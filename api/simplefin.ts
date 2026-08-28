@@ -1,4 +1,12 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
+import type { IncomingMessage, ServerResponse } from "node:http";
+
+/**
+ * Vercel's request/response objects are Node's own, plus a parsed `body`.
+ * Typing them structurally keeps @vercel/node (and 150 packages) out of the
+ * install, and out of the build's way.
+ */
+type ApiRequest = IncomingMessage & { body?: unknown };
+type ApiResponse = ServerResponse;
 
 /**
  * Server-side proxy for SimpleFIN Bridge.
@@ -21,7 +29,7 @@ const UPSTREAM_TIMEOUT_MS = 15_000;
 interface ClaimBody { action: "claim"; setupToken: string }
 interface AccountsBody { action: "accounts"; accessUrl: string; startDate: number }
 
-export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   const send = (status: number, data: unknown) => {
     res.statusCode = status;
     res.setHeader("content-type", "application/json");
