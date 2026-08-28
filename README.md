@@ -44,8 +44,10 @@ Getting transactions in, cheapest first:
 
 ### Connecting SimpleFIN
 
-1. Sign up at [bridge.simplefin.org](https://bridge.simplefin.org) and link your banks there.
-2. Generate a **setup token** (a long base64 string — single use).
+1. Sign up at [bridge.simplefin.org](https://bridge.simplefin.org). There's a 30-day free
+   trial, but you have to start it (or subscribe) **before your first bank can be added** —
+   the account exists without one, the connection doesn't.
+2. Link your banks there, then generate a **setup token** (a long base64 string, single use).
 3. Paste it into Settings → Bank sync → Connect.
 
 The token is exchanged once for a durable access URL, which is stored in this browser and
@@ -54,7 +56,8 @@ sends no CORS headers and its access URL carries HTTP Basic credentials, which b
 refuse to send cross-origin — so the request has to be made server-side.
 
 **Sync only works where that function runs**: `vercel dev` locally, or a deployment. Plain
-`npm run dev` serves the UI but not `/api`, so the Connect button will fail there.
+`npm run dev` serves the UI but not `/api`, so Connect fails there — the app says so rather
+than blaming SimpleFIN.
 
 Syncing pulls a 90-day window (SimpleFIN's per-request maximum), de-duplicates on the
 bridge's own transaction ids, and runs every new transaction through your rules.

@@ -30,6 +30,7 @@ await build({
       export { applyRules } from "./src/lib/rules.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
+      export { simplefin } from "./src/lib/sync/simplefin.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -113,6 +114,40 @@ await test("proxy strips credentials into a Basic header", async () => {
 });
 
 bridge.close();
+
+/* ── client-side error reporting ──────────────────────────────────────── */
+
+const withFetch = async (impl, fn) => {
+  const real = globalThis.fetch;
+  globalThis.fetch = impl;
+  try { return await fn(); } finally { globalThis.fetch = real; }
+};
+const caught = async (fn) => { try { await fn(); return null; } catch (e) { return e.message; } };
+
+await test("a 404 blames the missing function, not SimpleFIN", async () => {
+  const msg = await withFetch(
+    async () => new Response("", { status: 404 }),
+    () => caught(() => M.simplefin.fetch("https://u:p@example.com/simplefin", "2026-01-01")),
+  );
+  assert.match(msg, /api\/simplefin function isn't running/);
+  assert.doesNotMatch(msg, /SimpleFIN request failed/);
+});
+
+await test("an SPA shell served instead of JSON says the same thing", async () => {
+  const msg = await withFetch(
+    async () => new Response("<!doctype html><div id=root>", { status: 200 }),
+    () => caught(() => M.simplefin.fetch("https://u:p@example.com/simplefin", "2026-01-01")),
+  );
+  assert.match(msg, /api\/simplefin function isn't running/);
+});
+
+await test("a real bridge error is surfaced verbatim", async () => {
+  const msg = await withFetch(
+    async () => new Response(JSON.stringify({ error: "Bridge rejected the token (403)." }), { status: 400 }),
+    () => caught(() => M.simplefin.connect("dG9rZW4=")),
+  );
+  assert.equal(msg, "Bridge rejected the token (403).");
+});
 
 /* ── merge ────────────────────────────────────────────────────────────── */
 
