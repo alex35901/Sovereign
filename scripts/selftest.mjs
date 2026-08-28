@@ -74,19 +74,53 @@ const bridge = http.createServer((req, res) => {
 await new Promise((r) => bridge.listen(0, "127.0.0.1", r));
 const port = bridge.address().port;
 
-const post = (body) =>
-  M.simplefinHandler(new Request("http://localhost/api/simplefin", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-  }));
+/**
+ * Calls the handler exactly the way Vercel's Node runtime does — (req, res),
+ * never a Web Request. A handler that writes nothing fails here instead of
+ * hanging a browser forever, which is the bug this shape is guarding against.
+ */
+const invoke = (body, method = "POST") =>
+  new Promise((resolve, reject) => {
+    const headers = {};
+    // Only res.end() settles this. Resolving the handler's promise must NOT, or
+    // a handler that returns without writing would hang the suite instead of
+    // failing it — which is precisely the defect being guarded against.
+    const timer = setTimeout(() => reject(new Error("handler never wrote a response")), 5000);
+    const res = {
+      statusCode: 200,
+      setHeader: (k, v) => { headers[k.toLowerCase()] = v; },
+      end: (text) => { clearTimeout(timer); resolve({ status: res.statusCode, headers, text: text ?? "" }); },
+    };
+    Promise.resolve(M.simplefinHandler({ method, body }, res))
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+
+const post = async (body, method = "POST") => {
+  const r = await invoke(body, method);
+  return { status: r.status, json: r.text ? JSON.parse(r.text) : {} };
+};
+
+await test("proxy always writes a response (never hangs the caller)", async () => {
+  const r = await invoke({ action: "claim", setupToken: "" });
+  assert.ok(r.status >= 400, "an unusable token should still get an answer");
+  assert.equal(r.headers["content-type"], "application/json");
+});
 
 await test("proxy rejects non-POST", async () => {
-  const res = await M.simplefinHandler(new Request("http://localhost/api/simplefin"));
+  const res = await post({}, "GET");
   assert.equal(res.status, 405);
+});
+
+await test("proxy rejects a malformed body", async () => {
+  const r = await invoke(undefined);
+  assert.equal(r.status, 400);
+  assert.match(JSON.parse(r.text).error, /Malformed/);
 });
 
 await test("proxy rejects a token that isn't an https URL", async () => {
   const res = await post({ action: "claim", setupToken: Buffer.from("ftp://nope").toString("base64") });
   assert.equal(res.status, 400);
+  assert.match(res.json.error, /https URL/);
 });
 
 let accessUrl;
