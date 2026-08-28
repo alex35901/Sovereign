@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
@@ -163,28 +163,79 @@ export function Modal({ title, children, onClose, footer, wide }: {
   );
 }
 
-/** Anchored popover menu — closes on outside click or Escape. */
-export function Popover({ trigger, children, align = "left", width }: {
-  trigger: (open: () => void) => ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right"; width?: number;
+/**
+ * Anchored popover menu. The menu is portalled to <body> and positioned from the
+ * trigger's rect — anchoring it in place would let cards (which clip their
+ * contents so rows keep the rounded corners) cut the menu off.
+ */
+export function Popover({ trigger, children, align = "left", width = 220 }: {
+  trigger: (open: () => void) => ReactNode;
+  children: (close: () => void) => ReactNode;
+  align?: "left" | "right";
+  width?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
+  const anchor = useRef<HTMLDivElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+
+  const place = useCallback(() => {
+    const el = anchor.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const room = window.innerHeight - r.bottom;
+    const up = room < 260 && r.top > room;
+    setPos({
+      top: up ? r.top - 4 : r.bottom + 4,
+      left: Math.max(8, Math.min(
+        align === "right" ? r.right - width : r.left,
+        window.innerWidth - width - 8,
+      )),
+      up,
+    });
+  }, [align, width]);
+
+  useLayoutEffect(() => {
+    if (open) place();
+  }, [open, place]);
+
   useEffect(() => {
     if (!open) return;
-    const away = (e: MouseEvent) => { if (box.current && !box.current.contains(e.target as Node)) setOpen(false); };
+    const away = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!anchor.current?.contains(t) && !menu.current?.contains(t)) setOpen(false);
+    };
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", esc);
-    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", esc); };
-  }, [open]);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("mousedown", away);
+      window.removeEventListener("keydown", esc);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, place]);
+
   return (
-    <div ref={box} style={{ position: "relative", display: "inline-flex" }}>
+    <div ref={anchor} style={{ display: "inline-flex" }}>
       {trigger(() => setOpen((o) => !o))}
-      {open ? (
-        <div className="menu" style={{ top: "calc(100% + 4px)", [align]: 0, width } as CSSProperties}>
-          {children(() => setOpen(false))}
-        </div>
-      ) : null}
+      {open
+        ? createPortal(
+            <div
+              ref={menu}
+              className="menu"
+              style={{
+                position: "fixed", top: pos.top, left: pos.left, width,
+                transform: pos.up ? "translateY(-100%)" : undefined,
+              }}
+            >
+              {children(() => setOpen(false))}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

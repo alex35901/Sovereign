@@ -255,6 +255,17 @@ await test("recurring detection finds the fixed monthly bills", () => {
   assert.ok(!found.some((f) => f.includes("whole foods")), "false positive on groceries");
 });
 
+await test("investment balances agree with the positions inside them", () => {
+  for (const id of ["a_brokerage", "a_401k", "a_roth"]) {
+    const account = demo.accounts.find((a) => a.id === id);
+    const positions = demo.holdings
+      .filter((h) => h.accountId === id)
+      .reduce((s, h) => s + Math.round(h.quantity * h.price), 0);
+    assert.equal(account.balance, positions, `${id} balance drifts from its holdings`);
+    assert.equal(account.history.at(-1).balance, positions);
+  }
+});
+
 await test("net worth series matches the account snapshots", () => {
   const series = M.netWorthSeries(demo, ["2026-07", "2026-08"]);
   assert.equal(series.length, 2);

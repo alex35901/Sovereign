@@ -279,6 +279,19 @@ export function buildDemoDB(): DB {
     { id: uid("h"), accountId: "a_roth", ticker: "VTWAX", name: "Vanguard Total World Stock Admiral", quantity: 1402.6, costBasis: cents(34.1), price: cents(48.02), assetClass: "us_equity" },
   ];
 
+  // make each investment account's balance agree with the positions inside it,
+  // scaling its history so the growth curve still lands on the right number
+  for (const id of ["a_brokerage", "a_401k", "a_roth"]) {
+    const a = accounts.find((x) => x.id === id)!;
+    const target = holdings
+      .filter((h) => h.accountId === id)
+      .reduce((s, h) => s + Math.round(h.quantity * h.price), 0);
+    if (!target || !a.balance) continue;
+    const factor = target / a.balance;
+    a.history = a.history.map((h) => ({ ...h, balance: Math.round(h.balance * factor) }));
+    a.balance = target;
+  }
+
   const goals: Goal[] = [
     { id: "gl_efund", name: "Emergency Fund", emoji: "\u{1F6DF}", targetAmount: cents(30000), accountIds: ["a_savings"], startingAmount: 0, monthlyContribution: cents(600), priority: 0, archived: false },
     { id: "gl_kitchen", name: "Kitchen Remodel", emoji: "\u{1F373}", targetAmount: cents(28000), targetDate: `${addMonths(thisMonth(), 14)}-01`, accountIds: [], startingAmount: cents(6400), monthlyContribution: cents(900), priority: 1, archived: false },

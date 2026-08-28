@@ -110,7 +110,7 @@ export default function Transactions() {
       />
       <div className="page stack">
         <Card>
-          <div className="row wrap" style={{ gap: 8 }}>
+          <div className="row wrap filter-bar" style={{ gap: 8 }}>
             <div className="search grow" style={{ minWidth: 200 }}>
               <Search size={14} />
               <TextInput value={q} onChange={setQ} placeholder="Search merchants, notes, statements" />
