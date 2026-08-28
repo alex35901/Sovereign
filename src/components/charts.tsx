@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { fmt0 } from "../lib/money";
 import { color } from "./ui";
@@ -42,11 +42,13 @@ const niceTicks = (min: number, max: number, count = 4): number[] => {
 
 export interface Point { label: string; value: number; sub?: string }
 
-export function AreaChart({ points, height = 190, tone = "--accent", zeroBase = false }: {
-  points: Point[]; height?: number; tone?: string; zeroBase?: boolean;
+export function AreaChart({ points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false }: {
+  points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+  const raw = useId();
+  const uid = raw.replace(/[^a-zA-Z0-9]/g, "");
   if (!points.length) return <div ref={ref} style={{ height }} />;
 
   const padL = 52;
@@ -56,18 +58,25 @@ export function AreaChart({ points, height = 190, tone = "--accent", zeroBase = 
   const innerW = Math.max(40, w - padL - padR);
   const innerH = height - padT - padB;
   const values = points.map((p) => p.value);
-  let lo = Math.min(...values, zeroBase ? 0 : Infinity);
-  let hi = Math.max(...values, zeroBase ? 0 : -Infinity);
+  const hasNegative = values.some((v) => v < 0);
+  // A debt line is only meaningful against zero — the filled distance from the
+  // axis down to the balance is the point of the chart.
+  const anchorZero = zeroBase || hasNegative;
+  let lo = Math.min(...values, anchorZero ? 0 : Infinity);
+  let hi = Math.max(...values, anchorZero ? 0 : -Infinity);
   if (lo === hi) { lo -= 100; hi += 100; }
   const pad = (hi - lo) * 0.08;
   lo -= pad; hi += pad;
   const x = (i: number) => padL + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
   const y = (v: number) => padT + innerH - ((v - lo) / (hi - lo)) * innerH;
 
+  const zeroY = Math.max(padT, Math.min(padT + innerH, y(0)));
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
-  const area = `${line} L${x(points.length - 1).toFixed(1)},${padT + innerH} L${x(0).toFixed(1)},${padT + innerH} Z`;
-  const gid = `grad-${tone.replace(/[^a-z0-9]/gi, "")}`;
+  // Fill to the zero axis rather than the floor of the plot, so a negative
+  // series paints the band between 0 and the balance instead of a thin sliver.
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${zeroY} L${x(0).toFixed(1)},${zeroY} Z`;
   const ticks = niceTicks(lo, hi);
+  const showZeroLine = hasNegative && hi > 0;
 
   return (
     <div ref={ref} className="chart-wrap" style={{ height }}>
@@ -82,34 +91,59 @@ export function AreaChart({ points, height = 190, tone = "--accent", zeroBase = 
         }}
       >
         <defs>
-          <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color(tone)} stopOpacity="0.28" />
+          <linearGradient id={`up-${uid}`} gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={zeroY}>
+            <stop offset="0%" stopColor={color(tone)} stopOpacity="0.30" />
             <stop offset="100%" stopColor={color(tone)} stopOpacity="0.02" />
           </linearGradient>
+          <linearGradient id={`dn-${uid}`} gradientUnits="userSpaceOnUse" x1="0" y1={zeroY} x2="0" y2={padT + innerH}>
+            <stop offset="0%" stopColor={color(negativeTone)} stopOpacity="0.05" />
+            <stop offset="100%" stopColor={color(negativeTone)} stopOpacity="0.34" />
+          </linearGradient>
+          {/* split at the axis so a series crossing zero is green above, red below */}
+          <clipPath id={`above-${uid}`}>
+            <rect x={padL} y={padT} width={innerW} height={Math.max(0, zeroY - padT)} />
+          </clipPath>
+          <clipPath id={`below-${uid}`}>
+            <rect x={padL} y={zeroY} width={innerW} height={Math.max(0, padT + innerH - zeroY)} />
+          </clipPath>
         </defs>
+
         {ticks.map((t) => (
           <g key={t}>
             <line className="grid-line" x1={padL} x2={padL + innerW} y1={y(t)} y2={y(t)} />
             <text className="axis-text" x={padL - 8} y={y(t) + 3.5} textAnchor="end">{fmt0(t, { compact: true })}</text>
           </g>
         ))}
-        <path d={area} fill={`url(#${gid})`} />
-        <path d={line} fill="none" stroke={color(tone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+
+        <path d={area} fill={`url(#up-${uid})`} clipPath={`url(#above-${uid})`} />
+        <path d={area} fill={`url(#dn-${uid})`} clipPath={`url(#below-${uid})`} />
+        <path d={line} fill="none" stroke={color(tone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" clipPath={`url(#above-${uid})`} />
+        <path d={line} fill="none" stroke={color(negativeTone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" clipPath={`url(#below-${uid})`} />
+
+        {showZeroLine ? (
+          <line x1={padL} x2={padL + innerW} y1={zeroY} y2={zeroY} stroke={color("--muted")} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+        ) : null}
+
         {points.map((p, i) =>
           i % Math.ceil(points.length / Math.max(2, Math.floor(innerW / 62))) === 0 ? (
             <text key={p.label + i} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">{p.label}</text>
           ) : null)}
+
         {hover !== null ? (
           <g>
             <line className="grid-line" x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + innerH} stroke={color("--line")} />
-            <circle cx={x(hover)} cy={y(points[hover].value)} r={4} fill={color(tone)} stroke={color("--surface")} strokeWidth={2} />
+            <circle
+              cx={x(hover)} cy={y(points[hover].value)} r={4}
+              fill={color(points[hover].value < 0 ? negativeTone : tone)}
+              stroke={color("--surface")} strokeWidth={2}
+            />
           </g>
         ) : null}
       </svg>
       {hover !== null ? (
         <Tip x={x(hover)} y={y(points[hover].value)} width={w}>
           <div className="tiny muted">{points[hover].label}</div>
-          <div className="num bold">{fmt0(points[hover].value)}</div>
+          <div className={`num bold ${points[hover].value < 0 ? "neg" : ""}`}>{fmt0(points[hover].value)}</div>
           {points[hover].sub ? <div className="tiny muted">{points[hover].sub}</div> : null}
         </Tip>
       ) : null}

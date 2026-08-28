@@ -136,7 +136,7 @@ export default function Reports() {
               </div>
               <div>
                 <span className="section-title">Liabilities</span>
-                <AreaChart points={netWorth.map((p) => ({ label: monthLabel(p.month, true), value: Math.abs(p.liabilities) }))} height={150} tone="--c9" />
+                <AreaChart points={netWorth.map((p) => ({ label: monthLabel(p.month, true), value: p.liabilities }))} height={150} tone="--c9" />
               </div>
             </div>
           </Card>

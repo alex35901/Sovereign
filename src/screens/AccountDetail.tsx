@@ -87,7 +87,7 @@ export default function AccountDetail() {
 
         <Card>
           <CardHead title="Balance history" right={<RangePicker value={range} onChange={setRange} />} />
-          <AreaChart points={series} height={220} tone={account.balance >= 0 ? "--c2" : "--c9"} zeroBase />
+          <AreaChart points={series} height={220} tone="--c2" zeroBase />
         </Card>
 
         <Card pad={false}>
