@@ -1,0 +1,222 @@
+import { useMemo, useState } from "react";
+import { Plus } from "lucide-react";
+import type { AssetClass, Holding } from "../types";
+import { useDB, useStore } from "../store";
+import { TopBar } from "../shell/TopBar";
+import { lastMonths, monthEnd, monthLabel, today } from "../lib/date";
+import { fmtPct } from "../lib/money";
+import { ASSET_CLASS_LABEL, balanceAt, holdingCost, holdingValue, portfolioSummary } from "../lib/select";
+import { AreaChart, Donut } from "../components/charts";
+import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
+import { RangePicker, rangeMonths } from "../components/pickers";
+import type { RangeKey } from "../components/pickers";
+
+const CLASS_TONES: Record<string, string> = {
+  us_equity: "--c2", intl_equity: "--c4", bond: "--c12", cash: "--c3",
+  crypto: "--c5", real_estate: "--c1", other: "--c10",
+};
+
+export default function Investments() {
+  const db = useDB();
+  const { actions } = useStore();
+  const [range, setRange] = useState<RangeKey>("1y");
+  const [editing, setEditing] = useState<Holding | null>(null);
+  const [adding, setAdding] = useState(false);
+  const p = useMemo(() => portfolioSummary(db), [db]);
+
+  const series = useMemo(() => {
+    const months = lastMonths(rangeMonths(range) + 1);
+    return months.map((m) => {
+      const at = monthEnd(m) > today() ? today() : monthEnd(m);
+      return {
+        label: monthLabel(m, true),
+        value: p.invAccounts.reduce((s, a) => s + balanceAt(a, at), 0),
+      };
+    });
+  }, [p.invAccounts, range]);
+
+  const start = series[0]?.value ?? 0;
+  const growth = p.accountsValue - start;
+
+  return (
+    <>
+      <TopBar
+        title="Investments"
+        actions={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> Holding</Btn>}
+      />
+      <div className="page stack">
+        <div className="grid g4">
+          <Tile label="Portfolio value" value={<Money value={p.accountsValue} cents={false} />}
+            sub={<span className="muted">{p.invAccounts.length} accounts</span>} />
+          <Tile label="Holdings value" value={<Money value={p.value} cents={false} />}
+            sub={<span className="muted">{p.holdings.length} positions</span>} />
+          <Tile label="Total gain" value={<Money value={p.gain} cents={false} />} tone={p.gain >= 0 ? "pos" : "neg"}
+            sub={<span className={p.gain >= 0 ? "pos" : "neg"}>{fmtPct(p.gainPct)} vs cost basis</span>} />
+          <Tile label={`Change over ${range.toUpperCase()}`} value={<Money value={growth} cents={false} sign={growth >= 0} />}
+            tone={growth >= 0 ? "pos" : "neg"} />
+        </div>
+
+        <div className="grid g-2-1">
+          <Card>
+            <CardHead title="Portfolio value" sub="Brokerage plus retirement balances" right={<RangePicker value={range} onChange={setRange} />} />
+            <AreaChart points={series} height={240} tone="--c2" />
+          </Card>
+          <Card>
+            <CardHead title="Allocation" sub="By asset class" />
+            {p.byClass.length ? (
+              <Donut
+                size={150}
+                slices={p.byClass.map((c) => ({ label: c.label, value: c.value, tone: CLASS_TONES[c.key] ?? "--c10" }))}
+                center={<div className="col" style={{ gap: 0 }}>
+                  <span className="tiny muted">Holdings</span>
+                  <Money value={p.value} cents={false} className="bold" />
+                </div>}
+              />
+            ) : <Empty title="No holdings yet" body="Add positions to see allocation." />}
+          </Card>
+        </div>
+
+        {p.invAccounts.map((a) => {
+          const rows = p.holdings.filter((h) => h.accountId === a.id);
+          const value = rows.reduce((s, h) => s + holdingValue(h), 0);
+          return (
+            <Card key={a.id} pad={false}>
+              <CardHead
+                flush title={a.name} sub={a.institution}
+                right={<span className="num bold"><Money value={rows.length ? value : a.balance} cents={false} /></span>}
+              />
+              {rows.length ? (
+                <div style={{ overflowX: "auto" }}>
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Holding</th>
+                        <th className="right">Shares</th>
+                        <th className="right">Price</th>
+                        <th className="right">Cost basis</th>
+                        <th className="right">Value</th>
+                        <th className="right">Gain</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((h) => {
+                        const val = holdingValue(h);
+                        const cost = holdingCost(h);
+                        const gain = val - cost;
+                        return (
+                          <tr key={h.id}>
+                            <td>
+                              <div className="col" style={{ gap: 0 }}>
+                                <span className="bold">{h.ticker}</span>
+                                <span className="tiny faint truncate" style={{ maxWidth: 240 }}>{h.name}</span>
+                              </div>
+                            </td>
+                            <td className="right num">{h.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })}</td>
+                            <td className="right num"><Money value={h.price} /></td>
+                            <td className="right num muted"><Money value={cost} cents={false} /></td>
+                            <td className="right num bold"><Money value={val} cents={false} /></td>
+                            <td className={cx("right num", gain >= 0 ? "pos" : "neg")}>
+                              <Money value={gain} cents={false} sign={gain >= 0} />
+                              <div className="tiny">{cost ? fmtPct((gain / cost) * 100) : "—"}</div>
+                            </td>
+                            <td className="right">
+                              <Btn size="sm" variant="ghost" onClick={() => setEditing(h)}>Edit</Btn>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div style={{ padding: 16 }}>
+                  <span className="small faint">
+                    No positions recorded — the account balance of <Money value={a.balance} cents={false} /> still counts toward net worth.
+                  </span>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+
+        {!p.invAccounts.length ? (
+          <Card>
+            <Empty title="No investment accounts" body="Add a brokerage or retirement account first, then record its holdings here." />
+          </Card>
+        ) : null}
+
+        <Card>
+          <span className="small muted">
+            Prices are entered by hand — no market data feed is wired up, so nothing here phones home. Update a price and the
+            value, gain and allocation recalculate.
+          </span>
+        </Card>
+      </div>
+
+      {editing || adding ? (
+        <HoldingModal
+          holding={editing ?? undefined}
+          onClose={() => { setEditing(null); setAdding(false); }}
+          onDelete={editing ? () => { actions.deleteHolding(editing.id); setEditing(null); } : undefined}
+        />
+      ) : null}
+    </>
+  );
+}
+
+const CLASS_OPTIONS = Object.entries(ASSET_CLASS_LABEL).map(([value, label]) => ({ value: value as AssetClass, label }));
+
+function HoldingModal({ holding, onClose, onDelete }: { holding?: Holding; onClose: () => void; onDelete?: () => void }) {
+  const db = useDB();
+  const { actions } = useStore();
+  const invAccounts = db.accounts.filter((a) => ["investment", "retirement", "crypto"].includes(a.type));
+  const [accountId, setAccountId] = useState(holding?.accountId ?? invAccounts[0]?.id ?? "");
+  const [ticker, setTicker] = useState(holding?.ticker ?? "");
+  const [name, setName] = useState(holding?.name ?? "");
+  const [quantity, setQuantity] = useState(String(holding?.quantity ?? ""));
+  const [price, setPrice] = useState(holding?.price ?? 0);
+  const [costBasis, setCostBasis] = useState(holding?.costBasis ?? 0);
+  const [assetClass, setAssetClass] = useState<AssetClass>(holding?.assetClass ?? "us_equity");
+
+  const save = () => {
+    const payload = {
+      accountId, ticker: ticker.trim().toUpperCase(), name: name.trim() || ticker.trim().toUpperCase(),
+      quantity: Number.parseFloat(quantity) || 0, price, costBasis, assetClass,
+    };
+    if (holding) actions.updateHolding(holding.id, payload);
+    else actions.addHolding(payload);
+    onClose();
+  };
+
+  return (
+    <Modal
+      title={holding ? "Edit holding" : "Add holding"}
+      onClose={onClose}
+      footer={
+        <>
+          {onDelete ? <Btn variant="danger" onClick={() => { onDelete(); onClose(); }}>Delete</Btn> : null}
+          <div className="grow" />
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" onClick={save} disabled={!accountId || !ticker.trim()}>Save</Btn>
+        </>
+      }
+    >
+      <Field label="Account">
+        <SelectInput value={accountId} onChange={setAccountId} options={invAccounts.map((a) => ({ value: a.id, label: a.name }))} />
+      </Field>
+      <div className="row" style={{ gap: 12 }}>
+        <Field label="Ticker"><TextInput value={ticker} onChange={setTicker} placeholder="VTI" autoFocus /></Field>
+        <Field label="Name"><TextInput value={name} onChange={setName} placeholder="Vanguard Total Stock Market ETF" /></Field>
+      </div>
+      <div className="row" style={{ gap: 12 }}>
+        <Field label="Shares"><TextInput value={quantity} onChange={setQuantity} placeholder="118.42" /></Field>
+        <Field label="Price per share"><MoneyInput value={price} onChange={setPrice} /></Field>
+        <Field label="Cost per share"><MoneyInput value={costBasis} onChange={setCostBasis} /></Field>
+      </div>
+      <Field label="Asset class">
+        <SelectInput value={assetClass} onChange={setAssetClass} options={CLASS_OPTIONS} />
+      </Field>
+    </Modal>
+  );
+}
