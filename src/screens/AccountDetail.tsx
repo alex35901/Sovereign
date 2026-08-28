@@ -5,12 +5,14 @@ import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, lastMonths, monthLabel, monthEnd, today } from "../lib/date";
 import { ACCOUNT_TYPE_LABEL, balanceAt } from "../lib/select";
+import { canValue } from "../lib/property";
 import { AreaChart } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Money, MoneyInput, Tile } from "../components/ui";
 import { CategoryTag, RangePicker, rangeMonths } from "../components/pickers";
 import type { RangeKey } from "../components/pickers";
 import { MerchantAvatar } from "./Transactions";
 import { AccountModal } from "./Accounts";
+import { PropertyValueCard } from "./PropertyValueCard";
 import { TransactionModal } from "./TransactionModal";
 import type { Transaction } from "../types";
 
@@ -84,6 +86,8 @@ export default function AccountDetail() {
             </div>
           </Card>
         </div>
+
+        {canValue(account.type) ? <PropertyValueCard account={account} /> : null}
 
         <Card>
           <CardHead title="Balance history" right={<RangePicker value={range} onChange={setRange} />} />

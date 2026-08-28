@@ -6,9 +6,102 @@ import { dateLabel } from "../lib/date";
 import { toCSV } from "../lib/csv";
 import { download, exportJSON, importJSON } from "../lib/storage";
 import { ADAPTERS, mergeSync, syncWindowStart } from "../lib/sync";
+import { canValue, estimateHomeValue } from "../lib/property";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
+import { Link } from "react-router-dom";
 import { CategoriesPanel, RulesPanel, TagsPanel } from "./SettingsPanels";
 import { ImportModal } from "./ImportModal";
+
+function PropertyValuesCard() {
+  const db = useDB();
+  const { actions, notify } = useStore();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const key = db.settings.rentcastApiKey ?? "";
+  const properties = db.accounts.filter((a) => canValue(a.type) && !a.hidden);
+  const withAddress = properties.filter((a) => a.address?.trim());
+
+  const refreshAll = async () => {
+    setBusy(true);
+    setError(null);
+    let done = 0;
+    const failures: string[] = [];
+    for (const account of withAddress) {
+      try {
+        const estimate = await estimateHomeValue(key, account.address ?? "");
+        actions.updateAccount(account.id, {
+          valuation: { source: "rentcast", low: estimate.low, high: estimate.high, at: estimate.asOf },
+        });
+        actions.setAccountBalance(account.id, estimate.value);
+        done++;
+      } catch (err) {
+        failures.push(`${account.name}: ${err instanceof Error ? err.message : "failed"}`);
+      }
+    }
+    setBusy(false);
+    if (failures.length) setError(failures.join(" · "));
+    notify(`Updated ${done} of ${withAddress.length} propert${withAddress.length === 1 ? "y" : "ies"}.`);
+  };
+
+  return (
+    <Card>
+      <CardHead
+        title="Property values"
+        sub="Bank sync carries no property values — these come from RentCast instead"
+        right={
+          <Btn variant="primary" onClick={() => void refreshAll()} disabled={busy || !key || !withAddress.length}>
+            <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
+            {busy ? "Updating…" : `Update ${withAddress.length || ""} now`}
+          </Btn>
+        }
+      />
+      <div className="row wrap" style={{ gap: 10, marginBottom: 12 }}>
+        <span className="chip on">RentCast</span>
+        <span className="small muted">Free tier — 50 lookups per month, no card required</span>
+      </div>
+
+      <ol className="small muted" style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+        <li>Sign up at <b>rentcast.io</b> and create an API key on the Developer (free) plan.</li>
+        <li>Paste it below, then add each property's address on its account page.</li>
+        <li>Refresh whenever you like — monthly is plenty, and 2 properties uses 2 of the 50.</li>
+      </ol>
+
+      <Field label="RentCast API key">
+        <TextInput
+          value={key}
+          onChange={(v) => actions.patchSettings({ rentcastApiKey: v.trim() || undefined })}
+          placeholder="Paste your API key"
+        />
+      </Field>
+
+      {properties.length ? (
+        <>
+          <div className="divider" />
+          <div className="col" style={{ gap: 8 }}>
+            {properties.map((a) => (
+              <div key={a.id} className="spread small">
+                <Link to={`/accounts/${a.id}`} className="link truncate">{a.name}</Link>
+                <span className="muted truncate" style={{ maxWidth: 320 }}>
+                  {a.address?.trim()
+                    ? `${a.address}${a.valuation ? ` · checked ${dateLabel(a.valuation.at.slice(0, 10))}` : " · never checked"}`
+                    : "no address set"}
+                </span>
+                <Money value={a.balance} cents={false} className="bold" />
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="small faint" style={{ marginTop: 10 }}>
+          No property accounts yet. Add one with type <b>Real Estate</b> from the Accounts page.
+        </div>
+      )}
+
+      {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+    </Card>
+  );
+}
 
 export default function Settings() {
   const db = useDB();
@@ -185,6 +278,8 @@ export default function Settings() {
             accounts. Both slot in as another adapter in <code>src/lib/sync/</code> — the rest of the app doesn't change.
           </div>
         </Card>
+
+        <PropertyValuesCard />
 
         <Card>
           <CardHead

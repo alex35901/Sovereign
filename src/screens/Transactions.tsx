@@ -197,14 +197,16 @@ export default function Transactions() {
         ) : null}
 
         <Card pad={false}>
-          <div className="list-row" style={{ padding: "9px 16px", background: "var(--surface-2)" }}>
+          <div className="list-row tx-grid head">
             <input
               type="checkbox" className="cb" checked={allSelected}
               onChange={() => setSelected(allSelected ? new Set() : new Set(shown.map((t) => t.id)))}
             />
-            <span className="tiny faint grow">Merchant</span>
-            <span className="tiny faint" style={{ width: 150 }}>Category</span>
-            <span className="tiny faint right" style={{ width: 110 }}>Amount</span>
+            <span />
+            <span className="tiny faint">Merchant</span>
+            <span className="tiny faint">Category</span>
+            <span className="tiny faint tx-account">Account</span>
+            <span className="tiny faint right">Amount</span>
           </div>
 
           {grouped.map(([date, rows]) => (
@@ -257,22 +259,29 @@ function Row({ txn, selected, onToggle, onEdit }: {
   const split = (txn.splits?.length ?? 0) > 0;
 
   return (
-    <div className={cx("list-row", selected && "sel")} style={selected ? { background: "var(--accent-soft)" } : undefined}>
+    <div className={cx("list-row tx-grid", selected && "sel")} style={selected ? { background: "var(--accent-soft)" } : undefined}>
       <input type="checkbox" className="cb" checked={selected} onChange={onToggle} />
       <MerchantAvatar name={txn.merchant} />
-      <div className="grow col" style={{ gap: 1, cursor: "pointer" }} onClick={onEdit}>
+      <div className="col" style={{ gap: 1, cursor: "pointer", minWidth: 0 }} onClick={onEdit}>
         <span className="row" style={{ gap: 6 }}>
           <span className="truncate" style={{ fontWeight: 500 }}>{txn.merchant}</span>
           {txn.pending ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>Pending</span> : null}
           {!txn.reviewed ? <span className="dot" style={{ background: "var(--accent)" }} title="Needs review" /> : null}
         </span>
-        <span className="tiny faint truncate">
-          {account?.name ?? "—"}
-          {txn.notes ? ` · ${txn.notes}` : ""}
-          {split ? ` · split ${txn.splits!.length} ways` : ""}
+        <span className="row tiny faint" style={{ gap: 5, minWidth: 0 }}>
+          <span className="truncate">
+            <span className="tx-sub-account">{account?.name ?? "—"}</span>
+            {txn.notes ? `${txn.notes}` : ""}
+            {split ? ` · split ${txn.splits!.length} ways` : ""}
+            {!txn.notes && !split ? "" : ""}
+          </span>
+          {txn.tags.map((id) => {
+            const tag = db.tags.find((g) => g.id === id);
+            return tag ? <TagPill key={id} name={tag.name} tone={tag.color} /> : null;
+          })}
         </span>
       </div>
-      <div className="row" style={{ width: 150, gap: 4 }}>
+      <div className="row" style={{ gap: 4, minWidth: 0 }}>
         {split ? (
           <span className="chip" onClick={onEdit} style={{ cursor: "pointer" }}>Split</span>
         ) : (
@@ -294,14 +303,9 @@ function Row({ txn, selected, onToggle, onEdit }: {
           />
         )}
       </div>
-      <div className="right num bold" style={{ width: 110 }} onClick={onEdit}>
+      <span className="tiny truncate tx-account">{account?.name ?? "—"}</span>
+      <div className="right num bold" style={{ cursor: "pointer" }} onClick={onEdit}>
         <Money value={txn.amount} colored={txn.amount > 0} />
-      </div>
-      <div className="row" style={{ gap: 2 }}>
-        {txn.tags.map((id) => {
-          const tag = db.tags.find((g) => g.id === id);
-          return tag ? <TagPill key={id} name={tag.name} tone={tag.color} /> : null;
-        })}
       </div>
     </div>
   );

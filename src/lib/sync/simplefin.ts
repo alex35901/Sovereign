@@ -1,6 +1,7 @@
 import type { SyncAdapter, SyncPayload } from "./types";
 import { guessAccountType } from "./types";
 import { toISO } from "../date";
+import { postJSON } from "../api";
 
 /**
  * SimpleFIN Bridge — $15/yr, up to 25 institutions, refreshed about once a day.
@@ -10,43 +11,8 @@ import { toISO } from "../date";
  */
 const PROXY = "/api/simplefin";
 
-const NO_FUNCTION =
-  "The /api/simplefin function isn't running, so the request never reached SimpleFIN. " +
-  "`npm run dev` serves the UI only \u2014 start the app with `vercel dev`, or use your deployment.";
-
-async function call<T>(action: string, body: Record<string, unknown>): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(PROXY, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, ...body }),
-    });
-  } catch {
-    throw new Error("Could not reach /api/simplefin. Is the app still running?");
-  }
-
-  // A bare 404 means the serverless function isn't mounted — the usual cause,
-  // and nothing to do with SimpleFIN or your subscription.
-  if (res.status === 404) throw new Error(NO_FUNCTION);
-
-  const text = await res.text();
-  if (!res.ok) {
-    let message = text;
-    try {
-      const parsed = JSON.parse(text) as { error?: string };
-      if (parsed.error) message = parsed.error;
-    } catch { /* not JSON — fall back to the raw body */ }
-    throw new Error(message || `SimpleFIN request failed (${res.status})`);
-  }
-
-  // Some static hosts answer unknown paths with the SPA shell instead of a 404.
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new Error(NO_FUNCTION);
-  }
-}
+const call = <T,>(action: string, body: Record<string, unknown>): Promise<T> =>
+  postJSON<T>(PROXY, { action, ...body });
 
 interface BridgeAccount {
   id: string;

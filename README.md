@@ -52,8 +52,21 @@ Getting transactions in, cheapest first:
 | --- | --- | --- |
 | CSV / manual | $0 | Works today, no signup. Mint, Monarch, YNAB and raw bank exports all import. |
 | **SimpleFIN Bridge** | **$15/yr** | Implemented. MX-backed, ~16k institutions, 25 max, refreshes daily. |
+| **RentCast** | **$0** | Implemented, for property values — see below. 50 lookups/month on the free tier. |
 | Plaid Trial | $0 | Not wired up. 10 institutions, and the only route with real holdings-level investment data. |
 | Teller | $0 | Not wired up. 100 connections, US only, thin on retirement accounts. |
+
+### Property values
+
+Bank aggregators carry no property valuations — MX, and therefore SimpleFIN, simply doesn't
+have them. Real-estate accounts get their value from RentCast instead: put the address on the
+account, press **Refresh estimate**, and the returned figure is written as a balance snapshot,
+so net worth updates and the history chart keeps what came before.
+
+Sign up at [rentcast.io](https://www.rentcast.io/api), create a key on the free Developer
+plan, and paste it into Settings → Property values. That plan allows 50 lookups a month; two
+properties refreshed monthly uses two. Settings also has an **Update now** button that walks
+every property with an address.
 
 ### Connecting SimpleFIN
 

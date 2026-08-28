@@ -22,6 +22,10 @@ export interface Account {
   syncSource?: "manual" | "csv" | "simplefin";
   syncId?: string;
   lastSyncedAt?: string;
+  /** Street address, for property accounts that can be valued automatically. */
+  address?: string;
+  /** The most recent automated valuation, kept for provenance. */
+  valuation?: { source: "rentcast"; low?: number; high?: number; at: string };
   order: number;
 }
 
@@ -136,6 +140,8 @@ export interface Settings {
   householdName: string;
   /** SimpleFIN access URL, stored locally. Empty until the user connects. */
   simplefinAccessUrl?: string;
+  /** RentCast API key for property valuations, stored locally. */
+  rentcastApiKey?: string;
   lastSyncAt?: string;
 }
 

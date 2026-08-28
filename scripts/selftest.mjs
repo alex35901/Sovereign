@@ -30,6 +30,8 @@ await build({
       export { applyRules } from "./src/lib/rules.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
+      export { default as propertyHandler } from "./api/property.ts";
+      export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
@@ -80,7 +82,7 @@ const port = bridge.address().port;
  * never a Web Request. A handler that writes nothing fails here instead of
  * hanging a browser forever, which is the bug this shape is guarding against.
  */
-const invoke = (body, method = "POST") =>
+const invokeOn = (handler, body, method = "POST") =>
   new Promise((resolve, reject) => {
     const headers = {};
     // Only res.end() settles this. Resolving the handler's promise must NOT, or
@@ -92,9 +94,19 @@ const invoke = (body, method = "POST") =>
       setHeader: (k, v) => { headers[k.toLowerCase()] = v; },
       end: (text) => { clearTimeout(timer); resolve({ status: res.statusCode, headers, text: text ?? "" }); },
     };
-    Promise.resolve(M.simplefinHandler({ method, body }, res))
+    Promise.resolve(handler({ method, body }, res))
       .catch((err) => { clearTimeout(timer); reject(err); });
   });
+
+const invoke = (body, method = "POST") => invokeOn(M.simplefinHandler, body, method);
+const invokeProperty = (body, method = "POST") => invokeOn(M.propertyHandler, body, method);
+
+const withFetch = async (impl, fn) => {
+  const real = globalThis.fetch;
+  globalThis.fetch = impl;
+  try { return await fn(); } finally { globalThis.fetch = real; }
+};
+const caught = async (fn) => { try { await fn(); return null; } catch (e) { return e.message; } };
 
 const post = async (body, method = "POST") => {
   const r = await invoke(body, method);
@@ -150,6 +162,82 @@ await test("proxy strips credentials into a Basic header", async () => {
 
 bridge.close();
 
+/* ── property valuations ──────────────────────────────────────────────── */
+
+const rentcast = (impl) => withFetch(impl, () => invokeProperty({ apiKey: "k", address: "1 Main St, Springfield, OR 97477" }));
+const errorOf = (r) => JSON.parse(r.text).error;
+
+await test("property proxy always writes a response", async () => {
+  const r = await invokeProperty({});
+  assert.ok(r.status >= 400);
+  assert.equal(r.headers["content-type"], "application/json");
+});
+
+await test("property proxy rejects non-POST and missing fields", async () => {
+  assert.equal((await invokeProperty({}, "GET")).status, 405);
+  assert.match(errorOf(await invokeProperty({ address: "1 Main St" })), /API key/);
+  assert.match(errorOf(await invokeProperty({ apiKey: "k" })), /address/);
+});
+
+await test("property proxy sends the key as a header, never in the URL", async () => {
+  let seen;
+  const r = await rentcast(async (url, init) => {
+    seen = { url: String(url), headers: init.headers };
+    return new Response(JSON.stringify({ price: 812500, priceRangeLow: 780000, priceRangeHigh: 845000 }), { status: 200 });
+  });
+  assert.equal(r.status, 200);
+  assert.ok(seen.url.startsWith("https://api.rentcast.io/v1/avm/value?address="));
+  assert.equal(seen.headers["X-Api-Key"], "k");
+  assert.doesNotMatch(seen.url, /apiKey|X-Api-Key|[?&]key=/i, "the key must not leak into the query string");
+  assert.equal(JSON.parse(r.text).price, 812500);
+});
+
+await test("a rejected key says so, rather than showing a raw 401", async () => {
+  const r = await rentcast(async () => new Response("Unauthorized", { status: 401 }));
+  assert.match(errorOf(r), /rejected the API key/);
+});
+
+await test("exhausting the free quota explains itself", async () => {
+  const r = await rentcast(async () => new Response("Too Many Requests", { status: 429 }));
+  assert.equal(r.status, 429);
+  assert.match(errorOf(r), /50 free RentCast lookups/);
+});
+
+await test("an unknown address suggests the address format", async () => {
+  const r = await rentcast(async () => new Response(JSON.stringify({}), { status: 200 }));
+  assert.equal(r.status, 404);
+  assert.match(errorOf(r), /street, city, state, ZIP/);
+});
+
+await test("a stalled provider times out instead of hanging", async () => {
+  const r = await rentcast(async () => {
+    const err = new Error("timed out");
+    err.name = "TimeoutError";
+    throw err;
+  });
+  assert.equal(r.status, 504);
+  assert.match(errorOf(r), /didn't respond within 15 seconds/);
+});
+
+await test("the client converts dollars to cents and guards its inputs", async () => {
+  const estimate = await withFetch(
+    async () => new Response(JSON.stringify({ price: 812500.4, priceRangeLow: 780000, priceRangeHigh: 845000 }), { status: 200 }),
+    () => M.estimateHomeValue("key", "1 Main St"),
+  );
+  assert.equal(estimate.value, 81250040);
+  assert.equal(estimate.low, 78000000);
+  assert.equal(estimate.high, 84500000);
+  assert.match(await caught(() => M.estimateHomeValue("", "1 Main St")), /API key/);
+  assert.match(await caught(() => M.estimateHomeValue("k", "  ")), /address/);
+});
+
+await test("only property account types offer valuation", () => {
+  assert.equal(M.canValue("real_estate"), true);
+  assert.equal(M.canValue("other_asset"), true);
+  assert.equal(M.canValue("checking"), false);
+  assert.equal(M.canValue("mortgage"), false);
+});
+
 /* ── emoji picker data ────────────────────────────────────────────────── */
 
 await test("emoji dataset is well-formed", () => {
@@ -185,13 +273,6 @@ await test("search ranks exact names above keyword hits", () => {
 });
 
 /* ── client-side error reporting ──────────────────────────────────────── */
-
-const withFetch = async (impl, fn) => {
-  const real = globalThis.fetch;
-  globalThis.fetch = impl;
-  try { return await fn(); } finally { globalThis.fetch = real; }
-};
-const caught = async (fn) => { try { await fn(); return null; } catch (e) { return e.message; } };
 
 await test("a 404 blames the missing function, not SimpleFIN", async () => {
   const msg = await withFetch(
