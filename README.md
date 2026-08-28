@@ -10,11 +10,24 @@ those features costs between **$0 and $15/yr** if you run the app yourself — s
 
 ## Running it
 
+**Without the terminal:** double-click **`start.cmd`**. It pulls the latest version, installs
+anything new, starts the app and opens http://localhost:5273 in your browser. Leave the black
+window open while you use the app; close it to stop. Run it again any time to get updates —
+pushing to GitHub does not change the files on your PC, so something has to pull them down,
+and that script is the something.
+
+**Better still, don't run it locally at all.** Deploy once to Vercel (below) and every change
+pushed to `main` rebuilds itself within a minute. Then you really can just refresh the page,
+from any device, and bank sync works too.
+
+**From a terminal**, if you prefer:
+
 ```
 npm install
-npm run dev      # http://localhost:5273
+npm run dev      # http://localhost:5273 - UI only, no bank sync
+vercel dev       # http://localhost:5273 - includes the /api function
 npm run build    # type-check + production bundle
-npm test         # logic self-tests (19 assertions, no browser needed)
+npm test         # logic self-tests, no browser needed
 ```
 
 First launch seeds two years of realistic demo data so every screen has something in it.
@@ -69,9 +82,17 @@ Implement `SyncAdapter` in `src/lib/sync/types.ts`, register it in `src/lib/sync
 
 ## Deploying
 
-Vercel, with **Root Directory** set to `monarch`. `vercel.json` handles the SPA rewrites and
-keeps `/api/*` out of them. Any static host works too, but without a host for `api/simplefin.ts`
-you're on CSV imports only.
+1. Go to [vercel.com](https://vercel.com) and sign in with GitHub.
+2. **Add New → Project**, pick `sovereign`, press Deploy. No settings to change — `vercel.json`
+   already handles the SPA rewrites and keeps `/api/*` out of them.
+3. You get a URL like `sovereign-xxxx.vercel.app`. That's the app, on every device you own.
+
+After that, every push to `main` redeploys automatically in about a minute — refresh the page
+and the change is there. The `/api/simplefin` function runs there too, so bank sync works
+without `vercel dev`.
+
+Any static host works as well, but without somewhere to run `api/simplefin.ts` you're on CSV
+imports only.
 
 ## How it's put together
 
