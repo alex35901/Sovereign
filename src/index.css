@@ -241,3 +241,28 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 720px) { .mobile-tabs { display: flex !important; } }
+
+/* ── emoji picker ─────────────────────────────────────────────────────── */
+.menu.emoji-menu { padding: 0; max-height: none; overflow: visible; }
+.emoji-trigger { gap: 8px; padding: 6px 10px; }
+.emoji-panel { display: flex; flex-direction: column; max-height: 340px; }
+.emoji-head { padding: 8px 8px 6px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 7px; }
+.emoji-tabs { display: flex; gap: 2px; }
+.emoji-tab {
+  flex: 1; border: 0; background: none; border-radius: 6px; padding: 4px 0; cursor: pointer;
+  font-size: 15px; line-height: 1.2; opacity: 0.6;
+}
+.emoji-tab:hover { background: var(--surface-2); opacity: 1; }
+.emoji-tab.on { background: var(--accent-soft); opacity: 1; }
+.emoji-scroll { overflow-y: auto; padding: 6px 8px 10px; }
+.emoji-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--faint);
+  font-weight: 600; padding: 6px 2px 5px; position: sticky; top: -6px; background: var(--surface);
+}
+.emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 1px; }
+.emoji-cell {
+  border: 0; background: none; border-radius: 6px; cursor: pointer; padding: 4px 0;
+  font-size: 19px; line-height: 1.35; text-align: center;
+}
+.emoji-cell:hover { background: var(--surface-3); transform: scale(1.15); }
+.emoji-cell.on { background: var(--accent-soft); }

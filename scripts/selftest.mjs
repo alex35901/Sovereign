@@ -31,6 +31,7 @@ await build({
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
+      export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -148,6 +149,40 @@ await test("proxy strips credentials into a Basic header", async () => {
 });
 
 bridge.close();
+
+/* ── emoji picker data ────────────────────────────────────────────────── */
+
+await test("emoji dataset is well-formed", () => {
+  assert.equal(M.EMOJI_GROUPS.length, 9);
+  assert.ok(M.ALL_EMOJI.length > 1800, `only ${M.ALL_EMOJI.length} emoji`);
+  for (const g of M.EMOJI_GROUPS) assert.ok(g.emojis.length > 0, `${g.key} is empty`);
+  for (const e of M.ALL_EMOJI) {
+    assert.ok(e.c && e.n, `malformed entry ${JSON.stringify(e)}`);
+  }
+  const chars = new Set(M.ALL_EMOJI.map((e) => e.c));
+  assert.equal(chars.size, M.ALL_EMOJI.length, "duplicate emoji in the dataset");
+});
+
+await test("every word a budgeter would type finds an emoji", () => {
+  // Unicode's own keywords cover none of these; the synonym layer in
+  // scripts/build-emoji.mjs is what makes them searchable.
+  const words = [
+    "grocery", "groceries", "rent", "mortgage", "paycheck", "salary", "income",
+    "insurance", "utilities", "internet", "phone", "gas", "fuel", "car", "auto",
+    "dining", "restaurant", "coffee", "travel", "vacation", "subscription",
+    "streaming", "gym", "fitness", "medical", "doctor", "pet", "childcare",
+    "kids", "shopping", "clothes", "savings", "investment", "retirement", "debt",
+    "loan", "tax", "charity", "gift", "haircut", "parking", "transit",
+    "electricity", "water", "trash", "furniture", "electronics", "entertainment",
+  ];
+  const missing = words.filter((w) => M.searchEmoji(w, 3).length === 0);
+  assert.deepEqual(missing, [], `no emoji for: ${missing.join(", ")}`);
+});
+
+await test("search ranks exact names above keyword hits", () => {
+  const [first] = M.searchEmoji("avocado", 5);
+  assert.equal(first.c, "\u{1F951}");
+});
 
 /* ── client-side error reporting ──────────────────────────────────────── */
 

@@ -6,6 +6,7 @@ import { TopBar } from "../shell/TopBar";
 import { addMonths, dateLabel, monthLabel, thisMonth } from "../lib/date";
 import { goalProgress } from "../lib/select";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, Progress, TextInput, Tile, cx } from "../components/ui";
+import { EmojiPicker } from "../components/EmojiPicker";
 
 export default function Goals() {
   const db = useDB();
@@ -135,8 +136,8 @@ function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void }) {
       }
     >
       <div className="row" style={{ gap: 12 }}>
-        <div style={{ width: 74 }}>
-          <Field label="Icon"><TextInput value={emoji} onChange={setEmoji} /></Field>
+        <div style={{ width: 120 }}>
+          <Field label="Icon"><EmojiPicker value={emoji} onChange={setEmoji} /></Field>
         </div>
         <Field label="Name"><TextInput value={name} onChange={setName} placeholder="Emergency fund" autoFocus /></Field>
       </div>

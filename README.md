@@ -104,6 +104,8 @@ src/
   lib/
     select.ts       all derived data — net worth, cash flow, budget rollups, rollover,
                     recurring detection, sankey, portfolio
+    emoji-data.ts   generated: 1,914 emoji, grouped and searchable. Regenerate with
+                    scripts/build-emoji.mjs; loaded as its own chunk on first use
     seed.ts         deterministic 24-month demo generator
     csv.ts          RFC-4180 parser, column-role guessing, dedupe, export
     rules.ts        criteria → actions, applied on import and sync

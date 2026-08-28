@@ -5,6 +5,7 @@ import { useDB, useStore } from "../store";
 import { countMatches } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { CategoryPicker } from "../components/pickers";
+import { EmojiPicker } from "../components/EmojiPicker";
 
 const PALETTE = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
 
@@ -90,7 +91,7 @@ function CategoryModal({ category, groupId, onClose }: { category?: Category; gr
       footer={<><div className="grow" /><Btn onClick={onClose}>Cancel</Btn><Btn variant="primary" onClick={save}>Save</Btn></>}
     >
       <div className="row" style={{ gap: 12 }}>
-        <div style={{ width: 74 }}><Field label="Icon"><TextInput value={icon} onChange={setIcon} /></Field></div>
+        <div style={{ width: 120 }}><Field label="Icon"><EmojiPicker value={icon} onChange={setIcon} /></Field></div>
         <Field label="Name"><TextInput value={name} onChange={setName} autoFocus /></Field>
       </div>
       <Field label="Group">

@@ -168,11 +168,12 @@ export function Modal({ title, children, onClose, footer, wide }: {
  * trigger's rect — anchoring it in place would let cards (which clip their
  * contents so rows keep the rounded corners) cut the menu off.
  */
-export function Popover({ trigger, children, align = "left", width = 220 }: {
+export function Popover({ trigger, children, align = "left", width = 220, className }: {
   trigger: (open: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
   width?: number;
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
@@ -225,7 +226,7 @@ export function Popover({ trigger, children, align = "left", width = 220 }: {
         ? createPortal(
             <div
               ref={menu}
-              className="menu"
+              className={cx("menu", className)}
               style={{
                 position: "fixed", top: pos.top, left: pos.left, width,
                 transform: pos.up ? "translateY(-100%)" : undefined,

@@ -1,0 +1,168 @@
+/**
+ * Regenerates src/lib/emoji-data.ts from emojibase.
+ *
+ *   npm i -D emojibase-data && node scripts/build-emoji.mjs && npm uninstall emojibase-data
+ *
+ * The output is committed and emojibase-data is 49MB, so it is deliberately not
+ * a standing dependency — install it only when regenerating, then drop it again.
+ * Nothing at build or run time needs it.
+ */
+import { writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const data = require("emojibase-data/en/compact.json");
+
+/**
+ * Unicode's own keywords miss most of the words a budgeter reaches for —
+ * "grocery", "rent", "paycheck", "childcare" all return nothing. These are
+ * added as extra search terms, keyed by the emoji's label so a typo fails the
+ * build rather than silently doing nothing.
+ */
+const SYNONYMS = {
+  "shopping cart": "grocery groceries supermarket market",
+  "basket": "grocery groceries produce",
+  "key": "rent rental lease landlord",
+  "house with garden": "mortgage rent home housing",
+  "house": "mortgage rent housing home",
+  "dollar banknote": "paycheck salary income wages pay earnings",
+  "money bag": "savings salary income paycheck fund",
+  "money with wings": "spending expense outgoing",
+  "shield": "insurance protection coverage cover",
+  "umbrella with rain drops": "insurance coverage protection",
+  "high voltage": "utilities electricity power electric",
+  "light bulb": "utilities electricity power",
+  "electric plug": "utilities electricity power",
+  "droplet": "water utilities",
+  "fork and knife with plate": "dining restaurant eating out meal",
+  "fork and knife": "dining restaurant meal",
+  "beach with umbrella": "vacation holiday retirement getaway",
+  "palm tree": "vacation holiday tropical",
+  "television": "subscription streaming cable tv entertainment",
+  "clapper board": "subscription streaming movies entertainment",
+  "satellite antenna": "subscription streaming cable internet",
+  "person lifting weights": "fitness gym workout exercise",
+  "flexed biceps": "fitness gym workout strength",
+  "teddy bear": "childcare kids children daycare toys",
+  "baby": "childcare kids children daycare",
+  "baby bottle": "childcare kids children daycare formula",
+  "pig": "savings piggy bank saving",
+  "chart increasing": "investment investing portfolio growth returns",
+  "chart increasing with yen": "investment investing stocks market",
+  "chart decreasing": "debt loss losses downturn",
+  "credit card": "debt loan card payment",
+  "bank": "loan mortgage savings banking debt",
+  "receipt": "tax taxes invoice bill",
+  "heart with ribbon": "charity donation giving",
+  "handshake": "charity donation giving",
+  "bus": "transit commute transport public",
+  "train": "transit commute transport rail",
+  "metro": "transit commute subway transport",
+  "couch and lamp": "furniture furnishings home housewares living room",
+  "chair": "furniture furnishings retirement seating",
+  "laptop": "electronics computer tech gadget",
+  "desktop computer": "electronics computer tech",
+  "mobile phone": "electronics phone tech mobile",
+  "older person": "retirement pension senior",
+  "graduation cap": "tuition education school college student",
+  "pill": "medical prescription pharmacy health",
+  "stethoscope": "medical doctor health healthcare",
+  "dog face": "pet pets dog vet",
+  "cat face": "pet pets cat vet",
+  "fuel pump": "gas fuel petrol gasoline",
+  "automobile": "car auto vehicle transport",
+  "hammer and wrench": "maintenance repairs home improvement",
+  "wrench": "maintenance repairs auto service",
+};
+
+/** group id → [key, display name, tab icon] */
+const GROUPS = [
+  [0, "smileys", "Smileys", "\u{1F600}"],
+  [1, "people", "People", "\u{1F44B}"],
+  [3, "nature", "Animals & Nature", "\u{1F43B}"],
+  [4, "food", "Food & Drink", "\u{1F354}"],
+  [5, "travel", "Travel & Places", "\u{1F697}"],
+  [6, "activities", "Activities", "\u{26BD}"],
+  [7, "objects", "Objects", "\u{1F4A1}"],
+  [8, "symbols", "Symbols", "\u{2764}\u{FE0F}"],
+  [9, "flags", "Flags", "\u{1F3C1}"],
+];
+
+const esc = (s) => JSON.stringify(s);
+const out = [];
+const matchedSynonyms = new Set();
+let count = 0;
+
+for (const [id, key, name, icon] of GROUPS) {
+  const rows = data
+    .filter((e) => e.group === id && e.unicode)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .map((e) => {
+      const label = e.label.toLowerCase();
+      const synonyms = SYNONYMS[label] ? SYNONYMS[label].split(" ") : [];
+      if (synonyms.length) matchedSynonyms.add(label);
+      // synonyms first so the cap never drops them
+      const extra = [...synonyms, ...(e.tags ?? []).filter((t) => !label.includes(t))]
+        .slice(0, 10)
+        .join(" ");
+      return `{c:${esc(e.unicode)},n:${esc(label)}${extra ? `,k:${esc(extra)}` : ""}}`;
+    });
+  count += rows.length;
+  out.push(`  { key: ${esc(key)}, name: ${esc(name)}, icon: ${esc(icon)}, emojis: [\n    ${rows.join(",\n    ")},\n  ] },`);
+}
+
+const file = `// Generated by scripts/build-emoji.mjs — do not edit by hand.
+// ${count} emoji from emojibase, grouped and searchable by name and keyword.
+
+export interface Emoji {
+  /** the character itself */
+  c: string;
+  /** display name, lowercase */
+  n: string;
+  /** extra search keywords the name doesn't already contain */
+  k?: string;
+}
+
+export interface EmojiGroup {
+  key: string;
+  name: string;
+  icon: string;
+  emojis: Emoji[];
+}
+
+export const EMOJI_GROUPS: EmojiGroup[] = [
+${out.join("\n")}
+];
+
+export const ALL_EMOJI: Emoji[] = EMOJI_GROUPS.flatMap((g) => g.emojis);
+
+/** Ranked search across names and keywords; exact and prefix hits come first. */
+export function searchEmoji(query: string, limit = 96): Emoji[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+  const scored: { e: Emoji; score: number }[] = [];
+  for (const e of ALL_EMOJI) {
+    let score = 0;
+    if (e.n === q) score = 100;
+    else if (e.n.startsWith(q)) score = 80;
+    else if (e.n.includes(q)) score = 60;
+    else if (e.k) {
+      const words = e.k.split(" ");
+      if (words.some((w) => w === q)) score = 50;
+      else if (words.some((w) => w.startsWith(q))) score = 30;
+    }
+    if (score) scored.push({ e, score });
+    if (scored.length > limit * 4) break;
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.e);
+}
+`;
+
+const unmatched = Object.keys(SYNONYMS).filter((k) => !matchedSynonyms.has(k));
+if (unmatched.length) {
+  console.error(`These synonym labels match no emoji — fix or remove them:\n  ${unmatched.join("\n  ")}`);
+  process.exit(1);
+}
+
+writeFileSync(new URL("../src/lib/emoji-data.ts", import.meta.url), file);
+console.log(`wrote src/lib/emoji-data.ts — ${count} emoji across ${GROUPS.length} groups`);
