@@ -37,6 +37,7 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
+      export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
@@ -396,6 +397,78 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── vehicle depreciation ─────────────────────────────────────────────── */
+
+await test("curves land on the published five-year figures", () => {
+  // 2026 industry averages: 41.8% lost overall, 34.2% trucks, 57.2% EVs
+  const within = (actual, expected, tol = 0.005) =>
+    assert.ok(Math.abs(actual - expected) < tol, `${actual.toFixed(3)} should be about ${expected}`);
+  within(M.retentionAt("car", 5), 0.582);
+  within(M.retentionAt("truck", 5), 0.658);
+  within(M.retentionAt("hybrid", 5), 0.646);
+  within(M.retentionAt("ev", 5), 0.428);
+});
+
+await test("the first year is the steepest, and value only falls", () => {
+  const firstYear = 1 - M.retentionAt("car", 1);
+  const secondYear = M.retentionAt("car", 1) - M.retentionAt("car", 2);
+  assert.ok(firstYear > secondYear, "year one should lose more than year two");
+  let previous = 1;
+  for (let y = 0.25; y <= 15; y += 0.25) {
+    const r = M.retentionAt("car", y);
+    assert.ok(r <= previous + 1e-9, `retention rose at year ${y}`);
+    previous = r;
+  }
+});
+
+await test("an old vehicle keeps a floor, never reaching zero", () => {
+  assert.ok(M.retentionAt("car", 40) >= 0.08);
+  assert.ok(M.retentionAt("ev", 40) >= 0.08);
+});
+
+await test("mileage moves a vehicle along its curve, within bounds", () => {
+  const base = { purchasePrice: 4000000, purchaseDate: "2024-08-29", class: "car", autoUpdate: false };
+  const asOf = "2026-08-29";
+  const average = M.estimateVehicleValue({ ...base, annualMiles: 12000 }, asOf);
+  const garaged = M.estimateVehicleValue({ ...base, annualMiles: 4000 }, asOf);
+  const hammered = M.estimateVehicleValue({ ...base, annualMiles: 30000 }, asOf);
+  assert.ok(garaged > average, "low mileage should hold value better");
+  assert.ok(hammered < average, "high mileage should lose more");
+  // the adjustment is capped so an outlier can't distort the model
+  assert.equal(M.effectiveYears({ ...base, annualMiles: 200000 }, asOf), M.effectiveYears({ ...base, annualMiles: 24000 }, asOf));
+  assert.equal(M.effectiveYears({ ...base, annualMiles: 0 }, asOf), M.effectiveYears({ ...base, annualMiles: 6000 }, asOf));
+});
+
+await test("a fresh purchase is worth what was paid", () => {
+  const profile = { purchasePrice: 3500000, purchaseDate: "2026-08-29", class: "suv", autoUpdate: false };
+  assert.equal(M.estimateVehicleValue(profile, "2026-08-29"), 3500000);
+});
+
+await test("auto-update records monthly and is otherwise inert", () => {
+  const db = M.emptyDB();
+  const vehicle = { purchasePrice: 3000000, purchaseDate: "2023-01-15", class: "truck", autoUpdate: true };
+  db.accounts = [{
+    id: "a_car", name: "Truck", institution: "Manual", type: "vehicle", balance: 0,
+    includeInNetWorth: true, hidden: false, history: [], order: 0, vehicle,
+  }];
+
+  const first = M.refreshVehicleValues(db, "2026-08-29");
+  assert.equal(first.accounts[0].history.length, 1);
+  assert.equal(first.accounts[0].balance, M.estimateVehicleValue(vehicle, "2026-08-29"));
+
+  // same object back when nothing is due — this runs on every page load
+  assert.equal(M.refreshVehicleValues(first, "2026-08-29"), first);
+  assert.equal(M.refreshVehicleValues(first, "2026-09-10"), first);
+
+  const later = M.refreshVehicleValues(first, "2026-09-30");
+  assert.equal(later.accounts[0].history.length, 2);
+  assert.ok(later.accounts[0].balance < first.accounts[0].balance, "a month on, it should be worth less");
+
+  // and it leaves manual accounts alone entirely
+  const manual = M.refreshVehicleValues({ ...db, accounts: [{ ...db.accounts[0], vehicle: { ...vehicle, autoUpdate: false } }] }, "2026-08-29");
+  assert.equal(manual.accounts[0].history.length, 0);
 });
 
 /* ── plaid ────────────────────────────────────────────────────────────── */

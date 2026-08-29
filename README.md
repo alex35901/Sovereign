@@ -86,6 +86,19 @@ Some institutions refuse aggregator access entirely — employer 401(k) recordke
 common case — and no provider gets past that. Those are kept current from the Balance points
 card.
 
+### Vehicles
+
+There is no free per-VIN valuation API — Kelley Blue Book and Edmunds retired their public
+ones and the paid providers don't publish pricing — so vehicle accounts model depreciation
+instead of quoting a market. Enter what it cost, when it was bought, the body type and rough
+annual mileage; the curve is fitted to 2026 industry averages for five-year depreciation
+(41.8% for the average vehicle, 34.2% trucks, 35.4% hybrids, 57.2% EVs) with the first year
+steepest, and mileage either side of 12,000 a year moves the vehicle along it faster or slower.
+
+Leave **re-record monthly** on and the value updates itself roughly every 25 days, whether or
+not the page is opened. A real quote from a dealer or KBB always wins: enter it as a balance
+point and it takes precedence over the model.
+
 ### Property values
 
 Bank aggregators carry no property valuations — MX, and therefore SimpleFIN, simply doesn't

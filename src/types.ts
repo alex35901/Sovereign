@@ -26,6 +26,8 @@ export interface Account {
   address?: string;
   /** The most recent automated valuation, kept for provenance. */
   valuation?: { source: "rentcast"; low?: number; high?: number; at: string };
+  /** Depreciation inputs for a vehicle account. */
+  vehicle?: VehicleProfile;
   order: number;
 }
 
@@ -145,6 +147,14 @@ export interface Settings {
   /** Connected Plaid items. Credentials for Plaid itself live server-side. */
   plaidItems?: PlaidItemRef[];
   lastSyncAt?: string;
+}
+
+export interface VehicleProfile {
+  purchasePrice: number;
+  purchaseDate: ISODate;
+  class: "car" | "suv" | "truck" | "hybrid" | "ev" | "luxury";
+  annualMiles?: number;
+  autoUpdate: boolean;
 }
 
 export interface PlaidItemRef {

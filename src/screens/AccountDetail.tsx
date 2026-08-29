@@ -14,6 +14,7 @@ import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 import { MerchantAvatar } from "./Transactions";
 import { AccountModal } from "./Accounts";
 import { PropertyValueCard } from "./PropertyValueCard";
+import { VehicleValueCard } from "./VehicleValueCard";
 import { BalanceImportModal } from "./BalanceImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
 import { TransactionModal } from "./TransactionModal";
@@ -99,6 +100,7 @@ export default function AccountDetail() {
         </div>
 
         {canValue(account.type) ? <PropertyValueCard account={account} /> : null}
+        {account.type === "vehicle" ? <VehicleValueCard account={account} /> : null}
 
         <Card>
           <CardHead

@@ -7,6 +7,7 @@ import { addMonths, today } from "./lib/date";
 import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
 import { mergeHistory } from "./lib/balance-csv";
+import { refreshVehicleValues } from "./lib/vehicle";
 
 type Mutator = (db: DB) => DB;
 
@@ -38,6 +39,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
 
   useEffect(() => { saveDB(db); }, [db]);
+  // vehicles depreciate whether or not anyone opens their page
+  const refreshed = useRef(false);
+  useEffect(() => {
+    if (refreshed.current) return;
+    refreshed.current = true;
+    setDb((prev) => refreshVehicleValues(prev));
+  }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = db.settings.theme;
   }, [db.settings.theme]);
