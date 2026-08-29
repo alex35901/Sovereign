@@ -10,6 +10,12 @@ those features costs between **$0 and $15/yr** if you run the app yourself — s
 
 ## Running it
 
+**Getting historical balances in:** every account page has **Import history** on its Balance
+history card. Feed it a CSV with a date column and a balance column and it fills the chart
+backwards. Daily exports are collapsed to their change points on the way in — a 706-row
+property history becomes 83 stored points, which renders identically because balances carry
+forward.
+
 **Without the terminal:** double-click **`start.cmd`**. It pulls the latest version, installs
 anything new, starts the app and opens http://localhost:5273 in your browser. Leave the black
 window open while you use the app; close it to stop. Run it again any time to get updates —

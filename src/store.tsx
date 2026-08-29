@@ -6,6 +6,7 @@ import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
 import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
+import { mergeHistory } from "./lib/balance-csv";
 
 type Mutator = (db: DB) => DB;
 
@@ -92,6 +93,7 @@ export interface Actions {
   addAccount: (a: Omit<Account, "id" | "order" | "history">) => void;
   updateAccount: (id: ID, patch: Partial<Account>) => void;
   setAccountBalance: (id: ID, balance: number) => void;
+  importBalanceHistory: (id: ID, points: { date: string; balance: number }[], mode: "merge" | "replace") => void;
   deleteAccount: (id: ID) => void;
 
   addTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
@@ -162,6 +164,16 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
           return { ...a, balance, history };
         }),
       })),
+    importBalanceHistory: (id, points, mode) =>
+      apply((db) => ({
+        ...db,
+        accounts: db.accounts.map((a) => {
+          if (a.id !== id) return a;
+          const history = mergeHistory(a.history, points, mode);
+          const newest = history[history.length - 1];
+          return { ...a, history, balance: newest ? newest.balance : a.balance };
+        }),
+      }), `import ${points.length} balance point${points.length === 1 ? "" : "s"}`),
     deleteAccount: (id) =>
       apply((db) => ({
         ...db,

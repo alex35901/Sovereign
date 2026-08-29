@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Pencil } from "lucide-react";
+import { ArrowLeft, Pencil, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, lastMonths, monthLabel, monthEnd, today } from "../lib/date";
@@ -13,6 +13,7 @@ import type { RangeKey } from "../components/pickers";
 import { MerchantAvatar } from "./Transactions";
 import { AccountModal } from "./Accounts";
 import { PropertyValueCard } from "./PropertyValueCard";
+import { BalanceImportModal } from "./BalanceImportModal";
 import { TransactionModal } from "./TransactionModal";
 import type { Transaction } from "../types";
 
@@ -25,6 +26,7 @@ export default function AccountDetail() {
   const [editing, setEditing] = useState(false);
   const [editTxn, setEditTxn] = useState<Transaction | null>(null);
   const [newBalance, setNewBalance] = useState<number | null>(null);
+  const [importing, setImporting] = useState(false);
 
   const account = db.accounts.find((a) => a.id === id);
   const txns = useMemo(
@@ -90,7 +92,16 @@ export default function AccountDetail() {
         {canValue(account.type) ? <PropertyValueCard account={account} /> : null}
 
         <Card>
-          <CardHead title="Balance history" right={<RangePicker value={range} onChange={setRange} />} />
+          <CardHead
+            title="Balance history"
+            sub={`${account.history.length} point${account.history.length === 1 ? "" : "s"} recorded`}
+            right={
+              <div className="row" style={{ gap: 8 }}>
+                <Btn onClick={() => setImporting(true)}><Upload size={14} /> Import history</Btn>
+                <RangePicker value={range} onChange={setRange} />
+              </div>
+            }
+          />
           <AreaChart points={series} height={220} tone="--c2" zeroBase />
         </Card>
 
@@ -116,6 +127,7 @@ export default function AccountDetail() {
         </Card>
       </div>
       {editing ? <AccountModal account={account} onClose={() => setEditing(false)} /> : null}
+      {importing ? <BalanceImportModal account={account} onClose={() => setImporting(false)} /> : null}
       {editTxn ? <TransactionModal txn={editTxn} onClose={() => setEditTxn(null)} /> : null}
     </>
   );

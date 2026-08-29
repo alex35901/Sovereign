@@ -32,6 +32,7 @@ await build({
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
+      export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
@@ -390,6 +391,99 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── balance history import ───────────────────────────────────────────── */
+
+/** The shape of a real property-history export: a row per day, mostly repeats. */
+const daily = (() => {
+  const lines = ["Date,Balance,Account"];
+  const start = Date.parse("2024-09-22T00:00:00Z");
+  for (let i = 0; i < 100; i++) {
+    const d = new Date(start + i * 86400000).toISOString().slice(0, 10);
+    const balance = i < 5 ? "477700.00" : i < 50 ? "474600.00" : "480500.00";
+    lines.push(`${d},${balance},3122 N Clifton Ave Apt 1 Chicago IL 60657`);
+  }
+  return lines.join("\n");
+})();
+
+await test("a daily series collapses to its change points", () => {
+  const { header, rows, hasHeader } = M.readBalanceCSV(daily);
+  assert.equal(hasHeader, true);
+  assert.deepEqual(M.guessBalanceColumns(header), ["date", "balance", "account"]);
+  const plan = M.buildBalancePlan(rows, ["date", "balance", "account"], { negate: false });
+  assert.equal(plan.rowsRead, 100);
+  // three distinct values, and the final day pinned
+  assert.equal(plan.points.length, 4);
+  assert.equal(plan.first.balance, 47770000);
+  assert.equal(plan.last.date, "2024-12-30");
+  assert.equal(plan.last.balance, 48050000);
+  assert.deepEqual(plan.accountLabels, ["3122 N Clifton Ave Apt 1 Chicago IL 60657"]);
+});
+
+await test("compression never moves the first or last point", () => {
+  const pts = [
+    { date: "2026-01-01", balance: 100 },
+    { date: "2026-01-02", balance: 100 },
+    { date: "2026-01-03", balance: 100 },
+  ];
+  const out = M.compress(pts);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out[0], pts[0]);
+  assert.deepEqual(out[1], pts[2]);
+});
+
+await test("a file with no header row still parses", () => {
+  const { hasHeader, rows } = M.readBalanceCSV("2026-01-01,500\n2026-02-01,600");
+  assert.equal(hasHeader, false);
+  assert.equal(rows.length, 2);
+  const plan = M.buildBalancePlan(rows, ["date", "balance"], { negate: false });
+  assert.equal(plan.points.length, 2);
+});
+
+await test("amounts owed can be stored as debt", () => {
+  const { rows } = M.readBalanceCSV("Date,Balance\n2026-01-01,250000\n2026-02-01,248000");
+  const plan = M.buildBalancePlan(rows, ["date", "balance"], { negate: true });
+  assert.equal(plan.first.balance, -25000000);
+  assert.equal(plan.last.balance, -24800000);
+  assert.equal(M.defaultNegate("mortgage"), true);
+  assert.equal(M.defaultNegate("real_estate"), false);
+});
+
+await test("a multi-property file can be filtered to one", () => {
+  const csv = [
+    "Date,Balance,Account",
+    "2026-01-01,100,Main Home",
+    "2026-01-01,200,Rental",
+    "2026-02-01,110,Main Home",
+    "2026-02-01,220,Rental",
+  ].join("\n");
+  const { rows } = M.readBalanceCSV(csv);
+  const all = M.buildBalancePlan(rows, ["date", "balance", "account"], { negate: false });
+  assert.deepEqual(all.accountLabels, ["Main Home", "Rental"]);
+  const rental = M.buildBalancePlan(rows, ["date", "balance", "account"], { negate: false, accountLabel: "Rental" });
+  assert.equal(rental.points.length, 2);
+  assert.equal(rental.first.balance, 20000);
+  assert.equal(rental.last.balance, 22000);
+});
+
+await test("merge keeps existing points, replace drops them", () => {
+  const existing = [{ date: "2020-01-01", balance: 1 }, { date: "2026-01-01", balance: 2 }];
+  const incoming = [{ date: "2026-01-01", balance: 99 }, { date: "2026-02-01", balance: 3 }];
+  const merged = M.mergeHistory(existing, incoming, "merge");
+  assert.equal(merged.length, 3);
+  assert.equal(merged[0].date, "2020-01-01");
+  assert.equal(merged[1].balance, 99, "the incoming value should win on a shared date");
+  const replaced = M.mergeHistory(existing, incoming, "replace");
+  assert.equal(replaced.length, 2);
+  assert.equal(replaced[0].date, "2026-01-01");
+});
+
+await test("unreadable rows are counted, not silently dropped", () => {
+  const { rows } = M.readBalanceCSV("Date,Balance\n2026-01-01,500\nnot-a-date,600\n2026-03-01,");
+  const plan = M.buildBalancePlan(rows, ["date", "balance"], { negate: false });
+  assert.equal(plan.points.length, 1);
+  assert.equal(plan.skipped, 2);
 });
 
 /* ── money & budget math ──────────────────────────────────────────────── */
