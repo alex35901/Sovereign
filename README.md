@@ -10,6 +10,11 @@ those features costs between **$0 and $15/yr** if you run the app yourself — s
 
 ## Running it
 
+**Accounts no aggregator can reach** — employer 401(k) recordkeepers are the usual case, and
+some refuse aggregator access outright — are kept current from the **Balance points** card on
+the account page: a dated balance, typed in, as often as a statement arrives. Points can be
+back-dated, and only the newest one drives the current balance.
+
 **Getting historical balances in:** every account page has **Import history** on its Balance
 history card. Feed it a CSV with a date column and a balance column and it fills the chart
 backwards. Daily exports are collapsed to their change points on the way in — a 706-row

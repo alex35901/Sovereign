@@ -94,6 +94,8 @@ export interface Actions {
   updateAccount: (id: ID, patch: Partial<Account>) => void;
   setAccountBalance: (id: ID, balance: number) => void;
   importBalanceHistory: (id: ID, points: { date: string; balance: number }[], mode: "merge" | "replace") => void;
+  setBalanceAt: (id: ID, date: string, balance: number) => void;
+  deleteBalancePoint: (id: ID, date: string) => void;
   deleteAccount: (id: ID) => void;
 
   addTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
@@ -174,6 +176,24 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
           return { ...a, history, balance: newest ? newest.balance : a.balance };
         }),
       }), `import ${points.length} balance point${points.length === 1 ? "" : "s"}`),
+    setBalanceAt: (id, date, balance) =>
+      apply((db) => ({
+        ...db,
+        accounts: db.accounts.map((a) => {
+          if (a.id !== id) return a;
+          const history = mergeHistory(a.history, [{ date, balance }], "merge");
+          return { ...a, history, balance: history[history.length - 1].balance };
+        }),
+      })),
+    deleteBalancePoint: (id, date) =>
+      apply((db) => ({
+        ...db,
+        accounts: db.accounts.map((a) => {
+          if (a.id !== id) return a;
+          const history = a.history.filter((h) => h.date !== date);
+          return { ...a, history, balance: history.length ? history[history.length - 1].balance : a.balance };
+        }),
+      }), "delete balance point"),
     deleteAccount: (id) =>
       apply((db) => ({
         ...db,

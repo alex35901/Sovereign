@@ -15,6 +15,7 @@ import { MerchantAvatar } from "./Transactions";
 import { AccountModal } from "./Accounts";
 import { PropertyValueCard } from "./PropertyValueCard";
 import { BalanceImportModal } from "./BalanceImportModal";
+import { BalancePointsCard } from "./BalancePointsCard";
 import { TransactionModal } from "./TransactionModal";
 import type { Transaction } from "../types";
 
@@ -112,6 +113,8 @@ export default function AccountDetail() {
           />
           <AreaChart points={series} height={220} tone="--c2" />
         </Card>
+
+        <BalancePointsCard account={account} />
 
         <Card pad={false}>
           <CardHead
