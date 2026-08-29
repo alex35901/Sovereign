@@ -25,7 +25,8 @@ export const ACCOUNT_GROUPS: { key: string; label: string; types: Account["type"
   { key: "credit", label: "Credit Cards", types: ["credit"] },
   { key: "investments", label: "Investments", types: ["investment", "crypto"] },
   { key: "retirement", label: "Retirement", types: ["retirement"] },
-  { key: "property", label: "Property", types: ["real_estate", "vehicle", "other_asset"] },
+  { key: "property", label: "Property", types: ["real_estate", "other_asset"] },
+  { key: "vehicles", label: "Vehicles", types: ["vehicle"] },
   { key: "loans", label: "Loans", types: ["loan", "mortgage", "other_liability"] },
 ];
 

@@ -36,6 +36,7 @@ await build({
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL } from "./src/lib/select.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
@@ -397,6 +398,27 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── account grouping ─────────────────────────────────────────────────── */
+
+await test("every account type belongs to exactly one group", () => {
+  const types = Object.keys(M.ACCOUNT_TYPE_LABEL);
+  for (const type of types) {
+    const groups = M.ACCOUNT_GROUPS.filter((g) => g.types.includes(type));
+    assert.equal(groups.length, 1, `${type} appears in ${groups.length} groups`);
+  }
+  const grouped = M.ACCOUNT_GROUPS.flatMap((g) => g.types);
+  assert.equal(new Set(grouped).size, grouped.length, "a type is listed twice");
+  assert.equal(grouped.length, types.length, "a type is missing from the groups");
+});
+
+await test("vehicles are their own group, separate from property", () => {
+  const vehicles = M.ACCOUNT_GROUPS.find((g) => g.key === "vehicles");
+  assert.ok(vehicles, "no vehicles group");
+  assert.deepEqual(vehicles.types, ["vehicle"]);
+  const property = M.ACCOUNT_GROUPS.find((g) => g.key === "property");
+  assert.ok(!property.types.includes("vehicle"), "vehicle is still filed under property");
 });
 
 /* ── vehicle depreciation ─────────────────────────────────────────────── */
