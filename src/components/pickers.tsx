@@ -3,7 +3,9 @@ import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import type { Category } from "../types";
 import { useDB } from "../store";
 import { addMonths, monthLabel } from "../lib/date";
-import { Popover, cx } from "./ui";
+import { Popover } from "./ui";
+import type { RangeKey } from "../lib/range";
+import { RANGES } from "../lib/range";
 
 /** Searchable category menu, grouped the way the budget screen groups them. */
 export function CategoryPicker({ value, onChange, trigger }: {
@@ -104,26 +106,15 @@ export function MonthNav({ month, onChange, max }: { month: string; onChange: (m
   );
 }
 
-export const RANGES = [
-  { value: "1m", label: "1M", months: 1 },
-  { value: "3m", label: "3M", months: 3 },
-  { value: "6m", label: "6M", months: 6 },
-  { value: "1y", label: "1Y", months: 12 },
-  { value: "2y", label: "2Y", months: 24 },
-] as const;
-export type RangeKey = (typeof RANGES)[number]["value"];
-
 export function RangePicker({ value, onChange }: { value: RangeKey; onChange: (v: RangeKey) => void }) {
   return (
-    <div className="seg">
+    <select className="select" style={{ width: "auto", minWidth: 140 }} value={value} onChange={(e) => onChange(e.target.value as RangeKey)}>
       {RANGES.map((r) => (
-        <button key={r.value} className={cx(r.value === value && "on")} onClick={() => onChange(r.value)}>{r.label}</button>
+        <option key={r.value} value={r.value}>{r.label}</option>
       ))}
-    </div>
+    </select>
   );
 }
-
-export const rangeMonths = (key: RangeKey): number => RANGES.find((r) => r.value === key)?.months ?? 6;
 
 export function AccountPicker({ value, onChange, allowAll }: {
   value: string; onChange: (id: string) => void; allowAll?: boolean;

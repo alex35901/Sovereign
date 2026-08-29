@@ -4,20 +4,32 @@ import { ChevronRight, Plus } from "lucide-react";
 import type { Account, AccountType } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { lastMonths, monthLabel } from "../lib/date";
-import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, netWorthNow, netWorthSeries } from "../lib/select";
+import { dateLabel, today } from "../lib/date";
+import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, earliestHistoryDate, netWorthAt, netWorthNow } from "../lib/select";
 import { AreaChart, Sparkline } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
-import { RangePicker, rangeMonths } from "../components/pickers";
-import type { RangeKey } from "../components/pickers";
+import { RangePicker } from "../components/pickers";
+import type { RangeKey } from "../lib/range";
+import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
 export default function Accounts() {
   const db = useDB();
   const [range, setRange] = useState<RangeKey>("1y");
   const [adding, setAdding] = useState(false);
   const nw = netWorthNow(db);
-  const series = useMemo(() => netWorthSeries(db, lastMonths(rangeMonths(range) + 1)), [db, range]);
-  const first = series[0]?.net ?? 0;
+  const series = useMemo(() => {
+    const earliest = earliestHistoryDate(db.accounts);
+    const from = rangeStart(range, earliest);
+    const start = earliest && earliest > from ? earliest : from;
+    const end = today();
+    const days = spanDays(start, end);
+    return sampleDates(start, end).map((d) => ({
+      label: sampleLabel(d, days),
+      value: netWorthAt(db, d),
+      sub: dateLabel(d, { year: true }),
+    }));
+  }, [db, range]);
+  const first = series[0]?.value ?? 0;
   const change = nw.net - first;
 
   const groups = ACCOUNT_GROUPS.map((g) => {
@@ -43,10 +55,10 @@ export default function Accounts() {
         <Card>
           <CardHead
             title="Net worth over time"
-            sub={`${monthLabel(series[0]?.month ?? "", true)} — today`}
+            sub={series.length ? `${series[0].sub} — today` : undefined}
             right={<RangePicker value={range} onChange={setRange} />}
           />
-          <AreaChart points={series.map((p) => ({ label: monthLabel(p.month, true), value: p.net }))} height={230} />
+          <AreaChart points={series} height={230} />
         </Card>
 
         {groups.map((g) => (

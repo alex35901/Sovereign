@@ -3,13 +3,14 @@ import { Plus } from "lucide-react";
 import type { AssetClass, Holding } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { lastMonths, monthEnd, monthLabel, today } from "../lib/date";
+import { dateLabel, today } from "../lib/date";
 import { fmtPct } from "../lib/money";
-import { ASSET_CLASS_LABEL, balanceAt, holdingCost, holdingValue, portfolioSummary } from "../lib/select";
+import { ASSET_CLASS_LABEL, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary } from "../lib/select";
 import { AreaChart, Donut } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
-import { RangePicker, rangeMonths } from "../components/pickers";
-import type { RangeKey } from "../components/pickers";
+import { RangePicker } from "../components/pickers";
+import type { RangeKey } from "../lib/range";
+import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
 const CLASS_TONES: Record<string, string> = {
   us_equity: "--c2", intl_equity: "--c4", bond: "--c12", cash: "--c3",
@@ -25,14 +26,16 @@ export default function Investments() {
   const p = useMemo(() => portfolioSummary(db), [db]);
 
   const series = useMemo(() => {
-    const months = lastMonths(rangeMonths(range) + 1);
-    return months.map((m) => {
-      const at = monthEnd(m) > today() ? today() : monthEnd(m);
-      return {
-        label: monthLabel(m, true),
-        value: p.invAccounts.reduce((s, a) => s + balanceAt(a, at), 0),
-      };
-    });
+    const earliest = earliestHistoryDate(p.invAccounts);
+    const from = rangeStart(range, earliest);
+    const start = earliest && earliest > from ? earliest : from;
+    const end = today();
+    const days = spanDays(start, end);
+    return sampleDates(start, end).map((d) => ({
+      label: sampleLabel(d, days),
+      value: p.invAccounts.reduce((sum, a) => sum + balanceAt(a, d), 0),
+      sub: dateLabel(d, { year: true }),
+    }));
   }, [p.invAccounts, range]);
 
   const start = series[0]?.value ?? 0;
@@ -52,7 +55,7 @@ export default function Investments() {
             sub={<span className="muted">{p.holdings.length} positions</span>} />
           <Tile label="Total gain" value={<Money value={p.gain} cents={false} />} tone={p.gain >= 0 ? "pos" : "neg"}
             sub={<span className={p.gain >= 0 ? "pos" : "neg"}>{fmtPct(p.gainPct)} vs cost basis</span>} />
-          <Tile label={`Change over ${range.toUpperCase()}`} value={<Money value={growth} cents={false} sign={growth >= 0} />}
+          <Tile label="Change over period" value={<Money value={growth} cents={false} sign={growth >= 0} />}
             tone={growth >= 0 ? "pos" : "neg"} />
         </div>
 

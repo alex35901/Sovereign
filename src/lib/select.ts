@@ -66,6 +66,26 @@ export function netWorthSeries(db: DB, months: MonthKey[]): NetWorthPoint[] {
   });
 }
 
+/** Net worth as of a given day, from each account's forward-filled snapshots. */
+export function netWorthAt(db: DB, date: ISODate): number {
+  let total = 0;
+  for (const a of db.accounts) {
+    if (!a.includeInNetWorth || a.hidden) continue;
+    total += balanceAt(a, date);
+  }
+  return total;
+}
+
+/** Earliest snapshot across the given accounts, if any. */
+export function earliestHistoryDate(accounts: Account[]): ISODate | undefined {
+  let earliest: ISODate | undefined;
+  for (const a of accounts) {
+    const first = a.history[0]?.date;
+    if (first && (!earliest || first < earliest)) earliest = first;
+  }
+  return earliest;
+}
+
 export function netWorthNow(db: DB): { assets: number; liabilities: number; net: number } {
   let assets = 0;
   let liabilities = 0;

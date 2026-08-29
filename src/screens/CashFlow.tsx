@@ -2,18 +2,29 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { lastMonths, monthEnd, monthLabel, monthStart } from "../lib/date";
+import { lastMonths, monthEnd, monthLabel, monthOf, monthStart } from "../lib/date";
 import { fmtPct, pct } from "../lib/money";
 import { cashFlowSeries, categoryTotals, merchantTotals, sankeyData } from "../lib/select";
 import { BarChart, HBars, Sankey } from "../components/charts";
 import { Card, CardHead, Empty, Money, Tile } from "../components/ui";
-import { RangePicker, rangeMonths } from "../components/pickers";
-import type { RangeKey } from "../components/pickers";
+import { RangePicker } from "../components/pickers";
+import type { RangeKey } from "../lib/range";
+import { rangeMonths } from "../lib/range";
 
 export default function CashFlow() {
   const db = useDB();
   const [range, setRange] = useState<RangeKey>("6m");
-  const months = useMemo(() => lastMonths(rangeMonths(range)), [range]);
+  const earliestMonth = useMemo(() => {
+    const dates = db.transactions.map((t) => t.date);
+    return dates.length ? monthOf(dates.reduce((a, b) => (a < b ? a : b))) : undefined;
+  }, [db.transactions]);
+  const months = useMemo(() => {
+    // a five-year window on two years of data should show two years, not three
+    // years of empty buckets
+    const window = lastMonths(rangeMonths(range, earliestMonth));
+    const clamped = earliestMonth ? window.filter((m) => m >= earliestMonth) : window;
+    return clamped.length ? clamped : window.slice(-1);
+  }, [range, earliestMonth]);
   const from = monthStart(months[0]);
   const to = monthEnd(months[months.length - 1]);
 

@@ -34,6 +34,7 @@ await build({
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
+      export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
@@ -392,6 +393,52 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── time ranges ──────────────────────────────────────────────────────── */
+
+await test("the range list is the seven options, in order", () => {
+  assert.deepEqual(M.RANGES.map((r) => r.value), ["1m", "3m", "6m", "ytd", "1y", "5y", "all"]);
+  assert.deepEqual(M.RANGES.map((r) => r.label), [
+    "1 month", "3 months", "6 months", "Year to date", "1 year", "5 years", "All time",
+  ]);
+});
+
+await test("fixed ranges cover the months they claim", () => {
+  assert.equal(M.rangeMonths("1m"), 1);
+  assert.equal(M.rangeMonths("3m"), 3);
+  assert.equal(M.rangeMonths("6m"), 6);
+  assert.equal(M.rangeMonths("1y"), 12);
+  assert.equal(M.rangeMonths("5y"), 60);
+});
+
+await test("year to date counts from January, whatever month it is", () => {
+  const month = Number(new Date().toISOString().slice(5, 7));
+  assert.equal(M.rangeMonths("ytd"), month);
+  assert.equal(M.rangeStart("ytd").slice(5), "01-01");
+});
+
+await test("all time reaches back to the first data, or two years without any", () => {
+  assert.equal(M.rangeMonths("all", "2024-09"), 24);
+  assert.equal(M.rangeMonths("all"), 24);
+  assert.equal(M.rangeStart("all", "2019-03-04"), "2019-03-04");
+});
+
+await test("sampling stays bounded and always ends on the final day", () => {
+  const daily = M.sampleDates("2026-08-01", "2026-08-29");
+  assert.equal(daily.length, 29, "a month should sample every day");
+  assert.equal(daily[daily.length - 1], "2026-08-29");
+
+  const fiveYears = M.sampleDates("2021-08-29", "2026-08-29");
+  assert.ok(fiveYears.length <= 91, `five years produced ${fiveYears.length} points`);
+  assert.equal(fiveYears[0], "2021-08-29");
+  assert.equal(fiveYears[fiveYears.length - 1], "2026-08-29");
+});
+
+await test("long spans label the year, short spans label the day", () => {
+  assert.equal(M.sampleLabel("2025-08-18", 30), "Aug 18");
+  // "Aug 25" would be read as a day number on a short range
+  assert.equal(M.sampleLabel("2025-08-18", 365), "Aug '25");
 });
 
 /* ── chart axis ───────────────────────────────────────────────────────── */

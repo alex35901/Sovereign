@@ -3,13 +3,14 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Pencil, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel, lastMonths, monthLabel, monthEnd, today } from "../lib/date";
+import { dateLabel, monthOf, thisMonth, today } from "../lib/date";
 import { ACCOUNT_TYPE_LABEL, balanceAt } from "../lib/select";
 import { canValue } from "../lib/property";
 import { AreaChart } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Money, MoneyInput, Tile } from "../components/ui";
-import { CategoryTag, RangePicker, rangeMonths } from "../components/pickers";
-import type { RangeKey } from "../components/pickers";
+import { CategoryTag, RangePicker } from "../components/pickers";
+import type { RangeKey } from "../lib/range";
+import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 import { MerchantAvatar } from "./Transactions";
 import { AccountModal } from "./Accounts";
 import { PropertyValueCard } from "./PropertyValueCard";
@@ -35,9 +36,16 @@ export default function AccountDetail() {
   );
   const series = useMemo(() => {
     if (!account) return [];
-    return lastMonths(rangeMonths(range) + 1).map((m) => ({
-      label: monthLabel(m, true),
-      value: balanceAt(account, monthEnd(m) > today() ? today() : monthEnd(m)),
+    const earliest = account.history[0]?.date;
+    // never plot before the account has data — it would read as a balance of zero
+    const from = rangeStart(range, earliest);
+    const start = earliest && earliest > from ? earliest : from;
+    const end = today();
+    const days = spanDays(start, end);
+    return sampleDates(start, end).map((d) => ({
+      label: sampleLabel(d, days),
+      value: balanceAt(account, d),
+      sub: dateLabel(d, { year: true }),
     }));
   }, [account, range]);
 
@@ -50,7 +58,7 @@ export default function AccountDetail() {
     );
   }
 
-  const monthTx = db.transactions.filter((t) => t.accountId === id && t.date >= monthEnd(lastMonths(1)[0]).slice(0, 8) + "01");
+  const monthTx = db.transactions.filter((t) => t.accountId === id && monthOf(t.date) === thisMonth());
   const inflow = monthTx.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
   const outflow = monthTx.filter((t) => t.amount < 0).reduce((s, t) => s + t.amount, 0);
 
