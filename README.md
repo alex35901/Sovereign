@@ -64,8 +64,27 @@ Getting transactions in, cheapest first:
 | CSV / manual | $0 | Works today, no signup. Mint, Monarch, YNAB and raw bank exports all import. |
 | **SimpleFIN Bridge** | **$15/yr** | Implemented. MX-backed, ~16k institutions, 25 max, refreshes daily. |
 | **RentCast** | **$0** | Implemented, for property values — see below. 50 lookups/month on the free tier. |
-| Plaid Trial | $0 | Not wired up. 10 institutions, and the only route with real holdings-level investment data. |
+| **Plaid** | **$0** | Implemented. Trial plan: 10 institutions, and the only route here returning holdings. |
 | Teller | $0 | Not wired up. 100 connections, US only, thin on retirement accounts. |
+
+### Plaid
+
+For IRAs, Roth IRAs, 401(k)s and brokerages: Plaid returns positions, cost basis and prices,
+which SimpleFIN cannot. Its Trial plan is free for 10 institutions.
+
+Unlike the other two providers, Plaid's credentials authorise every request for every
+connected bank, so they stay on the server: set `PLAID_CLIENT_ID` and `PLAID_SECRET` as Vercel
+environment variables (add `PLAID_ENV=sandbox` to test against fake banks first) and redeploy.
+Only the per-connection access token is held in the browser.
+
+Connect investment accounts and banks separately — Plaid rejects a link whose institution
+doesn't support every product requested, so asking for holdings and transactions at once fails
+on institutions offering only one. Holdings replace an account's previous positions on each
+sync, so a sold position disappears rather than lingering at its last price.
+
+Some institutions refuse aggregator access entirely — employer 401(k) recordkeepers are the
+common case — and no provider gets past that. Those are kept current from the Balance points
+card.
 
 ### Property values
 

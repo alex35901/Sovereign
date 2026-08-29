@@ -31,6 +31,8 @@ await build({
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
+      export { default as plaidHandler } from "./api/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken } from "./src/lib/sync/plaid.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
@@ -103,6 +105,7 @@ const invokeOn = (handler, body, method = "POST") =>
 
 const invoke = (body, method = "POST") => invokeOn(M.simplefinHandler, body, method);
 const invokeProperty = (body, method = "POST") => invokeOn(M.propertyHandler, body, method);
+const invokePlaid = (body, method = "POST") => invokeOn(M.plaidHandler, body, method);
 
 const withFetch = async (impl, fn) => {
   const real = globalThis.fetch;
@@ -393,6 +396,153 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── plaid ────────────────────────────────────────────────────────────── */
+
+const withEnv = async (vars, fn) => {
+  const saved = { ...process.env };
+  Object.assign(process.env, vars);
+  try { return await fn(); } finally { process.env = saved; }
+};
+const creds = { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_ENV: "sandbox" };
+
+await test("plaid proxy always writes a response", async () => {
+  const r = await withEnv(creds, () => invokePlaid({}));
+  assert.ok(r.status >= 400);
+  assert.equal(r.headers["content-type"], "application/json");
+});
+
+await test("missing credentials are reported as configuration, not failure", async () => {
+  const r = await withEnv({ PLAID_CLIENT_ID: "", PLAID_SECRET: "" }, () => invokePlaid({ action: "link_token" }));
+  assert.equal(r.status, 503);
+  const body = JSON.parse(r.text);
+  assert.equal(body.configured, false);
+  assert.match(body.error, /PLAID_CLIENT_ID and PLAID_SECRET/);
+});
+
+await test("credentials go to Plaid's body, never to the browser", async () => {
+  let seen;
+  const r = await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      seen = { url: String(url), body: JSON.parse(init.body) };
+      return new Response(JSON.stringify({ link_token: "link-sandbox-xyz" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", products: ["investments"] })));
+  assert.equal(seen.url, "https://sandbox.plaid.com/link/token/create");
+  assert.equal(seen.body.client_id, "cid");
+  assert.equal(seen.body.secret, "sec");
+  assert.deepEqual(seen.body.products, ["investments"]);
+  const body = JSON.parse(r.text);
+  assert.equal(body.linkToken, "link-sandbox-xyz");
+  assert.equal(body.secret, undefined, "the secret must not be echoed to the client");
+  assert.equal(body.client_id, undefined);
+});
+
+await test("plaid error codes become sentences", async () => {
+  const bad = async (code) => {
+    const r = await withEnv(creds, () =>
+      withFetch(async () => new Response(JSON.stringify({ error_code: code, error_message: "raw" }), { status: 400 }),
+        () => invokePlaid({ action: "link_token" })));
+    return JSON.parse(r.text).error;
+  };
+  assert.match(await bad("INVALID_API_KEYS"), /rejected the credentials/);
+  assert.match(await bad("ITEM_LOGIN_REQUIRED"), /re-authenticating/);
+  assert.match(await bad("PRODUCTS_NOT_SUPPORTED"), /other account type/);
+});
+
+await test("plaid account types map onto this app's types", () => {
+  assert.equal(M.mapAccountType("depository", "checking"), "checking");
+  assert.equal(M.mapAccountType("depository", "savings"), "savings");
+  assert.equal(M.mapAccountType("credit", "credit card"), "credit");
+  assert.equal(M.mapAccountType("loan", "mortgage"), "mortgage");
+  assert.equal(M.mapAccountType("loan", "student"), "loan");
+  assert.equal(M.mapAccountType("investment", "brokerage"), "investment");
+  // the point of the exercise: retirement accounts land as retirement
+  assert.equal(M.mapAccountType("investment", "roth"), "retirement");
+  assert.equal(M.mapAccountType("investment", "ira"), "retirement");
+  assert.equal(M.mapAccountType("investment", "401k"), "retirement");
+  assert.equal(M.mapAccountType("investment", "403B"), "retirement");
+  assert.equal(M.isLiability("credit"), true);
+  assert.equal(M.isLiability("depository"), false);
+});
+
+await test("securities map to asset classes", () => {
+  assert.equal(M.mapAssetClass("etf"), "us_equity");
+  assert.equal(M.mapAssetClass("mutual fund"), "us_equity");
+  assert.equal(M.mapAssetClass("fixed income"), "bond");
+  assert.equal(M.mapAssetClass("cash"), "cash");
+  assert.equal(M.mapAssetClass("cryptocurrency"), "crypto");
+  assert.equal(M.mapAssetClass(null), "other");
+});
+
+await test("a synced item maps into accounts, transactions and holdings", async () => {
+  const payload = await withFetch(
+    async () => new Response(JSON.stringify({
+      accounts: [
+        { account_id: "acc_ira", name: "Roth IRA", type: "investment", subtype: "roth", balances: { current: 48250.15, iso_currency_code: "USD" } },
+        { account_id: "acc_cc", name: "Visa", type: "credit", subtype: "credit card", balances: { current: 1240.5 } },
+      ],
+      transactions: [
+        { transaction_id: "t1", account_id: "acc_cc", date: "2026-08-20", amount: 42.1, name: "SQ *BLUE BOTTLE 1234", merchant_name: "Blue Bottle Coffee", pending: false },
+        { transaction_id: "t2", account_id: "acc_cc", date: "2026-08-21", amount: -500, name: "PAYMENT", pending: false },
+      ],
+      holdings: [
+        { account_id: "acc_ira", security_id: "sec1", quantity: 120.5, cost_basis: 24100, institution_price: 312.66 },
+      ],
+      securities: [{ security_id: "sec1", ticker_symbol: "VTI", name: "Vanguard Total Stock Market ETF", type: "etf" }],
+    }), { status: 200 }),
+    () => M.fetchItem({ accessToken: "tok", itemId: "i1", institution: "Vanguard", kind: "investment", addedAt: "" }, "2026-06-01"),
+  );
+
+  const ira = payload.accounts[0];
+  assert.equal(ira.type, "retirement");
+  assert.equal(ira.balance, 4825015);
+  // Plaid reports what a card owes as a positive number
+  assert.equal(payload.accounts[1].balance, -124050);
+
+  // and money leaving an account as positive, which is the opposite of here
+  assert.equal(payload.transactions[0].amount, -4210, "a purchase must be negative");
+  assert.equal(payload.transactions[1].amount, 50000, "a payment must be positive");
+  assert.equal(payload.transactions[0].payee, "Blue Bottle Coffee");
+
+  const holding = payload.holdings[0];
+  assert.equal(holding.ticker, "VTI");
+  // cost_basis is the total for the position; this app stores it per share
+  assert.equal(holding.costBasis, Math.round(2410000 / 120.5));
+  assert.equal(holding.price, 31266);
+  assert.equal(holding.assetClass, "us_equity");
+});
+
+await test("holdings replace the account's previous positions", () => {
+  const db = M.emptyDB();
+  const payload = {
+    fetchedAt: "2026-08-29T00:00:00.000Z",
+    errors: [],
+    accounts: [{ syncId: "acc_ira", name: "Roth IRA", institution: "Vanguard", balance: 100000, currency: "USD", type: "retirement", balanceDate: "2026-08-29" }],
+    transactions: [],
+    holdings: [{ accountSyncId: "acc_ira", ticker: "VTI", name: "VTI", quantity: 10, costBasis: 100, price: 200, assetClass: "us_equity" }],
+  };
+  const once = M.mergeSync(db, payload, "plaid");
+  assert.equal(once.holdingsUpdated, 1);
+  assert.equal(once.db.holdings.length, 1);
+
+  // the position was sold and replaced — the old one must not linger
+  const twice = M.mergeSync(once.db, {
+    ...payload,
+    holdings: [{ accountSyncId: "acc_ira", ticker: "VXUS", name: "VXUS", quantity: 5, costBasis: 50, price: 70, assetClass: "intl_equity" }],
+  }, "plaid");
+  assert.equal(twice.db.holdings.length, 1);
+  assert.equal(twice.db.holdings[0].ticker, "VXUS");
+});
+
+await test("the two providers cannot collide on transaction ids", () => {
+  const db = M.emptyDB();
+  const shared = { syncId: "same-id", accountSyncId: "a1", date: "2026-08-01", amount: -100, description: "X", pending: false };
+  const account = { syncId: "a1", name: "A", institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-08-01" };
+  const base = { fetchedAt: "2026-08-29T00:00:00.000Z", errors: [], accounts: [account], transactions: [shared] };
+  const first = M.mergeSync(db, base, "simplefin");
+  const second = M.mergeSync(first.db, base, "plaid");
+  assert.equal(second.transactionsAdded, 1, "the same id from a different provider is a different transaction");
 });
 
 /* ── time ranges ──────────────────────────────────────────────────────── */

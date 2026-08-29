@@ -10,6 +10,7 @@ import { canValue, estimateHomeValue } from "../lib/property";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { Link } from "react-router-dom";
 import { CategoriesPanel, RulesPanel, TagsPanel } from "./SettingsPanels";
+import { PlaidCard } from "./PlaidCard";
 import { ImportModal } from "./ImportModal";
 
 function PropertyValuesCard() {
@@ -273,11 +274,14 @@ export default function Settings() {
 
           <div className="divider" />
           <div className="small muted">
-            <b>Other providers.</b> Plaid's Trial plan is free for up to 10 institutions and is the only option here with
-            real holdings-level investment data; Teller is free for up to 100 connections but US-only and thin on retirement
-            accounts. Both slot in as another adapter in <code>src/lib/sync/</code> — the rest of the app doesn't change.
+            <b>Not everything is reachable this way.</b> SimpleFIN rides on MX, which carries no property values and
+            no holdings, and some institutions — employer 401(k) recordkeepers especially — refuse aggregator access
+            altogether. Plaid is set up below for investment accounts; property values have their own card; anything
+            left over can be kept current by hand from the Balance points card on the account.
           </div>
         </Card>
+
+        <PlaidCard />
 
         <PropertyValuesCard />
 

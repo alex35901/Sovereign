@@ -1,5 +1,6 @@
-import type { DB, Transaction } from "../../types";
+import type { DB, Holding, Transaction } from "../../types";
 import type { SyncPayload } from "./types";
+import type { RemoteHolding } from "./plaid";
 import { UNCATEGORIZED } from "../categories";
 import { uid } from "../id";
 import { applyRules } from "../rules";
@@ -10,6 +11,7 @@ export interface MergeResult {
   accountsAdded: number;
   accountsUpdated: number;
   transactionsAdded: number;
+  holdingsUpdated: number;
 }
 
 /**
@@ -17,7 +19,11 @@ export interface MergeResult {
  * transactions de-duplicated on the provider's own transaction id, and every
  * new transaction is run through the rules engine before it lands.
  */
-export function mergeSync(db: DB, payload: SyncPayload, source: "simplefin"): MergeResult {
+export function mergeSync(
+  db: DB,
+  payload: SyncPayload & { holdings?: RemoteHolding[] },
+  source: "simplefin" | "plaid",
+): MergeResult {
   const accounts = [...db.accounts];
   let accountsAdded = 0;
   let accountsUpdated = 0;
@@ -54,7 +60,7 @@ export function mergeSync(db: DB, payload: SyncPayload, source: "simplefin"): Me
   const known = new Set(db.transactions.map((t) => t.importKey).filter(Boolean) as string[]);
   const fresh: Transaction[] = [];
   for (const r of payload.transactions) {
-    const key = `sf:${r.syncId}`;
+    const key = `${source === "plaid" ? "pl" : "sf"}:${r.syncId}`;
     if (known.has(key)) continue;
     const accountId = idBySyncId.get(r.accountSyncId);
     if (!accountId) continue;
@@ -79,12 +85,42 @@ export function mergeSync(db: DB, payload: SyncPayload, source: "simplefin"): Me
   }
 
   const transactions = [...fresh, ...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  // Holdings are a snapshot, not a ledger: whatever the provider reports for an
+  // account replaces what was there, so a sold position disappears instead of
+  // lingering at its last known price.
+  let holdings = db.holdings;
+  let holdingsUpdated = 0;
+  if (payload.holdings?.length) {
+    const touched = new Set<string>();
+    const incoming: Holding[] = [];
+    for (const h of payload.holdings) {
+      const accountId = idBySyncId.get(h.accountSyncId);
+      if (!accountId) continue;
+      touched.add(accountId);
+      incoming.push({
+        id: uid("h"),
+        accountId,
+        ticker: h.ticker,
+        name: h.name,
+        quantity: h.quantity,
+        costBasis: h.costBasis,
+        price: h.price,
+        assetClass: h.assetClass,
+      });
+    }
+    if (touched.size) {
+      holdings = [...db.holdings.filter((h) => !touched.has(h.accountId)), ...incoming];
+      holdingsUpdated = incoming.length;
+    }
+  }
+
   return {
     db: {
-      ...db, accounts, transactions,
+      ...db, accounts, transactions, holdings,
       settings: { ...db.settings, lastSyncAt: payload.fetchedAt },
     },
-    accountsAdded, accountsUpdated, transactionsAdded: fresh.length,
+    accountsAdded, accountsUpdated, transactionsAdded: fresh.length, holdingsUpdated,
   };
 }
 

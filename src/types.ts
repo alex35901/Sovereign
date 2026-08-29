@@ -19,7 +19,7 @@ export interface Account {
   hidden: boolean;
   /** Sparse snapshots, ascending by date; forward-filled when charting. */
   history: { date: ISODate; balance: number }[];
-  syncSource?: "manual" | "csv" | "simplefin";
+  syncSource?: "manual" | "csv" | "simplefin" | "plaid";
   syncId?: string;
   lastSyncedAt?: string;
   /** Street address, for property accounts that can be valued automatically. */
@@ -142,6 +142,17 @@ export interface Settings {
   simplefinAccessUrl?: string;
   /** RentCast API key for property valuations, stored locally. */
   rentcastApiKey?: string;
+  /** Connected Plaid items. Credentials for Plaid itself live server-side. */
+  plaidItems?: PlaidItemRef[];
+  lastSyncAt?: string;
+}
+
+export interface PlaidItemRef {
+  accessToken: string;
+  itemId: string;
+  institution: string;
+  kind: "bank" | "investment";
+  addedAt: string;
   lastSyncAt?: string;
 }
 
