@@ -102,7 +102,7 @@ export default function AccountDetail() {
               </div>
             }
           />
-          <AreaChart points={series} height={220} tone="--c2" zeroBase />
+          <AreaChart points={series} height={220} tone="--c2" />
         </Card>
 
         <Card pad={false}>

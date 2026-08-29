@@ -27,6 +27,31 @@ function Tip({ x, y, width, children }: { x: number; y: number; width: number; c
   );
 }
 
+/**
+ * Evenly divides lo..hi so the first and last labels are the actual minimum and
+ * maximum of the period — the range is the information on a balance chart, and
+ * rounding to "nice" numbers hides it.
+ */
+export const rangeTicks = (lo: number, hi: number, count = 4): number[] =>
+  Array.from({ length: count + 1 }, (_, i) => lo + ((hi - lo) * i) / count);
+
+/**
+ * Picks a unit and precision from the span rather than the values, so a $500
+ * swing on a $570k balance doesn't render as five identical labels.
+ */
+export function axisFormat(lo: number, hi: number, count = 4): (v: number) => string {
+  const maxAbs = Math.max(Math.abs(lo), Math.abs(hi)) / 100;
+  const step = Math.abs(hi - lo) / count / 100;
+  const unit = maxAbs >= 1_000_000 ? 1_000_000 : maxAbs >= 1000 ? 1000 : 1;
+  const suffix = unit === 1_000_000 ? "M" : unit === 1000 ? "k" : "";
+  const stepInUnit = step / unit;
+  const decimals = unit === 1 ? 0 : stepInUnit >= 1 ? 1 : 2;
+  return (v: number) => {
+    const d = v / 100 / unit;
+    return `${d < 0 ? "-" : ""}$${Math.abs(d).toFixed(decimals)}${suffix}`;
+  };
+}
+
 const niceTicks = (min: number, max: number, count = 4): number[] => {
   if (max === min) return [min];
   const raw = (max - min) / count;
@@ -59,24 +84,32 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
   const innerH = height - padT - padB;
   const values = points.map((p) => p.value);
   const hasNegative = values.some((v) => v < 0);
-  // A debt line is only meaningful against zero — the filled distance from the
-  // axis down to the balance is the point of the chart.
-  const anchorZero = zeroBase || hasNegative;
-  let lo = Math.min(...values, anchorZero ? 0 : Infinity);
-  let hi = Math.max(...values, anchorZero ? 0 : -Infinity);
-  if (lo === hi) { lo -= 100; hi += 100; }
-  const pad = (hi - lo) * 0.08;
-  lo -= pad; hi += pad;
+  // The axis spans exactly the period's min and max. Zero is only forced in
+  // where a caller asks for it; on a balance chart it would flatten the line
+  // into a straight edge at the bottom.
+  let lo = Math.min(...values, zeroBase ? 0 : Infinity);
+  let hi = Math.max(...values, zeroBase ? 0 : -Infinity);
+  // a flat or near-flat series still needs a readable band
+  const minSpan = Math.max(100, Math.abs(hi) * 0.001);
+  if (hi - lo < minSpan) {
+    const mid = (hi + lo) / 2;
+    lo = mid - minSpan / 2;
+    hi = mid + minSpan / 2;
+  }
+  // breathing room in pixels, not in values, so the labels stay exact
+  const inset = 4;
+  const plotH = Math.max(1, innerH - inset * 2);
   const x = (i: number) => padL + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
-  const y = (v: number) => padT + innerH - ((v - lo) / (hi - lo)) * innerH;
+  const y = (v: number) => padT + inset + plotH - ((v - lo) / (hi - lo)) * plotH;
 
   const zeroY = Math.max(padT, Math.min(padT + innerH, y(0)));
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   // Fill to the zero axis rather than the floor of the plot, so a negative
   // series paints the band between 0 and the balance instead of a thin sliver.
   const area = `${line} L${x(points.length - 1).toFixed(1)},${zeroY} L${x(0).toFixed(1)},${zeroY} Z`;
-  const ticks = niceTicks(lo, hi);
-  const showZeroLine = hasNegative && hi > 0;
+  const ticks = rangeTicks(lo, hi);
+  const label = axisFormat(lo, hi);
+  const showZeroLine = hasNegative && hi > 0 && lo < 0;
 
   return (
     <div ref={ref} className="chart-wrap" style={{ height }}>
@@ -108,10 +141,10 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
           </clipPath>
         </defs>
 
-        {ticks.map((t) => (
-          <g key={t}>
+        {ticks.map((t, i) => (
+          <g key={i}>
             <line className="grid-line" x1={padL} x2={padL + innerW} y1={y(t)} y2={y(t)} />
-            <text className="axis-text" x={padL - 8} y={y(t) + 3.5} textAnchor="end">{fmt0(t, { compact: true })}</text>
+            <text className="axis-text" x={padL - 8} y={y(t) + 3.5} textAnchor="end">{label(t)}</text>
           </g>
         ))}
 

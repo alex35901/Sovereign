@@ -33,6 +33,7 @@ await build({
       export { default as propertyHandler } from "./api/property.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
+      export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
@@ -391,6 +392,38 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── chart axis ───────────────────────────────────────────────────────── */
+
+await test("the axis starts at the minimum and ends at the maximum", () => {
+  const ticks = M.rangeTicks(50370000, 58340000);
+  assert.equal(ticks.length, 5);
+  assert.equal(ticks[0], 50370000);
+  assert.equal(ticks[4], 58340000);
+  // evenly divided, not rounded to convenient numbers
+  const gaps = ticks.slice(1).map((t, i) => t - ticks[i]);
+  assert.ok(gaps.every((g) => Math.abs(g - gaps[0]) < 1));
+});
+
+await test("axis labels stay distinct however tight the range", () => {
+  const cases = [
+    [50370000, 58340000],   // a house over six months
+    [57035000, 57085000],   // $500 of movement on $570k
+    [-72110000, -71400000], // a mortgage paying down
+    [760000, 1350000],      // a checking account
+    [-339000, -160000],     // a credit card
+  ];
+  for (const [lo, hi] of cases) {
+    const label = M.axisFormat(lo, hi);
+    const labels = M.rangeTicks(lo, hi).map(label);
+    assert.equal(new Set(labels).size, labels.length, `duplicate labels for ${lo}..${hi}: ${labels.join(", ")}`);
+  }
+});
+
+await test("axis labels carry the sign of a debt", () => {
+  const label = M.axisFormat(-72110000, -71400000);
+  assert.match(label(-72110000), /^-\$721/);
 });
 
 /* ── balance history import ───────────────────────────────────────────── */
