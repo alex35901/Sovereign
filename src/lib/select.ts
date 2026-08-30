@@ -278,7 +278,11 @@ export function budgetTable(db: DB, month: MonthKey): BudgetGroupRow[] {
       if (c.excludeFromBudget) continue;
       const p = plannedFor(db, month, c.id);
       const a = actuals.get(c.id) ?? 0;
-      if (!p && !a) continue;
+      // A category budgeted to zero on purpose — money moved out of it, or
+      // typed to nothing — must stay on the sheet. Only categories that were
+      // never budgeted at all are left off.
+      const budgeted = db.budgets[month]?.[c.id] !== undefined || Boolean(db.budgetDefaults?.[c.id] && month >= db.budgetDefaults[c.id].from);
+      if (!p && !a && !budgeted) continue;
       const roll = rolloverFor(db, month, c.id);
       rows.push({ category: c, planned: p, actual: a, remaining: p + roll - a, rollover: roll, kind: g.kind });
     }

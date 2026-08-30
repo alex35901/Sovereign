@@ -26,7 +26,7 @@ export default function Budget() {
     });
 
   const unplanned = db.categories.filter(
-    (c) => !c.excludeFromBudget && !c.archived && !(db.budgets[month]?.[c.id]) &&
+    (c) => !c.excludeFromBudget && !c.archived && db.budgets[month]?.[c.id] === undefined &&
       !summary.table.some((g) => g.rows.some((r) => r.category.id === c.id)),
   );
 

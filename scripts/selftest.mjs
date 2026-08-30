@@ -554,6 +554,38 @@ await test("a move survives a standing amount rather than being undone by it", (
   assert.equal(M.plannedFor(after, "2026-09", "c_gas"), 20000, "September still follows the standing amount");
 });
 
+await test("a category emptied by a move stays on the sheet", () => {
+  const db = moveDb();
+  // move every last cent of home improvement's remaining into groceries
+  const before = M.moveCandidates(db, "2026-08").find((c) => c.categoryId === "c_home_improvement");
+  const { db: after } = M.moveBudget(db, "2026-08", "c_home_improvement", "c_groceries", before.planned);
+  assert.equal(M.plannedFor(after, "2026-08", "c_home_improvement"), 0);
+
+  const rows = M.budgetTable(after, "2026-08").flatMap((g) => g.rows);
+  const home = rows.find((r) => r.category.id === "c_home_improvement");
+  assert.ok(home, "the category disappeared from the budget after being emptied");
+  assert.equal(home.planned, 0);
+});
+
+await test("a category emptied with no spending at all still stays", () => {
+  const db = M.emptyDB();
+  db.budgets = { "2026-08": { c_mortgage: 284600, c_miscellaneous: 0 } };
+  // no transactions this month, and mortgage moved down to nothing
+  const { db: after } = M.moveBudget(db, "2026-08", "c_mortgage", "c_miscellaneous", 284600);
+  const rows = M.budgetTable(after, "2026-08").flatMap((g) => g.rows);
+  assert.ok(rows.find((r) => r.category.id === "c_mortgage"), "mortgage vanished");
+  assert.equal(rows.find((r) => r.category.id === "c_mortgage").planned, 0);
+});
+
+await test("categories never budgeted are still left off the sheet", () => {
+  const db = M.emptyDB();
+  db.budgets = { "2026-08": { c_groceries: 60000 } };
+  const rows = M.budgetTable(db, "2026-08").flatMap((g) => g.rows);
+  assert.ok(rows.find((r) => r.category.id === "c_groceries"));
+  assert.ok(!rows.find((r) => r.category.id === "c_gas"), "an untouched category should not be listed");
+  assert.equal(rows.length, 1);
+});
+
 /* ── account grouping ─────────────────────────────────────────────────── */
 
 await test("every account type belongs to exactly one group", () => {
