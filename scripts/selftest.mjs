@@ -37,6 +37,7 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward } from "./src/lib/select.ts";
+      export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
@@ -464,6 +465,93 @@ await test("a budget row driven by a standing amount reports it", () => {
   const groceries = rows.find((r) => r.category.id === "c_groceries");
   assert.ok(groceries, "the category should appear even with no explicit entry");
   assert.equal(groceries.planned, 50000);
+});
+
+/* ── moving money between categories ─────────────────────────────────── */
+
+/** A month with one category in surplus, one overspent, and one untouched. */
+const moveDb = () => {
+  const db = M.emptyDB();
+  db.budgets = { "2026-08": { c_home_improvement: 40000, c_groceries: 60000, c_gas: 20000 } };
+  const spend = (id, amount, n) => ({
+    id: `t_${id}_${n}`, accountId: "a1", date: "2026-08-10", merchant: "M", amount: -amount,
+    categoryId: id, tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "",
+  });
+  db.transactions = [
+    spend("c_home_improvement", 2400, 1),   // $376 of $400 left
+    spend("c_groceries", 117100, 1),        // $571 over
+    spend("c_gas", 10000, 1),               // $100 left
+  ];
+  return db;
+};
+
+await test("a surplus is offered to the deepest overspend", () => {
+  const db = moveDb();
+  const candidates = M.moveCandidates(db, "2026-08");
+  const home = candidates.find((c) => c.categoryId === "c_home_improvement");
+  assert.equal(home.remaining, 37600);
+  const target = M.suggestCounterpart(candidates, "c_home_improvement", "to");
+  assert.equal(target.categoryId, "c_groceries", "groceries is the deepest hole");
+  assert.equal(target.remaining, -57100);
+  // and the amount squares as much as it can without overdrawing the source
+  assert.equal(M.suggestedAmount(home, target), 37600);
+});
+
+await test("an overspend is filled from the largest surplus", () => {
+  const db = moveDb();
+  const candidates = M.moveCandidates(db, "2026-08");
+  const source = M.suggestCounterpart(candidates, "c_groceries", "from");
+  assert.equal(source.categoryId, "c_home_improvement", "$376 beats gas's $100");
+});
+
+await test("nothing is suggested when there is no counterpart", () => {
+  const db = M.emptyDB();
+  db.budgets = { "2026-08": { c_groceries: 60000 } };
+  const candidates = M.moveCandidates(db, "2026-08");
+  assert.equal(M.suggestCounterpart(candidates, "c_groceries", "to"), undefined);
+  assert.equal(M.suggestedAmount(candidates[0], undefined), 0);
+});
+
+await test("moving shifts both sides and conserves the total", () => {
+  const db = moveDb();
+  const before = M.budgetTable(db, "2026-08").flatMap((g) => g.rows).reduce((s, r) => s + r.planned, 0);
+  const { db: after, moved } = M.moveBudget(db, "2026-08", "c_home_improvement", "c_groceries", 37600);
+  assert.equal(moved, 37600);
+  assert.equal(M.plannedFor(after, "2026-08", "c_home_improvement"), 40000 - 37600);
+  assert.equal(M.plannedFor(after, "2026-08", "c_groceries"), 60000 + 37600);
+  const total = M.budgetTable(after, "2026-08").flatMap((g) => g.rows).reduce((s, r) => s + r.planned, 0);
+  assert.equal(total, before, "moving money must not create or destroy any");
+});
+
+await test("a category can't give more than it holds", () => {
+  const db = moveDb();
+  const { db: after, moved } = M.moveBudget(db, "2026-08", "c_gas", "c_groceries", 99999900);
+  assert.equal(moved, 20000, "capped at what gas has budgeted");
+  assert.equal(M.plannedFor(after, "2026-08", "c_gas"), 0);
+});
+
+await test("nonsense moves are refused", () => {
+  const db = moveDb();
+  for (const args of [
+    ["c_gas", "c_gas", 1000],
+    ["", "c_gas", 1000],
+    ["c_gas", "", 1000],
+    ["c_gas", "c_groceries", 0],
+    ["c_gas", "c_groceries", -500],
+  ]) {
+    const res = M.moveBudget(db, "2026-08", ...args);
+    assert.equal(res.moved, 0, `${JSON.stringify(args)} should move nothing`);
+    assert.equal(res.db, db, "and leave the database untouched");
+  }
+});
+
+await test("a move survives a standing amount rather than being undone by it", () => {
+  const db = moveDb();
+  // gas is set to $200 every month from August on
+  const withDefault = M.applyForward(db, "2026-08", "c_gas", 20000);
+  const { db: after } = M.moveBudget(withDefault, "2026-08", "c_gas", "c_groceries", 20000);
+  assert.equal(M.plannedFor(after, "2026-08", "c_gas"), 0, "August was emptied by the move");
+  assert.equal(M.plannedFor(after, "2026-09", "c_gas"), 20000, "September still follows the standing amount");
 });
 
 /* ── account grouping ─────────────────────────────────────────────────── */

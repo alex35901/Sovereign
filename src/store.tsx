@@ -9,6 +9,7 @@ import { applyRules } from "./lib/rules";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
 import { applyForward } from "./lib/select";
+import { moveBudget } from "./lib/budget-move";
 
 type Mutator = (db: DB) => DB;
 
@@ -126,6 +127,7 @@ export interface Actions {
 
   setPlanned: (month: MonthKey, categoryId: ID, amount: number) => void;
   applyPlannedForward: (month: MonthKey, categoryId: ID, amount: number) => void;
+  moveBudget: (month: MonthKey, fromId: ID, toId: ID, amount: number) => void;
   clearPlannedForward: (categoryId: ID) => void;
   copyPreviousMonth: (month: MonthKey) => void;
   autofillBudget: (month: MonthKey) => void;
@@ -283,12 +285,18 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     setPlanned: (month, categoryId, amount) =>
       apply((db) => {
         const m = { ...(db.budgets[month] ?? {}) };
-        if (amount <= 0) delete m[categoryId];
-        else m[categoryId] = amount;
+        const standing = db.budgetDefaults?.[categoryId];
+        const covered = Boolean(standing && month >= standing.from);
+        // dropping the entry would hand the month back to a standing amount, so
+        // an explicit zero has to stay explicit where one exists
+        if (amount <= 0 && !covered) delete m[categoryId];
+        else m[categoryId] = Math.max(0, amount);
         return { ...db, budgets: { ...db.budgets, [month]: m } };
       }),
     applyPlannedForward: (month, categoryId, amount) =>
       apply((db) => applyForward(db, month, categoryId, amount), "apply to all future months"),
+    moveBudget: (month, fromId, toId, amount) =>
+      apply((db) => moveBudget(db, month, fromId, toId, amount).db, "move money between categories"),
     clearPlannedForward: (categoryId) =>
       apply((db) => {
         const { [categoryId]: _removed, ...rest } = db.budgetDefaults ?? {};

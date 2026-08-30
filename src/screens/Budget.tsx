@@ -8,6 +8,7 @@ import { budgetSummary } from "../lib/select";
 import type { BudgetGroupRow } from "../lib/select";
 import { Btn, Card, CardHead, Money, Popover, Progress, Toggle, cx } from "../components/ui";
 import { BudgetAmountPopover } from "./BudgetAmountPopover";
+import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
 
 export default function Budget() {
@@ -170,9 +171,15 @@ function GroupCard({ data, month, collapsed, onToggle }: {
             >
               <Money value={r.actual} cents={false} />
             </Link>
-            <span className={cx("num right bold", over ? "neg" : r.remaining > 0 ? "muted" : "")} style={{ width: 100 }}>
-              <Money value={r.remaining} cents={false} />
-            </span>
+            <div style={{ width: 100 }}>
+              {income ? (
+                <span className="num right bold muted" style={{ display: "block" }}>
+                  <Money value={r.remaining} cents={false} />
+                </span>
+              ) : (
+                <BudgetMovePopover category={r.category} month={month} remaining={r.remaining} over={over} />
+              )}
+            </div>
             <Popover
               align="right"
               trigger={(open) => <button className="btn btn-ghost btn-icon" onClick={open}>⋯</button>}

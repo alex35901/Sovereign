@@ -297,6 +297,9 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 .budget-panel { padding: 12px; }
 .budget-amount { width: 100%; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .budget-amount.pinned { border-style: dashed; }
+/* what's left reads as a figure, not a field — but it is still a button */
+.budget-amount.remaining { background: none; border-color: transparent; font-weight: 600; }
+.budget-amount.remaining:hover { background: var(--surface-2); border-color: var(--line); }
 .budget-stat {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
@@ -306,3 +309,13 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 .budget-stat:disabled { opacity: 0.5; cursor: default; }
 .budget-chart { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 6px 2px; margin-top: 10px; }
 .budget-forward { display: flex; align-items: center; gap: 8px; margin-top: 12px; cursor: pointer; }
+
+/* ── move money popover ───────────────────────────────────────────────── */
+.menu.move-menu { padding: 0; max-height: none; overflow: visible; }
+.move-panel { padding: 12px; }
+.move-rows { margin-top: 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 10px; position: relative; }
+.move-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.move-row .btn.move-pick { flex: 1; min-width: 0; justify-content: flex-start; background: none; border-color: transparent; }
+.move-row .btn.move-pick:hover { background: var(--surface-3); }
+.move-arrow { display: flex; align-items: center; gap: 6px; color: var(--faint); padding-left: 40px; }
+.move-arrow::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }

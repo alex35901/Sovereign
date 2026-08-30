@@ -182,6 +182,10 @@ Notable behaviour worth knowing:
   is the useful answer when setting a monthly number. *Apply to all future months* stores a
   standing amount rather than writing to every month individually, so it covers months that
   don't exist yet; a single month edited later overrides it again.
+- **Clicking what's left** in a category opens a transfer between categories. A surplus is
+  offered to the deepest overspend, a shortfall is filled from the largest surplus, and the
+  amount defaults to whatever squares both sides. Only the selected month changes — a standing
+  amount keeps applying from the next one, which makes this a correction rather than a re-plan.
 - **Rollover** is opt-in per category (⋯ menu on a budget row) and accumulates forward from
   the earliest budgeted month, floored at zero.
 - **Recurring detection** wants three or more hits from one merchant, a gap that matches a
