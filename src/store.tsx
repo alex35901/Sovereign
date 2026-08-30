@@ -121,6 +121,7 @@ export interface Actions {
   deleteCategory: (id: ID, reassignTo: ID) => void;
   addGroup: (name: string, kind: "income" | "expense") => void;
   updateGroup: (id: ID, patch: Partial<DB["groups"][number]>) => void;
+  deleteGroup: (id: ID) => void;
 
   addTag: (name: string, color: string) => void;
   deleteTag: (id: ID) => void;
@@ -273,6 +274,12 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     addGroup: (name, kind) =>
       apply((db) => ({ ...db, groups: [...db.groups, { id: uid("g"), name, kind, order: db.groups.length }] })),
     updateGroup: (id, patch) => apply((db) => ({ ...db, groups: replace(db.groups, id, patch) })),
+    deleteGroup: (id) =>
+      apply((db) => {
+        // a group holding categories can't go — the categories would be orphaned
+        if (db.categories.some((c) => c.groupId === id)) return db;
+        return { ...db, groups: db.groups.filter((g) => g.id !== id) };
+      }, "delete group"),
 
     addTag: (name, color) => apply((db) => ({ ...db, tags: [...db.tags, { id: uid("tg"), name, color } as Tag] })),
     deleteTag: (id) =>

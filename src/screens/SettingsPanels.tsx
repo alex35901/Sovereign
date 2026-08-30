@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import type { Category, Rule } from "../types";
+import type { Category, CategoryGroup, Rule } from "../types";
 import { useDB, useStore } from "../store";
 import { countMatches } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
@@ -13,6 +13,7 @@ export function CategoriesPanel() {
   const db = useDB();
   const [editing, setEditing] = useState<Category | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
+  const [editingGroup, setEditingGroup] = useState<CategoryGroup | null>(null);
 
   return (
     <Card pad={false}>
@@ -21,7 +22,10 @@ export function CategoriesPanel() {
         <div key={g.id}>
           <div className="date-head spread" style={{ position: "static" }}>
             <span>{g.name} <span className="faint">· {g.kind}</span></span>
-            <button className="link tiny" onClick={() => setAddingTo(g.id)}>+ Add category</button>
+            <span className="row" style={{ gap: 12 }}>
+              <button className="link tiny" onClick={() => setEditingGroup(g)}>Rename</button>
+              <button className="link tiny" onClick={() => setAddingTo(g.id)}>+ Add category</button>
+            </span>
           </div>
           {db.categories.filter((c) => c.groupId === g.id).sort((a, b) => a.order - b.order).map((c) => (
             <div key={c.id} className="list-row">
@@ -35,6 +39,7 @@ export function CategoriesPanel() {
           ))}
         </div>
       ))}
+      {editingGroup ? <GroupModal group={editingGroup} onClose={() => setEditingGroup(null)} /> : null}
       {editing || addingTo ? (
         <CategoryModal
           category={editing ?? undefined}
@@ -50,6 +55,70 @@ export function CategoriesPanel() {
         </Popover>
       </div>
     </Card>
+  );
+}
+
+function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => void }) {
+  const db = useDB();
+  const { actions } = useStore();
+  const [name, setName] = useState(group.name);
+  const members = db.categories.filter((c) => c.groupId === group.id);
+  const isTransfer = group.kind === "transfer";
+  const [kind, setKind] = useState<"income" | "expense">(group.kind === "income" ? "income" : "expense");
+
+  return (
+    <Modal
+      title="Rename group"
+      onClose={onClose}
+      footer={
+        <>
+          <ConfirmButton
+            label="Delete group"
+            confirmLabel="Click again to delete"
+            onConfirm={() => { actions.deleteGroup(group.id); onClose(); }}
+            variant={members.length ? "default" : "danger"}
+          />
+          <div className="grow" />
+          <Btn onClick={onClose}>Cancel</Btn>
+          <Btn
+            variant="primary"
+            onClick={() => {
+              actions.updateGroup(group.id, { name: name.trim() || group.name, ...(isTransfer ? {} : { kind }) });
+              onClose();
+            }}
+          >
+            Save
+          </Btn>
+        </>
+      }
+    >
+      <Field label="Group name" hint="Shown on the Budget and Reports screens">
+        <TextInput value={name} onChange={setName} autoFocus />
+      </Field>
+
+      {isTransfer ? (
+        <div className="small muted">
+          This is the transfers group. Its categories are deliberately kept out of budgets and cash
+          flow, so its type can't be changed — rename it freely.
+        </div>
+      ) : (
+        <Field
+          label="Type"
+          hint={members.length ? `${members.length} categories move with it — income and expenses are treated differently everywhere` : undefined}
+        >
+          <SelectInput
+            value={kind} onChange={setKind}
+            options={[{ value: "expense", label: "Expense" }, { value: "income", label: "Income" }]}
+          />
+        </Field>
+      )}
+
+      <div className="small faint">
+        {members.length
+          ? `Holds ${members.length} categor${members.length === 1 ? "y" : "ies"}: ${members.slice(0, 6).map((c) => c.name).join(", ")}${members.length > 6 ? "…" : ""}. Move a category elsewhere by editing it and changing its group. A group has to be empty before it can be deleted.`
+          : "Empty, so it can be deleted."}
+      </div>
+    </Modal>
   );
 }
 

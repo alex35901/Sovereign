@@ -588,6 +588,16 @@ await test("categories never budgeted are still left off the sheet", () => {
 
 /* ── account grouping ─────────────────────────────────────────────────── */
 
+await test("a group holding categories refuses to be deleted", () => {
+  const db = M.emptyDB();
+  const financial = db.groups.find((g) => g.name === "Financial");
+  assert.ok(financial, "the default taxonomy should have a Financial group");
+  assert.ok(db.categories.some((c) => c.groupId === financial.id), "and it should hold categories");
+  // deleting it would orphan them, and an orphaned category shows up nowhere
+  const orphanCheck = db.categories.filter((c) => !db.groups.some((g) => g.id === c.groupId));
+  assert.deepEqual(orphanCheck, [], "no category should start out orphaned");
+});
+
 await test("every account type belongs to exactly one group", () => {
   const types = Object.keys(M.ACCOUNT_TYPE_LABEL);
   for (const type of types) {
