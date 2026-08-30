@@ -77,6 +77,25 @@ export function netWorthAt(db: DB, date: ISODate): number {
   return total;
 }
 
+/** Summed balance of several accounts on each of the given days. */
+export function aggregateSeries(accounts: Account[], dates: ISODate[]): number[] {
+  return dates.map((d) => accounts.reduce((sum, a) => sum + balanceAt(a, d), 0));
+}
+
+/**
+ * Colours a series by whether it improved, not by its sign.
+ *
+ * Balances are stored signed, so a loan paid down moves from -30,000 toward
+ * zero — an increase, and good news, exactly as a rising asset is. Both add to
+ * net worth, so both are green.
+ */
+export function trendTone(values: number[]): string {
+  if (values.length < 2) return "--muted";
+  const delta = values[values.length - 1] - values[0];
+  if (Math.abs(delta) < 100) return "--muted";
+  return delta > 0 ? "--pos" : "--neg";
+}
+
 /** Earliest snapshot across the given accounts, if any. */
 export function earliestHistoryDate(accounts: Account[]): ISODate | undefined {
   let earliest: ISODate | undefined;

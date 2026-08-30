@@ -36,6 +36,7 @@ await build({
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
+      export { aggregateSeries, trendTone, balanceAt } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
@@ -584,6 +585,41 @@ await test("categories never budgeted are still left off the sheet", () => {
   assert.ok(rows.find((r) => r.category.id === "c_groceries"));
   assert.ok(!rows.find((r) => r.category.id === "c_gas"), "an untouched category should not be listed");
   assert.equal(rows.length, 1);
+});
+
+/* ── account sparklines ───────────────────────────────────────────────── */
+
+const acct = (id, history) => ({
+  id, name: id, institution: "I", type: "checking", balance: history[history.length - 1]?.balance ?? 0,
+  includeInNetWorth: true, hidden: false, history, order: 0,
+});
+
+await test("a group's series is the sum of its accounts on each day", () => {
+  const a = acct("a", [{ date: "2026-01-01", balance: 1000 }, { date: "2026-03-01", balance: 3000 }]);
+  const b = acct("b", [{ date: "2026-02-01", balance: 500 }]);
+  const dates = ["2026-01-01", "2026-02-01", "2026-03-01"];
+  // balances carry forward, and an account contributes nothing before it exists
+  assert.deepEqual(M.aggregateSeries([a, b], dates), [1000, 1500, 3500]);
+  assert.deepEqual(M.aggregateSeries([], dates), [0, 0, 0]);
+});
+
+await test("paying down a debt reads as green, not red", () => {
+  // stored signed: a loan going from -30,000 to -25,000 has been paid down
+  assert.equal(M.trendTone([-3000000, -2800000, -2500000]), "--pos");
+  // and one growing is red
+  assert.equal(M.trendTone([-2500000, -3000000]), "--neg");
+});
+
+await test("assets follow the same rule", () => {
+  assert.equal(M.trendTone([100000, 250000]), "--pos");
+  assert.equal(M.trendTone([250000, 100000]), "--neg");
+});
+
+await test("a flat or unknowable series is neither", () => {
+  assert.equal(M.trendTone([500000, 500000]), "--muted");
+  assert.equal(M.trendTone([500000, 500050]), "--muted", "under a dollar is not a trend");
+  assert.equal(M.trendTone([500000]), "--muted");
+  assert.equal(M.trendTone([]), "--muted");
 });
 
 /* ── account grouping ─────────────────────────────────────────────────── */

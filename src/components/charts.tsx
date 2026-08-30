@@ -67,8 +67,8 @@ const niceTicks = (min: number, max: number, count = 4): number[] => {
 
 export interface Point { label: string; value: number; sub?: string }
 
-export function AreaChart({ points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false }: {
-  points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean;
+export function AreaChart({ points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false }: {
+  points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -109,6 +109,17 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
   const area = `${line} L${x(points.length - 1).toFixed(1)},${zeroY} L${x(0).toFixed(1)},${zeroY} Z`;
   const ticks = rangeTicks(lo, hi);
   const label = axisFormat(lo, hi);
+
+  // Sampled days can land twice in the same month, which would print "Jan '26"
+  // beside itself; only the first of a repeated label is drawn.
+  const every = Math.ceil(points.length / Math.max(2, Math.floor(innerW / 62)));
+  const labelled: number[] = [];
+  let previous = "";
+  for (let i = 0; i < points.length; i += every) {
+    if (points[i].label === previous) continue;
+    previous = points[i].label;
+    labelled.push(i);
+  }
   const showZeroLine = hasNegative && hi > 0 && lo < 0;
 
   return (
@@ -157,10 +168,19 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
           <line x1={padL} x2={padL + innerW} y1={zeroY} y2={zeroY} stroke={color("--muted")} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
         ) : null}
 
-        {points.map((p, i) =>
-          i % Math.ceil(points.length / Math.max(2, Math.floor(innerW / 62))) === 0 ? (
-            <text key={p.label + i} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">{p.label}</text>
-          ) : null)}
+        {startLine ? (
+          <line
+            className="start-baseline"
+            x1={padL} x2={padL + innerW} y1={y(points[0].value)} y2={y(points[0].value)}
+            stroke={color("--faint")} strokeWidth={1} strokeDasharray="3 4" opacity={0.8}
+          />
+        ) : null}
+
+        {labelled.map((i) => (
+          <text key={points[i].label + i} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">
+            {points[i].label}
+          </text>
+        ))}
 
         {hover !== null ? (
           <g>
@@ -417,18 +437,25 @@ export function Sankey({ data, height = 320 }: { data: SankeyInput; height?: num
 
 /* ── small pieces ─────────────────────────────────────────────────────── */
 
-export function Sparkline({ values, tone = "--accent", width = 88, height = 26 }: {
-  values: number[]; tone?: string; width?: number; height?: number;
+export function Sparkline({ values, tone = "--accent", width = 88, height = 26, baseline = false }: {
+  values: number[]; tone?: string; width?: number; height?: number; baseline?: boolean;
 }) {
   if (values.length < 2) return <svg width={width} height={height} />;
   const lo = Math.min(...values);
   const hi = Math.max(...values);
   const span = hi - lo || 1;
-  const d = values
-    .map((v, i) => `${i ? "L" : "M"}${(i / (values.length - 1)) * width},${height - ((v - lo) / span) * (height - 4) - 2}`)
-    .join(" ");
+  const y = (v: number) => height - ((v - lo) / span) * (height - 4) - 2;
+  const d = values.map((v, i) => `${i ? "L" : "M"}${(i / (values.length - 1)) * width},${y(v)}`).join(" ");
   return (
     <svg width={width} height={height} style={{ display: "block" }}>
+      {/* where the period started, so the shape reads as up or down at a glance */}
+      {baseline ? (
+        <line
+          className="spark-baseline"
+          x1={0} x2={width} y1={y(values[0])} y2={y(values[0])}
+          stroke={color("--faint")} strokeWidth={1} strokeDasharray="2 3" opacity={0.75}
+        />
+      ) : null}
       <path d={d} fill="none" stroke={color(tone)} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );

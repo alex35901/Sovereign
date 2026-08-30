@@ -186,6 +186,11 @@ Notable behaviour worth knowing:
   offered to the deepest overspend, a shortfall is filled from the largest surplus, and the
   amount defaults to whatever squares both sides. Only the selected month changes — a standing
   amount keeps applying from the next one, which makes this a correction rather than a re-plan.
+- **Sparklines on the Accounts screen** cover the period chosen in the range picker, with a
+  dashed line at where each account started so the shape reads as up or down at a glance.
+  Group headers carry the aggregate of their accounts. Colour follows the *direction* of the
+  signed balance, not its sign — a loan paid down moves toward zero, which adds to net worth
+  exactly as a rising asset does, so both are green.
 - **Rollover** is opt-in per category (⋯ menu on a budget row) and accumulates forward from
   the earliest budgeted month, floored at zero.
 - **Recurring detection** wants three or more hits from one merchant, a gap that matches a

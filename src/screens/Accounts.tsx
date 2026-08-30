@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Plus } from "lucide-react";
-import type { Account, AccountType } from "../types";
+import type { Account, AccountType, ISODate } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, today } from "../lib/date";
-import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, earliestHistoryDate, netWorthAt, netWorthNow } from "../lib/select";
+import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, aggregateSeries, balanceAt, earliestHistoryDate, netWorthAt, netWorthNow, trendTone } from "../lib/select";
 import { AreaChart, Sparkline } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
 import { RangePicker } from "../components/pickers";
@@ -32,11 +32,26 @@ export default function Accounts() {
   const first = series[0]?.value ?? 0;
   const change = nw.net - first;
 
+  // every sparkline on the page covers the same days as the chart above them
+  const dates = useMemo(() => {
+    const earliest = earliestHistoryDate(db.accounts);
+    const from = rangeStart(range, earliest);
+    const start = earliest && earliest > from ? earliest : from;
+    return sampleDates(start, today(), 24);
+  }, [db.accounts, range]);
+
   const groups = ACCOUNT_GROUPS.map((g) => {
     const accounts = db.accounts
       .filter((a) => g.types.includes(a.type) && !a.hidden)
       .sort((a, b) => a.order - b.order);
-    return { ...g, accounts, total: accounts.reduce((s, a) => s + a.balance, 0) };
+    const series = aggregateSeries(accounts, dates);
+    return {
+      ...g,
+      accounts,
+      series,
+      change: series.length > 1 ? series[series.length - 1] - series[0] : 0,
+      total: accounts.reduce((s, a) => s + a.balance, 0),
+    };
   }).filter((g) => g.accounts.length);
 
   const hidden = db.accounts.filter((a) => a.hidden);
@@ -58,16 +73,29 @@ export default function Accounts() {
             sub={series.length ? `${series[0].sub} — today` : undefined}
             right={<RangePicker value={range} onChange={setRange} />}
           />
-          <AreaChart points={series} height={230} />
+          <AreaChart points={series} height={230} startLine />
         </Card>
 
         {groups.map((g) => (
           <Card key={g.key} pad={false}>
             <CardHead
-              flush title={g.label}
-              right={<span className="num bold"><Money value={g.total} cents={false} /></span>}
+              flush
+              title={g.label}
+              sub={
+                g.change !== 0 ? (
+                  <span className={g.change > 0 ? "pos" : "neg"}>
+                    <Money value={g.change} cents={false} sign={g.change > 0} /> over the period
+                  </span>
+                ) : undefined
+              }
+              right={
+                <span className="row" style={{ gap: 14 }}>
+                  {g.series.length > 2 ? <Sparkline values={g.series} baseline tone={trendTone(g.series)} /> : null}
+                  <span className="num bold"><Money value={g.total} cents={false} /></span>
+                </span>
+              }
             />
-            {g.accounts.map((a) => <AccountRow key={a.id} account={a} />)}
+            {g.accounts.map((a) => <AccountRow key={a.id} account={a} dates={dates} />)}
           </Card>
         ))}
 
@@ -84,7 +112,7 @@ export default function Accounts() {
         {hidden.length ? (
           <Card pad={false}>
             <CardHead flush title="Hidden" sub={`${hidden.length} account${hidden.length === 1 ? "" : "s"}`} />
-            {hidden.map((a) => <AccountRow key={a.id} account={a} />)}
+            {hidden.map((a) => <AccountRow key={a.id} account={a} dates={dates} />)}
           </Card>
         ) : null}
       </div>
@@ -93,8 +121,10 @@ export default function Accounts() {
   );
 }
 
-function AccountRow({ account }: { account: Account }) {
-  const history = account.history.slice(-14).map((h) => h.balance);
+function AccountRow({ account, dates }: { account: Account; dates: ISODate[] }) {
+  // the same days as every other sparkline on the page, so the dashed baseline
+  // means "where this account started over the window you're looking at"
+  const history = useMemo(() => dates.map((d) => balanceAt(account, d)), [account, dates]);
   return (
     <Link to={`/accounts/${account.id}`} className="list-row click">
       <span
@@ -112,7 +142,7 @@ function AccountRow({ account }: { account: Account }) {
           {!account.includeInNetWorth ? " · excluded from net worth" : ""}
         </span>
       </div>
-      {history.length > 2 ? <Sparkline values={history} tone={account.balance >= 0 ? "--c3" : "--c9"} /> : null}
+      {history.length > 2 ? <Sparkline values={history} baseline tone={trendTone(history)} /> : null}
       <span className="num bold" style={{ width: 120, textAlign: "right" }}>
         <Money value={account.balance} cents={false} />
       </span>
