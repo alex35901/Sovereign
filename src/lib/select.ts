@@ -182,6 +182,61 @@ export interface BudgetGroupRow {
   remaining: number;
 }
 
+/**
+ * What a category is budgeted for in a month: an explicit entry if there is
+ * one, otherwise the standing default once its start month is reached.
+ */
+export function plannedFor(db: DB, month: MonthKey, categoryId: string): number {
+  const explicit = db.budgets[month]?.[categoryId];
+  if (explicit !== undefined) return explicit;
+  const fallback = db.budgetDefaults?.[categoryId];
+  if (fallback && month >= fallback.from) return fallback.amount;
+  return 0;
+}
+
+/**
+ * Sets a standing amount from `month` onwards, dropping later explicit entries
+ * that would otherwise mask it. Earlier months are untouched.
+ */
+export function applyForward(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
+  const budgets: DB["budgets"] = {};
+  for (const [m, row] of Object.entries(db.budgets)) {
+    if (m < month) { budgets[m] = row; continue; }
+    const { [categoryId]: _dropped, ...rest } = row;
+    budgets[m] = rest;
+  }
+  return {
+    ...db,
+    budgets,
+    budgetDefaults: { ...(db.budgetDefaults ?? {}), [categoryId]: { amount, from: month } },
+  };
+}
+
+/** Actual totals for one category over the given months, oldest first. */
+export function categoryHistory(db: DB, categoryId: string, months: MonthKey[]): { month: MonthKey; actual: number }[] {
+  const totals = new Map<MonthKey, number>(months.map((m) => [m, 0]));
+  for (const t of db.transactions) {
+    if (t.hideFromReports) continue;
+    const month = monthOf(t.date);
+    if (!totals.has(month)) continue;
+    for (const l of lines(t)) {
+      if (l.categoryId !== categoryId) continue;
+      totals.set(month, (totals.get(month) ?? 0) + Math.abs(l.amount));
+    }
+  }
+  return months.map((month) => ({ month, actual: totals.get(month) ?? 0 }));
+}
+
+/**
+ * Mean spend across the window, counting months with no activity as zero —
+ * a category used twice a year averages low, which is the useful answer when
+ * setting a monthly number.
+ */
+export function categoryAverage(history: { actual: number }[]): number {
+  if (!history.length) return 0;
+  return Math.round(history.reduce((sum, h) => sum + h.actual, 0) / history.length);
+}
+
 export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
   const out = new Map<string, number>();
   for (const t of db.transactions) {
@@ -198,11 +253,14 @@ export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
 export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number {
   const cat = db.categories.find((c) => c.id === categoryId);
   if (!cat?.rollover) return 0;
-  const budgeted = Object.keys(db.budgets).filter((m) => m < month).sort();
+  const withDefault = db.budgetDefaults?.[categoryId]?.from;
+  const budgeted = [...new Set([...Object.keys(db.budgets), ...(withDefault ? [withDefault] : [])])]
+    .filter((m) => m < month)
+    .sort();
   if (!budgeted.length) return 0;
   let carry = 0;
   for (const m of budgeted.slice(-24)) {
-    const planned = db.budgets[m]?.[categoryId] ?? 0;
+    const planned = plannedFor(db, m, categoryId);
     if (!planned && carry === 0) continue;
     const actual = actualsFor(db, m).get(categoryId) ?? 0;
     carry = Math.max(0, carry + planned - actual);
@@ -212,14 +270,13 @@ export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number
 
 export function budgetTable(db: DB, month: MonthKey): BudgetGroupRow[] {
   const actuals = actualsFor(db, month);
-  const planned = db.budgets[month] ?? {};
   const out: BudgetGroupRow[] = [];
   for (const g of [...db.groups].sort((a, b) => a.order - b.order)) {
     if (g.kind === "transfer") continue;
     const rows: BudgetRow[] = [];
     for (const c of db.categories.filter((c) => c.groupId === g.id && !c.archived).sort((a, b) => a.order - b.order)) {
       if (c.excludeFromBudget) continue;
-      const p = planned[c.id] ?? 0;
+      const p = plannedFor(db, month, c.id);
       const a = actuals.get(c.id) ?? 0;
       if (!p && !a) continue;
       const roll = rolloverFor(db, month, c.id);

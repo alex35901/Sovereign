@@ -176,6 +176,12 @@ Notable behaviour worth knowing:
 
 - **Transfers are excluded** from income, spending and budgets — a credit-card payment
   moves money, it isn't a new expense. Categories in the Transfers group carry that flag.
+- **Clicking a budget figure** opens what's behind it: the last six months as bars, what was
+  spent last month, and the monthly average — each one click away from becoming the budget.
+  The average counts empty months as zero, so a category used twice a year averages low, which
+  is the useful answer when setting a monthly number. *Apply to all future months* stores a
+  standing amount rather than writing to every month individually, so it covers months that
+  don't exist yet; a single month edited later overrides it again.
 - **Rollover** is opt-in per category (⋯ menu on a budget row) and accumulates forward from
   the earliest budgeted month, floored at zero.
 - **Recurring detection** wants three or more hits from one merchant, a gap that matches a

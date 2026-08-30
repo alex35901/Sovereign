@@ -188,14 +188,14 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
 
 export interface BarGroup { label: string; bars: { key: string; value: number; tone: string }[]; }
 
-export function BarChart({ groups, height = 200, showZero = true, onClickGroup }: {
-  groups: BarGroup[]; height?: number; showZero?: boolean; onClickGroup?: (label: string) => void;
+export function BarChart({ groups, height = 200, showZero = true, compact = false, onClickGroup }: {
+  groups: BarGroup[]; height?: number; showZero?: boolean; compact?: boolean; onClickGroup?: (label: string) => void;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   if (!groups.length) return <div ref={ref} style={{ height }} />;
 
-  const padL = 52;
+  const padL = compact ? 36 : 52;
   const padR = 8;
   const padT = 10;
   const padB = 22;
@@ -236,7 +236,7 @@ export function BarChart({ groups, height = 200, showZero = true, onClickGroup }
                 const h = Math.max(1, Math.abs(y(b.value) - y(0)));
                 return <rect key={b.key} x={bx} y={top} width={bw} height={h} rx={Math.min(3, bw / 2)} fill={color(b.tone)} />;
               })}
-              {gi % Math.ceil(groups.length / Math.max(2, Math.floor(innerW / 58))) === 0 ? (
+              {compact || gi % Math.ceil(groups.length / Math.max(2, Math.floor(innerW / 58))) === 0 ? (
                 <text className="axis-text" x={gx + slot / 2} y={height - 6} textAnchor="middle">{g.label}</text>
               ) : null}
             </g>

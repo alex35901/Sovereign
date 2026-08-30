@@ -36,7 +36,7 @@ await build({
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
-      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL } from "./src/lib/select.ts";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward } from "./src/lib/select.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
@@ -398,6 +398,72 @@ await test("debit/credit columns combine into one signed amount", () => {
     ["date", "merchant", "debit", "credit"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows[0].amount, -120000);
   assert.equal(plan.rows[1].amount, 5000);
+});
+
+/* ── budget defaults and history ──────────────────────────────────────── */
+
+const budgetDb = () => {
+  const db = M.emptyDB();
+  db.budgets = { "2026-06": { c_groceries: 60000 }, "2026-07": { c_groceries: 65000 } };
+  return db;
+};
+
+await test("an explicit month beats the standing amount", () => {
+  const db = budgetDb();
+  db.budgetDefaults = { c_groceries: { amount: 80000, from: "2026-06" } };
+  assert.equal(M.plannedFor(db, "2026-06", "c_groceries"), 60000);
+  assert.equal(M.plannedFor(db, "2026-07", "c_groceries"), 65000);
+  // no entry for August, so the standing amount shows through
+  assert.equal(M.plannedFor(db, "2026-08", "c_groceries"), 80000);
+});
+
+await test("a standing amount never reaches backwards", () => {
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 80000, from: "2026-08" } };
+  assert.equal(M.plannedFor(db, "2026-07", "c_groceries"), 0, "July predates it");
+  assert.equal(M.plannedFor(db, "2026-08", "c_groceries"), 80000);
+  assert.equal(M.plannedFor(db, "2030-01", "c_groceries"), 80000, "and it has no end");
+});
+
+await test("applying forward clears later months but keeps earlier ones", () => {
+  const db = budgetDb();
+  db.budgets["2026-08"] = { c_groceries: 70000, c_gas: 12000 };
+  const next = M.applyForward(db, "2026-07", "c_groceries", 75000);
+  assert.equal(next.budgets["2026-06"].c_groceries, 60000, "June is in the past and untouched");
+  assert.equal(next.budgets["2026-07"].c_groceries, undefined, "July now follows the standing amount");
+  assert.equal(next.budgets["2026-08"].c_groceries, undefined, "August too");
+  assert.equal(next.budgets["2026-08"].c_gas, 12000, "other categories are left alone");
+  assert.equal(M.plannedFor(next, "2026-07", "c_groceries"), 75000);
+  assert.equal(M.plannedFor(next, "2027-03", "c_groceries"), 75000);
+});
+
+await test("history counts empty months, and the average with them", () => {
+  const db = M.emptyDB();
+  const at = (month, amount) => ({
+    id: `t${month}`, accountId: "a1", date: `${month}-15`, merchant: "M", amount: -amount,
+    categoryId: "c_groceries", tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "",
+  });
+  // 3,600 in five of six months, nothing in the third
+  db.transactions = [
+    at("2026-02", 360000), at("2026-03", 360000),
+    at("2026-05", 360000), at("2026-06", 360000), at("2026-07", 360000),
+  ];
+  const months = ["2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"];
+  const history = M.categoryHistory(db, "c_groceries", months);
+  assert.equal(history.length, 6);
+  assert.deepEqual(history.map((h) => h.actual), [360000, 360000, 0, 360000, 360000, 360000]);
+  // 3,600 x 5 over six months is 3,000 — the empty month has to count
+  assert.equal(M.categoryAverage(history), 300000);
+  assert.equal(history[history.length - 1].actual, 360000, "last month reads straight off the end");
+});
+
+await test("a budget row driven by a standing amount reports it", () => {
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
+  const rows = M.budgetTable(db, "2026-09").flatMap((g) => g.rows);
+  const groceries = rows.find((r) => r.category.id === "c_groceries");
+  assert.ok(groceries, "the category should appear even with no explicit entry");
+  assert.equal(groceries.planned, 50000);
 });
 
 /* ── account grouping ─────────────────────────────────────────────────── */

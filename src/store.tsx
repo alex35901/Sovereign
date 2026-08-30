@@ -8,6 +8,7 @@ import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
+import { applyForward } from "./lib/select";
 
 type Mutator = (db: DB) => DB;
 
@@ -124,6 +125,8 @@ export interface Actions {
   deleteTag: (id: ID) => void;
 
   setPlanned: (month: MonthKey, categoryId: ID, amount: number) => void;
+  applyPlannedForward: (month: MonthKey, categoryId: ID, amount: number) => void;
+  clearPlannedForward: (categoryId: ID) => void;
   copyPreviousMonth: (month: MonthKey) => void;
   autofillBudget: (month: MonthKey) => void;
   clearBudget: (month: MonthKey) => void;
@@ -283,6 +286,13 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         if (amount <= 0) delete m[categoryId];
         else m[categoryId] = amount;
         return { ...db, budgets: { ...db.budgets, [month]: m } };
+      }),
+    applyPlannedForward: (month, categoryId, amount) =>
+      apply((db) => applyForward(db, month, categoryId, amount), "apply to all future months"),
+    clearPlannedForward: (categoryId) =>
+      apply((db) => {
+        const { [categoryId]: _removed, ...rest } = db.budgetDefaults ?? {};
+        return { ...db, budgetDefaults: rest };
       }),
     copyPreviousMonth: (month) =>
       apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: { ...(db.budgets[addMonths(month, -1)] ?? {}) } } }), "copy last month's budget"),

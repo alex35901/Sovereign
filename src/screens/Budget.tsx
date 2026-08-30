@@ -6,7 +6,8 @@ import { TopBar } from "../shell/TopBar";
 import { monthLabel, thisMonth, addMonths } from "../lib/date";
 import { budgetSummary } from "../lib/select";
 import type { BudgetGroupRow } from "../lib/select";
-import { Btn, Card, CardHead, Money, MoneyInput, Popover, Progress, Toggle, cx } from "../components/ui";
+import { Btn, Card, CardHead, Money, Popover, Progress, Toggle, cx } from "../components/ui";
+import { BudgetAmountPopover } from "./BudgetAmountPopover";
 import { MonthNav } from "../components/pickers";
 
 export default function Budget() {
@@ -161,10 +162,7 @@ function GroupCard({ data, month, collapsed, onToggle }: {
             </div>
 
             <div style={{ width: 116 }}>
-              <MoneyInput
-                value={r.planned}
-                onChange={(v) => actions.setPlanned(month, r.category.id, v)}
-              />
+              <BudgetAmountPopover category={r.category} month={month} kind={income ? "income" : "expense"} />
             </div>
             <Link
               to={`/transactions?category=${r.category.id}&month=${month}`}

@@ -237,6 +237,14 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .menu { z-index: 120; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 5px; min-width: 190px; max-height: 320px; overflow-y: auto; }
 .menu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 9px; border: 0; background: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .menu button:hover { background: var(--surface-2); }
+/* the rule above styles menu items, and was quietly stripping real buttons
+   placed inside a popover of their own styling */
+.menu .btn { width: auto; border: 1px solid var(--line); background: var(--surface-2); padding: 7px 12px; }
+.menu .btn:hover { background: var(--surface-3); }
+.menu .btn-sm { padding: 4px 9px; }
+.menu .btn-primary, .menu .btn-primary:hover { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.menu .btn-ghost { background: none; border-color: transparent; }
+.menu .btn-danger { background: var(--neg-soft); border-color: transparent; color: var(--neg); }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 200; background: var(--surface-3); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; box-shadow: var(--shadow); font-size: 13px; display: flex; align-items: center; gap: 10px; }
 
 /* ── charts ───────────────────────────────────────────────────────────── */
@@ -283,3 +291,18 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 }
 .emoji-cell:hover { background: var(--surface-3); transform: scale(1.15); }
 .emoji-cell.on { background: var(--accent-soft); }
+
+/* ── budget amount popover ────────────────────────────────────────────── */
+.menu.budget-menu { padding: 0; max-height: none; overflow: visible; }
+.budget-panel { padding: 12px; }
+.budget-amount { width: 100%; justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.budget-amount.pinned { border-style: dashed; }
+.budget-stat {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 9px 11px; cursor: pointer; text-align: left;
+}
+.budget-stat:hover:not(:disabled) { background: var(--surface-3); border-color: var(--accent); }
+.budget-stat:disabled { opacity: 0.5; cursor: default; }
+.budget-chart { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 6px 2px; margin-top: 10px; }
+.budget-forward { display: flex; align-items: center; gap: 8px; margin-top: 12px; cursor: pointer; }
