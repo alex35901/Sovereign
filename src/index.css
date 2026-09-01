@@ -256,13 +256,18 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 
 @media (max-width: 1000px) {
   .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .g3, .g-2-1 { grid-template-columns: minmax(0, 1fr); }
+  .g-2-1 { grid-template-columns: minmax(0, 1fr); }
+  /* Three number tiles still fit here — dropping straight to one column stacked
+     net worth, assets and liabilities down the page for no reason. */
 }
 @media (max-width: 720px) {
   .sidebar { display: none; }
   .page { padding: 16px 14px 80px; }
   .topbar { padding: 10px 14px; }
   .g2, .g4 { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .g3 { grid-template-columns: minmax(0, 1fr); }
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }

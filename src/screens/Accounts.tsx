@@ -65,8 +65,8 @@ export default function Accounts() {
         <div className="grid g3">
           <Tile label="Net worth" value={<Money value={nw.net} cents={false} />}
             sub={<span className={change >= 0 ? "pos" : "neg"}><Money value={change} cents={false} sign={change >= 0} /> over {range.toUpperCase()}</span>} />
-          <Tile label="Assets" value={<Money value={nw.assets} cents={false} />} />
-          <Tile label="Liabilities" value={<Money value={nw.liabilities} cents={false} />} />
+          <Tile label="Assets" value={<Money value={nw.assets} cents={false} />} tone="pos" />
+          <Tile label="Liabilities" value={<Money value={nw.liabilities} cents={false} />} tone="neg" />
         </div>
 
         <Card>
