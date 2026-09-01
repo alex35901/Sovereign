@@ -168,12 +168,14 @@ export function Modal({ title, children, onClose, footer, wide }: {
  * trigger's rect — anchoring it in place would let cards (which clip their
  * contents so rows keep the rounded corners) cut the menu off.
  */
-export function Popover({ trigger, children, align = "left", width = 220, className }: {
+export function Popover({ trigger, children, align = "left", width = 220, className, fill }: {
   trigger: (open: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
   width?: number;
   className?: string;
+  /** Stretch the anchor to its container, so a full-width trigger can fill a column. */
+  fill?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
@@ -220,7 +222,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   }, [open, place]);
 
   return (
-    <div ref={anchor} style={{ display: "inline-flex" }}>
+    <div ref={anchor} style={{ display: fill ? "flex" : "inline-flex" }}>
       {trigger(() => setOpen((o) => !o))}
       {open
         ? createPortal(

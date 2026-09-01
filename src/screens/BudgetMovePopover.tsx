@@ -4,6 +4,7 @@ import type { Category, MonthKey } from "../types";
 import { useDB, useStore } from "../store";
 import { fmt0 } from "../lib/money";
 import { moveBudget, moveCandidates, suggestCounterpart, suggestedAmount } from "../lib/budget-move";
+import { remainingTone } from "../lib/select";
 import type { MoveCandidate } from "../lib/budget-move";
 import { Money, MoneyInput, Popover, cx } from "../components/ui";
 import { CategoryPicker } from "../components/pickers";
@@ -13,20 +14,20 @@ import { CategoryPicker } from "../components/pickers";
  * A surplus is offered to the deepest overspend; an overspend is filled from
  * the largest surplus.
  */
-export function BudgetMovePopover({ category, month, remaining, over }: {
+export function BudgetMovePopover({ category, month, remaining }: {
   category: Category;
   month: MonthKey;
   remaining: number;
-  over: boolean;
 }) {
   return (
     <Popover
       width={340}
       align="right"
       className="move-menu"
+      fill
       trigger={(open) => (
         <button
-          className={cx("btn budget-amount remaining", over ? "neg" : remaining > 0 ? "" : "muted")}
+          className={cx("btn budget-amount remaining", remainingTone(remaining))}
           onClick={open}
           title="Move money between categories"
         >

@@ -69,6 +69,7 @@ h3 { font-size: 14px; }
 .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
+.flat { color: var(--muted); }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
 .small { font-size: 12px; }
@@ -298,8 +299,25 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 .budget-amount { width: 100%; justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .budget-amount.pinned { border-style: dashed; }
 /* what's left reads as a figure, not a field — but it is still a button */
-.budget-amount.remaining { background: none; border-color: transparent; font-weight: 600; }
-.budget-amount.remaining:hover { background: var(--surface-2); border-color: var(--line); }
+/* Remaining reads as a pill: green in hand, red overspent, quiet at zero. */
+.budget-amount.remaining {
+  border-color: transparent; font-weight: 600; border-radius: 999px;
+  background: var(--pos-soft); color: var(--pos);
+}
+.budget-amount.remaining.neg { background: var(--neg-soft); color: var(--neg); }
+.budget-amount.remaining.flat { background: none; color: var(--muted); }
+button.budget-amount.remaining:hover { filter: brightness(1.18); }
+button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter: none; }
+
+/* One grid for the whole sheet, so the group totals and the column labels sit
+   directly above the cells they describe. */
+.bcol { flex: none; text-align: right; }
+.bcol-plan { width: 116px; }
+.bcol-actual { width: 100px; }
+.bcol-left { width: 100px; }
+.bcol-menu { width: 29px; flex: none; }
+.btn.bcol-menu { padding-left: 0; padding-right: 0; }
+.budget-head { align-items: flex-end; gap: 12px; }
 .budget-stat {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);

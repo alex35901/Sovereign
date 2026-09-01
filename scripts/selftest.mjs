@@ -37,7 +37,7 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, balanceAt } from "./src/lib/select.ts";
-      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward } from "./src/lib/select.ts";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { thisMonth, addMonths } from "./src/lib/date.ts";
@@ -579,13 +579,27 @@ await test("a category emptied with no spending at all still stays", () => {
   assert.equal(rows.find((r) => r.category.id === "c_mortgage").planned, 0);
 });
 
-await test("categories never budgeted are still left off the sheet", () => {
+await test("every category is listed in every month, budgeted or not", () => {
   const db = M.emptyDB();
   db.budgets = { "2026-08": { c_groceries: 60000 } };
-  const rows = M.budgetTable(db, "2026-08").flatMap((g) => g.rows);
-  assert.ok(rows.find((r) => r.category.id === "c_groceries"));
-  assert.ok(!rows.find((r) => r.category.id === "c_gas"), "an untouched category should not be listed");
-  assert.equal(rows.length, 1);
+  const budgetable = db.categories.filter((c) => !c.excludeFromBudget && !c.archived).length;
+
+  const august = M.budgetTable(db, "2026-08").flatMap((g) => g.rows);
+  assert.equal(august.length, budgetable, "a quiet category is still part of the sheet");
+  assert.equal(august.find((r) => r.category.id === "c_groceries").planned, 60000);
+  assert.equal(august.find((r) => r.category.id === "c_gas").planned, 0);
+
+  // The complaint that prompted this: a future month came up nearly empty and
+  // every category had to be added back by hand.
+  const future = M.budgetTable(db, "2027-04").flatMap((g) => g.rows);
+  assert.equal(future.length, budgetable, "a future month lists the same categories");
+  assert.deepEqual(future.map((r) => r.category.id), august.map((r) => r.category.id));
+});
+
+await test("what's left reads as in hand, overspent, or neither", () => {
+  assert.equal(M.remainingTone(1), "pos");
+  assert.equal(M.remainingTone(-1), "neg");
+  assert.equal(M.remainingTone(0), "flat");
 });
 
 /* ── account sparklines ───────────────────────────────────────────────── */

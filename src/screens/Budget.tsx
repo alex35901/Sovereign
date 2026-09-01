@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight, Copy, RotateCcw, Sparkles } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronRight, Copy, RotateCcw, Sparkles } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { monthLabel, thisMonth, addMonths } from "../lib/date";
-import { budgetSummary } from "../lib/select";
+import { budgetSummary, remainingTone } from "../lib/select";
 import type { BudgetGroupRow } from "../lib/select";
-import { Btn, Card, CardHead, Money, Popover, Progress, Toggle, cx } from "../components/ui";
+import { Btn, Card, Money, Popover, Progress, Toggle, cx } from "../components/ui";
 import { BudgetAmountPopover } from "./BudgetAmountPopover";
 import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
@@ -24,11 +24,6 @@ export default function Budget() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
-
-  const unplanned = db.categories.filter(
-    (c) => !c.excludeFromBudget && !c.archived && db.budgets[month]?.[c.id] === undefined &&
-      !summary.table.some((g) => g.rows.some((r) => r.category.id === c.id)),
-  );
 
   return (
     <>
@@ -49,7 +44,16 @@ export default function Budget() {
       <div className="page stack">
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
-            <MonthNav month={month} onChange={setMonth} max={addMonths(thisMonth(), 6)} />
+            <div className="row" style={{ gap: 8 }}>
+              <MonthNav month={month} onChange={setMonth} max={addMonths(thisMonth(), 6)} />
+              <Btn
+                onClick={() => setMonth(thisMonth())}
+                disabled={month === thisMonth()}
+                title={`Jump back to ${monthLabel(thisMonth())}`}
+              >
+                <CalendarDays size={14} /> This month
+              </Btn>
+            </div>
             <div className="row wrap" style={{ gap: 26 }}>
               <Stat label="Planned income" value={summary.plannedIncome} actual={summary.actualIncome} />
               <Stat label="Planned expenses" value={summary.plannedExpense} actual={summary.actualExpense} />
@@ -88,23 +92,6 @@ export default function Budget() {
             collapsed={collapsed.has(g.group.id)} onToggle={() => toggleGroup(g.group.id)}
           />
         ))}
-
-        {unplanned.length ? (
-          <Card>
-            <CardHead title="Not budgeted" sub="Categories with no plan and no activity this month" />
-            <div className="row wrap" style={{ gap: 6 }}>
-              {unplanned.slice(0, 24).map((c) => (
-                <button
-                  key={c.id} className="chip"
-                  onClick={() => actions.setPlanned(month, c.id, 10000)}
-                  title="Add to this month's budget at $100"
-                >
-                  {c.icon} {c.name} +
-                </button>
-              ))}
-            </div>
-          </Card>
-        ) : null}
       </div>
     </>
   );
@@ -133,12 +120,22 @@ function GroupCard({ data, month, collapsed, onToggle }: {
           <h2>{data.group.name}</h2>
           <span className="tiny faint">{data.rows.length}</span>
         </div>
-        <div className="row" style={{ gap: 22 }}>
-          <span className="num small muted">planned <b><Money value={data.planned} cents={false} /></b></span>
-          <span className="num small muted">actual <b><Money value={data.actual} cents={false} /></b></span>
-          <span className={cx("num small bold", !income && data.remaining < 0 ? "neg" : "")} style={{ width: 92, textAlign: "right" }}>
-            <Money value={data.remaining} cents={false} />
-          </span>
+        <div className="row budget-head">
+          <div className="bcol bcol-plan">
+            <div className="tile-label">Planned</div>
+            <div className="num small bold"><Money value={data.planned} cents={false} /></div>
+          </div>
+          <div className="bcol bcol-actual">
+            <div className="tile-label">Actual</div>
+            <div className="num small bold"><Money value={data.actual} cents={false} /></div>
+          </div>
+          <div className="bcol bcol-left">
+            <div className="tile-label">Remaining</div>
+            <div className={cx("num small bold", remainingTone(data.remaining))}>
+              <Money value={data.remaining} cents={false} />
+            </div>
+          </div>
+          <span className="bcol-menu" />
         </div>
       </div>
 
@@ -162,27 +159,27 @@ function GroupCard({ data, month, collapsed, onToggle }: {
               />
             </div>
 
-            <div style={{ width: 116 }}>
+            <div className="bcol bcol-plan">
               <BudgetAmountPopover category={r.category} month={month} kind={income ? "income" : "expense"} />
             </div>
             <Link
               to={`/transactions?category=${r.category.id}&month=${month}`}
-              className="num right" style={{ width: 100 }}
+              className="num right bcol bcol-actual"
             >
               <Money value={r.actual} cents={false} />
             </Link>
-            <div style={{ width: 100 }}>
+            <div className="bcol bcol-left">
               {income ? (
-                <span className="num right bold muted" style={{ display: "block" }}>
+                <span className={cx("btn budget-amount remaining", remainingTone(r.remaining))}>
                   <Money value={r.remaining} cents={false} />
                 </span>
               ) : (
-                <BudgetMovePopover category={r.category} month={month} remaining={r.remaining} over={over} />
+                <BudgetMovePopover category={r.category} month={month} remaining={r.remaining} />
               )}
             </div>
             <Popover
               align="right"
-              trigger={(open) => <button className="btn btn-ghost btn-icon" onClick={open}>⋯</button>}
+              trigger={(open) => <button className="btn btn-ghost btn-icon bcol-menu" onClick={open}>⋯</button>}
             >
               {() => (
                 <div style={{ padding: "6px 8px" }}>

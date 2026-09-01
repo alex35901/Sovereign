@@ -32,6 +32,7 @@ export function BudgetAmountPopover({ category, month, kind }: {
       width={330}
       align="right"
       className="budget-menu"
+      fill
       trigger={(open) => (
         <button className={cx("btn budget-amount", pinned && "pinned")} onClick={open} title="Set this budget">
           <Money value={planned} cents={false} />
