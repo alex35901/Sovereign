@@ -340,6 +340,14 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .balance-point { padding: 7px 0; border-bottom: 1px solid var(--line-soft); min-height: 38px; }
 .balance-point:last-of-type { border-bottom: 0; }
 
+/* Fixed columns on the accounts page, so a group's sparkline and total sit
+   directly above the accounts beneath it. The slots are always present — a
+   sparkline rendered only when there's enough history shifted every row
+   without one out of line. */
+.acct-spark { width: 88px; flex: none; }
+.acct-amount { width: 130px; flex: none; text-align: right; }
+.acct-chevron { width: 15px; flex: none; }
+
 /* The month for one category, on hover over what's left. */
 .menu.hover-card { padding: 0; max-height: none; overflow: visible; cursor: default; }
 .hc-title { padding: 9px 12px; font-weight: 600; border-bottom: 1px solid var(--line-soft); }

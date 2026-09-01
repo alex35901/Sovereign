@@ -81,7 +81,7 @@ export default function Accounts() {
           />
           <Tile
             label="Liabilities" value={<Money value={nw.liabilities} cents={false} />} tone="neg"
-            sub={<Change amount={owedChange} range={range} owed />}
+            sub={<Change amount={owedChange} range={range} />}
           />
         </div>
 
@@ -107,9 +107,13 @@ export default function Accounts() {
                 ) : undefined
               }
               right={
-                <span className="row" style={{ gap: 14 }}>
-                  {g.series.length > 2 ? <Sparkline values={g.series} baseline tone={trendTone(g.series)} /> : null}
-                  <span className="num bold"><Money value={g.total} cents={false} /></span>
+                <span className="row" style={{ gap: 12 }}>
+                  <span className="acct-spark">
+                    {g.series.length > 2 ? <Sparkline values={g.series} baseline tone={trendTone(g.series)} /> : null}
+                  </span>
+                  <span className="num bold acct-amount"><Money value={g.total} cents={false} /></span>
+                  {/* stands in for the row chevron, so the totals column lines up */}
+                  <span className="acct-chevron" />
                 </span>
               }
             />
@@ -142,20 +146,16 @@ export default function Accounts() {
 /**
  * How a figure moved over the period.
  *
- * Debt is spelled out as "less owed" / "more owed" rather than signed: a
- * liability of -$738,161 next to "+$50,000" reads as if the debt grew, when
- * the balance rising is precisely the opposite.
+ * Signed throughout, liabilities included: they are stored negative, so the
+ * delta already reads the right way round — debt growing is a fall, and comes
+ * out negative and red.
  */
-function Change({ amount, range, owed }: { amount: number; range: RangeKey; owed?: boolean }) {
+function Change({ amount, range }: { amount: number; range: RangeKey }) {
   const over = ` over ${range.toUpperCase()}`;
   if (amount === 0) return <span className="muted">No change{over}</span>;
   return (
     <span className={amount > 0 ? "pos" : "neg"}>
-      {owed ? (
-        <><Money value={Math.abs(amount)} cents={false} /> {amount > 0 ? "less" : "more"} owed{over}</>
-      ) : (
-        <><Money value={amount} cents={false} sign={amount > 0} />{over}</>
-      )}
+      <Money value={amount} cents={false} sign={amount > 0} />{over}
     </span>
   );
 }
@@ -181,11 +181,13 @@ function AccountRow({ account, dates }: { account: Account; dates: ISODate[] }) 
           {!account.includeInNetWorth ? " · excluded from net worth" : ""}
         </span>
       </div>
-      {history.length > 2 ? <Sparkline values={history} baseline tone={trendTone(history)} /> : null}
-      <span className="num bold" style={{ width: 120, textAlign: "right" }}>
+      <span className="acct-spark">
+        {history.length > 2 ? <Sparkline values={history} baseline tone={trendTone(history)} /> : null}
+      </span>
+      <span className="num bold acct-amount">
         <Money value={account.balance} cents={false} />
       </span>
-      <ChevronRight size={15} className="faint" />
+      <ChevronRight size={15} className="faint acct-chevron" />
     </Link>
   );
 }
