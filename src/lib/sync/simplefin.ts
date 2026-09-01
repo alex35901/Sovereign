@@ -49,34 +49,49 @@ export const simplefin: SyncAdapter = {
   },
 
   async fetch(accessUrl: string, since: string): Promise<SyncPayload> {
-    const raw = await call<{ errors?: string[]; accounts?: BridgeAccount[] }>("accounts", {
+    const raw = await call<BridgeResponse>("accounts", {
       accessUrl,
-      startDate: Math.floor(new Date(`${since}T00:00:00Z`).getTime() / 1000),
+      startDate: startOfDayUnix(since),
     });
-    const accounts = (raw.accounts ?? []).map((a) => {
-      const balance = toCents(a.balance);
-      return {
-        syncId: a.id,
-        name: a.name,
-        institution: a.org?.name ?? a.org?.domain ?? "Unknown",
-        balance,
-        currency: a.currency ?? "USD",
-        type: guessAccountType(`${a.org?.name ?? ""} ${a.name}`, balance),
-        balanceDate: fromUnix(a["balance-date"]),
-      };
-    });
-    const transactions = (raw.accounts ?? []).flatMap((a) =>
-      (a.transactions ?? []).map((t) => ({
-        syncId: t.id,
-        accountSyncId: a.id,
-        date: fromUnix(t.posted),
-        amount: toCents(t.amount),
-        description: t.description ?? t.payee ?? "Unknown",
-        payee: t.payee,
-        memo: t.memo,
-        pending: Boolean(t.pending),
-      })),
-    );
-    return { accounts, transactions, errors: raw.errors ?? [], fetchedAt: new Date().toISOString() };
+    return toPayload(raw);
   },
 };
+
+export interface BridgeResponse { errors?: string[]; accounts?: BridgeAccount[] }
+
+/** The bridge's own start-date parameter: midnight UTC on that day, in seconds. */
+export const startOfDayUnix = (since: string): number =>
+  Math.floor(new Date(`${since}T00:00:00Z`).getTime() / 1000);
+
+/**
+ * Bridge JSON to this app's shape. Pulled out of fetch() so the scheduled job
+ * on the server can reuse it — it reaches the bridge directly rather than
+ * through the browser proxy, but the data it gets back is identical.
+ */
+export function toPayload(raw: BridgeResponse): SyncPayload {
+  const accounts = (raw.accounts ?? []).map((a) => {
+    const balance = toCents(a.balance);
+    return {
+      syncId: a.id,
+      name: a.name,
+      institution: a.org?.name ?? a.org?.domain ?? "Unknown",
+      balance,
+      currency: a.currency ?? "USD",
+      type: guessAccountType(`${a.org?.name ?? ""} ${a.name}`, balance),
+      balanceDate: fromUnix(a["balance-date"]),
+    };
+  });
+  const transactions = (raw.accounts ?? []).flatMap((a) =>
+    (a.transactions ?? []).map((t) => ({
+      syncId: t.id,
+      accountSyncId: a.id,
+      date: fromUnix(t.posted),
+      amount: toCents(t.amount),
+      description: t.description ?? t.payee ?? "Unknown",
+      payee: t.payee,
+      memo: t.memo,
+      pending: Boolean(t.pending),
+    })),
+  );
+  return { accounts, transactions, errors: raw.errors ?? [], fetchedAt: new Date().toISOString() };
+}

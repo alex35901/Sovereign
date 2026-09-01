@@ -21,6 +21,12 @@ interface Store {
   undoLabel: string | null;
   toast: string | null;
   notify: (msg: string) => void;
+  /**
+   * Adopts a document that came from the server. Deliberately not `apply`:
+   * this is not an edit, so it must not land on the undo stack, where one
+   * ctrl-Z would silently put a stale copy back and push it to every device.
+   */
+  replaceFromCloud: (next: DB) => void;
   actions: Actions;
 }
 
@@ -82,9 +88,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     notify(`Undid: ${top.label}`);
   }, [notify]);
 
+  const replaceFromCloud = useCallback((next: DB) => {
+    undoStack.current = [];
+    setUndoLabel(null);
+    setDb(next);
+  }, []);
+
   const actions = useMemo(() => makeActions(apply, notify), [apply, notify]);
 
-  const value: Store = { db, apply, undo, undoLabel, toast, notify, actions };
+  const value: Store = { db, apply, undo, undoLabel, toast, notify, replaceFromCloud, actions };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

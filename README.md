@@ -35,10 +35,10 @@ from any device, and bank sync works too.
 
 ```
 npm install
-npm run dev      # http://localhost:5273 - UI only, no bank sync
-vercel dev       # http://localhost:5273 - includes the /api function
+npm run dev      # http://localhost:5273 - serves the app and the api/ functions
 npm run build    # type-check + production bundle
 npm test         # logic self-tests, no browser needed
+                 # set DATABASE_URL to also exercise the store against real Postgres
 ```
 
 First launch seeds two years of realistic demo data so every screen has something in it.
@@ -46,14 +46,40 @@ First launch seeds two years of realistic demo data so every screen has somethin
 
 ## Where your data lives
 
-In `localStorage`, in one browser, on one machine. Nothing is transmitted anywhere unless
-you connect a sync provider. That means:
+Out of the box: in `localStorage`, in one browser, on one machine. Nothing is transmitted
+anywhere unless you connect a sync provider. That means:
 
 - **Take backups.** Settings → *Back up JSON* writes a complete, re-importable snapshot.
   Clearing site data destroys everything otherwise.
-- Moving to another machine or browser = export JSON, import it on the other side.
-- ~1,300 transactions is roughly 400 KB, well inside the ~5 MB budget. A decade of history
-  would want a real database — swap `src/lib/storage.ts` for one; nothing else needs to change.
+- A second browser has none of your data, so it opens on the demo fixture — that is
+  `loadDB() ?? buildDemoDB()` doing exactly what it says, not a bug.
+- Nothing can run on a schedule, because there is no server holding anything to update.
+
+### Syncing across devices
+
+Settings → *Sync across devices* moves the database into Postgres, behind a passphrase.
+Every browser then reads and writes the same document, and a nightly job can update it
+while nothing is open.
+
+1. Vercel → your project → **Storage** → **Create Database** → Postgres. It sets
+   `DATABASE_URL` for you. Any Postgres works; the driver is plain `pg`.
+2. Environment variables: **`SYNC_PASSPHRASE`** (what the app asks you for) and
+   **`CRON_SECRET`** (a long random string, so only Vercel can trigger the scheduled job).
+3. Redeploy, then connect each browser with the passphrase.
+
+How the two copies are kept honest:
+
+- One row, one JSON document, one integer version. Every save states the version it was
+  based on; the server refuses it if the document has moved on, under `SELECT … FOR UPDATE`
+  so two simultaneous saves cannot both claim the next version.
+- On a conflict the **server copy wins**, because that is what the schedule updates and what
+  every other device sees. The losing local copy is set aside rather than dropped — Settings
+  offers it back as a download.
+- The passphrase lives in the browser that typed it, never in the document.
+
+`vercel.json` runs `/api/cron/sync` daily at 09:00 UTC. Vercel's Hobby plan allows one cron
+job at daily granularity; the browser-side schedule in Settings → *Bank sync* still fills in
+between visits.
 
 ## Bank sync
 
@@ -124,9 +150,10 @@ sent only to your own `/api/simplefin` function. That function exists because th
 sends no CORS headers and its access URL carries HTTP Basic credentials, which browsers
 refuse to send cross-origin — so the request has to be made server-side.
 
-**Sync only works where that function runs**: `vercel dev` locally, or a deployment. Plain
-`npm run dev` serves the UI but not `/api`, so Connect fails there — the app says so rather
-than blaming SimpleFIN.
+**Sync needs that function running.** `npm run dev` mounts `api/` on the dev server itself
+(see the `apiFunctions` plugin in `vite.config.ts`), invoking each handler with the same
+`(req, res)` and parsed `body` Vercel gives it — so what works locally works deployed. Give
+it the same environment variables the deployment has.
 
 Syncing pulls a 90-day window (SimpleFIN's per-request maximum), de-duplicates on the
 bridge's own transaction ids, and runs every new transaction through your rules.
@@ -144,11 +171,11 @@ Implement `SyncAdapter` in `src/lib/sync/types.ts`, register it in `src/lib/sync
 3. You get a URL like `sovereign-xxxx.vercel.app`. That's the app, on every device you own.
 
 After that, every push to `main` redeploys automatically in about a minute — refresh the page
-and the change is there. The `/api/simplefin` function runs there too, so bank sync works
-without `vercel dev`.
+and the change is there. The functions under `api/` run there too, so bank sync and
+cross-device sync work without anything running locally.
 
-Any static host works as well, but without somewhere to run `api/simplefin.ts` you're on CSV
-imports only.
+A static host works for the UI alone, but without somewhere to run `api/` you are on CSV
+imports only, and the database stays in whichever browser you opened.
 
 ## How it's put together
 

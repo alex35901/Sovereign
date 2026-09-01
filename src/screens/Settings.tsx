@@ -12,6 +12,7 @@ import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } f
 import { Link } from "react-router-dom";
 import { CategoriesPanel, RulesPanel, TagsPanel } from "./SettingsPanels";
 import { PlaidCard } from "./PlaidCard";
+import { CloudCard } from "./CloudCard";
 import { ImportModal } from "./ImportModal";
 
 function PropertyValuesCard() {
@@ -275,6 +276,8 @@ export default function Settings() {
             left over can be kept current by hand from the Balance points card on the account.
           </div>
         </Card>
+
+        <CloudCard />
 
         <PlaidCard />
 

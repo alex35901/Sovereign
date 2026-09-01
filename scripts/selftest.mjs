@@ -8,7 +8,6 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { build } from "esbuild";
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const results = [];
@@ -18,7 +17,9 @@ const test = async (name, fn) => {
 };
 
 // bundle the TS modules under test into plain ESM
-const dir = await mkdtemp(join(tmpdir(), "selftest-"));
+// Inside the project: pg stays external (esbuild can't turn its dynamic
+// requires into ESM), so the bundle has to see node_modules.
+const dir = await mkdtemp(join(process.cwd(), "node_modules", ".selftest-"));
 const entry = join(dir, "entry.js");
 await build({
   stdin: {
@@ -32,6 +33,10 @@ await build({
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
+      export { default as dbHandler } from "./api/db.ts";
+      export { default as cronHandler } from "./api/cron/sync.ts";
+      export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
+      export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken } from "./src/lib/sync/plaid.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
@@ -51,6 +56,7 @@ await build({
     loader: "ts",
   },
   bundle: true, format: "esm", platform: "node", outfile: entry, logLevel: "silent",
+  external: ["pg", "pg-native"],
 });
 const M = await import(entry);
 
@@ -114,12 +120,33 @@ const invoke = (body, method = "POST") => invokeOn(M.simplefinHandler, body, met
 const invokeProperty = (body, method = "POST") => invokeOn(M.propertyHandler, body, method);
 const invokePlaid = (body, method = "POST") => invokeOn(M.plaidHandler, body, method);
 
+/** Like invokeOn, but able to carry headers — the sync endpoints need auth. */
+const invokeWith = (handler, { method = "POST", body, headers: reqHeaders = {} } = {}) =>
+  new Promise((resolve, reject) => {
+    const headers = {};
+    const timer = setTimeout(() => reject(new Error("handler never wrote a response")), 5000);
+    const res = {
+      statusCode: 200,
+      setHeader: (k, v) => { headers[k.toLowerCase()] = v; },
+      end: (text) => { clearTimeout(timer); resolve({ status: res.statusCode, headers, text: text ?? "" }); },
+    };
+    Promise.resolve(handler({ method, body, headers: reqHeaders }, res))
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+
 const withFetch = async (impl, fn) => {
   const real = globalThis.fetch;
   globalThis.fetch = impl;
   try { return await fn(); } finally { globalThis.fetch = real; }
 };
 const caught = async (fn) => { try { await fn(); return null; } catch (e) { return e.message; } };
+
+const withEnv = async (vars, fn) => {
+  const saved = { ...process.env };
+  Object.assign(process.env, vars);
+  try { return await fn(); } finally { process.env = saved; }
+};
+
 
 const post = async (body, method = "POST") => {
   const r = await invoke(body, method);
@@ -940,13 +967,101 @@ await test("the default cadence is one of the offered options", () => {
   assert.equal(M.DEFAULT_CADENCE, "daily", "SimpleFIN refreshes about daily upstream");
 });
 
+/* ── cross-device sync: the passphrase gate ──────────────────────────── */
+
+await test("a passphrase is read out of the Authorization header", () => {
+  assert.equal(M.bearer("Bearer hunter2"), "hunter2");
+  assert.equal(M.bearer("bearer hunter2"), "hunter2", "the scheme is case-insensitive");
+  assert.equal(M.bearer("  Bearer  spaced out  "), "spaced out");
+  assert.equal(M.bearer(["Bearer first"]), "first");
+  assert.equal(M.bearer(undefined), undefined);
+  assert.equal(M.bearer("Basic hunter2"), undefined, "only bearer tokens count");
+});
+
+await test("the passphrase must match exactly, and absence never passes", async () => {
+  await withEnv({ SYNC_PASSPHRASE: "correct horse" }, () => {
+    assert.equal(M.passphraseSet(), true);
+    assert.equal(M.passphraseOk("correct horse"), true);
+    assert.equal(M.passphraseOk("correct horse "), false, "trailing space is a different phrase");
+    assert.equal(M.passphraseOk("Correct Horse"), false);
+    assert.equal(M.passphraseOk(""), false);
+    assert.equal(M.passphraseOk(undefined), false);
+    // a short guess must not throw on a length mismatch — digests equalise it
+    assert.equal(M.passphraseOk("x"), false);
+    assert.equal(M.passphraseOk("x".repeat(500)), false);
+  });
+});
+
+await test("with no passphrase configured, nothing opens the door", async () => {
+  await withEnv({ SYNC_PASSPHRASE: "" }, () => {
+    assert.equal(M.passphraseSet(), false);
+    assert.equal(M.passphraseOk(""), false);
+    assert.equal(M.passphraseOk("anything"), false);
+    assert.equal(M.passphraseOk(undefined), false);
+  });
+});
+
+await test("the document endpoint refuses before it reaches the database", async () => {
+  // no database at all
+  const noDb = await withEnv({ DATABASE_URL: "", POSTGRES_URL: "", POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "", SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "GET" }));
+  assert.equal(noDb.status, 503);
+  assert.match(JSON.parse(noDb.text).error, /Storage/);
+
+  // database but no passphrase: refuse rather than serve it unguarded
+  const noPass = await withEnv({ DATABASE_URL: "postgres://x", SYNC_PASSPHRASE: "" },
+    () => invokeWith(M.dbHandler, { method: "GET" }));
+  assert.equal(noPass.status, 503);
+  assert.match(JSON.parse(noPass.text).error, /SYNC_PASSPHRASE/);
+
+  // wrong passphrase
+  const wrong = await withEnv({ DATABASE_URL: "postgres://x", SYNC_PASSPHRASE: "right" },
+    () => invokeWith(M.dbHandler, { method: "GET", headers: { authorization: "Bearer wrong" } }));
+  assert.equal(wrong.status, 401);
+
+  // no passphrase supplied at all
+  const none = await withEnv({ DATABASE_URL: "postgres://x", SYNC_PASSPHRASE: "right" },
+    () => invokeWith(M.dbHandler, { method: "GET" }));
+  assert.equal(none.status, 401);
+});
+
+await test("a write without a baseVersion is refused, so nothing clobbers blindly", async () => {
+  const env = { DATABASE_URL: "postgres://x", SYNC_PASSPHRASE: "right" };
+  const auth = { authorization: "Bearer right" };
+  for (const body of [{ doc: { a: 1 } }, { doc: { a: 1 }, baseVersion: "3" }, { doc: { a: 1 }, baseVersion: -1 }]) {
+    const r = await withEnv(env, () => invokeWith(M.dbHandler, { method: "PUT", body, headers: auth }));
+    assert.equal(r.status, 400, `should refuse ${JSON.stringify(body)}`);
+  }
+  const noDoc = await withEnv(env, () => invokeWith(M.dbHandler, { method: "PUT", body: { baseVersion: 0 }, headers: auth }));
+  assert.equal(noDoc.status, 400);
+});
+
+await test("the document endpoint answers every method, never hangs", async () => {
+  const r = await withEnv({ DATABASE_URL: "postgres://x", SYNC_PASSPHRASE: "right" },
+    () => invokeWith(M.dbHandler, { method: "DELETE", headers: { authorization: "Bearer right" } }));
+  assert.equal(r.status, 405);
+  assert.equal(r.headers["content-type"], "application/json");
+  assert.equal(r.headers["cache-control"], "no-store", "a budget must not be cached by a proxy");
+});
+
+await test("the scheduled job is closed to anyone without a secret", async () => {
+  const env = { CRON_SECRET: "s3cret", SYNC_PASSPHRASE: "phrase", DATABASE_URL: "postgres://x" };
+  const denied = await withEnv(env, () => invokeWith(M.cronHandler, { method: "GET" }));
+  assert.equal(denied.status, 401);
+
+  const guessed = await withEnv(env, () => invokeWith(M.cronHandler, { method: "GET", headers: { authorization: "Bearer nope" } }));
+  assert.equal(guessed.status, 401);
+
+  // Vercel's own call carries CRON_SECRET; a person can use the sync passphrase
+  for (const token of ["s3cret", "phrase"]) {
+    const r = await withEnv({ ...env, DATABASE_URL: "" },
+      () => invokeWith(M.cronHandler, { method: "GET", headers: { authorization: `Bearer ${token}` } }));
+    assert.equal(r.status, 503, `${token} should get past the gate and then hit the missing database`);
+  }
+});
+
 /* ── plaid ────────────────────────────────────────────────────────────── */
 
-const withEnv = async (vars, fn) => {
-  const saved = { ...process.env };
-  Object.assign(process.env, vars);
-  try { return await fn(); } finally { process.env = saved; }
-};
 const creds = { PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_ENV: "sandbox" };
 
 await test("plaid proxy always writes a response", async () => {

@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { MobileTabs, Sidebar } from "./shell/Sidebar";
 import { AutoSync } from "./components/AutoSync";
+import { CloudSync } from "./components/CloudSync";
 import { useStore } from "./store";
 import Dashboard from "./screens/Dashboard";
 import Accounts from "./screens/Accounts";
@@ -19,6 +20,7 @@ export default function App() {
   return (
     <div className="app">
       <AutoSync />
+      <CloudSync />
       <Sidebar />
       <div className="main">
         <Routes>

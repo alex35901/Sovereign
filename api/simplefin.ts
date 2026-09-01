@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { BridgeError, claim, fetchAccountsText } from "./_simplefin";
 
 /**
  * Vercel's request/response objects are Node's own, plus a parsed `body`.
@@ -23,9 +24,6 @@ type ApiResponse = ServerResponse;
  */
 export const config = { runtime: "nodejs", maxDuration: 30 };
 
-/** Upstream calls get a bounded wait so a stalled bridge can't hang the client. */
-const UPSTREAM_TIMEOUT_MS = 15_000;
-
 interface ClaimBody { action: "claim"; setupToken: string }
 interface AccountsBody { action: "accounts"; accessUrl: string; startDate: number }
 
@@ -48,38 +46,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   try {
     if (body.action === "claim") {
-      const claimUrl = Buffer.from(body.setupToken, "base64").toString("utf8").trim();
-      if (!/^https:\/\//.test(claimUrl)) {
-        return send(400, { error: "That setup token doesn't decode to an https URL. Copy the whole token — they're long and easy to truncate." });
-      }
-      const upstream = await fetch(claimUrl, {
-        method: "POST",
-        headers: { "content-length": "0" },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      const accessUrl = (await upstream.text()).trim();
-      if (!upstream.ok || !/^https:\/\//.test(accessUrl)) {
-        return send(400, {
-          error: `Bridge rejected the token (${upstream.status}). Setup tokens are single-use — generate a fresh one, and check the bridge shows an active subscription or trial.`,
-        });
-      }
-      return send(200, { accessUrl });
+      return send(200, { accessUrl: await claim(body.setupToken) });
     }
 
     if (body.action === "accounts") {
-      const url = new URL(body.accessUrl);
-      if (url.protocol !== "https:") return send(400, { error: "Access URL must be https." });
-      const auth = "Basic " + Buffer.from(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`).toString("base64");
-      url.username = "";
-      url.password = "";
-      const target = new URL(`${url.toString().replace(/\/$/, "")}/accounts`);
-      target.searchParams.set("start-date", String(body.startDate));
-      const upstream = await fetch(target, {
-        headers: { Authorization: auth },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      const text = await upstream.text();
-      if (!upstream.ok) return send(502, { error: `Bridge returned ${upstream.status}: ${text.slice(0, 300)}` });
+      const text = await fetchAccountsText(body.accessUrl, body.startDate);
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       res.end(text);
@@ -88,6 +59,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
     return send(400, { error: "Unknown action" });
   } catch (err) {
+    if (err instanceof BridgeError) return send(err.status, { error: err.message });
     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
     return send(504, {
       error: timedOut
