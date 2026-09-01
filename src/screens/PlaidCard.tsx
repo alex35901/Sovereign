@@ -139,7 +139,7 @@ export function PlaidCard() {
     <Card>
       <CardHead
         title="Plaid"
-        sub="Free for up to 10 institutions — and the only route here that returns holdings"
+        sub="Billed per connected login per month — and the only route here that returns holdings"
         right={items.length ? (
           <Btn variant="primary" onClick={() => void syncAll()} disabled={busy !== null}>
             <RefreshCw size={14} style={busy === "sync" ? { animation: "spin 1s linear infinite" } : undefined} />
@@ -161,6 +161,16 @@ export function PlaidCard() {
         Use <b>investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages — that pulls positions, cost basis
         and prices into the Investments screen. Use <b>bank</b> for chequing, savings and credit cards, which
         returns transactions instead. An institution offering both can be connected twice.
+      </div>
+
+      <div className="small muted" style={{ marginBottom: 12 }}>
+        <b>What each connection costs.</b> On Plaid's pay-as-you-go rates an investment login is
+        $0.18/month and a bank login is $0.30/month — charged per login per month, not per sync, so
+        syncing daily costs the same as syncing once. Three retirement accounts come to about
+        <b> $6.50 a year</b>. This app deliberately never calls Plaid's expensive endpoints: no Auth or
+        Identity ($1.50 each), no Balance ($0.10 a call), and no on-demand Refresh ($0.12 a call) — it
+        reads cached balances instead. Check Plaid's current rate card before connecting a lot of
+        institutions.
       </div>
 
       {items.length ? (
@@ -204,7 +214,7 @@ export function PlaidCard() {
       <details>
         <summary className="small muted" style={{ cursor: "pointer" }}>Setup — two environment variables</summary>
         <ol className="small muted" style={{ margin: "10px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 5 }}>
-          <li>Sign up at <b>dashboard.plaid.com</b>. New US accounts land on the free Trial plan: 10 live institutions, no card.</li>
+          <li>Sign up at <b>dashboard.plaid.com</b> and request Production access. Pay-as-you-go has no monthly minimum, so you pay only for the logins you connect.</li>
           <li>Copy your <b>client_id</b> and the <b>Production</b> secret from Team Settings → Keys.</li>
           <li>
             In Vercel → your project → Settings → Environment Variables, add <b>PLAID_CLIENT_ID</b> and

@@ -826,6 +826,25 @@ await test("the configuration check names production as the default and relays P
   assert.equal(body.probe.error, "INVALID_API_KEYS");
 });
 
+await test("a sync never touches Plaid's metered endpoints", async () => {
+  // Auth and Identity are $1.50 per call, Balance $0.10, the refresh
+  // endpoints $0.12. Everything this app needs comes from the per-item
+  // monthly products instead, and it must stay that way.
+  const hit = [];
+  await withEnv(creds, () =>
+    withFetch(async (url) => {
+      hit.push(new URL(String(url)).pathname);
+      return new Response(JSON.stringify({ accounts: [], transactions: [], holdings: [], securities: [] }), { status: 200 });
+    }, () => invokePlaid({
+      action: "sync", accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-01", withHoldings: true,
+    })));
+
+  assert.deepEqual(hit, ["/accounts/get", "/transactions/get", "/investments/holdings/get"]);
+  for (const metered of ["/auth/get", "/identity/get", "/accounts/balance/get", "/transactions/refresh", "/investments/refresh"]) {
+    assert.equal(hit.includes(metered), false, `${metered} is billed per call and must not be used`);
+  }
+});
+
 await test("plaid account types map onto this app's types", () => {
   assert.equal(M.mapAccountType("depository", "checking"), "checking");
   assert.equal(M.mapAccountType("depository", "savings"), "savings");
