@@ -1,4 +1,5 @@
-import { Pool } from "pg";
+// Type-only: erased at compile time, so nothing is required at module load.
+import type { Pool } from "pg";
 
 /**
  * The one budget document, held server-side so every device sees the same data
@@ -64,6 +65,7 @@ function findConnectionNamed(env: NodeJS.ProcessEnv = process.env): { name: stri
 }
 
 export interface StoreDiagnosis {
+  driver: { ok: boolean; error: string | null };
   variable: string | null;
   host: string | null;
   database: string | null;
@@ -92,6 +94,7 @@ export async function diagnose(): Promise<StoreDiagnosis> {
   const found = findConnectionNamed();
   const rejected = found ? undefined : findConnection().unusable;
   const out: StoreDiagnosis = {
+    driver: { ok: false, error: null },
     variable: found?.name ?? null,
     host: null,
     database: null,
@@ -108,6 +111,17 @@ export async function diagnose(): Promise<StoreDiagnosis> {
     table: { ok: false, error: null },
     documents: null,
   };
+  // Checked first and on its own: a driver that will not load is a different
+  // problem from a database that will not answer, and looks identical from
+  // outside if they are reported together.
+  try {
+    await loadPool();
+    out.driver.ok = true;
+  } catch (err) {
+    out.driver.error = describeError(err).error;
+    return out;
+  }
+
   if (!found) return out;
 
   try {
@@ -121,7 +135,7 @@ export async function diagnose(): Promise<StoreDiagnosis> {
   out.ssl = !/localhost|127\.0\.0\.1/.test(found.value);
 
   try {
-    const { rows } = await db().query("SELECT 1 AS ok");
+    const { rows } = await (await db()).query("SELECT 1 AS ok");
     out.connect.ok = rows.length === 1;
   } catch (err) {
     Object.assign(out.connect, describeError(err));
@@ -130,7 +144,7 @@ export async function diagnose(): Promise<StoreDiagnosis> {
 
   try {
     await ensureTable();
-    const { rows } = await db().query("SELECT count(*)::int AS n FROM budget_document");
+    const { rows } = await (await db()).query("SELECT count(*)::int AS n FROM budget_document");
     out.table.ok = true;
     out.documents = Number((rows[0] as { n: number }).n);
   } catch (err) {
@@ -155,11 +169,33 @@ const ROW_ID = 1;
  */
 let pool: Pool | null = null;
 
-function db(): Pool {
+/**
+ * The driver is loaded on demand rather than at module scope.
+ *
+ * A serverless function whose import graph fails to resolve dies before any of
+ * this code runs, and the platform answers with FUNCTION_INVOCATION_FAILED —
+ * a page that names neither the module nor the reason. Loading it here turns
+ * that into an ordinary error this app can report.
+ */
+async function loadPool(): Promise<new (config: unknown) => Pool> {
+  try {
+    const pg = await import("pg");
+    const Ctor = (pg as { Pool?: unknown; default?: { Pool?: unknown } }).Pool
+      ?? (pg as { default?: { Pool?: unknown } }).default?.Pool;
+    if (typeof Ctor !== "function") throw new Error("the pg module exported no Pool");
+    return Ctor as new (config: unknown) => Pool;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    throw new Error(`Could not load the Postgres driver: ${why}`);
+  }
+}
+
+async function db(): Promise<Pool> {
   const url = connectionString();
   if (!url) throw new Error("No database is configured.");
   if (!pool) {
-    pool = new Pool({
+    const PoolCtor = await loadPool();
+    pool = new PoolCtor({
       connectionString: url,
       // Hosted Postgres requires TLS; its certificate chain isn't one Node
       // ships, which is the usual reason a first deploy fails to connect.
@@ -168,6 +204,7 @@ function db(): Pool {
       idleTimeoutMillis: 10_000,
       connectionTimeoutMillis: 10_000,
     });
+    // An unhandled 'error' event on a pool takes the whole process down.
     pool.on("error", () => { pool = null; });
   }
   return pool;
@@ -175,7 +212,7 @@ function db(): Pool {
 
 /** Idempotent, so first use of a fresh database just works. */
 async function ensureTable(): Promise<void> {
-  await db().query(`
+  await (await db()).query(`
     CREATE TABLE IF NOT EXISTS budget_document (
       id integer PRIMARY KEY,
       version integer NOT NULL,
@@ -188,7 +225,7 @@ async function ensureTable(): Promise<void> {
 
 export async function readDoc(): Promise<StoredDoc | null> {
   await ensureTable();
-  const { rows } = await db().query(
+  const { rows } = await (await db()).query(
     "SELECT version, updated_at, updated_by, doc FROM budget_document WHERE id = $1",
     [ROW_ID],
   );
@@ -222,7 +259,7 @@ export interface WriteResult {
  */
 export async function writeDoc(doc: unknown, baseVersion: number | null, by: string): Promise<WriteResult> {
   await ensureTable();
-  const client = await db().connect();
+  const client = await (await db()).connect();
   try {
     await client.query("BEGIN");
     // Locked for the transaction: two devices saving at the same instant must

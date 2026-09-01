@@ -13,6 +13,10 @@ function Diagnosis({ check }: { check: CloudDiagnosis }) {
   const lines: { ok: boolean; text: string }[] = [];
 
   lines.push({
+    ok: check.driver.ok,
+    text: check.driver.ok ? "Postgres driver loaded" : `Postgres driver failed to load: ${check.driver.error}`,
+  });
+  lines.push({
     ok: Boolean(check.variable),
     text: check.variable
       ? `Connection string found in ${check.variable}`
@@ -36,7 +40,9 @@ function Diagnosis({ check }: { check: CloudDiagnosis }) {
     });
   }
 
-  const advice = !check.variable
+  const advice = !check.driver.ok
+    ? "That is a packaging problem in the deployment rather than anything to do with your database — send me this line."
+    : !check.variable
     ? "Vercel sets this when you create the database — the deployment has to be redeployed afterwards for it to appear."
     : !check.connect.ok
       ? "The usual causes: the database was created after this deployment was built, so redeploy; the project is paused or asleep on a free plan; or the connection string was pasted by hand and is missing part of the password."

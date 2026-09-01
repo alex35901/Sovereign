@@ -1092,6 +1092,18 @@ await test("the database check answers even with no database configured", async 
   assert.match(body.connect.error, /No connection string/);
 });
 
+await test("the check reports the driver separately from the connection", async () => {
+  const r = await withEnv({ DATABASE_URL: "postgres://u:p@db.example.com/app", SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "POST", body: { action: "diagnose" }, headers: { authorization: "Bearer p" } }));
+  const body = JSON.parse(r.text);
+  // A driver that will not load and a database that will not answer look
+  // identical from outside unless they are reported apart.
+  assert.equal(body.driver.ok, true, "pg loads in this environment");
+  assert.equal(body.variable, "DATABASE_URL");
+  assert.equal(body.host, "db.example.com");
+  assert.equal(JSON.stringify(body).includes("u:p@"), false, "credentials must not come back");
+});
+
 await test("the check still needs the passphrase", async () => {
   const r = await withEnv({ SYNC_PASSPHRASE: "p" },
     () => invokeWith(M.dbHandler, { method: "POST", body: { action: "diagnose" }, headers: { authorization: "Bearer wrong" } }));

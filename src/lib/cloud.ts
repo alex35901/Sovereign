@@ -146,6 +146,7 @@ export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
 }
 
 export interface CloudDiagnosis {
+  driver: { ok: boolean; error: string | null };
   variable: string | null;
   host: string | null;
   database: string | null;
