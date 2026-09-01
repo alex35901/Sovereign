@@ -161,6 +161,19 @@ it the same environment variables the deployment has.
 Syncing pulls a 90-day window (SimpleFIN's per-request maximum), de-duplicates on the
 bridge's own transaction ids, and runs every new transaction through your rules.
 
+### Why api/ imports carry a .js extension
+
+Vercel compiles each function to its own ESM `.js` and lets Node resolve the imports
+between them, and Node's ESM resolver requires an explicit extension. `import "./_auth"`
+compiles cleanly and then fails at runtime with ERR_MODULE_NOT_FOUND, which the platform
+reports as FUNCTION_INVOCATION_FAILED — a clean build and a dead endpoint.
+
+So every relative import in `api/`, and in the `src/` modules it reaches, ends in `.js`
+even though the file is `.ts`. TypeScript and Vite both resolve that back to the source.
+`npm run check:api` compiles the functions and imports each one under Node, which is the
+only check that catches this: under `bundler` resolution the extensionless form is
+perfectly legal, it just doesn't survive to runtime.
+
 ### Adding another provider
 
 Implement `SyncAdapter` in `src/lib/sync/types.ts`, register it in `src/lib/sync/index.ts`.

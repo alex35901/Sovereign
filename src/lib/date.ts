@@ -1,4 +1,4 @@
-import type { ISODate, MonthKey } from "../types";
+import type { ISODate, MonthKey } from "../types.js";
 
 export const today = (): ISODate => new Date().toISOString().slice(0, 10);
 export const monthOf = (d: ISODate): MonthKey => d.slice(0, 7);

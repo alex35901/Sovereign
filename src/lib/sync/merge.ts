@@ -1,9 +1,9 @@
-import type { DB, Holding, Transaction } from "../../types";
-import type { SyncPayload } from "./types";
-import type { RemoteHolding } from "./plaid";
-import { UNCATEGORIZED } from "../categories";
-import { uid } from "../id";
-import { applyRules } from "../rules";
+import type { DB, Holding, Transaction } from "../../types.js";
+import type { SyncPayload } from "./types.js";
+import type { RemoteHolding } from "./plaid.js";
+import { UNCATEGORIZED } from "../categories.js";
+import { uid } from "../id.js";
+import { applyRules } from "../rules.js";
 
 
 export interface MergeResult {

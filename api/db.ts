@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { bearer, passphraseOk, passphraseSet } from "./_auth";
-import { diagnose, findConnection, readDoc, writeDoc } from "./_store";
+import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
+import { diagnose, findConnection, readDoc, writeDoc } from "./_store.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 

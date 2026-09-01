@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && npm run check:api && vite build",
     "preview": "vite preview",
-    "test": "node scripts/selftest.mjs && node scripts/dbtest.mjs",
+    "test": "node scripts/selftest.mjs && node scripts/check-api.mjs && node scripts/dbtest.mjs",
     "lint": "oxlint",
     "test:db": "node scripts/dbtest.mjs",
     "check:api": "node scripts/check-api.mjs"

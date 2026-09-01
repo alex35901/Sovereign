@@ -1,4 +1,4 @@
-import type { DB, Rule, Transaction } from "../types";
+import type { DB, Rule, Transaction } from "../types.js";
 
 export function ruleMatches(rule: Rule, t: Transaction): boolean {
   const c = rule.criteria;

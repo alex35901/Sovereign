@@ -1,4 +1,4 @@
-import type { Category, CategoryGroup } from "../types";
+import type { Category, CategoryGroup } from "../types.js";
 
 /** [group name, kind, [category, emoji, color-var]] — the default taxonomy. */
 const TAXONOMY: [string, "income" | "expense" | "transfer", [string, string, string][]][] = [

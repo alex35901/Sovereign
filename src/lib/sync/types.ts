@@ -1,4 +1,4 @@
-import type { Account, AccountType } from "../../types";
+import type { Account, AccountType } from "../../types.js";
 
 export interface RemoteAccount {
   /** Stable id from the provider — how we re-find this account on later syncs. */

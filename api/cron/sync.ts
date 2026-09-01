@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { DB } from "../../src/types";
-import { mergeSync, syncWindowStart } from "../../src/lib/sync/merge";
-import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin";
-import type { BridgeResponse } from "../../src/lib/sync/simplefin";
-import { fetchAccountsText } from "../_simplefin";
-import { connectionString, readDoc, writeDoc } from "../_store";
-import { bearer, passphraseOk } from "../_auth";
+import type { DB } from "../../src/types.js";
+import { mergeSync, syncWindowStart } from "../../src/lib/sync/merge.js";
+import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
+import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
+import { fetchAccountsText } from "../_simplefin.js";
+import { connectionString, readDoc, writeDoc } from "../_store.js";
+import { bearer, passphraseOk } from "../_auth.js";
 
 /**
  * The scheduled pull, run by Vercel on the timetable in vercel.json.

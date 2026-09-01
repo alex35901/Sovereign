@@ -1,4 +1,4 @@
-import type { SyncCadence } from "./lib/sync/schedule";
+import type { SyncCadence } from "./lib/sync/schedule.js";
 /** All money is integer cents. Outflows are negative, inflows positive. */
 export type ID = string;
 export type ISODate = string; // YYYY-MM-DD

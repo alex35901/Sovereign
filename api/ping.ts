@@ -51,8 +51,8 @@ export default async function handler(req: Req, res: Res): Promise<void> {
   for (const [label, load] of [
     ["pg", () => import("pg")],
     ["node:crypto", () => import("node:crypto")],
-    ["./_auth", () => import("./_auth")],
-    ["./_store", () => import("./_store")],
+    ["./_auth", () => import("./_auth.js")],
+    ["./_store", () => import("./_store.js")],
   ] as [string, () => Promise<unknown>][]) {
     try {
       const mod = (await load()) as Record<string, unknown> & { default?: Record<string, unknown> };

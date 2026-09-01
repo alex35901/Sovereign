@@ -1,7 +1,7 @@
-import type { SyncAdapter, SyncPayload } from "./types";
-import { guessAccountType } from "./types";
-import { toISO } from "../date";
-import { postJSON } from "../api";
+import type { SyncAdapter, SyncPayload } from "./types.js";
+import { guessAccountType } from "./types.js";
+import { toISO } from "../date.js";
+import { postJSON } from "../api.js";
 
 /**
  * SimpleFIN Bridge — $15/yr, up to 25 institutions, refreshed about once a day.

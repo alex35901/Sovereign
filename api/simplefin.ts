@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { BridgeError, claim, fetchAccountsText } from "./_simplefin";
+import { BridgeError, claim, fetchAccountsText } from "./_simplefin.js";
 
 /**
  * Vercel's request/response objects are Node's own, plus a parsed `body`.

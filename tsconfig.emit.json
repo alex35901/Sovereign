@@ -1,0 +1,14 @@
+{
+  // Emits the functions the way the deployment does: one ESM .js per source
+  // file, relative imports left exactly as written. Used by check-api.mjs to
+  // load each entrypoint under Node, which is what actually resolves them.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "rootDir": ".",
+    "module": "ESNext",
+    "verbatimModuleSyntax": true
+  },
+  "include": ["api"]
+}

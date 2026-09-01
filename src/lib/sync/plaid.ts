@@ -1,7 +1,7 @@
-import type { AssetClass, PlaidItemRef } from "../../types";
-import type { RemoteAccount, RemoteTransaction, SyncPayload } from "./types";
-import { postJSON } from "../api";
-import { cleanMerchant } from "./merge";
+import type { AssetClass, PlaidItemRef } from "../../types.js";
+import type { RemoteAccount, RemoteTransaction, SyncPayload } from "./types.js";
+import { postJSON } from "../api.js";
+import { cleanMerchant } from "./merge.js";
 
 /**
  * Plaid. The Trial plan is free for up to 10 institutions and, unlike SimpleFIN,
