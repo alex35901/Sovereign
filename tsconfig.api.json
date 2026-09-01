@@ -1,0 +1,8 @@
+{
+  // Type-checks the serverless functions the way the deployment does: with the
+  // root compilerOptions, which is what Vercel reads. Inherited rather than
+  // repeated, so the check can't drift away from what it is checking.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["api"]
+}

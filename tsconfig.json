@@ -1,4 +1,22 @@
 {
+  // Vercel type-checks each api/ function against this file rather than the
+  // referenced projects below. With no compilerOptions here it fell back to
+  // TypeScript's defaults — nodenext resolution, no node types — and rejected
+  // every extensionless import and every use of Buffer, process and node:http.
+  // These options mirror tsconfig.node.json so the deployment sees what the
+  // local build sees.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "moduleDetection": "force"
+  },
   "files": [],
   "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
 }
