@@ -1,3 +1,4 @@
+import type { SyncCadence } from "./lib/sync/schedule";
 /** All money is integer cents. Outflows are negative, inflows positive. */
 export type ID = string;
 export type ISODate = string; // YYYY-MM-DD
@@ -155,6 +156,8 @@ export interface Settings {
   /** Connected Plaid items. Credentials for Plaid itself live server-side. */
   plaidItems?: PlaidItemRef[];
   lastSyncAt?: string;
+  /** How often to pull from SimpleFIN while the app is open. */
+  syncCadence?: SyncCadence;
 }
 
 export interface VehicleProfile {

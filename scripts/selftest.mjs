@@ -43,6 +43,8 @@ await build({
       export { thisMonth, addMonths } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
+      export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel } from "./src/lib/sync/schedule.ts";
+      export { syncSimplefin } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
     `,
     resolveDir: process.cwd(),
@@ -169,6 +171,45 @@ await test("proxy strips credentials into a Basic header", async () => {
   assert.equal(res.status, 200);
   assert.equal(json.accounts[0].id, "acct-1");
   assert.equal(json.startDateEcho, "1750000000");
+});
+
+/** The browser talks to /api/simplefin; in here that is the handler itself. */
+const throughProxy = (fn) => {
+  const real = globalThis.fetch;
+  return withFetch(async (url, init) => {
+    if (String(url) !== "/api/simplefin") {
+      // the handler's own call to the bridge — the stub speaks http, not https
+      return real(String(url).replace("https://127.0.0.1", "http://127.0.0.1"), init);
+    }
+    const r = await invoke(JSON.parse(init.body));
+    return new Response(r.text, { status: r.status, headers: { "content-type": "application/json" } });
+  }, fn);
+};
+
+await test("a scheduled pull merges and reports whether anything landed", async () => {
+  let db = M.emptyDB();
+  db = { ...db, settings: { ...db.settings, simplefinAccessUrl: `https://user1:pass1@127.0.0.1:${port}/simplefin` } };
+  const apply = (fn) => { db = fn(db); };
+
+  const first = await throughProxy(() => M.syncSimplefin(db, apply));
+  assert.equal(first.changed, true, "the first pull brings accounts in");
+  assert.match(first.summary, /account/);
+  assert.ok(db.settings.lastSyncAt, "the timestamp the schedule reads must be written");
+
+  // the same data again changes nothing, so the scheduler stays quiet
+  const second = await throughProxy(() => M.syncSimplefin(db, apply));
+  assert.equal(second.changed, false, "a no-op pull must not announce itself");
+  assert.match(second.summary, /account/, "the manual button still gets a summary");
+
+  // but a balance that has actually moved is worth saying out loud
+  db = { ...db, accounts: db.accounts.map((a) => ({ ...a, balance: a.balance + 12345 })) };
+  const third = await throughProxy(() => M.syncSimplefin(db, apply));
+  assert.equal(third.changed, true, "a changed balance must be announced");
+});
+
+await test("a scheduled pull refuses to run unconnected", async () => {
+  const msg = await caught(() => M.syncSimplefin(M.emptyDB(), () => {}));
+  assert.match(msg, /isn't connected/);
 });
 
 bridge.close();
@@ -828,6 +869,75 @@ await test("auto-update records monthly and is otherwise inert", () => {
   // and it leaves manual accounts alone entirely
   const manual = M.refreshVehicleValues({ ...db, accounts: [{ ...db.accounts[0], vehicle: { ...vehicle, autoUpdate: false } }] }, "2026-08-29");
   assert.equal(manual.accounts[0].history.length, 0);
+});
+
+/* ── the sync schedule ────────────────────────────────────────────────── */
+
+const HOUR = 3_600_000;
+const iso = (ms) => new Date(ms).toISOString();
+
+await test("off means nothing ever fires", () => {
+  const now = Date.parse("2026-09-01T12:00:00Z");
+  assert.equal(M.syncDue("off", undefined, now, now), false, "not even a first sync");
+  assert.equal(M.syncDue("off", iso(now - 400 * HOUR), now, now), false);
+  assert.equal(M.nextSyncAt("off", iso(now)), null);
+});
+
+await test("a connection that has never synced is due immediately", () => {
+  const now = Date.parse("2026-09-01T12:00:00Z");
+  for (const c of ["open", "hourly", "6h", "daily", "weekly"]) {
+    assert.equal(M.syncDue(c, undefined, now, now), true, `${c} should pull on a fresh connection`);
+  }
+});
+
+await test("an interval fires only once its hours have passed", () => {
+  const now = Date.parse("2026-09-01T12:00:00Z");
+  const cases = [["hourly", 1], ["6h", 6], ["daily", 24], ["weekly", 168]];
+  for (const [cadence, hours] of cases) {
+    assert.equal(M.cadenceHours(cadence), hours);
+    // a minute short
+    assert.equal(M.syncDue(cadence, iso(now - hours * HOUR + 60_000), now, now), false, `${cadence} fired early`);
+    // exactly on the hour, and past it
+    assert.equal(M.syncDue(cadence, iso(now - hours * HOUR), now, now), true, `${cadence} missed its slot`);
+    assert.equal(M.syncDue(cadence, iso(now - hours * HOUR * 3), now, now), true);
+    assert.equal(M.nextSyncAt(cadence, iso(now)), now + hours * HOUR);
+  }
+});
+
+await test("'whenever I open the app' fires once a visit, not once a check", () => {
+  const start = Date.parse("2026-09-01T12:00:00Z");
+  // synced before this page was loaded: owed
+  assert.equal(M.syncDue("open", iso(start - 60_000), start + 1000, start), true);
+  // the sync that just ran during this visit: not owed again five minutes later
+  assert.equal(M.syncDue("open", iso(start + 2000), start + 300_000, start), false,
+    "this is the loop that would sync forever");
+  assert.equal(M.nextSyncAt("open", iso(start)), null, "there is no clock time for 'on open'");
+});
+
+await test("a clock that jumped backwards does not stampede", () => {
+  const now = Date.parse("2026-09-01T12:00:00Z");
+  // lastSyncAt in the future — a machine whose clock was corrected
+  assert.equal(M.syncDue("hourly", iso(now + 5 * HOUR), now, now), false);
+});
+
+await test("an unreadable timestamp is treated as never synced", () => {
+  const now = Date.parse("2026-09-01T12:00:00Z");
+  assert.equal(M.syncDue("daily", "not a date", now, now), true);
+  assert.equal(M.nextSyncAt("daily", "not a date"), null);
+});
+
+await test("the countdown reads in whichever unit fits", () => {
+  const now = 0;
+  assert.equal(M.untilLabel(-1, now), "now");
+  assert.equal(M.untilLabel(60_000, now), "in 1 minute");
+  assert.equal(M.untilLabel(25 * 60_000, now), "in 25 minutes");
+  assert.equal(M.untilLabel(3 * HOUR, now), "in 3 hours");
+  assert.equal(M.untilLabel(72 * HOUR, now), "in 3 days");
+});
+
+await test("the default cadence is one of the offered options", () => {
+  assert.ok(M.CADENCES.some((c) => c.value === M.DEFAULT_CADENCE));
+  assert.equal(M.DEFAULT_CADENCE, "daily", "SimpleFIN refreshes about daily upstream");
 });
 
 /* ── plaid ────────────────────────────────────────────────────────────── */

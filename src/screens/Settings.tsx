@@ -5,7 +5,8 @@ import { TopBar } from "../shell/TopBar";
 import { dateLabel } from "../lib/date";
 import { toCSV } from "../lib/csv";
 import { download, exportJSON, importJSON } from "../lib/storage";
-import { ADAPTERS, mergeSync, syncWindowStart } from "../lib/sync";
+import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
+import type { SyncCadence } from "../lib/sync";
 import { canValue, estimateHomeValue } from "../lib/property";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { Link } from "react-router-dom";
@@ -132,20 +133,13 @@ export default function Settings() {
   };
 
   const sync = async () => {
-    const accessUrl = db.settings.simplefinAccessUrl;
-    if (!accessUrl) return;
+    if (!db.settings.simplefinAccessUrl) return;
     setBusy(true);
     setError(null);
     try {
-      const payload = await adapter.fetch(accessUrl, syncWindowStart(db));
-      let summary = "";
-      apply((cur) => {
-        const res = mergeSync(cur, payload, "simplefin");
-        summary = `${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}, ${res.accountsUpdated} account${res.accountsUpdated === 1 ? "" : "s"} updated${res.accountsAdded ? `, ${res.accountsAdded} added` : ""}.`;
-        return res.db;
-      }, "sync from SimpleFIN");
+      const { summary, errors } = await syncSimplefin(db, apply);
       notify(summary);
-      if (payload.errors.length) setError(payload.errors.join(" · "));
+      if (errors.length) setError(errors.join(" · "));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed.");
     } finally {
@@ -240,6 +234,7 @@ export default function Settings() {
                 {db.settings.lastSyncAt ? `${dateLabel(db.settings.lastSyncAt.slice(0, 10))} at ${new Date(db.settings.lastSyncAt).toLocaleTimeString()}` : "never"}
                 {" · "}next pull starts from {syncWindowStart(db)}
               </span>
+              <SyncSchedule />
               <div>
                 <ConfirmButton
                   label="Disconnect"
@@ -317,5 +312,46 @@ export default function Settings() {
       </div>
       {importing ? <ImportModal onClose={() => setImporting(false)} /> : null}
     </>
+  );
+}
+
+/**
+ * How often to pull, and when the next one is due.
+ *
+ * The app is the browser tab, so it says plainly that nothing runs while the
+ * tab is shut — a schedule that quietly does nothing overnight would be worse
+ * than no schedule at all.
+ */
+function SyncSchedule() {
+  const db = useDB();
+  const { actions } = useStore();
+  const cadence = db.settings.syncCadence ?? DEFAULT_CADENCE;
+  const due = nextSyncAt(cadence, db.settings.lastSyncAt);
+
+  return (
+    <div className="col" style={{ gap: 7 }}>
+      <div className="row wrap" style={{ gap: 10 }}>
+        <span className="small" style={{ fontWeight: 500 }}>Sync automatically</span>
+        <select
+          className="select" style={{ width: "auto", minWidth: 200 }}
+          value={cadence}
+          onChange={(e) => actions.patchSettings({ syncCadence: e.target.value as SyncCadence })}
+        >
+          {CADENCES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+      </div>
+
+      <span className="tiny faint" style={{ maxWidth: 520 }}>
+        {cadence === "off"
+          ? "Nothing will pull on its own — use Sync now above."
+          : due
+            ? `Next pull ${untilLabel(due, Date.now())}, the next time the app is open.`
+            : "The next pull runs as soon as the app is open."}
+        {" "}Checks happen while this tab is open; there is no server here, so nothing
+        runs overnight with the browser shut — the first check after you open it catches up.
+        SimpleFIN itself refreshes about once a day, so anything tighter than daily rarely
+        finds new data.
+      </span>
+    </div>
   );
 }

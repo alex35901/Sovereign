@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { MobileTabs, Sidebar } from "./shell/Sidebar";
+import { AutoSync } from "./components/AutoSync";
 import { useStore } from "./store";
 import Dashboard from "./screens/Dashboard";
 import Accounts from "./screens/Accounts";
@@ -17,6 +18,7 @@ export default function App() {
   const { toast, undoLabel, undo } = useStore();
   return (
     <div className="app">
+      <AutoSync />
       <Sidebar />
       <div className="main">
         <Routes>
