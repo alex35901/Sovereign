@@ -306,6 +306,8 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 }
 .budget-amount.remaining.neg { background: var(--neg-soft); color: var(--neg); }
 .budget-amount.remaining.flat { background: none; color: var(--muted); }
+.budget-amount.remaining { gap: 4px; }
+.rollover-mark { opacity: 0.75; flex: none; }
 button.budget-amount.remaining:hover { filter: brightness(1.18); }
 button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter: none; }
 

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, RotateCcw } from "lucide-react";
 import type { Category, MonthKey } from "../types";
 import { useDB, useStore } from "../store";
 import { fmt0 } from "../lib/money";
@@ -14,10 +14,11 @@ import { CategoryPicker } from "../components/pickers";
  * A surplus is offered to the deepest overspend; an overspend is filled from
  * the largest surplus.
  */
-export function BudgetMovePopover({ category, month, remaining }: {
+export function BudgetMovePopover({ category, month, remaining, onOpenChange }: {
   category: Category;
   month: MonthKey;
   remaining: number;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
     <Popover
@@ -25,12 +26,14 @@ export function BudgetMovePopover({ category, month, remaining }: {
       align="right"
       className="move-menu"
       fill
+      onOpenChange={onOpenChange}
       trigger={(open) => (
         <button
           className={cx("btn budget-amount remaining", remainingTone(remaining))}
           onClick={open}
           title="Move money between categories"
         >
+          {category.rollover ? <RotateCcw size={11} className="rollover-mark" /> : null}
           <Money value={remaining} cents={false} />
         </button>
       )}
@@ -114,7 +117,9 @@ function Panel({ category, month, onDone }: { category: Category; month: MonthKe
         <div className="tiny muted" style={{ marginTop: 10 }}>
           {from?.name} ends on <b>{fmt0((from?.remaining ?? 0) - preview.moved)}</b>,{" "}
           {to?.name} on <b>{fmt0((to?.remaining ?? 0) + preview.moved)}</b>.
-          {capped ? ` Capped at ${fmt0(preview.moved)} — that's all ${from?.name} has budgeted.` : ""}
+          {capped
+            ? ` Capped at ${fmt0(preview.moved)} — that's all ${from?.name} has ${from?.rollover ? "left" : "budgeted"}.`
+            : ""}
         </div>
       ) : (
         <div className="tiny faint" style={{ marginTop: 10 }}>

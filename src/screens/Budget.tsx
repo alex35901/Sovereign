@@ -111,7 +111,6 @@ function Stat({ label, value, actual }: { label: string; value: number; actual: 
 function GroupCard({ data, month, collapsed, onToggle }: {
   data: BudgetGroupRow; month: string; collapsed: boolean; onToggle: () => void;
 }) {
-  const { actions } = useStore();
   const income = data.group.kind === "income";
   return (
     <Card pad={false}>
@@ -141,7 +140,21 @@ function GroupCard({ data, month, collapsed, onToggle }: {
       </div>
 
       {collapsed ? null : data.rows.map((r) => (
-          <div key={r.category.id} className="list-row">
+        <RowLine key={r.category.id} row={r} month={month} income={income} />
+      ))}
+    </Card>
+  );
+}
+
+/**
+ * One category. Holds whether its move panel is open, so the hover card can be
+ * suppressed while that panel covers the same spot.
+ */
+function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; income: boolean }) {
+  const { actions } = useStore();
+  const [moving, setMoving] = useState(false);
+  return (
+          <div className="list-row">
             <span style={{ fontSize: 15, width: 22 }}>{r.category.icon}</span>
             <div className="grow" style={{ minWidth: 0 }}>
               <span className="truncate" style={{ fontWeight: 500 }}>{r.category.name}</span>
@@ -157,13 +170,17 @@ function GroupCard({ data, month, collapsed, onToggle }: {
               <Money value={r.actual} cents={false} />
             </Link>
             <div className="bcol bcol-left">
-              <HoverCard fill width={266} card={<RemainingCard row={r} />}>
+              <HoverCard fill width={266} disabled={moving} card={<RemainingCard row={r} />}>
                 {income ? (
                   <span className={cx("btn budget-amount remaining", remainingTone(r.remaining))}>
+                    {r.category.rollover ? <RotateCcw size={11} className="rollover-mark" /> : null}
                     <Money value={r.remaining} cents={false} />
                   </span>
                 ) : (
-                  <BudgetMovePopover category={r.category} month={month} remaining={r.remaining} />
+                  <BudgetMovePopover
+                    category={r.category} month={month} remaining={r.remaining}
+                    onOpenChange={setMoving}
+                  />
                 )}
               </HoverCard>
             </div>
@@ -185,8 +202,6 @@ function GroupCard({ data, month, collapsed, onToggle }: {
               )}
             </Popover>
           </div>
-      ))}
-    </Card>
   );
 }
 

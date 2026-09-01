@@ -168,7 +168,7 @@ export function Modal({ title, children, onClose, footer, wide }: {
  * trigger's rect — anchoring it in place would let cards (which clip their
  * contents so rows keep the rounded corners) cut the menu off.
  */
-export function Popover({ trigger, children, align = "left", width = 220, className, fill }: {
+export function Popover({ trigger, children, align = "left", width = 220, className, fill, onOpenChange }: {
   trigger: (open: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
@@ -176,6 +176,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   className?: string;
   /** Stretch the anchor to its container, so a full-width trigger can fill a column. */
   fill?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
@@ -201,6 +202,11 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   useLayoutEffect(() => {
     if (open) place();
   }, [open, place]);
+
+  // Held in a ref so an inline callback can't retrigger this every render.
+  const report = useRef(onOpenChange);
+  report.current = onOpenChange;
+  useEffect(() => { report.current?.(open); }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -248,11 +254,13 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
  * a card row can't clip it, and suppressed on mousedown so it doesn't sit on
  * top of whatever the click opens.
  */
-export function HoverCard({ children, card, width = 260, fill }: {
+export function HoverCard({ children, card, width = 260, fill, disabled }: {
   children: ReactNode;
   card: ReactNode;
   width?: number;
   fill?: boolean;
+  /** Suppress the card entirely — e.g. while a panel it would cover is open. */
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
@@ -264,7 +272,7 @@ export function HoverCard({ children, card, width = 260, fill }: {
 
   const show = () => {
     const el = anchor.current;
-    if (!el || shut.current) return;
+    if (!el || shut.current || disabled) return;
     const r = el.getBoundingClientRect();
     const room = window.innerHeight - r.bottom;
     setPos({
@@ -287,6 +295,8 @@ export function HoverCard({ children, card, width = 260, fill }: {
   const press = () => { shut.current = true; close(); };
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  // Going disabled while open — the panel just opened underneath — must close it.
+  useEffect(() => { if (disabled) { if (timer.current) clearTimeout(timer.current); setOpen(false); } }, [disabled]);
 
   return (
     <div

@@ -8,6 +8,7 @@ export interface MoveCandidate {
   color: string;
   planned: number;
   remaining: number;
+  rollover: number;
 }
 
 /** Every expense category in play this month, with what's left in it. */
@@ -22,6 +23,7 @@ export function moveCandidates(db: DB, month: MonthKey): MoveCandidate[] {
       color: r.category.color,
       planned: r.planned,
       remaining: r.remaining,
+      rollover: r.rollover,
     }));
 }
 
@@ -51,12 +53,34 @@ export function suggestCounterpart(
   return best;
 }
 
+/**
+ * The spare money in a category — what a move should offer to take by default.
+ *
+ * For an ordinary category that is this month's plan less what's been spent.
+ * A rollover category can also give away what carried in, so its surplus is
+ * simply what's left, which is usually more than the month's plan.
+ */
+export function surplusOf(from: MoveCandidate): number {
+  return from.rollover > 0
+    ? Math.max(0, from.remaining)
+    : Math.max(0, Math.min(from.remaining, from.planned));
+}
+
+/**
+ * The hard ceiling on a move out of a category — more than the surplus, since
+ * a category may deliberately be pushed into overspend to cover another.
+ * A rollover category stops at what's left: past that it would be giving away
+ * money it never had.
+ */
+export function moveCeiling(from: MoveCandidate): number {
+  return from.rollover > 0 ? Math.max(0, from.remaining) : Math.max(0, from.planned);
+}
+
 /** The move that would square both sides, without overdrawing either. */
 export function suggestedAmount(from: MoveCandidate | undefined, to: MoveCandidate | undefined): number {
   if (!from || !to) return 0;
-  const surplus = Math.max(0, Math.min(from.remaining, from.planned));
   const shortfall = Math.max(0, -to.remaining);
-  return Math.min(surplus, shortfall);
+  return Math.min(surplusOf(from), shortfall);
 }
 
 export interface MoveResult { db: DB; moved: number }
@@ -74,7 +98,12 @@ export function moveBudget(db: DB, month: MonthKey, fromId: string, toId: string
 
   const fromPlanned = plannedFor(db, month, fromId);
   const toPlanned = plannedFor(db, month, toId);
-  const moved = Math.min(amount, fromPlanned);
+  const source = moveCandidates(db, month).find((c) => c.categoryId === fromId);
+  // A rollover category may give away more than this month's plan, which drives
+  // that month's planned figure negative — correct, since what's left lands on
+  // zero rather than below it.
+  const ceiling = source ? moveCeiling(source) : Math.max(0, fromPlanned);
+  const moved = Math.min(amount, ceiling);
   if (moved <= 0) return { db, moved: 0 };
 
   return {

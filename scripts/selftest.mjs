@@ -38,7 +38,7 @@ await build({
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, balanceAt } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone, spentShare } from "./src/lib/select.ts";
-      export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget } from "./src/lib/budget-move.ts";
+      export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { thisMonth, addMonths } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
@@ -512,6 +512,68 @@ await test("nothing is suggested when there is no counterpart", () => {
   const candidates = M.moveCandidates(db, "2026-08");
   assert.equal(M.suggestCounterpart(candidates, "c_groceries", "to"), undefined);
   assert.equal(M.suggestedAmount(candidates[0], undefined), 0);
+});
+
+/** A rollover category holding $200 carried in, $100 planned, $39 spent. */
+const rolloverDb = () => {
+  const db = M.emptyDB();
+  db.categories = db.categories.map((c) => (c.id === "c_home_improvement" ? { ...c, rollover: true } : c));
+  db.budgets = { "2026-07": { c_home_improvement: 20000 }, "2026-08": { c_home_improvement: 10000, c_groceries: 60000 } };
+  db.transactions = [{
+    id: "t1", accountId: "a1", date: "2026-08-05", merchant: "M", amount: -3900,
+    categoryId: "c_home_improvement", tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "",
+  }, {
+    id: "t2", accountId: "a1", date: "2026-08-06", merchant: "M", amount: -80000,
+    categoryId: "c_groceries", tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "",
+  }];
+  return db;
+};
+
+await test("a rollover category offers what's left, not just this month's plan", () => {
+  const db = rolloverDb();
+  const cands = M.moveCandidates(db, "2026-08");
+  const src = cands.find((c) => c.categoryId === "c_home_improvement");
+  assert.equal(src.rollover, 20000, "$200 carried in from July");
+  assert.equal(src.planned, 10000);
+  assert.equal(src.remaining, 26100, "200 + 100 - 39");
+
+  // the complaint: the box defaulted to the $100 budgeted, not the $261 left
+  assert.equal(M.surplusOf(src), 26100);
+  assert.equal(M.moveCeiling(src), 26100);
+  // The suggestion is still bounded by the other side's hole: groceries is only
+  // $200 overspent, so that is what gets offered.
+  const short = cands.find((c) => c.categoryId === "c_groceries");
+  assert.equal(short.remaining, -20000);
+  assert.equal(M.suggestedAmount(src, short), 20000);
+
+  // When the hole is deeper than the surplus, the whole surplus is offered —
+  // $261, not the $100 this month happened to budget.
+  const deep = { ...short, remaining: -50000 };
+  assert.equal(M.suggestedAmount(src, deep), 26100);
+});
+
+await test("an ordinary category still stops at what it budgeted", () => {
+  const db = rolloverDb();
+  const gas = M.moveCandidates(db, "2026-08").find((c) => c.categoryId === "c_gas");
+  assert.equal(gas.rollover, 0);
+  assert.equal(M.moveCeiling(gas), gas.planned, "no rollover means no extra to give");
+});
+
+await test("moving a rollover surplus empties it exactly, not below", () => {
+  const db = rolloverDb();
+  const { db: after, moved } = M.moveBudget(db, "2026-08", "c_home_improvement", "c_groceries", 26100);
+  assert.equal(moved, 26100, "the whole surplus moves, though it exceeds the plan");
+
+  const row = M.budgetTable(after, "2026-08").flatMap((g) => g.rows).find((r) => r.category.id === "c_home_improvement");
+  assert.equal(row.remaining, 0, "what's left lands on zero, never below");
+  assert.equal(row.planned, 10000 - 26100, "the month's plan goes negative to pay for it");
+  assert.equal(M.plannedFor(after, "2026-08", "c_groceries"), 60000 + 26100);
+});
+
+await test("a rollover category can't give away more than it holds", () => {
+  const db = rolloverDb();
+  const { moved } = M.moveBudget(db, "2026-08", "c_home_improvement", "c_groceries", 99999);
+  assert.equal(moved, 26100, "capped at what's left");
 });
 
 await test("moving shifts both sides and conserves the total", () => {
