@@ -61,8 +61,11 @@ Settings → *Sync across devices* moves the database into Postgres, behind a pa
 Every browser then reads and writes the same document, and a nightly job can update it
 while nothing is open.
 
-1. Vercel → your project → **Storage** → **Create Database** → Postgres. It sets
-   `DATABASE_URL` for you. Any Postgres works; the driver is plain `pg`.
+1. Vercel → your project → **Storage** → **Create Database** → **Neon**. It sets `DATABASE_URL`
+   for you. Any Postgres works — the driver is plain `pg` — so Supabase is equally fine.
+   **Prisma Postgres is not**: it sets `DATABASE_URL` to a `prisma+postgres://` accelerate URL,
+   which is a proxy protocol rather than a Postgres connection. The app detects that and says
+   so instead of failing inside the driver.
 2. Environment variables: **`SYNC_PASSPHRASE`** (what the app asks you for) and
    **`CRON_SECRET`** (a long random string, so only Vercel can trigger the scheduled job).
 3. Redeploy, then connect each browser with the passphrase.

@@ -192,7 +192,11 @@ export function CloudCard() {
       <details>
         <summary className="small muted" style={{ cursor: "pointer" }}>Setup — a database and a passphrase</summary>
         <ol className="small muted" style={{ margin: "10px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 5 }}>
-          <li>In Vercel, open your project → <b>Storage</b> → <b>Create Database</b> → <b>Neon (Postgres)</b>. The free tier is ample; it sets <code>DATABASE_URL</code> for you.</li>
+          <li>
+            In Vercel, open your project → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b>. The free tier is
+            ample and it sets <code>DATABASE_URL</code> for you. Supabase works too; avoid <b>Prisma Postgres</b>,
+            whose URL is an accelerate proxy rather than a Postgres connection.
+          </li>
           <li>Under Settings → Environment Variables, add <b>SYNC_PASSPHRASE</b> — any phrase you'll remember. This is what the box above asks for.</li>
           <li>Add <b>CRON_SECRET</b> as well, any long random string. Vercel sends it to the scheduled job so nobody else can trigger it.</li>
           <li>Redeploy, then come back and connect. Do the same on your phone and laptop.</li>

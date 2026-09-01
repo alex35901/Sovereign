@@ -36,6 +36,7 @@ await build({
       export { default as dbHandler } from "./api/db.ts";
       export { default as cronHandler } from "./api/cron/sync.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
+      export { findConnection } from "./api/_store.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken } from "./src/lib/sync/plaid.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
@@ -1023,6 +1024,51 @@ await test("the document endpoint refuses before it reaches the database", async
   const none = await withEnv({ DATABASE_URL: "postgres://x", SYNC_PASSPHRASE: "right" },
     () => invokeWith(M.dbHandler, { method: "GET" }));
   assert.equal(none.status, 401);
+});
+
+const findUrl = (env) => M.findConnection(env).url;
+
+await test("the connection string is picked from whichever provider set one", () => {
+  // Neon and Supabase through the Vercel marketplace
+  assert.equal(findUrl({ DATABASE_URL: "postgres://u:p@ep-x.neon.tech/db?sslmode=require" }), "postgres://u:p@ep-x.neon.tech/db?sslmode=require");
+  assert.equal(findUrl({ POSTGRES_URL: "postgresql://u:p@db.supabase.co:6543/postgres" }), "postgresql://u:p@db.supabase.co:6543/postgres");
+  assert.equal(findUrl({ NEON_DATABASE_URL: "postgres://a/b" }), "postgres://a/b");
+  assert.equal(findUrl({ DATABASE_URL_UNPOOLED: "postgres://direct/b" }), "postgres://direct/b");
+  assert.equal(findUrl({}), null);
+  assert.equal(findUrl({ DATABASE_URL: "   " }), null, "whitespace is not a connection string");
+  assert.equal(findUrl({ DATABASE_URL: "  postgres://a/b  " }), "postgres://a/b", "and a stray newline is trimmed");
+});
+
+await test("a pooled connection is preferred over a direct one", () => {
+  // Both are set by Neon; serverless functions want the pooler.
+  const both = { DATABASE_URL: "postgres://pooled/db", DATABASE_URL_UNPOOLED: "postgres://direct/db" };
+  assert.equal(findUrl(both), "postgres://pooled/db");
+});
+
+await test("a URL pg cannot dial is named rather than dialled", () => {
+  // Prisma Postgres hands out an accelerate URL under the usual variable name.
+  const prisma = M.findConnection({ DATABASE_URL: "prisma+postgres://accelerate.prisma-data.net/?api_key=x" });
+  assert.equal(prisma.url, null, "this must not reach pg");
+  assert.equal(prisma.unusable.name, "DATABASE_URL");
+  assert.equal(prisma.unusable.scheme, "prisma+postgres");
+
+  // but a usable one alongside it still wins
+  const mixed = M.findConnection({
+    DATABASE_URL: "prisma+postgres://accelerate.prisma-data.net/?api_key=x",
+    POSTGRES_URL: "postgres://real/db",
+  });
+  assert.equal(mixed.url, "postgres://real/db");
+});
+
+await test("an unusable URL is explained, not left as a driver crash", async () => {
+  const r = await withEnv(
+    { DATABASE_URL: "prisma+postgres://accelerate.prisma-data.net/?api_key=x", POSTGRES_URL: "", POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "", POSTGRES_URL_NON_POOLING: "", DATABASE_URL_UNPOOLED: "", SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "GET", headers: { authorization: "Bearer p" } }),
+  );
+  assert.equal(r.status, 503);
+  const { error } = JSON.parse(r.text);
+  assert.match(error, /prisma\+postgres/);
+  assert.match(error, /Neon and Supabase/);
 });
 
 await test("a write without a baseVersion is refused, so nothing clobbers blindly", async () => {

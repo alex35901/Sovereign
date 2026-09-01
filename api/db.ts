@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearer, passphraseOk, passphraseSet } from "./_auth";
-import { connectionString, readDoc, writeDoc } from "./_store";
+import { findConnection, readDoc, writeDoc } from "./_store";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 
@@ -20,10 +20,13 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     res.end(JSON.stringify(data));
   };
 
-  if (!connectionString()) {
+  const conn = findConnection();
+  if (!conn.url) {
     return send(503, {
       configured: false,
-      error: "No database yet. Add one in Vercel under Storage, then redeploy — it sets DATABASE_URL for you.",
+      error: conn.unusable
+        ? `${conn.unusable.name} is a ${conn.unusable.scheme}: URL, which isn't a Postgres connection this app can open. Neon and Supabase give a postgres:// URL; Prisma Postgres gives an accelerate URL, which won't work here.`
+        : "No database yet. Add one in Vercel under Storage, then redeploy — it sets DATABASE_URL for you.",
     });
   }
   if (!passphraseSet()) {

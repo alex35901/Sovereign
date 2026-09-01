@@ -9,14 +9,49 @@ import { Pool } from "pg";
  * and a document keeps the client and the cron reading exactly the same shape.
  */
 
-const CONNECTION_VARS = ["DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL", "NEON_DATABASE_URL"];
+/**
+ * Every name the hosted Postgres providers use, pooled ones first: a serverless
+ * function opens a connection per cold start, which is exactly what a pooler is
+ * for.
+ */
+const CONNECTION_VARS = [
+  "DATABASE_URL",
+  "POSTGRES_URL",
+  "POSTGRES_PRISMA_URL",
+  "NEON_DATABASE_URL",
+  "POSTGRES_URL_NON_POOLING",
+  "DATABASE_URL_UNPOOLED",
+];
+
+/** pg speaks the Postgres wire protocol; a proxy URL of any other scheme is not it. */
+const DIALABLE = /^postgres(ql)?:\/\//i;
+
+export interface Connection {
+  url: string | null;
+  /** Something was set, but not a URL pg can dial — worth saying so by name. */
+  unusable?: { name: string; scheme: string };
+}
+
+/**
+ * Picks the connection string, skipping values pg cannot use.
+ *
+ * Prisma Postgres, for one, sets DATABASE_URL to a `prisma+postgres://`
+ * accelerate URL. Dialling that fails deep inside the driver with nothing that
+ * points at the cause, so it is caught here and named instead.
+ */
+export function findConnection(env: NodeJS.ProcessEnv = process.env): Connection {
+  let unusable: Connection["unusable"];
+  for (const name of CONNECTION_VARS) {
+    const value = env[name]?.trim();
+    if (!value) continue;
+    if (DIALABLE.test(value)) return { url: value };
+    unusable ??= { name, scheme: value.split(":")[0] };
+  }
+  return { url: null, unusable };
+}
 
 export function connectionString(): string | null {
-  for (const name of CONNECTION_VARS) {
-    const v = process.env[name];
-    if (v && v.trim()) return v.trim();
-  }
-  return null;
+  return findConnection().url;
 }
 
 export interface StoredDoc {
