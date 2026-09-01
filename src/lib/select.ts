@@ -325,6 +325,15 @@ export function remainingTone(remaining: number): "pos" | "neg" | "flat" {
   return "flat";
 }
 
+/**
+ * What share of a month's available money has been spent. Null when nothing was
+ * available, because a percentage of zero says nothing useful.
+ */
+export function spentShare(available: number, actual: number): number | null {
+  if (available <= 0) return null;
+  return Math.round((actual / available) * 100);
+}
+
 export function budgetSummary(db: DB, month: MonthKey) {
   const table = budgetTable(db, month);
   const income = table.filter((g) => g.group.kind === "income");

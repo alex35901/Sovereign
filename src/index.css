@@ -296,7 +296,7 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 /* ── budget amount popover ────────────────────────────────────────────── */
 .menu.budget-menu { padding: 0; max-height: none; overflow: visible; }
 .budget-panel { padding: 12px; }
-.budget-amount { width: 100%; justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.budget-amount { width: 100%; justify-content: center; font-variant-numeric: tabular-nums; }
 .budget-amount.pinned { border-style: dashed; }
 /* what's left reads as a figure, not a field — but it is still a button */
 /* Remaining reads as a pill: green in hand, red overspent, quiet at zero. */
@@ -311,13 +311,21 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 /* One grid for the whole sheet, so the group totals and the column labels sit
    directly above the cells they describe. */
-.bcol { flex: none; text-align: right; }
+.bcol { flex: none; text-align: center; }
 .bcol-plan { width: 116px; }
 .bcol-actual { width: 100px; }
 .bcol-left { width: 100px; }
 .bcol-menu { width: 29px; flex: none; }
 .btn.bcol-menu { padding-left: 0; padding-right: 0; }
 .budget-head { align-items: flex-end; gap: 12px; }
+
+/* The month for one category, on hover over what's left. */
+.menu.hover-card { padding: 0; max-height: none; overflow: visible; cursor: default; }
+.hc-title { padding: 9px 12px; font-weight: 600; border-bottom: 1px solid var(--line-soft); }
+.hc-body, .hc-foot { padding: 9px 12px; display: flex; flex-direction: column; gap: 7px; }
+.hc-foot { border-top: 1px solid var(--line-soft); }
+.hc-line { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font-size: 12.5px; }
+.hc-line .lbl { color: var(--muted); }
 .budget-stat {
   display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);

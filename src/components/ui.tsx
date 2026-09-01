@@ -243,6 +243,80 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   );
 }
 
+/**
+ * A read-only card shown on hover or keyboard focus. Portalled like Popover so
+ * a card row can't clip it, and suppressed on mousedown so it doesn't sit on
+ * top of whatever the click opens.
+ */
+export function HoverCard({ children, card, width = 260, fill }: {
+  children: ReactNode;
+  card: ReactNode;
+  width?: number;
+  fill?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
+  const anchor = useRef<HTMLDivElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A click focuses the trigger, and focus would otherwise reopen the card on
+  // top of whatever the click opened. Stay shut until the pointer leaves.
+  const shut = useRef(false);
+
+  const show = () => {
+    const el = anchor.current;
+    if (!el || shut.current) return;
+    const r = el.getBoundingClientRect();
+    const room = window.innerHeight - r.bottom;
+    setPos({
+      top: room < 240 && r.top > room ? r.top - 6 : r.bottom + 6,
+      left: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)),
+      up: room < 240 && r.top > room,
+    });
+    setOpen(true);
+  };
+
+  const close = () => {
+    if (timer.current) clearTimeout(timer.current);
+    setOpen(false);
+  };
+  const enter = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(show, 140);
+  };
+  const leave = () => { shut.current = false; close(); };
+  const press = () => { shut.current = true; close(); };
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  return (
+    <div
+      ref={anchor}
+      style={{ display: fill ? "flex" : "inline-flex" }}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
+      onMouseDown={press}
+      onFocus={show}
+      onBlur={close}
+    >
+      {children}
+      {open
+        ? createPortal(
+            <div
+              className="menu hover-card"
+              style={{
+                position: "fixed", top: pos.top, left: pos.left, width,
+                transform: pos.up ? "translateY(-100%)" : undefined,
+              }}
+            >
+              {card}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 export function Progress({ value, max, color: c = "--accent", over }: { value: number; max: number; color?: string; over?: boolean }) {
   const pctRaw = max > 0 ? (value / max) * 100 : 0;
   return (

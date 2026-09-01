@@ -4,9 +4,10 @@ import { CalendarDays, ChevronDown, ChevronRight, Copy, RotateCcw, Sparkles } fr
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { monthLabel, thisMonth, addMonths } from "../lib/date";
-import { budgetSummary, remainingTone } from "../lib/select";
-import type { BudgetGroupRow } from "../lib/select";
-import { Btn, Card, Money, Popover, Progress, Toggle, cx } from "../components/ui";
+import { budgetSummary, remainingTone, spentShare } from "../lib/select";
+import { fmt0 } from "../lib/money";
+import type { BudgetGroupRow, BudgetRow } from "../lib/select";
+import { Btn, Card, HoverCard, Money, Popover, Progress, Toggle, cx } from "../components/ui";
 import { BudgetAmountPopover } from "./BudgetAmountPopover";
 import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
@@ -139,24 +140,11 @@ function GroupCard({ data, month, collapsed, onToggle }: {
         </div>
       </div>
 
-      {collapsed ? null : data.rows.map((r) => {
-        const over = !income && r.remaining < 0;
-        return (
+      {collapsed ? null : data.rows.map((r) => (
           <div key={r.category.id} className="list-row">
             <span style={{ fontSize: 15, width: 22 }}>{r.category.icon}</span>
-            <div className="grow col" style={{ gap: 5, minWidth: 0 }}>
-              <div className="spread">
-                <span className="truncate" style={{ fontWeight: 500 }}>
-                  {r.category.name}
-                  {r.rollover > 0 ? (
-                    <span className="tiny faint"> · <Money value={r.rollover} cents={false} /> rolled over</span>
-                  ) : null}
-                </span>
-              </div>
-              <Progress
-                value={r.actual} max={Math.max(r.planned + r.rollover, r.actual, 1)}
-                color={r.category.color} over={over}
-              />
+            <div className="grow" style={{ minWidth: 0 }}>
+              <span className="truncate" style={{ fontWeight: 500 }}>{r.category.name}</span>
             </div>
 
             <div className="bcol bcol-plan">
@@ -164,18 +152,20 @@ function GroupCard({ data, month, collapsed, onToggle }: {
             </div>
             <Link
               to={`/transactions?category=${r.category.id}&month=${month}`}
-              className="num right bcol bcol-actual"
+              className="num bcol bcol-actual"
             >
               <Money value={r.actual} cents={false} />
             </Link>
             <div className="bcol bcol-left">
-              {income ? (
-                <span className={cx("btn budget-amount remaining", remainingTone(r.remaining))}>
-                  <Money value={r.remaining} cents={false} />
-                </span>
-              ) : (
-                <BudgetMovePopover category={r.category} month={month} remaining={r.remaining} />
-              )}
+              <HoverCard fill width={266} card={<RemainingCard row={r} />}>
+                {income ? (
+                  <span className={cx("btn budget-amount remaining", remainingTone(r.remaining))}>
+                    <Money value={r.remaining} cents={false} />
+                  </span>
+                ) : (
+                  <BudgetMovePopover category={r.category} month={month} remaining={r.remaining} />
+                )}
+              </HoverCard>
             </div>
             <Popover
               align="right"
@@ -195,8 +185,45 @@ function GroupCard({ data, month, collapsed, onToggle }: {
               )}
             </Popover>
           </div>
-        );
-      })}
+      ))}
     </Card>
+  );
+}
+
+/** The whole month for one category, shown when you point at what's left. */
+function RemainingCard({ row }: { row: BudgetRow }) {
+  const available = row.rollover + row.planned;
+  const share = spentShare(available, row.actual);
+  return (
+    <>
+      <div className="hc-title">{row.category.icon} {row.category.name}</div>
+      <div className="hc-body">
+        {row.rollover ? <HcLine label="Rollover from last month" value={row.rollover} tone="pos" /> : null}
+        <HcLine label="Planned" value={row.planned} />
+        <HcLine label="Available to spend" value={available} />
+        <HcLine label="Actual" value={row.actual} />
+      </div>
+      <div className="hc-foot">
+        <HcLine label="Remaining" value={row.remaining} tone={remainingTone(row.remaining)} bold />
+        <Progress
+          value={row.actual} max={Math.max(available, row.actual, 1)}
+          color={row.category.color} over={row.remaining < 0}
+        />
+        <div className="tiny faint">
+          {share === null
+            ? `Nothing planned — ${fmt0(row.actual)} spent`
+            : `${share}% of the ${fmt0(available)} available spent`}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function HcLine({ label, value, tone, bold }: { label: string; value: number; tone?: string; bold?: boolean }) {
+  return (
+    <div className="hc-line">
+      <span className="lbl">{label}</span>
+      <span className={cx(tone, bold && "bold")}><Money value={value} cents={false} /></span>
+    </div>
   );
 }

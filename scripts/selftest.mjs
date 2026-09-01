@@ -37,7 +37,7 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, balanceAt } from "./src/lib/select.ts";
-      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone } from "./src/lib/select.ts";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { thisMonth, addMonths } from "./src/lib/date.ts";
@@ -594,6 +594,34 @@ await test("every category is listed in every month, budgeted or not", () => {
   const future = M.budgetTable(db, "2027-04").flatMap((g) => g.rows);
   assert.equal(future.length, budgetable, "a future month lists the same categories");
   assert.deepEqual(future.map((r) => r.category.id), august.map((r) => r.category.id));
+});
+
+await test("a rollover category carries unspent money into what's left", () => {
+  const db = M.emptyDB();
+  db.categories = db.categories.map((c) => (c.id === "c_groceries" ? { ...c, rollover: true } : c));
+  db.budgets = { "2026-07": { c_groceries: 60000 }, "2026-08": { c_groceries: 60000 } };
+  db.transactions = [{
+    id: "t1", accountId: "a1", date: "2026-07-10", merchant: "M", amount: -45000,
+    categoryId: "c_groceries", tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "",
+  }];
+
+  const row = M.budgetTable(db, "2026-08").flatMap((g) => g.rows).find((r) => r.category.id === "c_groceries");
+  assert.equal(row.rollover, 15000, "$150 went unspent in July");
+  assert.equal(row.planned, 60000);
+  assert.equal(row.actual, 0);
+  // what the hover card adds up and shows
+  const available = row.rollover + row.planned;
+  assert.equal(available, 75000);
+  assert.equal(available - row.actual, row.remaining, "available less spent is what's left");
+  assert.equal(M.spentShare(available, row.actual), 0);
+});
+
+await test("the share spent is of what was available, and undefined at zero", () => {
+  assert.equal(M.spentShare(72000, 60100), 83);   // rollover + planned vs spent
+  assert.equal(M.spentShare(20000, 60100), 301);  // overspending goes past 100
+  assert.equal(M.spentShare(0, 5000), null, "a percentage of nothing says nothing");
+  assert.equal(M.spentShare(0, 0), null);
+  assert.equal(M.spentShare(-100, 50), null, "a negative pot is not a denominator");
 });
 
 await test("what's left reads as in hand, overspent, or neither", () => {
