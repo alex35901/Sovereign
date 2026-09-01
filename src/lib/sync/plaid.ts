@@ -92,6 +92,17 @@ export function mapAssetClass(securityType?: string | null): AssetClass {
   }
 }
 
+export interface PlaidDiagnosis {
+  environment: "sandbox" | "production";
+  envVarSet: boolean;
+  clientId: { length: number; trimmed: boolean };
+  secret: { length: number; trimmed: boolean };
+  probe: { ok: boolean; error: string | null };
+}
+
+/** Asks the function what it sees, without any credential leaving the server. */
+export const diagnosePlaid = (): Promise<PlaidDiagnosis> => postJSON<PlaidDiagnosis>(PROXY, { action: "diagnose" });
+
 export async function createLinkToken(kind: "bank" | "investment"): Promise<string> {
   const products = kind === "investment" ? ["investments"] : ["transactions"];
   const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, { action: "link_token", products });

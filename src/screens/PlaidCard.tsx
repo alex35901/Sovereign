@@ -1,12 +1,63 @@
 import { useState } from "react";
-import { Building2, LineChart, RefreshCw } from "lucide-react";
+import { Building2, LineChart, RefreshCw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { mergeSync, syncWindowStart } from "../lib/sync";
-import { createLinkToken, exchangePublicToken, fetchItem } from "../lib/sync/plaid";
+import { createLinkToken, diagnosePlaid, exchangePublicToken, fetchItem } from "../lib/sync/plaid";
+import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
+
+/** What the function sees, in words rather than raw values. */
+function Diagnosis({ check }: { check: PlaidDiagnosis }) {
+  const lines: { ok: boolean; text: string }[] = [];
+
+  lines.push({
+    ok: check.clientId.length > 0,
+    text: check.clientId.length ? `PLAID_CLIENT_ID is set (${check.clientId.length} characters)` : "PLAID_CLIENT_ID is missing",
+  });
+  lines.push({
+    ok: check.secret.length > 0,
+    text: check.secret.length ? `PLAID_SECRET is set (${check.secret.length} characters)` : "PLAID_SECRET is missing",
+  });
+  if (check.clientId.trimmed || check.secret.trimmed) {
+    lines.push({ ok: false, text: "One of them had stray whitespace, which has been trimmed — worth fixing in Vercel too" });
+  }
+  lines.push({
+    ok: true,
+    text: check.envVarSet
+      ? `PLAID_ENV is set, so this app talks to ${check.environment}`
+      : `PLAID_ENV isn't set, so this app talks to ${check.environment} (the default)`,
+  });
+  lines.push({
+    ok: check.probe.ok,
+    text: check.probe.ok
+      ? `Plaid accepted these credentials for ${check.environment}`
+      : `Plaid refused them — ${check.probe.error}`,
+  });
+
+  const wrongKeys = check.probe.error === "INVALID_API_KEYS";
+
+  return (
+    <div className="col" style={{ gap: 5, width: "100%", marginTop: 4 }}>
+      {lines.map((l, i) => (
+        <div key={i} className={`small ${l.ok ? "muted" : "neg"}`}>
+          {l.ok ? "✓" : "✗"} {l.text}
+        </div>
+      ))}
+      {wrongKeys ? (
+        <div className="small muted" style={{ marginTop: 6 }}>
+          Plaid issues a <b>separate secret for each environment</b>. The Keys page in the Plaid dashboard lists
+          Sandbox and Production separately — a Sandbox secret will always be rejected here, because this app
+          asks for {check.environment}. Either paste the {check.environment} secret, or set
+          <b> PLAID_ENV=sandbox</b> to try it against Plaid's fake banks first. Changing a variable in Vercel
+          only takes effect on the next deployment, so redeploy afterwards.
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /** Connect and sync Plaid items — the route to retirement and brokerage holdings. */
 export function PlaidCard() {
@@ -14,6 +65,19 @@ export function PlaidCard() {
   const { actions, apply, notify } = useStore();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [check, setCheck] = useState<PlaidDiagnosis | null>(null);
+
+  const runCheck = async () => {
+    setBusy("check");
+    setError(null);
+    try {
+      setCheck(await diagnosePlaid());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not run the check.");
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const items = db.settings.plaidItems ?? [];
 
@@ -127,6 +191,14 @@ export function PlaidCard() {
       ) : null}
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+
+      <div className="divider" />
+      <div className="row wrap" style={{ gap: 10 }}>
+        <Btn onClick={() => void runCheck()} disabled={busy !== null}>
+          <Stethoscope size={14} /> {busy === "check" ? "Checking…" : "Check configuration"}
+        </Btn>
+        {check ? <Diagnosis check={check} /> : null}
+      </div>
 
       <div className="divider" />
       <details>

@@ -18,11 +18,13 @@ const UPSTREAM_TIMEOUT_MS = 25_000;
 type ApiRequest = IncomingMessage & { body?: unknown };
 type ApiResponse = ServerResponse;
 
+interface DiagnoseBody { action: "diagnose" }
 interface LinkTokenBody { action: "link_token"; products?: string[] }
 interface ExchangeBody { action: "exchange"; publicToken: string }
 interface SyncBody { action: "sync"; accessToken: string; startDate: string; endDate: string; withHoldings?: boolean }
-type Body = LinkTokenBody | ExchangeBody | SyncBody;
+type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | SyncBody;
 
+const CHECK_POINTER = " Press “Check configuration” below to see which one Plaid is refusing.";
 const env = () => (process.env.PLAID_ENV === "sandbox" ? "sandbox" : "production");
 const base = () => `https://${env()}.plaid.com`;
 
@@ -35,8 +37,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   if (req.method !== "POST") return send(405, { error: "POST only" });
 
-  const clientId = process.env.PLAID_CLIENT_ID;
-  const secret = process.env.PLAID_SECRET;
+  const rawClientId = process.env.PLAID_CLIENT_ID ?? "";
+  const rawSecret = process.env.PLAID_SECRET ?? "";
+  const clientId = rawClientId.trim();
+  const secret = rawSecret.trim();
   if (!clientId || !secret) {
     return send(503, {
       error: "Plaid isn't configured. Add PLAID_CLIENT_ID and PLAID_SECRET as environment variables in your Vercel project, then redeploy.",
@@ -66,11 +70,33 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     } catch {
       throw new PlaidError(502, `Plaid returned something that wasn't JSON (${upstream.status}).`);
     }
-    if (!upstream.ok) throw new PlaidError(upstream.status, describe(parsed));
+    if (!upstream.ok) {
+      throw new PlaidError(upstream.status, describe(parsed), typeof parsed.error_code === "string" ? parsed.error_code : "");
+    }
     return parsed;
   };
 
   try {
+    if (body.action === "diagnose") {
+      // Reports the shape of the configuration and what Plaid says about it,
+      // without ever returning the credentials themselves.
+      const probe = await call("/institutions/get", { count: 1, offset: 0, country_codes: ["US"] })
+        .then(() => ({ ok: true, error: null }))
+        .catch((err: unknown) => {
+          // Terse here on purpose: the card prints the explanation underneath,
+          // so this line only has to say what Plaid itself said.
+          if (err instanceof PlaidError) return { ok: false, error: err.code || "the request was refused" };
+          return { ok: false, error: err instanceof Error ? err.message : "unknown failure" };
+        });
+      return send(200, {
+        environment: env(),
+        envVarSet: Boolean(process.env.PLAID_ENV),
+        clientId: { length: clientId.length, trimmed: rawClientId !== clientId },
+        secret: { length: secret.length, trimmed: rawSecret !== secret },
+        probe,
+      });
+    }
+
     if (body.action === "link_token") {
       const products = body.products?.length ? body.products : ["transactions"];
       const data = await call("/link/token/create", {
@@ -141,7 +167,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 }
 
 class PlaidError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public code = "") {
     super(message);
     this.name = "PlaidError";
   }
@@ -151,7 +177,9 @@ class PlaidError extends Error {
 function describe(body: Record<string, unknown>): string {
   const code = typeof body.error_code === "string" ? body.error_code : "";
   const message = typeof body.error_message === "string" ? body.error_message : "Plaid rejected the request.";
-  if (code === "INVALID_API_KEYS") return "Plaid rejected the credentials. Check PLAID_CLIENT_ID and PLAID_SECRET, and that they match the environment (PLAID_ENV).";
+  if (code === "INVALID_API_KEYS") {
+    return "Plaid rejected the credentials. The usual cause is a secret from the wrong environment: Plaid issues a separate secret for Sandbox and for Production, and this app talks to Production unless PLAID_ENV says otherwise." + CHECK_POINTER;
+  }
   if (code === "ITEM_LOGIN_REQUIRED") return "This connection needs re-authenticating at the bank. Reconnect it below.";
   if (code === "PRODUCTS_NOT_SUPPORTED") return "That institution doesn't offer this data through Plaid. Try connecting it as the other account type.";
   if (code === "NO_INVESTMENT_ACCOUNTS") return "Plaid found no investment accounts on that login.";

@@ -40,6 +40,7 @@ await build({
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
+      export { thisMonth, addMonths } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
@@ -772,9 +773,57 @@ await test("plaid error codes become sentences", async () => {
         () => invokePlaid({ action: "link_token" })));
     return JSON.parse(r.text).error;
   };
-  assert.match(await bad("INVALID_API_KEYS"), /rejected the credentials/);
+  const keys = await bad("INVALID_API_KEYS");
+  assert.match(keys, /rejected the credentials/);
+  assert.match(keys, /Check configuration/, "the connect error should point at the check");
   assert.match(await bad("ITEM_LOGIN_REQUIRED"), /re-authenticating/);
   assert.match(await bad("PRODUCTS_NOT_SUPPORTED"), /other account type/);
+});
+
+await test("the configuration check describes the credentials without revealing them", async () => {
+  // Sentinels chosen so they cannot appear as part of a field name.
+  const id = "6a1f9c0d2b4e8f31", key = "0e7d3b5a9f2c1486";
+  const r = await withEnv({ PLAID_CLIENT_ID: id, PLAID_SECRET: key, PLAID_ENV: "sandbox" }, () =>
+    withFetch(async () => new Response(JSON.stringify({ institutions: [] }), { status: 200 }),
+      () => invokePlaid({ action: "diagnose" })));
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.equal(body.environment, "sandbox");
+  assert.equal(body.envVarSet, true);
+  assert.equal(body.clientId.length, 16);
+  assert.equal(body.secret.length, 16);
+  assert.equal(body.probe.ok, true);
+  // the whole point: lengths and booleans travel, values never do
+  assert.equal(r.text.includes(id), false, "the client id must not appear in the response");
+  assert.equal(r.text.includes(key), false, "the secret must not appear in the response");
+});
+
+await test("the configuration check reports stray whitespace and trims it before use", async () => {
+  let seen;
+  const r = await withEnv({ ...creds, PLAID_SECRET: "sec\n" }, () =>
+    withFetch(async (_url, init) => {
+      seen = JSON.parse(init.body);
+      return new Response(JSON.stringify({ institutions: [] }), { status: 200 });
+    }, () => invokePlaid({ action: "diagnose" })));
+  const body = JSON.parse(r.text);
+  assert.equal(body.secret.trimmed, true);
+  assert.equal(body.secret.length, 3);
+  assert.equal(body.clientId.trimmed, false);
+  assert.equal(seen.secret, "sec", "the trailing newline must not reach Plaid");
+});
+
+await test("the configuration check names production as the default and relays Plaid's refusal", async () => {
+  const r = await withEnv({ PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_ENV: "" }, () =>
+    withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
+      () => invokePlaid({ action: "diagnose" })));
+  assert.equal(r.status, 200, "a rejected probe is still a successful check");
+  const body = JSON.parse(r.text);
+  assert.equal(body.environment, "production");
+  assert.equal(body.envVarSet, false);
+  assert.equal(body.probe.ok, false);
+  // terse on purpose — the card prints the explanation beneath it, and keys
+  // off this exact code to decide whether the environment advice applies
+  assert.equal(body.probe.error, "INVALID_API_KEYS");
 });
 
 await test("plaid account types map onto this app's types", () => {
@@ -896,7 +945,9 @@ await test("year to date counts from January, whatever month it is", () => {
 });
 
 await test("all time reaches back to the first data, or two years without any", () => {
-  assert.equal(M.rangeMonths("all", "2024-09"), 24);
+  // Counted from today, not from a hardcoded month, or this test expires.
+  assert.equal(M.rangeMonths("all", M.addMonths(M.thisMonth(), -23)), 24);
+  assert.equal(M.rangeMonths("all", M.thisMonth()), 1, "data starting this month is one month of range");
   assert.equal(M.rangeMonths("all"), 24);
   assert.equal(M.rangeStart("all", "2019-03-04"), "2019-03-04");
 });
