@@ -826,6 +826,42 @@ await test("the configuration check names production as the default and relays P
   assert.equal(body.probe.error, "INVALID_API_KEYS");
 });
 
+await test("a refused key is traced to the environment it does belong to", async () => {
+  // The one that matters: a Sandbox-only account, which is what Plaid gives
+  // you before Production access is approved.
+  const seen = [];
+  const r = await withEnv({ PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_ENV: "" }, () =>
+    withFetch(async (url) => {
+      const host = new URL(String(url)).host;
+      seen.push(host);
+      return host.startsWith("sandbox")
+        ? new Response(JSON.stringify({ institutions: [] }), { status: 200 })
+        : new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 });
+    }, () => invokePlaid({ action: "diagnose" })));
+
+  const body = JSON.parse(r.text);
+  assert.equal(body.environment, "production");
+  assert.equal(body.probe.ok, false);
+  assert.equal(body.worksIn, "sandbox", "the check should say where the keys do work");
+  assert.deepEqual(seen, ["production.plaid.com", "sandbox.plaid.com"]);
+});
+
+await test("keys good for the configured environment aren't probed twice", async () => {
+  let calls = 0;
+  const r = await withEnv(creds, () =>
+    withFetch(async () => { calls += 1; return new Response(JSON.stringify({ institutions: [] }), { status: 200 }); },
+      () => invokePlaid({ action: "diagnose" })));
+  assert.equal(calls, 1, "a working key needs no second probe");
+  assert.equal(JSON.parse(r.text).worksIn, "sandbox");
+});
+
+await test("keys that work nowhere are reported as matching neither", async () => {
+  const r = await withEnv({ PLAID_CLIENT_ID: "cid", PLAID_SECRET: "sec", PLAID_ENV: "" }, () =>
+    withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
+      () => invokePlaid({ action: "diagnose" })));
+  assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
 await test("a sync never touches Plaid's metered endpoints", async () => {
   // Auth and Identity are $1.50 per call, Balance $0.10, the refresh
   // endpoints $0.12. Everything this app needs comes from the per-item

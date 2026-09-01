@@ -98,6 +98,8 @@ export interface PlaidDiagnosis {
   clientId: { length: number; trimmed: boolean };
   secret: { length: number; trimmed: boolean };
   probe: { ok: boolean; error: string | null };
+  /** Which environment these credentials are actually valid for, if any. */
+  worksIn: "sandbox" | "production" | null;
 }
 
 /** Asks the function what it sees, without any credential leaving the server. */

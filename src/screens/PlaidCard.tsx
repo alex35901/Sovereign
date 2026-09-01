@@ -38,6 +38,10 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
   });
 
   const wrongKeys = check.probe.error === "INVALID_API_KEYS";
+  const other = check.environment === "production" ? "sandbox" : "production";
+  if (wrongKeys && check.worksIn) {
+    lines.push({ ok: false, text: `These are ${check.worksIn} credentials, and this app is asking ${check.environment}` });
+  }
 
   return (
     <div className="col" style={{ gap: 5, width: "100%", marginTop: 4 }}>
@@ -46,13 +50,21 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
           {l.ok ? "✓" : "✗"} {l.text}
         </div>
       ))}
-      {wrongKeys ? (
+      {wrongKeys && check.worksIn === "sandbox" ? (
+        <div className="small" style={{ marginTop: 6 }}>
+          <b>These keys work — but only against Plaid's fake banks.</b> Plaid only shows a Production secret
+          on the Keys page once your Production access request has been approved; until then the page lists a
+          Sandbox secret alone, which is what you have. Two ways forward: set <b>PLAID_ENV</b> to
+          <code> sandbox</code> in Vercel and redeploy, to try the whole flow against test banks now — or wait
+          for approval, then paste the Production secret and remove PLAID_ENV. Either way, a Vercel variable
+          only takes effect on the next deployment.
+        </div>
+      ) : wrongKeys ? (
         <div className="small muted" style={{ marginTop: 6 }}>
-          Plaid issues a <b>separate secret for each environment</b>. The Keys page in the Plaid dashboard lists
-          Sandbox and Production separately — a Sandbox secret will always be rejected here, because this app
-          asks for {check.environment}. Either paste the {check.environment} secret, or set
-          <b> PLAID_ENV=sandbox</b> to try it against Plaid's fake banks first. Changing a variable in Vercel
-          only takes effect on the next deployment, so redeploy afterwards.
+          Plaid issues a <b>separate secret for each environment</b>, and the Keys page lists them separately.
+          These were refused by {check.environment} and by {other}, so the pair doesn't match: check that the
+          client_id and the secret were copied from the same dashboard account, with no characters missing.
+          Changing a variable in Vercel only takes effect on the next deployment, so redeploy afterwards.
         </div>
       ) : null}
     </div>

@@ -25,8 +25,8 @@ interface SyncBody { action: "sync"; accessToken: string; startDate: string; end
 type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | SyncBody;
 
 const CHECK_POINTER = " Press “Check configuration” below to see which one Plaid is refusing.";
-const env = () => (process.env.PLAID_ENV === "sandbox" ? "sandbox" : "production");
-const base = () => `https://${env()}.plaid.com`;
+type PlaidEnv = "sandbox" | "production";
+const env = (): PlaidEnv => (process.env.PLAID_ENV === "sandbox" ? "sandbox" : "production");
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   const send = (status: number, data: unknown) => {
@@ -56,8 +56,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return send(400, { error: "Malformed JSON body" });
   }
 
-  const call = async (path: string, payload: Record<string, unknown>) => {
-    const upstream = await fetch(`${base()}${path}`, {
+  const call = async (path: string, payload: Record<string, unknown>, on: PlaidEnv = env()) => {
+    const upstream = await fetch(`https://${on}.plaid.com${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ client_id: clientId, secret, ...payload }),
@@ -80,20 +80,31 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     if (body.action === "diagnose") {
       // Reports the shape of the configuration and what Plaid says about it,
       // without ever returning the credentials themselves.
-      const probe = await call("/institutions/get", { count: 1, offset: 0, country_codes: ["US"] })
-        .then(() => ({ ok: true, error: null }))
-        .catch((err: unknown) => {
-          // Terse here on purpose: the card prints the explanation underneath,
-          // so this line only has to say what Plaid itself said.
-          if (err instanceof PlaidError) return { ok: false, error: err.code || "the request was refused" };
-          return { ok: false, error: err instanceof Error ? err.message : "unknown failure" };
-        });
+      const tryEnv = (on: PlaidEnv) =>
+        call("/institutions/get", { count: 1, offset: 0, country_codes: ["US"] }, on)
+          .then(() => ({ ok: true, error: null }))
+          .catch((err: unknown) => {
+            // Terse on purpose: the card prints the explanation underneath, so
+            // this line only has to say what Plaid itself said.
+            if (err instanceof PlaidError) return { ok: false, error: err.code || "the request was refused" };
+            return { ok: false, error: err instanceof Error ? err.message : "unknown failure" };
+          });
+
+      const here = env();
+      const there: PlaidEnv = here === "production" ? "sandbox" : "production";
+      const probe = await tryEnv(here);
+      // If the keys are refused, the useful question is which environment they
+      // DO belong to — that turns a dead end into a one-line instruction.
+      const elsewhere = probe.error === "INVALID_API_KEYS" ? await tryEnv(there) : { ok: false, error: null };
+      const worksIn: PlaidEnv | null = probe.ok ? here : elsewhere.ok ? there : null;
+
       return send(200, {
-        environment: env(),
+        environment: here,
         envVarSet: Boolean(process.env.PLAID_ENV),
         clientId: { length: clientId.length, trimmed: rawClientId !== clientId },
         secret: { length: secret.length, trimmed: rawSecret !== secret },
         probe,
+        worksIn,
       });
     }
 
