@@ -9,6 +9,7 @@ import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, aggregateSeries, balanceAt, earlies
 import { AreaChart, Sparkline } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
 import { RangePicker } from "../components/pickers";
+import { HiddenToggle } from "./AccountControls";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
@@ -55,6 +56,7 @@ export default function Accounts() {
   }).filter((g) => g.accounts.length);
 
   const hidden = db.accounts.filter((a) => a.hidden);
+  const [showHidden, setShowHidden] = useState(false);
 
   return (
     <>
@@ -111,8 +113,8 @@ export default function Accounts() {
 
         {hidden.length ? (
           <Card pad={false}>
-            <CardHead flush title="Hidden" sub={`${hidden.length} account${hidden.length === 1 ? "" : "s"}`} />
-            {hidden.map((a) => <AccountRow key={a.id} account={a} dates={dates} />)}
+            {showHidden ? hidden.map((a) => <AccountRow key={a.id} account={a} dates={dates} />) : null}
+            <HiddenToggle count={hidden.length} open={showHidden} onToggle={() => setShowHidden((v) => !v)} />
           </Card>
         ) : null}
       </div>

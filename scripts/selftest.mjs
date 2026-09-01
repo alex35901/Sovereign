@@ -24,7 +24,8 @@ const entry = join(dir, "entry.js");
 await build({
   stdin: {
     contents: `
-      export { mergeSync, cleanMerchant, syncWindowStart } from "./src/lib/sync/merge.ts";
+      export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
+      export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor } from "./src/lib/select.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
@@ -759,6 +760,133 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+});
+
+/* ── hiding, closing and deleting accounts ───────────────────────────── */
+
+const syncPayload = (over = {}) => ({
+  fetchedAt: "2026-09-01T12:00:00.000Z",
+  accounts: [{
+    syncId: "sf-1", name: "Everyday", institution: "Test Bank", type: "checking",
+    balance: 120000, currency: "USD", balanceDate: "2026-09-01", ...over,
+  }],
+  transactions: [{
+    syncId: "tx-1", accountSyncId: "sf-1", date: "2026-09-01", amount: -4210,
+    description: "COFFEE", pending: false,
+  }],
+  errors: [],
+});
+
+await test("an account is identified by its sync id, and by name before it has one", () => {
+  const keys = M.accountKeys({ syncId: "sf-1", name: "Everyday", institution: "Test Bank" });
+  assert.deepEqual(keys, ["sync:sf-1", "name:test bank|everyday"]);
+  // case and padding must not create a second identity
+  assert.deepEqual(
+    M.accountKeys({ name: "  EVERYDAY ", institution: "Test Bank" }),
+    ["name:test bank|everyday"],
+  );
+});
+
+await test("a deleted account does not come back on the next sync", () => {
+  let db = M.emptyDB();
+  const first = M.mergeSync(db, syncPayload(), "simplefin");
+  assert.equal(first.accountsAdded, 1);
+  assert.equal(first.db.transactions.length, 1);
+
+  // delete it the way the app does: drop it and remember the provider's key
+  const gone = first.db.accounts[0];
+  db = {
+    ...first.db,
+    accounts: [],
+    transactions: [],
+    settings: { ...first.db.settings, deletedAccountKeys: M.accountKeys(gone) },
+  };
+
+  const again = M.mergeSync(db, syncPayload(), "simplefin");
+  assert.equal(again.accountsAdded, 0, "the account must stay deleted");
+  assert.equal(again.db.accounts.length, 0);
+  assert.equal(again.transactionsAdded, 0, "and must not bring its transactions with it");
+});
+
+await test("a tombstone matches on name too, for an account deleted before it had a sync id", () => {
+  const db = {
+    ...M.emptyDB(),
+    settings: { ...M.emptyDB().settings, deletedAccountKeys: ["name:test bank|everyday"] },
+  };
+  const res = M.mergeSync(db, syncPayload({ syncId: "a-different-id" }), "simplefin");
+  assert.equal(res.accountsAdded, 0, "same account, new provider id");
+});
+
+await test("deleting one account leaves the others alone", () => {
+  const db = {
+    ...M.emptyDB(),
+    settings: { ...M.emptyDB().settings, deletedAccountKeys: ["sync:sf-1"] },
+  };
+  const payload = syncPayload();
+  payload.accounts.push({
+    syncId: "sf-2", name: "Savings", institution: "Test Bank", type: "savings",
+    balance: 500000, currency: "USD", balanceDate: "2026-09-01",
+  });
+  payload.transactions.push({
+    syncId: "tx-2", accountSyncId: "sf-2", date: "2026-09-01", amount: -100,
+    description: "FEE", pending: false,
+  });
+  const res = M.mergeSync(db, payload, "simplefin");
+  assert.equal(res.accountsAdded, 1);
+  assert.equal(res.db.accounts[0].name, "Savings");
+  assert.equal(res.transactionsAdded, 1, "only the surviving account's transactions");
+});
+
+await test("a closed account is left settled by the next sync", () => {
+  const first = M.mergeSync(M.emptyDB(), syncPayload(), "simplefin");
+  const closed = {
+    ...first.db,
+    accounts: first.db.accounts.map((a) => ({
+      ...a, balance: 0, closedAt: "2026-09-01",
+      history: [...a.history, { date: "2026-09-01", balance: 0 }],
+    })),
+  };
+  const after = M.mergeSync(closed, syncPayload({ balance: 999900 }), "simplefin");
+  assert.equal(after.db.accounts[0].balance, 0, "a closed account must not be revived by a pull");
+  assert.equal(after.accountsUpdated, 0);
+  assert.equal(after.transactionsAdded, 0, "and takes no further transactions");
+  assert.equal(after.db.accounts.length, 1, "but is not re-added as a second account either");
+});
+
+await test("hiding an account's transactions takes them out of every figure", () => {
+  const base = M.buildDemoDB();
+  const busiest = [...base.accounts]
+    .map((a) => ({ a, n: base.transactions.filter((t) => t.accountId === a.id).length }))
+    .sort((x, y) => y.n - x.n)[0];
+  assert.ok(busiest.n > 0, "need an account with transactions to judge");
+
+  const muted = { ...base, accounts: base.accounts.map((a) => (a.id === busiest.a.id ? { ...a, hideTransactions: true } : a)) };
+  assert.equal(M.mutedAccountIds(muted).has(busiest.a.id), true);
+  assert.equal(M.mutedAccountIds(base).size, 0);
+
+  const month = M.thisMonth();
+  const before = [...M.budgetSummary(base, month).table].reduce((s, g) => s + g.actual, 0);
+  const after = [...M.budgetSummary(muted, month).table].reduce((s, g) => s + g.actual, 0);
+  assert.ok(after <= before, "muting can only remove actuals, never add");
+
+  const months = [M.addMonths(month, -1), month];
+  const flowBefore = M.cashFlowSeries(base, months).reduce((s, p) => s + p.income + p.expense, 0);
+  const flowAfter = M.cashFlowSeries(muted, months).reduce((s, p) => s + p.income + p.expense, 0);
+  assert.ok(flowAfter < flowBefore, "cash flow must drop when a busy account is muted");
+
+  // and the account's own balance is untouched — this hides figures, not money
+  assert.equal(
+    muted.accounts.find((a) => a.id === busiest.a.id).balance,
+    base.accounts.find((a) => a.id === busiest.a.id).balance,
+  );
+});
+
+await test("a muted transaction is excluded, a plain one is not", () => {
+  const muted = new Set(["a_muted"]);
+  const t = (accountId, hideFromReports = false) => ({ accountId, hideFromReports });
+  assert.equal(M.counts(t("a_ok"), muted), true);
+  assert.equal(M.counts(t("a_muted"), muted), false);
+  assert.equal(M.counts(t("a_ok", true), muted), false, "the per-transaction flag still applies");
 });
 
 /* ── account sparklines ───────────────────────────────────────────────── */

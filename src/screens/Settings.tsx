@@ -10,7 +10,6 @@ import type { SyncCadence } from "../lib/sync";
 import { canValue, estimateHomeValue } from "../lib/property";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { Link } from "react-router-dom";
-import { CategoriesPanel, RulesPanel, TagsPanel } from "./SettingsPanels";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
 import { ImportModal } from "./ImportModal";
@@ -268,6 +267,23 @@ export default function Settings() {
 
           {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
 
+          {(db.settings.deletedAccountKeys?.length ?? 0) > 0 ? (
+            <>
+              <div className="divider" />
+              <div className="spread wrap" style={{ gap: 10 }}>
+                <span className="small muted" style={{ maxWidth: 520 }}>
+                  <b>{db.settings.deletedAccountKeys!.length} deleted account
+                  {db.settings.deletedAccountKeys!.length === 1 ? " is" : "s are"} ignored on sync.</b>{" "}
+                  Forgetting them lets the provider offer them again on the next pull — the way back
+                  from a delete you didn't mean.
+                </span>
+                <Btn onClick={() => { actions.forgetDeletedAccounts(); notify("Deleted accounts forgotten. They can return on the next sync."); }}>
+                  Forget them
+                </Btn>
+              </div>
+            </>
+          ) : null}
+
           <div className="divider" />
           <div className="small muted">
             <b>Not everything is reachable this way.</b> SimpleFIN rides on MX, which carries no property values and
@@ -291,9 +307,6 @@ export default function Settings() {
           />
         </Card>
 
-        <RulesPanel />
-        <TagsPanel />
-        <CategoriesPanel />
 
         <Card>
           <CardHead title="Danger zone" />

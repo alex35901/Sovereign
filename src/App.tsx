@@ -14,6 +14,9 @@ import Recurring from "./screens/Recurring";
 import Goals from "./screens/Goals";
 import Investments from "./screens/Investments";
 import Settings from "./screens/Settings";
+import Rules from "./screens/Rules";
+import Categories from "./screens/Categories";
+import Tags from "./screens/Tags";
 
 export default function App() {
   const { toast, undoLabel, undo } = useStore();
@@ -35,6 +38,9 @@ export default function App() {
           <Route path="/recurring" element={<Recurring />} />
           <Route path="/goals" element={<Goals />} />
           <Route path="/investments" element={<Investments />} />
+          <Route path="/rules" element={<Rules />} />
+          <Route path="/categories" element={<Categories />} />
+          <Route path="/tags" element={<Tags />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

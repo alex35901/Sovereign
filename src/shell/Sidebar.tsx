@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
-  ArrowLeftRight, ChartPie, Landmark, LayoutDashboard, LineChart, Repeat,
-  Settings as SettingsIcon, Target, TrendingUp, Wallet,
+  ArrowLeftRight, ChartPie, Filter, Landmark, LayoutDashboard, LineChart, Repeat,
+  Settings as SettingsIcon, Shapes, Tag, Target, TrendingUp, Wallet,
 } from "lucide-react";
 import { useDB } from "../store";
 import { needsReviewCount, netWorthNow } from "../lib/select";
@@ -19,6 +19,12 @@ export const NAV_PLAN = [
   { to: "/recurring", label: "Recurring", Icon: Repeat },
   { to: "/goals", label: "Goals", Icon: Target },
   { to: "/investments", label: "Investments", Icon: LineChart },
+];
+
+export const NAV_CONFIG = [
+  { to: "/rules", label: "Rules", Icon: Filter },
+  { to: "/categories", label: "Categories", Icon: Shapes },
+  { to: "/tags", label: "Tags", Icon: Tag },
 ];
 
 export function Sidebar() {
@@ -46,6 +52,8 @@ export function Sidebar() {
         {NAV.map(item)}
         <div className="nav-label">Plan</div>
         {NAV_PLAN.map(item)}
+        <div className="nav-label">Configuration</div>
+        {NAV_CONFIG.map(item)}
         <div className="nav-label">Net worth</div>
         <div style={{ padding: "2px 10px 10px" }}>
           <Money value={net} cents={false} className="bold" style={{ fontSize: 18 }} />

@@ -17,6 +17,7 @@ import { PropertyValueCard } from "./PropertyValueCard";
 import { VehicleValueCard } from "./VehicleValueCard";
 import { BalanceImportModal } from "./BalanceImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
+import { AccountControls } from "./AccountControls";
 import { TransactionModal } from "./TransactionModal";
 import type { Transaction } from "../types";
 
@@ -117,6 +118,8 @@ export default function AccountDetail() {
         </Card>
 
         <BalancePointsCard account={account} />
+
+        <AccountControls account={account} />
 
         <Card pad={false}>
           <CardHead

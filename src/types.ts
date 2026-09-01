@@ -18,6 +18,10 @@ export interface Account {
   balance: number;
   includeInNetWorth: boolean;
   hidden: boolean;
+  /** Keep this account's transactions out of cash flow, budgets and reports. */
+  hideTransactions?: boolean;
+  /** Closed on this date: balance zeroed, history kept, sync stops touching it. */
+  closedAt?: ISODate;
   /** Sparse snapshots, ascending by date; forward-filled when charting. */
   history: { date: ISODate; balance: number }[];
   syncSource?: "manual" | "csv" | "simplefin" | "plaid";
@@ -158,6 +162,11 @@ export interface Settings {
   lastSyncAt?: string;
   /** How often to pull from SimpleFIN while the app is open. */
   syncCadence?: SyncCadence;
+  /**
+   * Accounts deleted on purpose. Without this a provider hands the same account
+   * back on the next pull and it reappears, which reads as the delete failing.
+   */
+  deletedAccountKeys?: string[];
 }
 
 export interface VehicleProfile {

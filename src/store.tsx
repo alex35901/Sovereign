@@ -10,6 +10,7 @@ import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
 import { applyForward } from "./lib/select";
 import { moveBudget } from "./lib/budget-move";
+import { accountKeys } from "./lib/sync/merge";
 
 type Mutator = (db: DB) => DB;
 
@@ -119,6 +120,9 @@ export interface Actions {
   setBalanceAt: (id: ID, date: string, balance: number) => void;
   deleteBalancePoint: (id: ID, date: string) => void;
   deleteAccount: (id: ID) => void;
+  closeAccount: (id: ID) => void;
+  reopenAccount: (id: ID) => void;
+  forgetDeletedAccounts: () => void;
 
   addTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
   addTransactions: (ts: Transaction[]) => void;
@@ -221,12 +225,52 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         }),
       }), "delete balance point"),
     deleteAccount: (id) =>
+      apply((db) => {
+        const gone = db.accounts.find((a) => a.id === id);
+        // Remembered, or the next pull hands the same account straight back and
+        // the delete looks like it silently failed.
+        const keys = gone ? accountKeys(gone) : [];
+        return {
+          ...db,
+          accounts: db.accounts.filter((a) => a.id !== id),
+          transactions: db.transactions.filter((t) => t.accountId !== id),
+          holdings: db.holdings.filter((h) => h.accountId !== id),
+          settings: {
+            ...db.settings,
+            deletedAccountKeys: [...new Set([...(db.settings.deletedAccountKeys ?? []), ...keys])],
+          },
+        };
+      }, "delete account"),
+
+    closeAccount: (id) =>
       apply((db) => ({
         ...db,
-        accounts: db.accounts.filter((a) => a.id !== id),
-        transactions: db.transactions.filter((t) => t.accountId !== id),
-        holdings: db.holdings.filter((h) => h.accountId !== id),
-      }), "delete account"),
+        accounts: db.accounts.map((a) => {
+          if (a.id !== id) return a;
+          const on = today();
+          return {
+            ...a,
+            balance: 0,
+            closedAt: on,
+            // A final zero point, so the chart shows it settling rather than
+            // ending on whatever it happened to hold.
+            history: [...a.history.filter((h) => h.date !== on), { date: on, balance: 0 }]
+              .sort((x, y) => (x.date < y.date ? -1 : 1)),
+          };
+        }),
+      }), "close account"),
+
+    reopenAccount: (id) =>
+      apply((db) => ({
+        ...db,
+        accounts: db.accounts.map((a) => (a.id === id ? { ...a, closedAt: undefined } : a)),
+      }), "reopen account"),
+
+    forgetDeletedAccounts: () =>
+      apply((db) => ({
+        ...db,
+        settings: { ...db.settings, deletedAccountKeys: [] },
+      }), "forget deleted accounts"),
 
     addTransaction: (t) =>
       apply((db) => ({

@@ -29,9 +29,20 @@ export function mergeSync(
   let accountsUpdated = 0;
   const idBySyncId = new Map<string, string>();
 
+  const tombstones = new Set(db.settings.deletedAccountKeys ?? []);
+
   for (const r of payload.accounts) {
+    // Deleted on purpose: skip it entirely, so it neither returns as a new
+    // account nor brings its transactions with it.
+    if (accountKeys({ syncId: r.syncId, name: r.name, institution: r.institution }).some((k) => tombstones.has(k))) continue;
+
     const existing = accounts.find((a) => a.syncId === r.syncId)
       ?? accounts.find((a) => a.syncSource === source && a.name === r.name && a.institution === r.institution);
+
+    // A closed account has been settled deliberately. Leave its balance and
+    // history alone, and take no further transactions for it.
+    if (existing?.closedAt) continue;
+
     if (existing) {
       const history = existing.history.filter((h) => h.date !== r.balanceDate);
       history.push({ date: r.balanceDate, balance: r.balance });
@@ -122,6 +133,16 @@ export function mergeSync(
     },
     accountsAdded, accountsUpdated, transactionsAdded: fresh.length, holdingsUpdated,
   };
+}
+
+/**
+ * The identities a provider might hand an account back under: its own stable id,
+ * and the name/institution pair the merge falls back to before one is known.
+ */
+export function accountKeys(a: { syncId?: string; name: string; institution: string }): string[] {
+  const keys = [`name:${a.institution.toLowerCase().trim()}|${a.name.toLowerCase().trim()}`];
+  if (a.syncId) keys.unshift(`sync:${a.syncId}`);
+  return keys;
 }
 
 /** Strips the noise banks staple onto descriptions: card numbers, store ids, dates. */

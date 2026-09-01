@@ -117,6 +117,21 @@ export function netWorthNow(db: DB): { assets: number; liabilities: number; net:
   return { assets, liabilities, net: assets + liabilities };
 }
 
+/**
+ * Transactions an account has been told to keep out of the figures.
+ *
+ * Set per account rather than per transaction, so turning it on excludes the
+ * history as well as anything that arrives later — which is the point of it.
+ */
+export function mutedAccountIds(db: DB): Set<string> {
+  return new Set(db.accounts.filter((a) => a.hideTransactions).map((a) => a.id));
+}
+
+/** Whether a transaction should count towards budgets, cash flow and reports. */
+export function counts(t: Transaction, muted: Set<string>): boolean {
+  return !t.hideFromReports && !muted.has(t.accountId);
+}
+
 /* ── cash flow ────────────────────────────────────────────────────────── */
 
 export interface FlowPoint { month: MonthKey; income: number; expense: number; net: number }
@@ -124,8 +139,9 @@ export interface FlowPoint { month: MonthKey; income: number; expense: number; n
 export function cashFlowSeries(db: DB, months: MonthKey[]): FlowPoint[] {
   const kind = new Map(db.categories.map((c) => [c.id, categoryKind(db, c.id)]));
   const acc = new Map(months.map((m) => [m, { income: 0, expense: 0 }]));
+  const muted = mutedAccountIds(db);
   for (const t of db.transactions) {
-    if (t.hideFromReports) continue;
+    if (!counts(t, muted)) continue;
     const bucket = acc.get(monthOf(t.date));
     if (!bucket) continue;
     for (const l of lines(t)) {
@@ -148,8 +164,9 @@ export function categoryTotals(
 ): CatTotal[] {
   const cats = byId(db.categories);
   const tally = new Map<string, { total: number; count: number }>();
+  const muted = mutedAccountIds(db);
   for (const t of db.transactions) {
-    if (t.hideFromReports || t.date < from || t.date > to) continue;
+    if (!counts(t, muted) || t.date < from || t.date > to) continue;
     for (const l of lines(t)) {
       const k = categoryKind(db, l.categoryId);
       if (k === "transfer") continue;
@@ -169,8 +186,9 @@ export function categoryTotals(
 
 export function merchantTotals(db: DB, from: ISODate, to: ISODate, limit = 10) {
   const tally = new Map<string, { total: number; count: number }>();
+  const muted = mutedAccountIds(db);
   for (const t of db.transactions) {
-    if (t.hideFromReports || t.date < from || t.date > to || t.amount >= 0) continue;
+    if (!counts(t, muted) || t.date < from || t.date > to || t.amount >= 0) continue;
     if (categoryKind(db, t.categoryId) === "transfer") continue;
     const cur = tally.get(t.merchant) ?? { total: 0, count: 0 };
     cur.total += -t.amount;
@@ -234,8 +252,9 @@ export function applyForward(db: DB, month: MonthKey, categoryId: string, amount
 /** Actual totals for one category over the given months, oldest first. */
 export function categoryHistory(db: DB, categoryId: string, months: MonthKey[]): { month: MonthKey; actual: number }[] {
   const totals = new Map<MonthKey, number>(months.map((m) => [m, 0]));
+  const muted = mutedAccountIds(db);
   for (const t of db.transactions) {
-    if (t.hideFromReports) continue;
+    if (!counts(t, muted)) continue;
     const month = monthOf(t.date);
     if (!totals.has(month)) continue;
     for (const l of lines(t)) {
@@ -258,8 +277,9 @@ export function categoryAverage(history: { actual: number }[]): number {
 
 export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
   const out = new Map<string, number>();
+  const muted = mutedAccountIds(db);
   for (const t of db.transactions) {
-    if (t.hideFromReports || monthOf(t.date) !== month) continue;
+    if (!counts(t, muted) || monthOf(t.date) !== month) continue;
     for (const l of lines(t)) out.set(l.categoryId, (out.get(l.categoryId) ?? 0) + Math.abs(l.amount));
   }
   return out;
@@ -364,8 +384,9 @@ const CADENCE_DAYS: [Recurring["cadence"], number][] = [
 export function detectRecurring(db: DB): Recurring[] {
   const cutoff = addDays(today(), -400);
   const groups = new Map<string, Transaction[]>();
+  const muted = mutedAccountIds(db);
   for (const t of db.transactions) {
-    if (t.date < cutoff || categoryKind(db, t.categoryId) === "transfer") continue;
+    if (!counts(t, muted) || t.date < cutoff || categoryKind(db, t.categoryId) === "transfer") continue;
     const key = t.merchant.toLowerCase().trim();
     const arr = groups.get(key) ?? [];
     arr.push(t);
