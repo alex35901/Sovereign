@@ -5,7 +5,7 @@ import type { Account, AccountType, ISODate } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, today } from "../lib/date";
-import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, aggregateSeries, balanceAt, earliestHistoryDate, netWorthAt, netWorthNow, trendTone } from "../lib/select";
+import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, aggregateSeries, balanceAt, earliestHistoryDate, netWorthAt, netWorthNow, netWorthSplitAt, trendTone } from "../lib/select";
 import { AreaChart, Sparkline } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
 import { RangePicker } from "../components/pickers";
@@ -18,10 +18,16 @@ export default function Accounts() {
   const [range, setRange] = useState<RangeKey>("1y");
   const [adding, setAdding] = useState(false);
   const nw = netWorthNow(db);
-  const series = useMemo(() => {
+
+  // The first day of the chosen period, or the first day there is any data —
+  // shared so the tiles and the chart can't measure over different spans.
+  const start = useMemo(() => {
     const earliest = earliestHistoryDate(db.accounts);
     const from = rangeStart(range, earliest);
-    const start = earliest && earliest > from ? earliest : from;
+    return earliest && earliest > from ? earliest : from;
+  }, [db.accounts, range]);
+
+  const series = useMemo(() => {
     const end = today();
     const days = spanDays(start, end);
     return sampleDates(start, end).map((d) => ({
@@ -29,9 +35,13 @@ export default function Accounts() {
       value: netWorthAt(db, d),
       sub: dateLabel(d, { year: true }),
     }));
-  }, [db, range]);
-  const first = series[0]?.value ?? 0;
-  const change = nw.net - first;
+  }, [db, start]);
+
+  const then = useMemo(() => netWorthSplitAt(db, start), [db, start]);
+  const change = nw.net - then.net;
+  const assetChange = nw.assets - then.assets;
+  // Liabilities are stored negative, so a rise is debt shrinking.
+  const owedChange = nw.liabilities - then.liabilities;
 
   // every sparkline on the page covers the same days as the chart above them
   const dates = useMemo(() => {
@@ -65,8 +75,14 @@ export default function Accounts() {
         <div className="grid g3">
           <Tile label="Net worth" value={<Money value={nw.net} cents={false} />}
             sub={<span className={change >= 0 ? "pos" : "neg"}><Money value={change} cents={false} sign={change >= 0} /> over {range.toUpperCase()}</span>} />
-          <Tile label="Assets" value={<Money value={nw.assets} cents={false} />} tone="pos" />
-          <Tile label="Liabilities" value={<Money value={nw.liabilities} cents={false} />} tone="neg" />
+          <Tile
+            label="Assets" value={<Money value={nw.assets} cents={false} />} tone="pos"
+            sub={<Change amount={assetChange} range={range} />}
+          />
+          <Tile
+            label="Liabilities" value={<Money value={nw.liabilities} cents={false} />} tone="neg"
+            sub={<Change amount={owedChange} range={range} owed />}
+          />
         </div>
 
         <Card>
@@ -120,6 +136,27 @@ export default function Accounts() {
       </div>
       {adding ? <AccountModal onClose={() => setAdding(false)} /> : null}
     </>
+  );
+}
+
+/**
+ * How a figure moved over the period.
+ *
+ * Debt is spelled out as "less owed" / "more owed" rather than signed: a
+ * liability of -$738,161 next to "+$50,000" reads as if the debt grew, when
+ * the balance rising is precisely the opposite.
+ */
+function Change({ amount, range, owed }: { amount: number; range: RangeKey; owed?: boolean }) {
+  const over = ` over ${range.toUpperCase()}`;
+  if (amount === 0) return <span className="muted">No change{over}</span>;
+  return (
+    <span className={amount > 0 ? "pos" : "neg"}>
+      {owed ? (
+        <><Money value={Math.abs(amount)} cents={false} /> {amount > 0 ? "less" : "more"} owed{over}</>
+      ) : (
+        <><Money value={amount} cents={false} sign={amount > 0} />{over}</>
+      )}
+    </span>
   );
 }
 

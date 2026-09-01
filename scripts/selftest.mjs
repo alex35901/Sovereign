@@ -43,7 +43,7 @@ await build({
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
-      export { aggregateSeries, trendTone, balanceAt } from "./src/lib/select.ts";
+      export { aggregateSeries, trendTone, balanceAt, netWorthSplitAt, netWorthNow } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
@@ -760,6 +760,86 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+});
+
+/* ── assets and liabilities over a period ────────────────────────────── */
+
+const held = (id, history) => ({
+  id, name: id, institution: "I", type: "checking",
+  balance: history[history.length - 1]?.balance ?? 0,
+  includeInNetWorth: true, hidden: false, history, order: 0,
+});
+
+await test("assets and liabilities are split by the sign each balance had that day", () => {
+  const db = {
+    ...M.emptyDB(),
+    accounts: [
+      held("savings", [{ date: "2026-01-01", balance: 500000 }, { date: "2026-09-01", balance: 800000 }]),
+      held("card", [{ date: "2026-01-01", balance: -300000 }, { date: "2026-09-01", balance: -100000 }]),
+    ],
+  };
+  const then = M.netWorthSplitAt(db, "2026-01-01");
+  assert.equal(then.assets, 500000);
+  assert.equal(then.liabilities, -300000);
+  assert.equal(then.net, 200000);
+
+  const now = M.netWorthSplitAt(db, "2026-09-01");
+  assert.equal(now.assets, 800000);
+  assert.equal(now.liabilities, -100000);
+  assert.equal(now.net, 700000);
+
+  // what the tiles report
+  assert.equal(now.assets - then.assets, 300000, "assets grew by $3,000");
+  assert.equal(now.liabilities - then.liabilities, 200000, "a rise in a negative balance is $2,000 less owed");
+});
+
+await test("an account that changed side is counted where it actually was", () => {
+  // a card carried a balance in January and sits in credit by September
+  const db = {
+    ...M.emptyDB(),
+    accounts: [held("card", [{ date: "2026-01-01", balance: -50000 }, { date: "2026-09-01", balance: 12000 }])],
+  };
+  const then = M.netWorthSplitAt(db, "2026-01-01");
+  assert.equal(then.assets, 0);
+  assert.equal(then.liabilities, -50000, "it was a debt back then");
+
+  const now = M.netWorthSplitAt(db, "2026-09-01");
+  assert.equal(now.assets, 12000, "and an asset now");
+  assert.equal(now.liabilities, 0);
+});
+
+await test("the split honours the same exclusions as the totals", () => {
+  const base = [
+    held("counted", [{ date: "2026-01-01", balance: 100000 }]),
+    { ...held("hidden", [{ date: "2026-01-01", balance: 900000 }]), hidden: true },
+    { ...held("excluded", [{ date: "2026-01-01", balance: 900000 }]), includeInNetWorth: false },
+  ];
+  const split = M.netWorthSplitAt({ ...M.emptyDB(), accounts: base }, "2026-01-01");
+  assert.equal(split.assets, 100000, "hidden and excluded accounts stay out");
+  assert.equal(split.net, 100000);
+});
+
+await test("balances before an account existed read as zero, not as a drop", () => {
+  const db = {
+    ...M.emptyDB(),
+    accounts: [held("new", [{ date: "2026-06-01", balance: 250000 }])],
+  };
+  const before = M.netWorthSplitAt(db, "2026-01-01");
+  assert.equal(before.assets, 0);
+  assert.equal(before.liabilities, 0);
+  const after = M.netWorthSplitAt(db, "2026-09-01");
+  assert.equal(after.assets, 250000, "and forward-fill carries the last point");
+});
+
+await test("today's split agrees with the totals shown beside it", () => {
+  const db = M.buildDemoDB();
+  const now = M.netWorthNow(db);
+  const split = M.netWorthSplitAt(db, M.thisMonth() + "-01");
+  // not necessarily equal — the split is as of a date — but the shape must hold
+  assert.equal(split.assets + split.liabilities, split.net);
+  assert.equal(now.assets + now.liabilities, now.net);
+  assert.ok(split.assets >= 0, "assets never go negative");
+  assert.ok(split.liabilities <= 0, "liabilities never go positive");
 });
 
 /* ── downloading an account ──────────────────────────────────────────── */

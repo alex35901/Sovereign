@@ -77,6 +77,25 @@ export function netWorthAt(db: DB, date: ISODate): number {
   return total;
 }
 
+/**
+ * Assets, liabilities and net on a given day.
+ *
+ * Split by each balance's sign *on that day* rather than today's: a card paid
+ * off, or an account overdrawn, belonged to the other side back then, and
+ * classifying it by its current sign would misreport the history.
+ */
+export function netWorthSplitAt(db: DB, date: ISODate): { assets: number; liabilities: number; net: number } {
+  let assets = 0;
+  let liabilities = 0;
+  for (const a of db.accounts) {
+    if (!a.includeInNetWorth || a.hidden) continue;
+    const balance = balanceAt(a, date);
+    if (balance >= 0) assets += balance;
+    else liabilities += balance;
+  }
+  return { assets, liabilities, net: assets + liabilities };
+}
+
 /** Summed balance of several accounts on each of the given days. */
 export function aggregateSeries(accounts: Account[], dates: ISODate[]): number[] {
   return dates.map((d) => accounts.reduce((sum, a) => sum + balanceAt(a, d), 0));
