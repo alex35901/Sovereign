@@ -222,7 +222,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   }, [open, place]);
 
   return (
-    <div ref={anchor} style={{ display: fill ? "flex" : "inline-flex" }}>
+    <div ref={anchor} style={fill ? { display: "flex", width: "100%" } : { display: "inline-flex" }}>
       {trigger(() => setOpen((o) => !o))}
       {open
         ? createPortal(
@@ -291,7 +291,7 @@ export function HoverCard({ children, card, width = 260, fill }: {
   return (
     <div
       ref={anchor}
-      style={{ display: fill ? "flex" : "inline-flex" }}
+      style={fill ? { display: "flex", width: "100%" } : { display: "inline-flex" }}
       onMouseEnter={enter}
       onMouseLeave={leave}
       onMouseDown={press}
