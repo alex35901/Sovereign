@@ -155,6 +155,21 @@ export function rowsToTransactions(db: DB, plan: ImportPlan, accountId: string):
   }));
 }
 
+/**
+ * An account's balance history as CSV.
+ *
+ * Columns are named so the file reads straight back into Import history —
+ * downloading, editing in a spreadsheet and re-importing is the point of it.
+ */
+export function balanceHistoryToCSV(account: { name: string; history: { date: string; balance: number }[] }): string {
+  const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const head = ["Date", "Account", "Balance"];
+  const body = account.history.map((h) =>
+    [h.date, account.name, (h.balance / 100).toFixed(2)].map((v) => esc(String(v))).join(","),
+  );
+  return [head.join(","), ...body].join("\n");
+}
+
 export function toCSV(db: DB, txns: Transaction[]): string {
   const acc = new Map(db.accounts.map((a) => [a.id, a.name]));
   const cat = new Map(db.categories.map((c) => [c.id, c.name]));

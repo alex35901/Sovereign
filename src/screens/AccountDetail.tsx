@@ -1,13 +1,15 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Pencil, Upload } from "lucide-react";
+import { ArrowLeft, Download, MoreHorizontal, Pencil, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, monthOf, thisMonth, today } from "../lib/date";
 import { ACCOUNT_TYPE_LABEL, balanceAt } from "../lib/select";
 import { canValue } from "../lib/property";
+import { balanceHistoryToCSV, toCSV } from "../lib/csv";
+import { download } from "../lib/storage";
 import { AreaChart } from "../components/charts";
-import { Btn, Card, CardHead, Empty, Money, MoneyInput, Tile } from "../components/ui";
+import { Btn, Card, CardHead, Empty, Money, MoneyInput, Popover, Tile } from "../components/ui";
 import { CategoryTag, RangePicker } from "../components/pickers";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
@@ -20,6 +22,9 @@ import { BalancePointsCard } from "./BalancePointsCard";
 import { AccountControls } from "./AccountControls";
 import { TransactionModal } from "./TransactionModal";
 import type { Transaction } from "../types";
+
+const slug = (name: string) =>
+  name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "account";
 
 export default function AccountDetail() {
   const { id = "" } = useParams();
@@ -69,7 +74,43 @@ export default function AccountDetail() {
     <>
       <TopBar
         title={account.name}
-        actions={<Btn onClick={() => setEditing(true)}><Pencil size={14} /> Edit</Btn>}
+        actions={
+          <>
+            <Btn onClick={() => setEditing(true)}><Pencil size={14} /> Edit</Btn>
+            <Popover
+              align="right" width={250}
+              trigger={(open) => (
+                <Btn onClick={open} title="More"><MoreHorizontal size={15} /></Btn>
+              )}
+            >
+              {(close) => (
+                <>
+                  <button
+                    onClick={() => {
+                      const rows = db.transactions.filter((t) => t.accountId === account.id);
+                      download(`${slug(account.name)}-transactions.csv`, toCSV(db, rows), "text/csv");
+                      close();
+                    }}
+                  >
+                    <Download size={14} /> Download transactions
+                  </button>
+                  <button onClick={() => { setImporting(true); close(); }}>
+                    <Upload size={14} /> Import balance history
+                  </button>
+                  <button
+                    disabled={!account.history.length}
+                    onClick={() => {
+                      download(`${slug(account.name)}-balance-history.csv`, balanceHistoryToCSV(account), "text/csv");
+                      close();
+                    }}
+                  >
+                    <Download size={14} /> Download balance history
+                  </button>
+                </>
+              )}
+            </Popover>
+          </>
+        }
       />
       <div className="page stack">
         <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => nav("/accounts")}>

@@ -332,6 +332,8 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   color: var(--muted); font-size: 13px; font-weight: 500; border-radius: 0 0 12px 12px;
 }
 .hidden-toggle:hover { background: var(--surface-2); color: var(--fg); }
+.balance-point { padding: 7px 0; border-bottom: 1px solid var(--line-soft); min-height: 38px; }
+.balance-point:last-of-type { border-bottom: 0; }
 
 /* The month for one category, on hover over what's left. */
 .menu.hover-card { padding: 0; max-height: none; overflow: visible; cursor: default; }

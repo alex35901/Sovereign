@@ -26,7 +26,7 @@ await build({
     contents: `
       export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
-      export { parseCSV, guessColumns, buildPlan, parseDate } from "./src/lib/csv.ts";
+      export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor } from "./src/lib/select.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules } from "./src/lib/rules.ts";
@@ -760,6 +760,62 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+});
+
+/* ── downloading an account ──────────────────────────────────────────── */
+
+await test("balance history downloads as CSV, and reads straight back in", () => {
+  const account = {
+    name: "Joint Cash Preserve",
+    history: [
+      { date: "2026-07-01", balance: 4456743 },
+      { date: "2026-08-01", balance: -120050 },  // a debt, and a value needing two decimals
+      { date: "2026-09-01", balance: 0 },
+    ],
+  };
+  const csv = M.balanceHistoryToCSV(account);
+  const lines = csv.split("\n");
+  assert.equal(lines[0], "Date,Account,Balance");
+  assert.equal(lines[1], "2026-07-01,Joint Cash Preserve,44567.43");
+  assert.equal(lines[2], "2026-08-01,Joint Cash Preserve,-1200.50");
+  assert.equal(lines[3], "2026-09-01,Joint Cash Preserve,0.00");
+
+  // the point of the column names: the file is importable again
+  const parsed = M.readBalanceCSV(csv);
+  const roles = M.guessBalanceColumns(parsed.header);
+  assert.deepEqual(roles, ["date", "account", "balance"]);
+  const plan = M.buildBalancePlan(parsed.rows, roles, { negate: false });
+  assert.equal(plan.points.length, 3);
+  assert.equal(plan.skipped, 0, "a file this app wrote must not have unreadable rows");
+  assert.deepEqual(plan.points.map((p) => p.balance), [4456743, -120050, 0], "cents must survive the round trip");
+});
+
+await test("a name with a comma in it doesn't break the columns", () => {
+  const csv = M.balanceHistoryToCSV({
+    name: 'Vector Rentals, LLC "Savings"',
+    history: [{ date: "2026-09-01", balance: 1000791 }],
+  });
+  const parsed = M.readBalanceCSV(csv);
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0][1], 'Vector Rentals, LLC "Savings"');
+  assert.equal(parsed.rows[0][2], "10007.91");
+});
+
+await test("an empty history still writes a header, not an empty file", () => {
+  assert.equal(M.balanceHistoryToCSV({ name: "New", history: [] }), "Date,Account,Balance");
+});
+
+await test("transactions download for one account, with its own rows only", () => {
+  const db = M.buildDemoDB();
+  const target = db.accounts.find((a) => db.transactions.some((t) => t.accountId === a.id));
+  const rows = db.transactions.filter((t) => t.accountId === target.id);
+  const csv = M.toCSV(db, rows);
+  const lines = csv.split("\n");
+  assert.equal(lines[0], "Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags");
+  assert.equal(lines.length, rows.length + 1);
+  for (const line of lines.slice(1)) {
+    assert.ok(line.includes(target.name), "every row must belong to the account asked for");
+  }
 });
 
 /* ── hiding, closing and deleting accounts ───────────────────────────── */
