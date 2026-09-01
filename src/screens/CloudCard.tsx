@@ -1,12 +1,58 @@
 import { useEffect, useState } from "react";
-import { Cloud, CloudOff, Download, RefreshCw } from "lucide-react";
+import { Cloud, CloudOff, Download, RefreshCw, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
-  cloudEnabled, cloudState, clearConflict, pull, push,
+  cloudEnabled, cloudState, clearConflict, diagnose, pull, push,
   setCloudState, setPassphrase, takeConflict,
 } from "../lib/cloud";
-import type { RemoteDoc } from "../lib/cloud";
+import type { CloudDiagnosis, RemoteDoc } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
+
+/** What the function sees of the database, in words rather than a stack trace. */
+function Diagnosis({ check }: { check: CloudDiagnosis }) {
+  const lines: { ok: boolean; text: string }[] = [];
+
+  lines.push({
+    ok: Boolean(check.variable),
+    text: check.variable
+      ? `Connection string found in ${check.variable}`
+      : "No connection string — add a database in Vercel under Storage, then redeploy",
+  });
+  if (check.host) {
+    lines.push({ ok: true, text: `Points at ${check.host}${check.database ? ` / ${check.database}` : ""}, TLS ${check.ssl ? "on" : "off"}` });
+  }
+  lines.push({
+    ok: check.connect.ok,
+    text: check.connect.ok
+      ? "The database answered"
+      : `Could not connect${check.connect.code ? ` [${check.connect.code}]` : ""}: ${check.connect.error}`,
+  });
+  if (check.connect.ok) {
+    lines.push({
+      ok: check.table.ok,
+      text: check.table.ok
+        ? `Table ready, holding ${check.documents} document${check.documents === 1 ? "" : "s"}`
+        : `Table unavailable: ${check.table.error}`,
+    });
+  }
+
+  const advice = !check.variable
+    ? "Vercel sets this when you create the database — the deployment has to be redeployed afterwards for it to appear."
+    : !check.connect.ok
+      ? "The usual causes: the database was created after this deployment was built, so redeploy; the project is paused or asleep on a free plan; or the connection string was pasted by hand and is missing part of the password."
+      : !check.table.ok
+        ? "The role in the connection string needs permission to create a table in this database."
+        : null;
+
+  return (
+    <div className="col" style={{ gap: 5, width: "100%", marginTop: 4 }}>
+      {lines.map((l, i) => (
+        <div key={i} className={`small ${l.ok ? "muted" : "neg"}`}>{l.ok ? "✓" : "✗"} {l.text}</div>
+      ))}
+      {advice ? <div className="small muted" style={{ marginTop: 6 }}>{advice}</div> : null}
+    </div>
+  );
+}
 
 /**
  * Turns this browser into one of several windows onto the same budget.
@@ -21,6 +67,7 @@ export function CloudCard() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [remote, setRemote] = useState<RemoteDoc | null>(null);
+  const [check, setCheck] = useState<CloudDiagnosis | null>(null);
   const [checked, setChecked] = useState(false);
   const on = cloudEnabled();
   const stashed = takeConflict();
@@ -90,6 +137,19 @@ export function CloudCard() {
       notify(`Saved as version ${res.version}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runCheck = async () => {
+    setBusy("check");
+    setError(null);
+    try {
+      // works before connecting, using whatever is typed in the box
+      setCheck(await diagnose(entry.trim() || undefined));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not run the check.");
     } finally {
       setBusy(null);
     }
@@ -187,6 +247,14 @@ export function CloudCard() {
       ) : null}
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+
+      <div className="divider" />
+      <div className="row wrap" style={{ gap: 10 }}>
+        <Btn onClick={() => void runCheck()} disabled={busy !== null}>
+          <Stethoscope size={14} /> {busy === "check" ? "Checking…" : "Check the database"}
+        </Btn>
+        {check ? <Diagnosis check={check} /> : null}
+      </div>
 
       <div className="divider" />
       <details>

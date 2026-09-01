@@ -54,6 +54,91 @@ export function connectionString(): string | null {
   return findConnection().url;
 }
 
+/** The winning variable and its value, for reporting which one was used. */
+function findConnectionNamed(env: NodeJS.ProcessEnv = process.env): { name: string; value: string } | null {
+  for (const name of CONNECTION_VARS) {
+    const value = env[name]?.trim();
+    if (value && DIALABLE.test(value)) return { name, value };
+  }
+  return null;
+}
+
+export interface StoreDiagnosis {
+  variable: string | null;
+  host: string | null;
+  database: string | null;
+  ssl: boolean;
+  connect: { ok: boolean; error: string | null; code: string | null };
+  table: { ok: boolean; error: string | null };
+  documents: number | null;
+}
+
+const describeError = (err: unknown): { error: string; code: string | null } => {
+  const e = err as { message?: string; code?: string; name?: string };
+  return {
+    error: e?.message ? String(e.message) : "unknown failure",
+    code: typeof e?.code === "string" ? e.code : null,
+  };
+};
+
+/**
+ * What the function can actually see and reach.
+ *
+ * The host and database name travel; the user and password never do. Written
+ * because a failed connection otherwise surfaces as a bare 500, which says
+ * nothing about which of the half-dozen possible causes it was.
+ */
+export async function diagnose(): Promise<StoreDiagnosis> {
+  const found = findConnectionNamed();
+  const rejected = found ? undefined : findConnection().unusable;
+  const out: StoreDiagnosis = {
+    variable: found?.name ?? null,
+    host: null,
+    database: null,
+    ssl: false,
+    connect: {
+      ok: false,
+      error: found
+        ? null
+        : rejected
+          ? `${rejected.name} holds a ${rejected.scheme}: URL, which is not a Postgres connection.`
+          : "No connection string is set.",
+      code: null,
+    },
+    table: { ok: false, error: null },
+    documents: null,
+  };
+  if (!found) return out;
+
+  try {
+    const parsed = new URL(found.value);
+    out.host = parsed.host;
+    out.database = parsed.pathname.replace(/^\//, "") || null;
+  } catch {
+    out.connect.error = "The connection string isn't a URL this can parse.";
+    return out;
+  }
+  out.ssl = !/localhost|127\.0\.0\.1/.test(found.value);
+
+  try {
+    const { rows } = await db().query("SELECT 1 AS ok");
+    out.connect.ok = rows.length === 1;
+  } catch (err) {
+    Object.assign(out.connect, describeError(err));
+    return out;
+  }
+
+  try {
+    await ensureTable();
+    const { rows } = await db().query("SELECT count(*)::int AS n FROM budget_document");
+    out.table.ok = true;
+    out.documents = Number((rows[0] as { n: number }).n);
+  } catch (err) {
+    out.table.error = describeError(err).error;
+  }
+  return out;
+}
+
 export interface StoredDoc {
   version: number;
   updatedAt: string;

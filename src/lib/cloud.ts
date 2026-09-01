@@ -68,8 +68,8 @@ export class CloudError extends Error {
   }
 }
 
-async function call(init: RequestInit): Promise<Response> {
-  const pass = passphrase();
+async function call(init: RequestInit, override?: string): Promise<Response> {
+  const pass = override ?? passphrase();
   if (!pass) throw new CloudError("No passphrase set on this device.", 0);
   let res: Response;
   try {
@@ -86,13 +86,26 @@ async function call(init: RequestInit): Promise<Response> {
   return res;
 }
 
+/**
+ * The server's own words where it has any.
+ *
+ * A platform-level failure answers with an HTML page rather than this app's
+ * JSON, and reducing that to a bare status code hides the only clue there is —
+ * so the raw body is shown instead.
+ */
 const messageOf = async (res: Response, fallback: string): Promise<string> => {
+  let text = "";
   try {
-    const body = (await res.clone().json()) as { error?: string };
-    return body.error || fallback;
+    text = await res.clone().text();
   } catch {
     return fallback;
   }
+  try {
+    const body = JSON.parse(text) as { error?: string };
+    if (body.error) return body.error;
+  } catch { /* not this app's JSON — fall through to the raw body */ }
+  const plain = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return plain ? `${fallback}: ${plain.slice(0, 300)}` : fallback;
 };
 
 export interface RemoteDoc {
@@ -130,6 +143,32 @@ export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
   if (res.status === 409) throw new CloudError(await messageOf(res, "Changed elsewhere."), 409);
   if (!res.ok) throw new CloudError(await messageOf(res, `Save failed (${res.status})`), res.status);
   return (await res.json()) as PushResult;
+}
+
+export interface CloudDiagnosis {
+  variable: string | null;
+  host: string | null;
+  database: string | null;
+  ssl: boolean;
+  passphraseSet: boolean;
+  connect: { ok: boolean; error: string | null; code: string | null };
+  table: { ok: boolean; error: string | null };
+  documents: number | null;
+}
+
+/**
+ * Asks the function what it can actually see, without any credential coming
+ * back. Takes a passphrase directly so the check still runs on a browser that
+ * has not managed to connect yet — which is when it is most wanted.
+ */
+export async function diagnose(override?: string): Promise<CloudDiagnosis> {
+  const res = await call({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "diagnose" }),
+  }, override);
+  if (!res.ok) throw new CloudError(await messageOf(res, `Check failed (${res.status})`), res.status);
+  return (await res.json()) as CloudDiagnosis;
 }
 
 /** Keeps a copy that would otherwise be lost to a conflict. */

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearer, passphraseOk, passphraseSet } from "./_auth";
-import { findConnection, readDoc, writeDoc } from "./_store";
+import { diagnose, findConnection, readDoc, writeDoc } from "./_store";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 
@@ -20,15 +20,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     res.end(JSON.stringify(data));
   };
 
-  const conn = findConnection();
-  if (!conn.url) {
-    return send(503, {
-      configured: false,
-      error: conn.unusable
-        ? `${conn.unusable.name} is a ${conn.unusable.scheme}: URL, which isn't a Postgres connection this app can open. Neon and Supabase give a postgres:// URL; Prisma Postgres gives an accelerate URL, which won't work here.`
-        : "No database yet. Add one in Vercel under Storage, then redeploy — it sets DATABASE_URL for you.",
-    });
-  }
+  // The passphrase gate comes first, so nothing below can be probed anonymously.
   if (!passphraseSet()) {
     return send(503, {
       configured: false,
@@ -40,13 +32,31 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
   }
 
   try {
+    // Answered before the database is required, because a missing or unusable
+    // connection is precisely what this is asked to explain. Gating it behind
+    // that check would make it useless in the only case that needs it.
+    const body0 = (typeof req.body === "string" ? safeParse(req.body) : req.body) as { action?: string } | undefined;
+    if (req.method === "POST" && body0?.action === "diagnose") {
+      return send(200, { ...(await diagnose()), passphraseSet: true });
+    }
+
+    const conn = findConnection();
+    if (!conn.url) {
+      return send(503, {
+        configured: false,
+        error: conn.unusable
+          ? `${conn.unusable.name} is a ${conn.unusable.scheme}: URL, which isn't a Postgres connection this app can open. Neon and Supabase give a postgres:// URL; Prisma Postgres gives an accelerate URL, which won't work here.`
+          : "No database yet. Add one in Vercel under Storage, then redeploy — it sets DATABASE_URL for you.",
+      });
+    }
+
     if (req.method === "GET") {
       const stored = await readDoc();
       return send(200, stored ? { found: true, ...stored } : { found: false });
     }
 
     if (req.method === "PUT" || req.method === "POST") {
-      const body = (typeof req.body === "string" ? JSON.parse(req.body) : req.body) as {
+      const body = (typeof req.body === "string" ? safeParse(req.body) : req.body) as {
         doc?: unknown; baseVersion?: number; device?: string;
       } | undefined;
       if (!body || body.doc === undefined) return send(400, { error: "No document supplied." });
@@ -66,6 +76,17 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
 
     return send(405, { error: "GET or PUT only" });
   } catch (err) {
-    return send(500, { error: err instanceof Error ? err.message : "The database request failed." });
+    // Always JSON, always this app's shape: a raw throw would reach the browser
+    // as the platform's HTML error page, which says nothing useful.
+    const e = err as { message?: string; code?: string };
+    const code = typeof e?.code === "string" ? ` (${e.code})` : "";
+    return send(500, {
+      error: `${e?.message ? String(e.message) : "The database request failed."}${code}`,
+      hint: "Settings → Sync across devices → Check the database says which part failed.",
+    });
   }
 }
+
+const safeParse = (raw: string): unknown => {
+  try { return JSON.parse(raw); } catch { return undefined; }
+};

@@ -1003,9 +1003,15 @@ await test("with no passphrase configured, nothing opens the door", async () => 
 });
 
 await test("the document endpoint refuses before it reaches the database", async () => {
-  // no database at all
-  const noDb = await withEnv({ DATABASE_URL: "", POSTGRES_URL: "", POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "", SYNC_PASSPHRASE: "p" },
+  // The passphrase gate comes first, so an unauthenticated caller learns
+  // nothing about how this deployment is configured.
+  const anonymous = await withEnv({ DATABASE_URL: "", POSTGRES_URL: "", POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "", SYNC_PASSPHRASE: "p" },
     () => invokeWith(M.dbHandler, { method: "GET" }));
+  assert.equal(anonymous.status, 401);
+
+  // with the passphrase, a missing database is explained
+  const noDb = await withEnv({ DATABASE_URL: "", POSTGRES_URL: "", POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "", POSTGRES_URL_NON_POOLING: "", DATABASE_URL_UNPOOLED: "", SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "GET", headers: { authorization: "Bearer p" } }));
   assert.equal(noDb.status, 503);
   assert.match(JSON.parse(noDb.text).error, /Storage/);
 
@@ -1069,6 +1075,39 @@ await test("an unusable URL is explained, not left as a driver crash", async () 
   const { error } = JSON.parse(r.text);
   assert.match(error, /prisma\+postgres/);
   assert.match(error, /Neon and Supabase/);
+});
+
+await test("the database check answers even with no database configured", async () => {
+  // The case it exists for. Gating it behind the connection check would make it
+  // useless in exactly the situation that needs explaining.
+  const r = await withEnv(
+    { DATABASE_URL: "", POSTGRES_URL: "", POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "",
+      POSTGRES_URL_NON_POOLING: "", DATABASE_URL_UNPOOLED: "", SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "POST", body: { action: "diagnose" }, headers: { authorization: "Bearer p" } }),
+  );
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.equal(body.variable, null);
+  assert.equal(body.connect.ok, false);
+  assert.match(body.connect.error, /No connection string/);
+});
+
+await test("the check still needs the passphrase", async () => {
+  const r = await withEnv({ SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "POST", body: { action: "diagnose" }, headers: { authorization: "Bearer wrong" } }));
+  assert.equal(r.status, 401, "anyone must not be able to probe the database");
+});
+
+await test("an unusable URL is named by the check as well as the endpoint", async () => {
+  const r = await withEnv(
+    { DATABASE_URL: "prisma+postgres://accelerate.prisma-data.net/?api_key=k", POSTGRES_URL: "",
+      POSTGRES_PRISMA_URL: "", NEON_DATABASE_URL: "", POSTGRES_URL_NON_POOLING: "",
+      DATABASE_URL_UNPOOLED: "", SYNC_PASSPHRASE: "p" },
+    () => invokeWith(M.dbHandler, { method: "POST", body: { action: "diagnose" }, headers: { authorization: "Bearer p" } }),
+  );
+  const body = JSON.parse(r.text);
+  assert.equal(body.variable, null);
+  assert.match(body.connect.error, /prisma\+postgres/);
 });
 
 await test("a write without a baseVersion is refused, so nothing clobbers blindly", async () => {
