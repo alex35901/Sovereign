@@ -2,11 +2,37 @@ import { useEffect, useState } from "react";
 import { Cloud, CloudOff, Download, RefreshCw, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
-  cloudEnabled, cloudState, clearConflict, diagnose, pull, push,
+  cloudEnabled, cloudState, clearConflict, diagnose, probe, pull, push,
   setCloudState, setPassphrase, takeConflict,
 } from "../lib/cloud";
-import type { CloudDiagnosis, RemoteDoc } from "../lib/cloud";
+import type { CloudDiagnosis, Probe, RemoteDoc } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
+
+/**
+ * Shown when /api/db could not answer at all. Names which of its dependencies
+ * refuse to load, which is the part that cannot be seen from a crash.
+ */
+function ProbeReport({ probe: p }: { probe: Probe }) {
+  const modules = ["pg", "node:crypto", "./_auth", "./_store"];
+  return (
+    <div className="col" style={{ gap: 5, width: "100%", marginTop: 8 }}>
+      <div className="small" style={{ fontWeight: 600 }}>The sync endpoint didn't answer, so here's what did:</div>
+      <div className="small muted">
+        Node {String(p.node ?? "?")}{p.region ? ` in ${String(p.region)}` : ""} · variables set:{" "}
+        {Array.isArray(p.envSet) && p.envSet.length ? p.envSet.join(", ") : "none"}
+      </div>
+      {modules.map((name) => {
+        const m = p[name] as { ok?: boolean; error?: string; exports?: string[] } | undefined;
+        if (!m) return null;
+        return (
+          <div key={name} className={`small ${m.ok ? "muted" : "neg"}`}>
+            {m.ok ? "✓" : "✗"} {name}{m.ok ? ` loaded (${(m.exports ?? []).slice(0, 4).join(", ")}…)` : `: ${m.error}`}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 /** What the function sees of the database, in words rather than a stack trace. */
 function Diagnosis({ check }: { check: CloudDiagnosis }) {
@@ -74,6 +100,7 @@ export function CloudCard() {
   const [error, setError] = useState<string | null>(null);
   const [remote, setRemote] = useState<RemoteDoc | null>(null);
   const [check, setCheck] = useState<CloudDiagnosis | null>(null);
+  const [fallback, setFallback] = useState<Probe | null>(null);
   const [checked, setChecked] = useState(false);
   const on = cloudEnabled();
   const stashed = takeConflict();
@@ -151,11 +178,25 @@ export function CloudCard() {
   const runCheck = async () => {
     setBusy("check");
     setError(null);
+    setFallback(null);
+    const pass = entry.trim() || undefined; // works before connecting
     try {
-      // works before connecting, using whatever is typed in the box
-      setCheck(await diagnose(entry.trim() || undefined));
+      setCheck(await diagnose(pass));
     } catch (err) {
+      setCheck(null);
       setError(err instanceof Error ? err.message : "Could not run the check.");
+      // /api/db could not answer, so ask the endpoint that has nothing to load.
+      // Whether that one answers is itself the finding: if it does, the problem
+      // is in what /api/db imports; if it doesn't, no function here is running.
+      try {
+        setFallback(await probe(pass));
+      } catch (probeErr) {
+        setError(
+          `${err instanceof Error ? err.message : "The sync endpoint failed."} ` +
+          `An endpoint with no imports at all also failed, so this isn't about the database — ` +
+          `no function in this deployment is running. ${probeErr instanceof Error ? probeErr.message : ""}`,
+        );
+      }
     } finally {
       setBusy(null);
     }
@@ -260,6 +301,7 @@ export function CloudCard() {
           <Stethoscope size={14} /> {busy === "check" ? "Checking…" : "Check the database"}
         </Btn>
         {check ? <Diagnosis check={check} /> : null}
+        {fallback ? <ProbeReport probe={fallback} /> : null}
       </div>
 
       <div className="divider" />

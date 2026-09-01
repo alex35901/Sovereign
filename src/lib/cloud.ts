@@ -172,6 +172,35 @@ export async function diagnose(override?: string): Promise<CloudDiagnosis> {
   return (await res.json()) as CloudDiagnosis;
 }
 
+export interface Probe {
+  alive: boolean;
+  node?: string;
+  region?: string | null;
+  envSet?: string[];
+  [module: string]: unknown;
+}
+
+/**
+ * The import-free endpoint. Asked when /api/db fails to answer at all, because
+ * a function that dies on load cannot report why — this one has nothing to
+ * load, so it can.
+ */
+export async function probe(override?: string): Promise<Probe> {
+  const pass = override ?? passphrase();
+  let res: Response;
+  try {
+    res = await fetch("/api/ping", { headers: pass ? { authorization: `Bearer ${pass}` } : {} });
+  } catch {
+    throw new CloudError("Couldn't reach the app's functions at all.", 0);
+  }
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as Probe;
+  } catch {
+    throw new CloudError(`Even the import-free probe failed (${res.status}). ${text.replace(/<[^>]*>/g, " ").slice(0, 200)}`, res.status);
+  }
+}
+
 /** Keeps a copy that would otherwise be lost to a conflict. */
 export function stashConflict(db: DB): void {
   try {
