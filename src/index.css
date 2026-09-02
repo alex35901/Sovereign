@@ -20,6 +20,8 @@
   --radius: 12px;
   --radius-sm: 8px;
   --sidebar-w: 232px;
+  /* What the sidebar keeps when it isn't being used. */
+  --rail-w: 58px;
 
   --c1: #e8894a; --c2: #4a9fe8; --c3: #35c48c; --c4: #b47ae8;
   --c5: #e8c34a; --c6: #e85a8a; --c7: #4ad0e8; --c8: #8ae84a;
@@ -101,10 +103,54 @@ h3 { font-size: 14px; }
 .mb { margin-bottom: 12px; }
 
 /* ── sidebar ──────────────────────────────────────────────────────────── */
+/*
+ * A rail that opens on hover.
+ *
+ * Taken out of flow and given the page a matching margin instead, so opening it
+ * slides over the content rather than shoving it sideways — a layout that
+ * reflowed every time the pointer crossed the edge would be unusable.
+ */
 .sidebar {
-  width: var(--sidebar-w); flex: none; background: var(--surface);
+  width: var(--rail-w); flex: none; background: var(--surface);
   border-right: 1px solid var(--line); display: flex; flex-direction: column;
-  position: sticky; top: 0; height: 100vh;
+  position: fixed; left: 0; top: 0; height: 100vh; z-index: 60; overflow: hidden;
+  transition: width 160ms ease, box-shadow 160ms ease;
+}
+.sidebar:hover, .sidebar:focus-within { width: var(--sidebar-w); box-shadow: var(--shadow); }
+.main { margin-left: var(--rail-w); }
+
+/*
+ * Labels fade rather than unmount, so they keep their space and the icons stay
+ * exactly where they are as it opens.
+ */
+.sidebar .nav-item > .grow,
+.sidebar .brand > span:last-child,
+.sidebar .nav-label,
+.sidebar .nav-net { opacity: 0; transition: opacity 120ms ease; white-space: nowrap; }
+.sidebar:hover .nav-item > .grow,
+.sidebar:hover .brand > span:last-child,
+.sidebar:hover .nav-label,
+.sidebar:hover .nav-net,
+.sidebar:focus-within .nav-item > .grow,
+.sidebar:focus-within .brand > span:last-child,
+.sidebar:focus-within .nav-label,
+.sidebar:focus-within .nav-net { opacity: 1; }
+
+/* The net worth figure is the one block that can fold away without moving an
+   icon, since nothing sits below it. */
+.nav-networth { overflow: hidden; max-height: 90px; transition: max-height 160ms ease; }
+.sidebar:not(:hover):not(:focus-within) .nav-networth { max-height: 0; }
+
+/* Closed, the unreviewed count has nowhere to go, so it becomes a dot. */
+.nav-item { position: relative; }
+.sidebar:not(:hover):not(:focus-within) .nav-item .tag {
+  position: absolute; left: 25px; top: 4px;
+  width: 8px; height: 8px; min-width: 0; padding: 0; border-radius: 999px;
+  font-size: 0; overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .sidebar .nav-item > .grow, .sidebar .nav-label, .sidebar .nav-net { transition: none; }
 }
 .brand { display: flex; align-items: center; gap: 9px; padding: 16px 16px 12px; font-weight: 700; font-size: 15px; letter-spacing: -0.02em; }
 .brand-mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
@@ -319,6 +365,7 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 }
 @media (max-width: 720px) {
   .sidebar { display: none; }
+  .main { margin-left: 0; }
   .page { padding: 16px 14px 80px; }
   .topbar { padding: 10px 14px; }
   .g2, .g4 { grid-template-columns: minmax(0, 1fr); }

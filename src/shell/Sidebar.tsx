@@ -54,9 +54,13 @@ export function Sidebar() {
         {NAV_PLAN.map(item)}
         <div className="nav-label">Configuration</div>
         {NAV_CONFIG.map(item)}
-        <div className="nav-label">Net worth</div>
-        <div style={{ padding: "2px 10px 10px" }}>
-          <Money value={net} cents={false} className="bold" style={{ fontSize: 18 }} />
+        {/* Below every nav item, so collapsing it when the rail is closed
+            cannot shift an icon out from under the pointer. */}
+        <div className="nav-networth">
+          <div className="nav-label">Net worth</div>
+          <div className="nav-net" style={{ padding: "2px 10px 10px" }}>
+            <Money value={net} cents={false} className="bold" style={{ fontSize: 18 }} />
+          </div>
         </div>
       </nav>
       <div className="nav-foot">{item({ to: "/settings", label: "Settings", Icon: SettingsIcon })}</div>
