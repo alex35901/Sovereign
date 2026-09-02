@@ -116,7 +116,9 @@ h3 { font-size: 14px; }
   position: fixed; left: 0; top: 0; height: 100vh; z-index: 60; overflow: hidden;
   transition: width 160ms ease, box-shadow 160ms ease;
 }
-.sidebar:hover, .sidebar:focus-within { width: var(--sidebar-w); box-shadow: var(--shadow); }
+/* Hover opens it; so does keyboard focus, but not the focus a mouse click
+   leaves behind — that kept it open until you clicked somewhere else. */
+.sidebar:hover, .sidebar:has(:focus-visible) { width: var(--sidebar-w); box-shadow: var(--shadow); }
 .main { margin-left: var(--rail-w); }
 
 /*
@@ -131,19 +133,19 @@ h3 { font-size: 14px; }
 .sidebar:hover .brand > span:last-child,
 .sidebar:hover .nav-label,
 .sidebar:hover .nav-net,
-.sidebar:focus-within .nav-item > .grow,
-.sidebar:focus-within .brand > span:last-child,
-.sidebar:focus-within .nav-label,
-.sidebar:focus-within .nav-net { opacity: 1; }
+.sidebar:has(:focus-visible) .nav-item > .grow,
+.sidebar:has(:focus-visible) .brand > span:last-child,
+.sidebar:has(:focus-visible) .nav-label,
+.sidebar:has(:focus-visible) .nav-net { opacity: 1; }
 
 /* The net worth figure is the one block that can fold away without moving an
    icon, since nothing sits below it. */
 .nav-networth { overflow: hidden; max-height: 90px; transition: max-height 160ms ease; }
-.sidebar:not(:hover):not(:focus-within) .nav-networth { max-height: 0; }
+.sidebar:not(:hover):not(:has(:focus-visible)) .nav-networth { max-height: 0; }
 
 /* Closed, the unreviewed count has nowhere to go, so it becomes a dot. */
 .nav-item { position: relative; }
-.sidebar:not(:hover):not(:focus-within) .nav-item .tag {
+.sidebar:not(:hover):not(:has(:focus-visible)) .nav-item .tag {
   position: absolute; left: 25px; top: 4px;
   width: 8px; height: 8px; min-width: 0; padding: 0; border-radius: 999px;
   font-size: 0; overflow: hidden;
