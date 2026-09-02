@@ -72,14 +72,14 @@ export default function Recurring() {
                 <MerchantAvatar name={r.merchant} size={30} />
                 <div className="grow col" style={{ gap: 1 }}>
                   <span className="row" style={{ gap: 6 }}>
-                    <span style={{ fontWeight: 500 }}>{r.merchant}</span>
+                    <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
                     {r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
                   </span>
-                  <span className="tiny faint">
+                  <span className="tiny faint truncate">
                     {CADENCES.find((c) => c.value === r.cadence)?.label} · next {relativeDay(r.nextDate).toLowerCase()} ({dateLabel(r.nextDate)})
                   </span>
                 </div>
-                <CategoryTag categoryId={r.categoryId} />
+                <span className="rec-category"><CategoryTag categoryId={r.categoryId} /></span>
                 <span className="num bold" style={{ width: 96, textAlign: "right" }}>
                   <Money value={r.amount} colored={r.amount > 0} />
                 </span>

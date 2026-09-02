@@ -212,7 +212,7 @@ export default function Transactions() {
             />
             <span />
             <span className="tiny faint">Merchant</span>
-            <span className="tiny faint">Category</span>
+            <span className="tiny faint tx-category">Category</span>
             <span className="tiny faint tx-account">Account</span>
             <span className="tiny faint right">Amount</span>
           </div>
@@ -264,12 +264,23 @@ function Row({ txn, selected, onToggle, onEdit }: {
   const db = useDB();
   const { actions, suggestRule } = useStore();
   const account = db.accounts.find((a) => a.id === txn.accountId);
+  const category = db.categories.find((c) => c.id === txn.categoryId);
   const split = (txn.splits?.length ?? 0) > 0;
 
   return (
     <div className={cx("list-row tx-grid", selected && "sel")} style={selected ? { background: "var(--accent-soft)" } : undefined}>
       <input type="checkbox" className="cb" checked={selected} onChange={onToggle} />
-      <MerchantAvatar name={txn.merchant} />
+      <span className="tx-mark">
+        <MerchantAvatar name={txn.merchant} />
+        <span
+          className="avatar tx-cat-mark" aria-hidden
+          style={category ? {
+            background: `color-mix(in srgb, var(${category.color}) 16%, transparent)`,
+          } : undefined}
+        >
+          {category?.icon ?? "\u2753"}
+        </span>
+      </span>
       <div className="col" style={{ gap: 1, cursor: "pointer", minWidth: 0 }} onClick={onEdit}>
         <span className="row" style={{ gap: 6 }}>
           <span className="truncate" style={{ fontWeight: 500 }}>{txn.merchant}</span>
@@ -289,7 +300,7 @@ function Row({ txn, selected, onToggle, onEdit }: {
           })}
         </span>
       </div>
-      <div className="row" style={{ gap: 4, minWidth: 0 }}>
+      <div className="row tx-category" style={{ gap: 4, minWidth: 0 }}>
         {split ? (
           <span className="chip" onClick={onEdit} style={{ cursor: "pointer" }}>Split</span>
         ) : (

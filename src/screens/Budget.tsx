@@ -45,7 +45,7 @@ export default function Budget() {
       <div className="page stack">
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
-            <div className="row" style={{ gap: 8 }}>
+            <div className="row wrap" style={{ gap: 8 }}>
               <MonthNav month={month} onChange={setMonth} max={addMonths(thisMonth(), 6)} />
               <Btn
                 onClick={() => setMonth(thisMonth())}
@@ -156,9 +156,7 @@ function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; inc
   return (
           <div className="list-row">
             <span style={{ fontSize: 15, width: 22 }}>{r.category.icon}</span>
-            <div className="grow" style={{ minWidth: 0 }}>
-              <span className="truncate" style={{ fontWeight: 500 }}>{r.category.name}</span>
-            </div>
+            <div className="grow truncate" style={{ fontWeight: 500 }}>{r.category.name}</div>
 
             <div className="bcol bcol-plan">
               <BudgetAmountPopover category={r.category} month={month} kind={income ? "income" : "expense"} />

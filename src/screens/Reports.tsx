@@ -192,6 +192,7 @@ export default function Reports() {
             <Card pad={false}>
               <CardHead flush title={tab === "income" ? "Income" : "Spending"} sub={`by ${groupBy}`} />
               {rows.length ? (
+                <div style={{ overflowX: "auto" }}>
                 <table className="tbl">
                   <thead>
                     <tr>
@@ -223,6 +224,7 @@ export default function Reports() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               ) : <Empty title="Nothing to report in this range" />}
             </Card>
 

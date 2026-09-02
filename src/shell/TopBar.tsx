@@ -13,7 +13,7 @@ export function TopBar({ title, actions }: { title: string; actions?: React.Reac
     <>
       <header className="topbar">
         <h1 className="grow truncate" style={{ fontSize: 19 }}>{title}</h1>
-        <div className="row" style={{ gap: 6 }}>
+        <div className="row topbar-actions" style={{ gap: 6 }}>
           {actions}
           <button
             className="btn btn-ghost btn-icon" title={privacy ? "Show amounts" : "Hide amounts"}
@@ -24,7 +24,9 @@ export function TopBar({ title, actions }: { title: string; actions?: React.Reac
           <button className="btn btn-ghost btn-icon" title="Toggle theme" onClick={act.toggleTheme}>
             {db.settings.theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> Transaction</Btn>
+          <Btn variant="primary" title="Add transaction" onClick={() => setAdding(true)}>
+            <Plus size={15} /> <span className="btn-label">Transaction</span>
+          </Btn>
         </div>
       </header>
       {adding ? <TransactionModal onClose={() => setAdding(false)} /> : null}
