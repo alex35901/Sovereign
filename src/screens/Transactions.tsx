@@ -4,6 +4,7 @@ import { CheckCheck, Download, Filter, Search, Tag as TagIcon, Trash2, Upload, X
 import type { Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
+import { InstitutionLogo } from "../components/InstitutionLogo";
 import { dateLabel, monthOf } from "../lib/date";
 import { hash } from "../lib/id";
 import { toCSV } from "../lib/csv";
@@ -213,7 +214,7 @@ export default function Transactions() {
             <span />
             <span className="tiny faint">Merchant</span>
             <span className="tiny faint tx-category">Category</span>
-            <span className="tiny faint tx-account">Account</span>
+            <span className="tx-account" />
             <span className="tiny faint right">Amount</span>
           </div>
 
@@ -333,7 +334,12 @@ function Row({ txn, selected, onToggle, onEdit }: {
         )}
       </div>
       {account ? (
-        <Link to={`/accounts/${account.id}`} className="tiny truncate tx-account">{account.name}</Link>
+        <Link
+          to={`/accounts/${account.id}`} className="tx-account"
+          title={account.name} aria-label={account.name}
+        >
+          <InstitutionLogo account={account} size={26} round />
+        </Link>
       ) : (
         <span className="tiny truncate tx-account">—</span>
       )}

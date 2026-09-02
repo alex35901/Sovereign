@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Account } from "../types";
 import { useDB } from "../store";
+import { cx } from "./ui";
 
 /**
  * The institution's mark, with initials as the floor.
@@ -25,7 +26,9 @@ export function toneOf(name: string): string {
 export const initialsOf = (name: string): string =>
   name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] ?? "").join("").toUpperCase() || "?";
 
-export function InstitutionLogo({ account, size = 32 }: { account: Account; size?: number }) {
+export function InstitutionLogo(
+  { account, size = 32, round = false }: { account: Account; size?: number; round?: boolean },
+) {
   const db = useDB();
   const lookupAllowed = db.settings.institutionLogos !== false;
   const src = account.logo || (lookupAllowed && account.domain ? iconFor(account.domain) : "");
@@ -39,7 +42,7 @@ export function InstitutionLogo({ account, size = 32 }: { account: Account; size
   if (src && !failed) {
     return (
       <span
-        className="avatar institution-logo"
+        className={cx("avatar institution-logo", round && "round")}
         style={{ width: size, height: size }}
       >
         <img
@@ -52,7 +55,7 @@ export function InstitutionLogo({ account, size = 32 }: { account: Account; size
 
   return (
     <span
-      className="avatar"
+      className={cx("avatar", round && "round")}
       style={{
         width: size, height: size,
         background: `color-mix(in srgb, var(${tone}) 16%, transparent)`,
