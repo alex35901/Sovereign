@@ -238,12 +238,26 @@ export function RulesPanel() {
   const { actions } = useStore();
   const [editing, setEditing] = useState<Rule | null>(null);
   const [adding, setAdding] = useState(false);
+  const enabled = db.rules.filter((r) => r.enabled);
 
   return (
     <Card pad={false}>
       <CardHead
         flush title="Rules" sub="Applied to every imported or synced transaction, in order"
-        right={<Btn size="sm" onClick={() => setAdding(true)}><Plus size={13} /> New rule</Btn>}
+        right={
+          <div className="row wrap" style={{ gap: 8 }}>
+            {/* Sweeping enough to be worth asking twice: it can recategorise
+                and mark reviewed across the whole history in one press. One
+                undo takes it all back, which is why asking once is enough. */}
+            <ConfirmButton
+              label={`Run ${enabled.length || ""} now`.replace("  ", " ")}
+              confirmLabel={`Click again — ${db.transactions.length.toLocaleString()} transactions`}
+              variant="default"
+              onConfirm={actions.applyAllRules}
+            />
+            <Btn size="sm" onClick={() => setAdding(true)}><Plus size={13} /> New rule</Btn>
+          </div>
+        }
       />
       {db.rules.map((r) => (
         <div key={r.id} className="list-row">

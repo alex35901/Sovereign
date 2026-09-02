@@ -52,7 +52,7 @@ export default function App() {
       <RulePrompt />
       {undoLabel ? (
         <div className="toast">
-          <span className="muted">{undoLabel}</span>
+          <span className="muted">{toast ?? undoLabel}</span>
           <button className="link bold" onClick={undo}>Undo</button>
         </div>
       ) : toast ? (

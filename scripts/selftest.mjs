@@ -1827,6 +1827,69 @@ await test("keys that work nowhere are reported as matching neither", async () =
   assert.equal(JSON.parse(r.text).worksIn, null);
 });
 
+/* ── running every rule at once ───────────────────────────────────────── */
+
+const shellTxn = (over = {}) => ({
+  id: "t1", accountId: "a1", date: "2026-09-02", merchant: "Shell Oil 4471",
+  statement: "SHELL OIL 4471", amount: -5000, categoryId: "uncat", tags: [],
+  pending: false, reviewed: false, hideFromReports: false, ...over,
+});
+const aRule = (over) => ({ id: "r", name: "r", enabled: true, order: 0, criteria: {}, actions: {}, ...over });
+
+await test("running them all applies later rules over earlier ones", () => {
+  // The order in the list is the order they run, so the last word wins — the
+  // same as when a transaction arrives, or the two would disagree.
+  const rules = [
+    aRule({ id: "r1", order: 0, criteria: { merchantContains: "shell" }, actions: { categoryId: "c_gas" } }),
+    aRule({ id: "r2", order: 1, criteria: { merchantContains: "shell oil" }, actions: { categoryId: "c_fuel" } }),
+  ];
+  assert.equal(M.applyRules(rules, shellTxn()).categoryId, "c_fuel");
+  // and reversing their order reverses the outcome
+  const flipped = [{ ...rules[0], order: 1 }, { ...rules[1], order: 0 }];
+  assert.equal(M.applyRules(flipped, shellTxn()).categoryId, "c_gas");
+});
+
+await test("a switched-off rule does nothing when they all run", () => {
+  const rules = [
+    aRule({ id: "r1", order: 0, enabled: false, criteria: { merchantContains: "shell" }, actions: { categoryId: "c_gas" } }),
+    aRule({ id: "r2", order: 1, criteria: { merchantContains: "nothing" }, actions: { categoryId: "c_x" } }),
+  ];
+  assert.equal(M.applyRules(rules, shellTxn()).categoryId, "uncat");
+});
+
+await test("running them all is idempotent — twice is the same as once", () => {
+  // The button is there to be pressed whenever, so a second press must not
+  // pile up more changes or more history entries than the first.
+  const rules = [
+    aRule({ id: "r1", criteria: { merchantContains: "shell" }, actions: { categoryId: "c_gas", markReviewed: true } }),
+  ];
+  const once = M.applyRules(rules, shellTxn());
+  const twice = M.applyRules(rules, once);
+  assert.deepEqual(twice, once);
+  assert.equal(once.reviewed, true);
+});
+
+await test("a rule that matches nothing leaves its transaction untouched by identity", () => {
+  // The count of what changed is worked out by comparing objects, so an
+  // unchanged transaction has to come back as the very same one.
+  const rules = [aRule({ criteria: { merchantContains: "costco" }, actions: { categoryId: "c_gas" } })];
+  const before = shellTxn();
+  assert.equal(M.applyRules(rules, before), before, "no match must return the same object, not a copy");
+});
+
+await test("every action a rule carries is applied in one pass", () => {
+  const rules = [aRule({
+    criteria: { merchantContains: "shell" },
+    actions: { categoryId: "c_gas", renameMerchant: "Shell", addTags: ["tg1"], markReviewed: true, hideFromReports: true },
+  })];
+  const out = M.applyRules(rules, shellTxn());
+  assert.equal(out.categoryId, "c_gas");
+  assert.equal(out.merchant, "Shell");
+  assert.deepEqual(out.tags, ["tg1"]);
+  assert.equal(out.reviewed, true);
+  assert.equal(out.hideFromReports, true);
+});
+
 /* ── how often property values refresh ────────────────────────────────── */
 
 await test("two properties use the allowance without spending the reserve", () => {

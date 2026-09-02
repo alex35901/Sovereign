@@ -236,6 +236,15 @@ export interface Actions {
   updateRule: (id: ID, patch: Partial<Rule>, applyToExisting?: boolean) => void;
   deleteRule: (id: ID) => void;
   applyRuleToExisting: (id: ID) => void;
+  /**
+   * Runs every enabled rule over every transaction, in order.
+   *
+   * One pass rather than one per rule: applyRules already walks them in order
+   * for each transaction, so a later rule wins over an earlier one exactly as
+   * it does when a transaction arrives — and a transaction two rules touch
+   * gets one entry in its history rather than two.
+   */
+  applyAllRules: () => void;
 
   addHolding: (h: Omit<Holding, "id">) => void;
   updateHolding: (id: ID, patch: Partial<Holding>) => void;
@@ -547,6 +556,21 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         notify(`Rule applied to ${touched} transaction${touched === 1 ? "" : "s"}.`);
         return { ...db, transactions };
       }, "apply rule to existing transactions"),
+
+    applyAllRules: () =>
+      apply((db) => {
+        const enabled = db.rules.filter((r) => r.enabled);
+        if (!enabled.length) {
+          notify("No rules are switched on.");
+          return db;
+        }
+        const transactions = editTransactions(db, null, (t) => applyRules(enabled, t));
+        const touched = transactions.filter((t, i) => t !== db.transactions[i]).length;
+        notify(touched
+          ? `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"} — ${touched} transaction${touched === 1 ? "" : "s"} changed.`
+          : `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"} — nothing needed changing.`);
+        return { ...db, transactions };
+      }, "run all rules"),
 
     addHolding: (h) => apply((db) => ({ ...db, holdings: [...db.holdings, { ...h, id: uid("h") }] })),
     updateHolding: (id, patch) => apply((db) => ({ ...db, holdings: replace(db.holdings, id, patch) })),
