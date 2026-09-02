@@ -44,10 +44,10 @@ export function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="brand">
+      <NavLink to="/dashboard" className="brand">
         <span className="brand-mark">◈</span>
         <span>Sovereign</span>
-      </div>
+      </NavLink>
       <nav className="nav">
         {NAV.map(item)}
         <div className="nav-label">Plan</div>

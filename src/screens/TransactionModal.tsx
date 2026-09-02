@@ -84,6 +84,11 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         </Field>
       </div>
       <Field label="Merchant"><TextInput value={merchant} onChange={setMerchant} placeholder="Blue Bottle Coffee" /></Field>
+      {txn?.statement ? (
+        <Field label="Original statement" hint="Exactly as the bank sent it — kept for reference and never edited">
+          <div className="statement">{txn.statement}</div>
+        </Field>
+      ) : null}
       <div className="row" style={{ gap: 12, alignItems: "flex-end" }}>
         <Field label="Account">
           <SelectInput
