@@ -30,6 +30,7 @@ await build({
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor } from "./src/lib/select.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
+      export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
@@ -760,6 +761,135 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+});
+
+/* ── a transaction's history ─────────────────────────────────────────── */
+
+const actDb = () => {
+  const db = M.emptyDB();
+  return {
+    ...db,
+    accounts: [
+      { id: "a1", name: "Everyday", institution: "Bank", type: "checking", balance: 0,
+        includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "a2", name: "Savings", institution: "Bank", type: "savings", balance: 0,
+        includeInNetWorth: true, hidden: false, history: [], order: 1 },
+    ],
+    tags: [{ id: "g1", name: "Work", color: "--c1" }, { id: "g2", name: "Trip", color: "--c2" }],
+  };
+};
+const actTxn = (over = {}) => ({
+  id: "t1", accountId: "a1", date: "2026-09-01", merchant: "Blue Bottle", amount: -450,
+  categoryId: "c_coffee_shops", tags: [], pending: false, reviewed: false, hideFromReports: false,
+  createdAt: "2026-09-01T10:00:00.000Z", ...over,
+});
+
+await test("arrival is recorded with the name of whatever brought it in", () => {
+  assert.equal(M.added("plaid", "2026-08-30T22:32:00.000Z").source, "Plaid");
+  assert.equal(M.added("simplefin", "x").source, "SimpleFIN");
+  assert.equal(M.added("csv", "x").source, "a CSV import");
+  assert.equal(M.added("manual", "x").source, "you");
+  assert.equal(M.sourceLabel(undefined), "you");
+  assert.equal(M.eventTitle(M.added("plaid", "x")), "Added to Sovereign");
+  assert.equal(M.eventDetail(M.added("plaid", "x")), "by Plaid");
+});
+
+await test("only the fields that moved are written down", () => {
+  const db = actDb();
+  const before = actTxn();
+  const after = { ...before, categoryId: "c_groceries", merchant: "Blue Bottle Coffee" };
+  const events = M.changes(db, before, after, "2026-09-02T09:00:00.000Z");
+  assert.equal(events.length, 2, "two fields moved, so two lines");
+  const byField = Object.fromEntries(events.map((e) => [e.field, e]));
+  assert.equal(byField.Merchant.from, "Blue Bottle");
+  assert.equal(byField.Merchant.to, "Blue Bottle Coffee");
+  assert.equal(byField.Category.from, "Coffee Shops");
+  assert.equal(byField.Category.to, "Groceries");
+  assert.ok(events.every((e) => e.kind === "changed" && e.at === "2026-09-02T09:00:00.000Z"));
+});
+
+await test("a change that changes nothing writes nothing", () => {
+  const db = actDb();
+  const t = actTxn();
+  assert.deepEqual(M.changes(db, t, { ...t }, "x"), []);
+  assert.equal(M.record(db, t, { ...t }, "x").activity, undefined, "no empty log is created");
+});
+
+await test("values are written as words, so a later rename can't rewrite history", () => {
+  const db = actDb();
+  const before = actTxn();
+  const logged = M.record(db, before, { ...before, categoryId: "c_groceries" }, "2026-09-02T09:00:00.000Z");
+  assert.equal(logged.activity[0].to, "Groceries");
+
+  // rename the category afterwards; the line must still say what it said then
+  const renamed = { ...db, categories: db.categories.map((c) => (c.id === "c_groceries" ? { ...c, name: "Food" } : c)) };
+  assert.equal(M.history(logged)[1].to, "Groceries");
+  assert.equal(renamed.categories.find((c) => c.id === "c_groceries").name, "Food");
+});
+
+await test("amounts, dates, accounts, tags and the switches are all tracked", () => {
+  const db = actDb();
+  const before = actTxn();
+  const after = {
+    ...before, amount: -1250, date: "2026-09-03", accountId: "a2",
+    tags: ["g1", "g2"], reviewed: true, hideFromReports: true, notes: "receipt in the app",
+  };
+  const fields = M.changes(db, before, after, "x").map((e) => e.field).sort();
+  assert.deepEqual(fields, ["Account", "Amount", "Date", "Hidden from reports", "Notes", "Reviewed", "Tags"]);
+  const byField = Object.fromEntries(M.changes(db, before, after, "x").map((e) => [e.field, e]));
+  assert.equal(byField.Account.from, "Everyday");
+  assert.equal(byField.Account.to, "Savings");
+  assert.equal(byField.Tags.from, "none", "an empty value reads as none, not blank");
+  assert.equal(byField.Tags.to, "Trip, Work");
+  assert.equal(byField.Reviewed.to, "yes");
+  assert.match(byField.Amount.from, /4\.50/);
+});
+
+await test("tag order doesn't count as a change", () => {
+  const db = actDb();
+  const before = actTxn({ tags: ["g1", "g2"] });
+  assert.deepEqual(M.changes(db, before, { ...before, tags: ["g2", "g1"] }, "x"), []);
+});
+
+await test("history is capped, keeping the newest", () => {
+  const db = actDb();
+  let t = actTxn({ activity: [M.added("plaid", "2026-01-01T00:00:00.000Z")] });
+  for (let i = 0; i < 80; i++) t = M.record(db, t, { ...t, merchant: `Name ${i}` }, `2026-09-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`);
+  assert.ok(t.activity.length <= 60, `kept ${t.activity.length}`);
+  assert.equal(t.activity[t.activity.length - 1].to, "Name 79", "the newest line survives");
+});
+
+await test("a transaction older than the log still shows how it arrived", () => {
+  // nothing recorded, but it carries an import key and its account syncs
+  const imported = M.history(actTxn({ importKey: "sf:1" }), "simplefin");
+  assert.equal(imported.length, 1);
+  assert.equal(imported[0].kind, "added");
+  assert.equal(imported[0].source, "SimpleFIN");
+  assert.equal(imported[0].at, "2026-09-01T10:00:00.000Z", "dated from when it was created");
+
+  // typed in by hand, with no sync source anywhere
+  assert.equal(M.history(actTxn())[0].source, "you");
+
+  // and one that does have a log is left exactly as it is
+  const logged = actTxn({ activity: [M.added("plaid", "2026-08-30T22:32:00.000Z")] });
+  assert.deepEqual(M.history(logged, "simplefin"), logged.activity);
+});
+
+await test("a synced transaction records the provider that brought it", () => {
+  const db = M.emptyDB();
+  const payload = {
+    fetchedAt: "2026-09-01T12:00:00.000Z",
+    accounts: [{ syncId: "sf-1", name: "Everyday", institution: "Bank", type: "checking",
+      balance: 1000, currency: "USD", balanceDate: "2026-09-01" }],
+    transactions: [{ syncId: "tx-1", accountSyncId: "sf-1", date: "2026-09-01", amount: -450,
+      description: "BLUE BOTTLE", pending: false }],
+    errors: [],
+  };
+  const res = M.mergeSync(db, payload, "plaid");
+  const t = res.db.transactions[0];
+  assert.equal(t.activity[0].kind, "added");
+  assert.equal(t.activity[0].source, "Plaid");
+  assert.equal(t.activity[0].at, "2026-09-01T12:00:00.000Z");
 });
 
 /* ── rules: account scope and tags ───────────────────────────────────── */

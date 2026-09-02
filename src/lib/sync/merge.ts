@@ -4,6 +4,7 @@ import type { RemoteHolding } from "./plaid.js";
 import { UNCATEGORIZED } from "../categories.js";
 import { uid } from "../id.js";
 import { applyRules } from "../rules.js";
+import { added, record } from "../activity.js";
 
 
 export interface MergeResult {
@@ -91,8 +92,10 @@ export function mergeSync(
       hideFromReports: false,
       importKey: key,
       createdAt: payload.fetchedAt,
+      activity: [added(source, payload.fetchedAt)],
     };
-    fresh.push(applyRules(db.rules, base));
+    // Rules run on arrival; whatever they change is logged like any other edit.
+    fresh.push(record(db, base, applyRules(db.rules, base), payload.fetchedAt));
   }
 
   const transactions = [...fresh, ...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));

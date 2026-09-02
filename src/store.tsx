@@ -11,6 +11,7 @@ import { refreshVehicleValues } from "./lib/vehicle";
 import { applyForward } from "./lib/select";
 import { moveBudget } from "./lib/budget-move";
 import { accountKeys } from "./lib/sync/merge";
+import { added, record } from "./lib/activity";
 
 type Mutator = (db: DB) => DB;
 
@@ -133,8 +134,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 const replace = <T extends { id: ID }>(xs: T[], id: ID, patch: Partial<T>): T[] =>
   xs.map((x) => (x.id === id ? { ...x, ...patch } : x));
 
+/**
+ * Applies a change to the named transactions and logs whatever it moved.
+ *
+ * Every path that edits a transaction goes through here, so nothing can change
+ * without leaving a line in its history.
+ */
+const editTransactions = (db: DB, ids: Set<ID> | null, edit: (t: Transaction) => Transaction): Transaction[] => {
+  const at = new Date().toISOString();
+  return db.transactions.map((t) => {
+    if (ids && !ids.has(t.id)) return t;
+    const next = edit(t);
+    return next === t ? t : record(db, t, next, at);
+  });
+};
+
 /** Every transaction with one rule's actions applied. */
-const runRule = (db: DB, rule: Rule): Transaction[] => db.transactions.map((t) => applyRules([rule], t));
+const runRule = (db: DB, rule: Rule): Transaction[] =>
+  editTransactions(db, null, (t) => applyRules([rule], t));
 
 export interface Actions {
   resetDemo: () => void;
@@ -304,34 +321,42 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
       }), "forget deleted accounts"),
 
     addTransaction: (t) =>
-      apply((db) => ({
-        ...db,
-        transactions: [
-          applyRules(db.rules, { ...t, tags: t.tags ?? [], id: uid("t"), createdAt: new Date().toISOString() }),
-          ...db.transactions,
-        ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
-      })),
-    addTransactions: (ts) =>
-      apply((db) => ({
-        ...db,
-        transactions: [...ts, ...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
-      }), `import ${ts.length} transactions`),
-    updateTransaction: (id, patch) =>
-      apply((db) => ({ ...db, transactions: replace(db.transactions, id, patch) })),
-    updateMany: (ids, patch, label) =>
       apply((db) => {
-        const set = new Set(ids);
-        return { ...db, transactions: db.transactions.map((t) => (set.has(t.id) ? { ...t, ...patch } : t)) };
-      }, label),
-    addTagToMany: (ids, tagId) =>
-      apply((db) => {
-        const set = new Set(ids);
+        const at = new Date().toISOString();
+        const fresh = { ...t, tags: t.tags ?? [], id: uid("t"), createdAt: at, activity: [added("manual", at)] };
+        // Rules run at the door, and what they change is logged like any edit.
+        const ruled = record(db, fresh, applyRules(db.rules, fresh), at);
         return {
           ...db,
-          transactions: db.transactions.map((t) =>
-            set.has(t.id) && !t.tags.includes(tagId) ? { ...t, tags: [...t.tags, tagId] } : t),
+          transactions: [ruled, ...db.transactions]
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
         };
-      }, `tag ${ids.length} transaction${ids.length === 1 ? "" : "s"}`),
+      }),
+    addTransactions: (ts) =>
+      apply((db) => {
+        const at = new Date().toISOString();
+        const logged = ts.map((t) => (t.activity?.length ? t : { ...t, activity: [added("csv", t.createdAt || at)] }));
+        return {
+          ...db,
+          transactions: [...logged, ...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
+        };
+      }, `import ${ts.length} transactions`),
+    updateTransaction: (id, patch) =>
+      apply((db) => ({
+        ...db,
+        transactions: editTransactions(db, new Set([id]), (t) => ({ ...t, ...patch })),
+      })),
+    updateMany: (ids, patch, label) =>
+      apply((db) => ({
+        ...db,
+        transactions: editTransactions(db, new Set(ids), (t) => ({ ...t, ...patch })),
+      }), label),
+    addTagToMany: (ids, tagId) =>
+      apply((db) => ({
+        ...db,
+        transactions: editTransactions(db, new Set(ids), (t) =>
+          t.tags.includes(tagId) ? t : { ...t, tags: [...t.tags, tagId] }),
+      }), `tag ${ids.length} transaction${ids.length === 1 ? "" : "s"}`),
     deleteTransactions: (ids) =>
       apply((db) => {
         const set = new Set(ids);
@@ -340,10 +365,10 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     splitTransaction: (id, splits) =>
       apply((db) => ({
         ...db,
-        transactions: db.transactions.map((t) =>
-          t.id === id
-            ? { ...t, splits: splits.length ? splits.map((s) => ({ ...s, id: uid("s") })) : undefined }
-            : t),
+        transactions: editTransactions(db, new Set([id]), (t) => ({
+          ...t,
+          splits: splits.length ? splits.map((s) => ({ ...s, id: uid("s") })) : undefined,
+        })),
       }), "split transaction"),
 
     addCategory: (c) =>
@@ -446,12 +471,8 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
       apply((db) => {
         const rule = db.rules.find((r) => r.id === id);
         if (!rule) return db;
-        let touched = 0;
-        const transactions = db.transactions.map((t) => {
-          const next = applyRules([rule], t);
-          if (next !== t) touched++;
-          return next;
-        });
+        const transactions = runRule(db, rule);
+        const touched = transactions.filter((t, i) => t !== db.transactions[i]).length;
         notify(`Rule applied to ${touched} transaction${touched === 1 ? "" : "s"}.`);
         return { ...db, transactions };
       }, "apply rule to existing transactions"),

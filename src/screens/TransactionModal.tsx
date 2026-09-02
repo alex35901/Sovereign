@@ -7,6 +7,7 @@ import { fmt } from "../lib/money";
 import { UNCATEGORIZED } from "../lib/categories";
 import { Btn, Field, Modal, Money, MoneyInput, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { CategoryPicker } from "../components/pickers";
+import { ActivityLog } from "../components/ActivityLog";
 
 /** Add or edit a transaction, including splits and tags. */
 export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose: () => void }) {
@@ -21,6 +22,9 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   const [categoryId, setCategoryId] = useState(txn?.categoryId ?? UNCATEGORIZED);
   const [notes, setNotes] = useState(txn?.notes ?? "");
   const [tags, setTags] = useState<string[]>(txn?.tags ?? []);
+  // Editing used to mark a transaction reviewed whether or not you meant to,
+  // with no way back. It is a switch now.
+  const [reviewed, setReviewed] = useState(txn?.reviewed ?? true);
   const [hideFromReports, setHide] = useState(txn?.hideFromReports ?? false);
   const [splits, setSplits] = useState(txn?.splits?.map((s) => ({ categoryId: s.categoryId, amount: s.amount })) ?? []);
 
@@ -32,7 +36,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
     const payload = {
       date, merchant: merchant.trim() || "Unknown", amount, accountId, categoryId,
       notes: notes.trim() || undefined, tags, hideFromReports,
-      pending: txn?.pending ?? false, reviewed: true,
+      pending: txn?.pending ?? false, reviewed,
       splits: splits.length ? splits.map((s, i) => ({ ...s, id: txn?.splits?.[i]?.id ?? `s${i}` })) : undefined,
     };
     if (txn) actions.updateTransaction(txn.id, payload);
@@ -146,7 +150,12 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         ) : null}
       </div>
 
-      <Toggle on={hideFromReports} onChange={setHide} label={<span className="small">Hide from reports and budget</span>} />
+      <div className="col" style={{ gap: 8 }}>
+        <Toggle on={reviewed} onChange={setReviewed} label={<span className="small">Reviewed</span>} />
+        <Toggle on={hideFromReports} onChange={setHide} label={<span className="small">Hide from reports and budget</span>} />
+      </div>
+
+      {txn ? <ActivityLog txn={txn} /> : null}
     </Modal>
   );
 }

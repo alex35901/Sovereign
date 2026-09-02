@@ -73,6 +73,20 @@ export interface Transaction {
   /** Stable hash of source fields, used to de-duplicate imports. */
   importKey?: string;
   createdAt: string;
+  /** How it arrived and what has been changed since, oldest first. */
+  activity?: TxnEvent[];
+}
+
+/** One line of a transaction's history. */
+export interface TxnEvent {
+  at: string;
+  kind: "added" | "changed";
+  /** For "added": where it came from — Plaid, SimpleFIN, a CSV, or by hand. */
+  source?: string;
+  /** For "changed": what moved, and from what to what, already in words. */
+  field?: string;
+  from?: string;
+  to?: string;
 }
 
 export interface Tag { id: ID; name: string; color: string }
