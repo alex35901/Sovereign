@@ -69,7 +69,7 @@ const nameOf = (el) => {
   if (el.tagName === "INPUT") return "cb";
   if (c.includes("tx-account")) return "account";
   if (c.includes("tx-category")) return "category";
-  if (c.includes("right")) return "amount";
+  if (c.includes("tx-amount")) return "amount";
   if (c.includes("avatar")) return "avatar";
   return "merchant";
 };
@@ -114,6 +114,49 @@ try {
       `header ${head}, row ${cols.length}`);
     await page.close();
   }
+
+  // ── the centred columns actually line up ──
+  // Measured on the rendered text rather than the cell holding it: a header
+  // cell can sit centred over its column while its label sits hard left, which
+  // is exactly what justify-content alone did to "Category".
+  const wide = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await wide.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+  await wide.waitForTimeout(500);
+
+  const aligned = await wide.evaluate(() => {
+    const head = document.querySelector(".tx-grid.head");
+    const row = document.querySelector(".tx-grid:not(.head)");
+    const find = (parent, cls) => [...parent.children]
+      .find((c) => (c.className || "").toString().includes(cls));
+    const midText = (el) => {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      const b = r.getBoundingClientRect();
+      return b.width ? (b.left + b.right) / 2 : null;
+    };
+    const midBox = (el) => {
+      const b = el.getBoundingClientRect();
+      return (b.left + b.right) / 2;
+    };
+    const out = {};
+    for (const cls of ["tx-account", "tx-category", "tx-amount"]) {
+      const h = find(head, cls);
+      const c = find(row, cls);
+      out[cls] = h && c ? Math.round(Math.abs((midText(h) ?? midBox(h)) - midBox(c))) : null;
+    }
+    // and every category pill the same width, or the column reads as ragged
+    out.pillWidths = [...new Set([...document.querySelectorAll(".tx-category .chip")]
+      .map((c) => Math.round(c.getBoundingClientRect().width)))];
+    return out;
+  });
+
+  for (const cls of ["tx-account", "tx-category", "tx-amount"]) {
+    check(`1440px — the ${cls.replace("tx-", "")} heading sits over its column`,
+      aligned[cls] !== null && aligned[cls] <= 1, `drifts ${aligned[cls]}px`);
+  }
+  check("1440px — every category pill is the same width",
+    aligned.pillWidths.length === 1, `saw widths ${aligned.pillWidths.join(", ")}`);
+  await wide.close();
 
   // ── nothing runs off the edge, anywhere ──
   for (const w of [320, 360, 390, 430, 768, 1024, 1440]) {

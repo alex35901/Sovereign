@@ -296,12 +296,19 @@ table.tbl { width: 100%; border-collapse: collapse; }
    than across a canyon of empty space on a wide screen */
 .tx-grid {
   display: grid;
-  grid-template-columns: 16px 32px minmax(0, 34rem) 64px minmax(140px, 1fr) 118px;
+  grid-template-columns: 16px 32px minmax(0, 34rem) 64px minmax(158px, 1fr) 118px;
   gap: 12px;
   align-items: center;
 }
 .tx-grid.head { padding: 9px 16px; background: var(--surface-2); }
 .tx-account { text-align: center; color: var(--muted); }
+/* Account, Category and Amount all sit centred under their headings.
+   Categories are one fixed-width pill each rather than a chip that grows with
+   its name, so the column reads as a column instead of as ragged text. */
+.tx-amount { text-align: center; }
+.tx-category { justify-content: center; text-align: center; }
+.tx-category .chip { width: 150px; justify-content: center; }
+.tx-category .chip .truncate { min-width: 0; }
 /* The institution's mark, standing in for the account's name. Dimmed until
    pointed at, so a column of logos sits quietly behind the figures rather than
    competing with them. */

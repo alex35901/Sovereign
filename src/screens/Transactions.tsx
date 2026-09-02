@@ -215,7 +215,7 @@ export default function Transactions() {
             <span className="tiny faint">Merchant</span>
             <span className="tiny faint tx-account">Account</span>
             <span className="tiny faint tx-category">Category</span>
-            <span className="tiny faint right">Amount</span>
+            <span className="tiny faint tx-amount">Amount</span>
           </div>
 
           {grouped.map(([date, rows]) => (
@@ -337,13 +337,13 @@ function Row({ txn, selected, onToggle, onEdit }: {
                 }}
               >
                 <span>{cat?.icon ?? "❓"}</span>
-                <span className="truncate" style={{ maxWidth: 96 }}>{cat?.name ?? "Uncategorized"}</span>
+                <span className="truncate">{cat?.name ?? "Uncategorized"}</span>
               </span>
             )}
           />
         )}
       </div>
-      <div className="right num bold" style={{ cursor: "pointer" }} onClick={onEdit}>
+      <div className="num bold tx-amount" style={{ cursor: "pointer" }} onClick={onEdit}>
         <Money value={txn.amount} colored={txn.amount > 0} />
       </div>
     </div>
