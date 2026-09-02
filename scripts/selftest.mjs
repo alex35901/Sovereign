@@ -68,6 +68,7 @@ await build({
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
       export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
       export * as C from "./src/lib/crypto.ts";
+      export * as RI from "./src/lib/rules-import.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -77,6 +78,7 @@ await build({
 });
 const M = await import(entry);
 const C = M.C; // the crypto module, kept under its own name for readability
+const RI = M.RI; // the Monarch rules importer
 
 /* ── SimpleFIN proxy, against a stub bridge ───────────────────────────── */
 
@@ -1823,6 +1825,160 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+/* ── importing Monarch's rules ────────────────────────────────────────── */
+
+const CATS = [
+  { id: "c_rest", name: "Restaurants & Bars", icon: "🍽", color: "--c1" },
+  { id: "c_gro", name: "Groceries", icon: "🛒", color: "--c2" },
+  { id: "c_coffee", name: "Coffee Shops", icon: "☕", color: "--c3" },
+  { id: "c_gas", name: "Gas", icon: "⛽", color: "--c4" },
+];
+
+await test("the line from the export parses exactly as written", () => {
+  // Verbatim from the user's own export, tabs and quotes and all.
+  const line = "'If merchant name exactly matches fair oaks farms'\t'Recategorize to 🍽 Restaurants & Bars'\t''";
+  const out = RI.parseMonarchRules(line, CATS);
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.rules.length, 1);
+  assert.equal(out.rules[0].merchant, "fair oaks farms");
+  assert.equal(out.rules[0].match, "exact", "exactly matches must not become a contains rule");
+  assert.equal(out.rules[0].categoryId, "c_rest");
+  assert.deepEqual(out.unknownCategories, []);
+});
+
+await test("an emoji in front of a category name does not stop it matching", () => {
+  for (const written of ["🍽 Restaurants & Bars", "Restaurants & Bars", "restaurants and bars", "🍽️ Restaurants and Bars"]) {
+    const out = RI.parseMonarchRules(`If merchant name contains x\tRecategorize to ${written}`, CATS);
+    assert.equal(out.rules[0]?.categoryId, "c_rest", `"${written}" should have found the category`);
+  }
+});
+
+await test("every match type Monarch writes comes across as itself", () => {
+  const cases = [
+    ["If merchant name exactly matches Costco", "exact", "Costco"],
+    ["If merchant name contains Costco", "contains", "Costco"],
+    ["If merchant name starts with Costco", "starts", "Costco"],
+    ["If merchant name ends with Costco", "ends", "Costco"],
+    ["If merchant name is exactly Costco", "exact", "Costco"],
+    ["If merchant contains Costco", "contains", "Costco"],
+  ];
+  for (const [criteria, mode, merchant] of cases) {
+    const out = RI.parseMonarchRules(`${criteria}\tRecategorize to Gas`, CATS);
+    assert.equal(out.problems.length, 0, `"${criteria}" was not understood`);
+    assert.equal(out.rules[0].match, mode, criteria);
+    assert.equal(out.rules[0].merchant, merchant);
+  }
+});
+
+await test("what it cannot read it reports, rather than dropping", () => {
+  // The failure worth designing against: 6 of 118 vanish and nobody notices
+  // until a transaction lands in the wrong place months later.
+  const text = [
+    "If merchant name exactly matches Philz\tRecategorize to Coffee Shops",
+    "If amount is greater than 100\tRecategorize to Gas",
+    "If merchant name exactly matches Shell\tHide from reports",
+    "some nonsense line",
+    "If merchant name exactly matches Chevron\tRecategorize to Gas",
+  ].join("\n");
+  const out = RI.parseMonarchRules(text, CATS);
+
+  assert.equal(out.rules.length, 2, "the two it understood");
+  assert.equal(out.problems.length, 3, "and it must account for all three it did not");
+  assert.deepEqual(out.problems.map((p) => p.line), [2, 3, 4]);
+  assert.match(out.problems[0].why, /merchant name criteria/);
+  assert.match(out.problems[1].why, /Recategorize/);
+  for (const p of out.problems) assert.ok(p.raw.length, "a problem has to quote its own line back");
+});
+
+await test("a category with nothing to map onto is named, not invented", () => {
+  const out = RI.parseMonarchRules("If merchant name exactly matches Vet\tRecategorize to 🐕 Pets", CATS);
+  assert.deepEqual(out.unknownCategories, ["🐕 Pets"]);
+  assert.equal(out.rules[0].categoryId, null);
+  // and it must not be turned into a real rule
+  assert.deepEqual(RI.toRules(out.rules, 0, () => "r1"), [],
+    "a rule pointing at no category would match and then do nothing, which looks like working");
+});
+
+await test("the rules it builds set the category and mark reviewed", () => {
+  const out = RI.parseMonarchRules("If merchant name exactly matches fair oaks farms\tRecategorize to 🍽 Restaurants & Bars", CATS);
+  let n = 0;
+  const [rule] = RI.toRules(out.rules, 7, () => `r${++n}`);
+  assert.equal(rule.enabled, true);
+  assert.equal(rule.order, 7);
+  assert.deepEqual(rule.criteria, { merchantContains: "fair oaks farms", merchantMatch: "exact" });
+  assert.equal(rule.actions.categoryId, "c_rest");
+  assert.equal(rule.actions.markReviewed, true, "every imported rule marks reviewed, as asked");
+});
+
+await test("an exact rule matches only the merchant it names", () => {
+  const out = RI.parseMonarchRules("If merchant name exactly matches Shell\tRecategorize to Gas", CATS);
+  const [rule] = RI.toRules(out.rules, 0, () => "r1");
+  const txn = (merchant, statement) => ({
+    id: "t", accountId: "a", date: "2026-09-02", merchant, statement,
+    amount: -1000, categoryId: "uncat", tags: [], pending: false, reviewed: false, hideFromReports: false,
+  });
+  assert.equal(M.ruleMatches(rule, txn("Shell")), true);
+  assert.equal(M.ruleMatches(rule, txn("shell")), true, "case is not the point of an exact match");
+  assert.equal(M.ruleMatches(rule, txn("Shell Oil 4471")), false, "this is what contains would have caught");
+  assert.equal(M.ruleMatches(rule, txn("Bombshell Salon")), false);
+  // and it must not reach into the raw statement, or it isn't exact
+  assert.equal(M.ruleMatches(rule, txn("Sunoco", "SHELL SERVICE STATION")), false);
+});
+
+await test("a rule written before match types existed still means contains", () => {
+  const old = {
+    id: "r0", name: "old", enabled: true, order: 0,
+    criteria: { merchantContains: "coffee" }, actions: { categoryId: "c_coffee" },
+  };
+  const txn = { id: "t", accountId: "a", date: "2026-09-02", merchant: "Blue Bottle Coffee Co",
+    amount: -500, categoryId: "uncat", tags: [], pending: false, reviewed: false, hideFromReports: false };
+  assert.equal(M.ruleMatches(old, txn), true, "absent merchantMatch has to keep meaning contains");
+});
+
+await test("the same merchant twice is flagged rather than imported twice", () => {
+  const text = [
+    "If merchant name exactly matches Shell\tRecategorize to Gas",
+    "If merchant name exactly matches Chevron\tRecategorize to Gas",
+    "If merchant name exactly matches Shell\tRecategorize to Gas",
+  ].join("\n");
+  const out = RI.parseMonarchRules(text, CATS);
+  const existing = [{
+    id: "r9", name: "Chevron", enabled: true, order: 0,
+    criteria: { merchantContains: "Chevron", merchantMatch: "exact" }, actions: { categoryId: "c_gas" },
+  }];
+  const dupes = RI.duplicatesOf(out.rules, existing);
+  assert.equal(dupes.has(2), true, "already here");
+  assert.equal(dupes.has(3), true, "repeated within the paste itself");
+  assert.equal(dupes.has(1), false);
+});
+
+await test("a paste survives the shapes a spreadsheet copy arrives in", () => {
+  const tabbed = RI.parseMonarchRules("If merchant name contains Costco\tRecategorize to Gas", CATS);
+  const spaced = RI.parseMonarchRules("If merchant name contains Costco    Recategorize to Gas", CATS);
+  const quoted = RI.parseMonarchRules('"If merchant name contains Costco","Recategorize to Gas"', CATS);
+  for (const [what, out] of [["tabs", tabbed], ["spaces", spaced], ["quoted csv", quoted]]) {
+    assert.equal(out.problems.length, 0, `${what} was not understood`);
+    assert.equal(out.rules[0].merchant, "Costco", what);
+    assert.equal(out.rules[0].categoryId, "c_gas", what);
+  }
+});
+
+await test("blank lines and a header row are skipped in silence", () => {
+  const out = RI.parseMonarchRules(
+    "Criteria\tAction\n\nIf merchant name exactly matches Shell\tRecategorize to Gas\n\n", CATS);
+  assert.equal(out.rules.length, 1);
+  assert.deepEqual(out.problems, [], "neither is worth telling anyone about");
+});
+
+await test("a merchant rename alongside the category is kept", () => {
+  const out = RI.parseMonarchRules(
+    "If merchant name contains SQ *BLUE BOTTLE\tRecategorize to Coffee Shops\tRename merchant to Blue Bottle", CATS);
+  assert.equal(out.problems.length, 0);
+  const [rule] = RI.toRules(out.rules, 0, () => "r1");
+  assert.equal(rule.actions.renameMerchant, "Blue Bottle");
+  assert.equal(rule.actions.categoryId, "c_coffee");
 });
 
 /* ── end-to-end encryption ────────────────────────────────────────────── */

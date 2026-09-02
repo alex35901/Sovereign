@@ -220,9 +220,9 @@ export default function Transactions() {
 
           {grouped.map(([date, rows]) => (
             <div key={date}>
-              <div className="date-head spread">
-                <span>{dateLabel(date, { weekday: true, year: true })}</span>
-                <span className="num">
+              <div className="date-head tx-grid">
+                <span className="date-head-label">{dateLabel(date, { weekday: true, year: true })}</span>
+                <span className="num tx-amount">
                   <Money value={rows.reduce((s, t) => s + t.amount, 0)} colored />
                 </span>
               </div>

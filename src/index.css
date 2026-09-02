@@ -301,6 +301,9 @@ table.tbl { width: 100%; border-collapse: collapse; }
   align-items: center;
 }
 .tx-grid.head { padding: 9px 16px; background: var(--surface-2); }
+/* The day's total sits in the amount column, over the figures it totals. The
+   date takes every column before it. */
+.date-head-label { grid-column: 1 / -2; }
 .tx-account { text-align: center; color: var(--muted); }
 /* Account, Category and Amount all sit centred under their headings.
    Categories are one fixed-width pill each rather than a chip that grows with

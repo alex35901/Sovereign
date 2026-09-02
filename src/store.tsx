@@ -206,6 +206,12 @@ export interface Actions {
 
   /** `applyToExisting` runs the saved rule over the transactions already held. */
   addRule: (r: Omit<Rule, "id" | "order">, applyToExisting?: boolean) => void;
+  /**
+   * Adds many at once, as one step. An import of a hundred rules added one at a
+   * time would be a hundred entries on the undo stack, and undoing it would
+   * mean pressing undo a hundred times.
+   */
+  addRules: (rs: Omit<Rule, "id" | "order">[], applyToExisting?: boolean) => void;
   updateRule: (id: ID, patch: Partial<Rule>, applyToExisting?: boolean) => void;
   deleteRule: (id: ID) => void;
   applyRuleToExisting: (id: ID) => void;
@@ -456,6 +462,24 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         // rule and every transaction it just rewrote.
         return { ...db, rules, transactions: applyToExisting ? runRule(db, rule) : db.transactions };
       }, "add rule"),
+
+    addRules: (rs, applyToExisting) =>
+      apply((db) => {
+        if (!rs.length) return db;
+        let out = db;
+        const added: Rule[] = [];
+        rs.forEach((r, i) => {
+          added.push({ ...r, id: uid("r"), order: db.rules.length + i });
+        });
+        out = { ...out, rules: [...db.rules, ...added] };
+        if (applyToExisting) {
+          // Run in the order they were added, so a later rule wins over an
+          // earlier one on the same transaction — the same order they run in
+          // when a transaction arrives.
+          for (const rule of added) out = { ...out, transactions: runRule(out, rule) };
+        }
+        return out;
+      }, `import ${rs.length} rule${rs.length === 1 ? "" : "s"}`),
 
     updateRule: (id, patch, applyToExisting) =>
       apply((db) => {

@@ -138,6 +138,12 @@ export interface Recurring {
 
 export interface RuleCriteria {
   merchantContains?: string;
+  /**
+   * How `merchantContains` is compared. Absent means "contains", which is what
+   * every rule written before this existed meant, so old rules keep working.
+   * Monarch's rules distinguish the two and its exports say which.
+   */
+  merchantMatch?: "contains" | "exact" | "starts" | "ends";
   accountId?: ID;
   amountMin?: number;
   amountMax?: number;

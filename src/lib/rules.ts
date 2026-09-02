@@ -4,8 +4,20 @@ export function ruleMatches(rule: Rule, t: Transaction): boolean {
   const c = rule.criteria;
   if (!rule.enabled) return false;
   if (c.merchantContains) {
-    const hay = `${t.merchant} ${t.statement ?? ""}`.toLowerCase();
-    if (!hay.includes(c.merchantContains.toLowerCase())) return false;
+    const want = c.merchantContains.toLowerCase().trim();
+    // "contains" looks at the raw statement too, because that is where a
+    // half-recognised merchant hides. The exact forms compare the merchant
+    // name alone: an exact rule that quietly matched a substring of the
+    // statement would not be exact at all.
+    const merchant = t.merchant.toLowerCase().trim();
+    const mode = c.merchantMatch ?? "contains";
+    if (mode === "exact" && merchant !== want) return false;
+    if (mode === "starts" && !merchant.startsWith(want)) return false;
+    if (mode === "ends" && !merchant.endsWith(want)) return false;
+    if (mode === "contains") {
+      const hay = `${t.merchant} ${t.statement ?? ""}`.toLowerCase();
+      if (!hay.includes(want)) return false;
+    }
   }
   if (c.accountId && t.accountId !== c.accountId) return false;
   if (c.direction === "in" && t.amount < 0) return false;

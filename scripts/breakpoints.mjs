@@ -54,6 +54,10 @@ const PAGES = [
 /**
  * The transaction row is the most-overridden thing in the app — three
  * breakpoints change it — so its column set is spelled out rather than assumed.
+ *
+ * Matched on .list-row.tx-grid, not .tx-grid alone: the date header shares that
+ * grid so the day's total lands in the amount column, and would otherwise be
+ * the first thing the selector found.
  */
 const TX_COLUMNS = [
   { w: 1440, cols: ["cb", "avatar", "merchant", "account", "category", "amount"] },
@@ -85,7 +89,7 @@ try {
 
     const seen = await page.evaluate((fn) => {
       const named = new Function("el", `return (${fn})(el)`);
-      const row = document.querySelector(".tx-grid:not(.head)");
+      const row = document.querySelector(".list-row.tx-grid:not(.head)");
       if (!row) return null;
       const out = [];
       for (const child of row.children) {
@@ -125,7 +129,7 @@ try {
 
   const aligned = await wide.evaluate(() => {
     const head = document.querySelector(".tx-grid.head");
-    const row = document.querySelector(".tx-grid:not(.head)");
+    const row = document.querySelector(".list-row.tx-grid:not(.head)");
     const find = (parent, cls) => [...parent.children]
       .find((c) => (c.className || "").toString().includes(cls));
     const midText = (el) => {

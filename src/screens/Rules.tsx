@@ -1,5 +1,6 @@
 import { TopBar } from "../shell/TopBar";
 import { RulesPanel } from "./SettingsPanels";
+import { ImportRules } from "./ImportRules";
 
 export default function Rules() {
   return (
@@ -7,6 +8,7 @@ export default function Rules() {
       <TopBar title="Rules" />
       <div className="page stack">
         <RulesPanel />
+        <ImportRules />
       </div>
     </>
   );
