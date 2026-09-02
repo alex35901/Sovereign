@@ -248,6 +248,32 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .menu .btn-danger { background: var(--neg-soft); border-color: transparent; color: var(--neg); }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 200; background: var(--surface-3); border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; box-shadow: var(--shadow); font-size: 13px; display: flex; align-items: center; gap: 10px; }
 
+/* The offer to turn a hand-made categorisation into a rule. Sits above the
+   undo toast, which appears at the same moment for the same action. */
+.rule-prompt {
+  position: fixed; bottom: 74px; left: 50%; transform: translateX(-50%); z-index: 210;
+  display: flex; align-items: stretch; max-width: min(440px, calc(100vw - 28px));
+  background: var(--surface-3); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow); overflow: hidden; font-size: 13px;
+}
+.rule-prompt-body { position: relative; padding: 11px 14px 13px; min-width: 0; }
+.rule-prompt-acts { display: flex; flex-direction: column; border-left: 1px solid var(--line); flex: none; }
+.rule-prompt-acts button {
+  flex: 1; border: 0; background: none; color: var(--fg); cursor: pointer;
+  padding: 0 16px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.rule-prompt-acts button:first-child { border-bottom: 1px solid var(--line); }
+.rule-prompt-acts button:hover { background: var(--surface-2); }
+.rule-prompt-timer {
+  position: absolute; left: 0; bottom: 0; height: 2px; width: 100%;
+  background: var(--accent); transform-origin: left;
+  animation: rule-countdown linear forwards;
+}
+@keyframes rule-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) { .rule-prompt-timer { display: none; } }
+@media (max-width: 720px) { .rule-prompt { bottom: 86px; } }
+
 /* ── charts ───────────────────────────────────────────────────────────── */
 .chart-tip { position: absolute; pointer-events: none; background: var(--surface-3); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 12px; box-shadow: var(--shadow); z-index: 20; white-space: nowrap; }
 .chart-wrap { position: relative; }

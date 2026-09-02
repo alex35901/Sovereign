@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { MobileTabs, Sidebar } from "./shell/Sidebar";
 import { AutoSync } from "./components/AutoSync";
 import { CloudSync } from "./components/CloudSync";
+import { RulePrompt } from "./components/RulePrompt";
 import { useStore } from "./store";
 import Dashboard from "./screens/Dashboard";
 import Accounts from "./screens/Accounts";
@@ -46,6 +47,7 @@ export default function App() {
         </Routes>
       </div>
       <MobileTabs />
+      <RulePrompt />
       {undoLabel ? (
         <div className="toast">
           <span className="muted">{undoLabel}</span>

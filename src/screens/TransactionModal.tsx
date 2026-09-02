@@ -11,7 +11,7 @@ import { CategoryPicker } from "../components/pickers";
 /** Add or edit a transaction, including splits and tags. */
 export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose: () => void }) {
   const db = useDB();
-  const { actions } = useStore();
+  const { actions, suggestRule } = useStore();
   const editing = Boolean(txn);
 
   const [date, setDate] = useState(txn?.date ?? today());
@@ -37,6 +37,11 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
     };
     if (txn) actions.updateTransaction(txn.id, payload);
     else actions.addTransaction({ ...payload, statement: merchant.trim() });
+    // Only when the category actually moved, and only for an edit — a rule made
+    // from a transaction typed in by hand would match nothing yet.
+    if (txn && categoryId !== txn.categoryId && !splits.length) {
+      suggestRule({ merchant: payload.merchant, categoryId });
+    }
     onClose();
   };
 

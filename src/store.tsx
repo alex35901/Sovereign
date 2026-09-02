@@ -22,6 +22,10 @@ interface Store {
   undoLabel: string | null;
   toast: string | null;
   notify: (msg: string) => void;
+  /** The offer to turn a just-made categorisation into a standing rule. */
+  rulePrompt: RulePrompt | null;
+  suggestRule: (p: Omit<RulePrompt, "key">) => void;
+  dismissRulePrompt: () => void;
   /**
    * Adopts a document that came from the server. Deliberately not `apply`:
    * this is not an edit, so it must not land on the undo stack, where one
@@ -29,6 +33,14 @@ interface Store {
    */
   replaceFromCloud: (next: DB) => void;
   actions: Actions;
+}
+
+/** What a "create a rule for this?" offer needs to know. */
+export interface RulePrompt {
+  merchant: string;
+  categoryId: ID;
+  /** Changes on every offer, so the countdown restarts rather than carrying on. */
+  key: number;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -64,6 +76,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("beforeunload", flush);
   }, [db]);
 
+  const [rulePrompt, setRulePrompt] = useState<RulePrompt | null>(null);
+  const dismissRulePrompt = useCallback(() => setRulePrompt(null), []);
+  const suggestRule = useCallback((p: Omit<RulePrompt, "key">) => {
+    // Nothing to match on without a merchant, and nothing to do without a category.
+    if (!p.merchant.trim() || !p.categoryId) return;
+    setRulePrompt({ ...p, key: Date.now() });
+  }, []);
+
   const notify = useCallback((msg: string) => {
     setToast(msg);
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 3200);
@@ -97,7 +117,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const actions = useMemo(() => makeActions(apply, notify), [apply, notify]);
 
-  const value: Store = { db, apply, undo, undoLabel, toast, notify, replaceFromCloud, actions };
+  const value: Store = {
+    db, apply, undo, undoLabel, toast, notify, replaceFromCloud, actions,
+    rulePrompt, suggestRule, dismissRulePrompt,
+  };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

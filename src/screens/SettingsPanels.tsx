@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
-import type { Category, CategoryGroup, Rule } from "../types";
+import type { Category, CategoryGroup, ID, Rule } from "../types";
 import { useDB, useStore } from "../store";
 import { countMatches } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
@@ -264,14 +264,17 @@ export function RulesPanel() {
   );
 }
 
-function RuleModal({ rule, onClose }: { rule?: Rule; onClose: () => void }) {
+/** A new rule started from something the user just did, rather than from blank. */
+export interface RulePreset { merchantContains?: string; categoryId?: ID; name?: string }
+
+export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: RulePreset; onClose: () => void }) {
   const { actions } = useStore();
-  const [name, setName] = useState(rule?.name ?? "");
-  const [merchantContains, setMerchant] = useState(rule?.criteria.merchantContains ?? "");
+  const [name, setName] = useState(rule?.name ?? preset?.name ?? "");
+  const [merchantContains, setMerchant] = useState(rule?.criteria.merchantContains ?? preset?.merchantContains ?? "");
   const [direction, setDirection] = useState<"" | "in" | "out">(rule?.criteria.direction ?? "");
   const [amountMin, setMin] = useState(rule?.criteria.amountMin ?? 0);
   const [amountMax, setMax] = useState(rule?.criteria.amountMax ?? 0);
-  const [categoryId, setCategory] = useState(rule?.actions.categoryId ?? "");
+  const [categoryId, setCategory] = useState(rule?.actions.categoryId ?? preset?.categoryId ?? "");
   const [renameMerchant, setRename] = useState(rule?.actions.renameMerchant ?? "");
   const [markReviewed, setReviewed] = useState(rule?.actions.markReviewed ?? false);
   const [hideFromReports, setHide] = useState(rule?.actions.hideFromReports ?? false);

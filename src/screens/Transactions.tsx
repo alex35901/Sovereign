@@ -35,7 +35,7 @@ type Preset = "all" | "unreviewed" | "uncategorized" | "income" | "expense" | "h
 
 export default function Transactions() {
   const db = useDB();
-  const { actions } = useStore();
+  const { actions, suggestRule } = useStore();
   const [params, setParams] = useSearchParams();
 
   const [q, setQ] = useState("");
@@ -164,7 +164,15 @@ export default function Transactions() {
               <div className="grow" />
               <CategoryPicker
                 value=""
-                onChange={(id) => { actions.updateMany([...selected], { categoryId: id, reviewed: true }, `categorize ${selected.size}`); setSelected(new Set()); }}
+                onChange={(id) => {
+                  const picked = db.transactions.filter((t) => selected.has(t.id));
+                  actions.updateMany([...selected], { categoryId: id, reviewed: true }, `categorize ${selected.size}`);
+                  setSelected(new Set());
+                  // One merchant across the selection is exactly the case a rule
+                  // handles; a mixed batch has nothing to match on.
+                  const merchants = new Set(picked.map((t) => t.merchant));
+                  if (merchants.size === 1) suggestRule({ merchant: [...merchants][0], categoryId: id });
+                }}
                 trigger={(_, open) => <Btn onClick={open} size="sm">Categorize</Btn>}
               />
               <Popover
@@ -254,7 +262,7 @@ function Row({ txn, selected, onToggle, onEdit }: {
   txn: Transaction; selected: boolean; onToggle: () => void; onEdit: () => void;
 }) {
   const db = useDB();
-  const { actions } = useStore();
+  const { actions, suggestRule } = useStore();
   const account = db.accounts.find((a) => a.id === txn.accountId);
   const split = (txn.splits?.length ?? 0) > 0;
 
@@ -287,7 +295,10 @@ function Row({ txn, selected, onToggle, onEdit }: {
         ) : (
           <CategoryPicker
             value={txn.categoryId}
-            onChange={(id) => actions.updateTransaction(txn.id, { categoryId: id, reviewed: true })}
+            onChange={(id) => {
+              actions.updateTransaction(txn.id, { categoryId: id, reviewed: true });
+              if (id !== txn.categoryId) suggestRule({ merchant: txn.merchant, categoryId: id });
+            }}
             trigger={(cat, open) => (
               <span
                 className="chip" onClick={open}
