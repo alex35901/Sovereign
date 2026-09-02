@@ -36,7 +36,7 @@ await build({
     contents: `
       export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
-      export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV } from "./src/lib/csv.ts";
+      export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor } from "./src/lib/select.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
@@ -1825,6 +1825,106 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+/* ── the statement, tags and reviewed columns on a CSV import ─────────── */
+
+await test("a Monarch export's own headers are recognised", () => {
+  const header = ["Date", "Merchant", "Category", "Account", "Original Statement", "Notes", "Amount", "Tags"];
+  assert.deepEqual(M.guessColumns(header),
+    ["date", "merchant", "category", "account", "statement", "notes", "amount", "tags"]);
+});
+
+await test("original description still means the merchant, not the statement", () => {
+  // A Mint export has only that column, and moving it would leave those files
+  // with no merchant at all.
+  assert.deepEqual(M.guessColumns(["Date", "Original Description", "Amount"]),
+    ["date", "merchant", "amount"]);
+});
+
+await test("the raw statement is kept beside the tidied name", () => {
+  const rows = [["2026-09-02", "Philz Coffee", "SQ *PHILZ COFFEE 4471 SAN", "-10.00"]];
+  const plan = M.buildPlan(rows, ["date", "merchant", "statement", "amount"],
+    { flipSign: false, accountId: "a1", existing: [] });
+  assert.equal(plan.rows[0].statement, "SQ *PHILZ COFFEE 4471 SAN");
+
+  const [t] = M.rowsToTransactions(M.emptyDB(), plan, "a1");
+  assert.equal(t.merchant, "Philz Coffee");
+  assert.equal(t.statement, "SQ *PHILZ COFFEE 4471 SAN", "the bank's own wording has to survive");
+});
+
+await test("a file with no statement column keeps the old behaviour", () => {
+  const plan = M.buildPlan([["2026-09-02", "Philz Coffee", "-10.00"]], ["date", "merchant", "amount"],
+    { flipSign: false, accountId: "a1", existing: [] });
+  const [t] = M.rowsToTransactions(M.emptyDB(), plan, "a1");
+  assert.equal(t.statement, "Philz Coffee", "the merchant is all there was to go on");
+});
+
+await test("tags come across however the file separates them", () => {
+  for (const [raw, want] of [
+    ["Business, Reimbursable", ["Business", "Reimbursable"]],
+    ["Business;Reimbursable", ["Business", "Reimbursable"]],
+    ["Business|Reimbursable", ["Business", "Reimbursable"]],
+    ["  Business ,  ", ["Business"]],
+    ["", []],
+  ]) {
+    assert.deepEqual(M.splitTags(raw), want, JSON.stringify(raw));
+  }
+});
+
+await test("tags resolve to ids, and the ones not here yet are named", () => {
+  const rows = [
+    ["2026-09-02", "Zelle", "-462.00", "Business, Household"],
+    ["2026-09-03", "Philz", "-10.00", "Business"],
+  ];
+  const plan = M.buildPlan(rows, ["date", "merchant", "amount", "tags"],
+    { flipSign: false, accountId: "a1", existing: [] });
+
+  const existing = [{ id: "tg_house", name: "Household", color: "--c1" }];
+  assert.deepEqual(M.newTagNames(plan, existing), ["Business"], "only the one that is missing, once");
+
+  const ids = new Map([["household", "tg_house"], ["business", "tg_biz"]]);
+  const txns = M.rowsToTransactions(M.emptyDB(), plan, "a1", { tagIds: ids });
+  assert.deepEqual(txns[0].tags, ["tg_biz", "tg_house"]);
+  assert.deepEqual(txns[1].tags, ["tg_biz"]);
+});
+
+await test("a tag with no id is dropped rather than left as a dangling name", () => {
+  const plan = M.buildPlan([["2026-09-02", "Zelle", "-462.00", "Nowhere"]],
+    ["date", "merchant", "amount", "tags"], { flipSign: false, accountId: "a1", existing: [] });
+  const [t] = M.rowsToTransactions(M.emptyDB(), plan, "a1", { tagIds: new Map() });
+  assert.deepEqual(t.tags, [], "a tag id that does not exist would render as nothing at best");
+});
+
+await test("imported rows can come in reviewed, and default not to", () => {
+  const plan = M.buildPlan([["2026-09-02", "Philz", "-10.00"]], ["date", "merchant", "amount"],
+    { flipSign: false, accountId: "a1", existing: [] });
+  assert.equal(M.rowsToTransactions(M.emptyDB(), plan, "a1", { reviewed: true })[0].reviewed, true);
+  assert.equal(M.rowsToTransactions(M.emptyDB(), plan, "a1", { reviewed: false })[0].reviewed, false);
+  assert.equal(M.rowsToTransactions(M.emptyDB(), plan, "a1")[0].reviewed, false,
+    "the default stays as it was, so nothing else that calls this changes");
+});
+
+await test("a whole Monarch row lands with everything it carried", () => {
+  const header = "Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags";
+  const row = '2026-09-02,Zelle,Groceries,Checking,"ZELLE PAYMENT TO ALEX 4471",rent share,-462.00,"Business, Household"';
+  const parsed = M.parseCSV(`${header}\n${row}`);
+  const roles = M.guessColumns(parsed[0]);
+  const plan = M.buildPlan(parsed.slice(1), roles, { flipSign: false, accountId: "a1", existing: [] });
+
+  const db = M.emptyDB();
+  db.categories = [{ id: "c_gro", name: "Groceries", icon: "🛒", color: "--c1", groupId: "g1" }];
+  const ids = new Map([["business", "tg_biz"], ["household", "tg_house"]]);
+  const [t] = M.rowsToTransactions(db, plan, "a1", { tagIds: ids, reviewed: true });
+
+  assert.equal(t.date, "2026-09-02");
+  assert.equal(t.merchant, "Zelle");
+  assert.equal(t.statement, "ZELLE PAYMENT TO ALEX 4471");
+  assert.equal(t.amount, -46200);
+  assert.equal(t.categoryId, "c_gro");
+  assert.equal(t.notes, "rent share");
+  assert.deepEqual(t.tags, ["tg_biz", "tg_house"]);
+  assert.equal(t.reviewed, true);
 });
 
 /* ── importing Monarch's rules ────────────────────────────────────────── */

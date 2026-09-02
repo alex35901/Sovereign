@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { FileUp } from "lucide-react";
 import { useDB, useStore } from "../store";
 import type { ColumnRole } from "../lib/csv";
-import { buildPlan, guessColumns, parseCSV, rowsToTransactions } from "../lib/csv";
+import { buildPlan, guessColumns, newTagNames, parseCSV, rowsToTransactions } from "../lib/csv";
 import { Btn, Card, Field, Modal, Money, SelectInput, Toggle } from "../components/ui";
 import { dateLabel } from "../lib/date";
 
@@ -10,10 +10,12 @@ const ROLES: { value: ColumnRole; label: string }[] = [
   { value: "ignore", label: "— ignore —" },
   { value: "date", label: "Date" },
   { value: "merchant", label: "Merchant / description" },
+  { value: "statement", label: "Original statement" },
   { value: "amount", label: "Amount (signed)" },
   { value: "debit", label: "Debit / outflow" },
   { value: "credit", label: "Credit / inflow" },
   { value: "category", label: "Category" },
+  { value: "tags", label: "Tags" },
   { value: "notes", label: "Notes / memo" },
   { value: "account", label: "Account name" },
 ];
@@ -29,6 +31,9 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   const [roles, setRoles] = useState<ColumnRole[]>([]);
   const [accountId, setAccountId] = useState(db.accounts[0]?.id ?? "");
   const [flipSign, setFlipSign] = useState(false);
+  // On by default: a CSV is a statement you have already been through, so its
+  // rows are not the ones that want reviewing. Still a choice, for a messy file.
+  const [reviewed, setReviewed] = useState(true);
   const [fileName, setFileName] = useState("");
 
   const read = async (file: File) => {
@@ -46,11 +51,24 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
     return buildPlan(body, roles, { flipSign, accountId, existing: db.transactions });
   }, [rows, body, roles, flipSign, accountId, db.transactions]);
 
+  const freshTags = useMemo(
+    () => (plan ? newTagNames(plan, db.tags) : []),
+    [plan, db.tags],
+  );
+
   const commit = () => {
     if (!plan || !accountId) return;
-    const txns = rowsToTransactions(db, plan, accountId);
-    actions.addTransactions(txns);
-    notify(`Imported ${txns.length} transaction${txns.length === 1 ? "" : "s"}${plan.duplicates ? `, skipped ${plan.duplicates} duplicate${plan.duplicates === 1 ? "" : "s"}` : ""}.`);
+    const count = plan.rows.length;
+    // The tags have to exist before the rows can point at them, and must not
+    // exist if the rows don't land — so both happen in one write.
+    actions.importTransactions(freshTags, (tagIds) =>
+      rowsToTransactions(db, plan, accountId, { tagIds, reviewed }));
+    notify(
+      `Imported ${count} transaction${count === 1 ? "" : "s"}`
+      + (freshTags.length ? `, made ${freshTags.length} tag${freshTags.length === 1 ? "" : "s"}` : "")
+      + (plan.duplicates ? `, skipped ${plan.duplicates} duplicate${plan.duplicates === 1 ? "" : "s"}` : "")
+      + ".",
+    );
     onClose();
   };
 
@@ -99,8 +117,18 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
             <div className="col" style={{ gap: 9, paddingTop: 18 }}>
               <Toggle on={hasHeader} onChange={setHasHeader} label={<span className="small">First row is a header</span>} />
               <Toggle on={flipSign} onChange={setFlipSign} label={<span className="small">Flip signs (spending is positive in this file)</span>} />
+              <Toggle on={reviewed} onChange={setReviewed} label={<span className="small">Mark these as reviewed</span>} />
             </div>
           </div>
+
+          {freshTags.length ? (
+            <div className="setting-row">
+              <span className="small">
+                <b>{freshTags.length} new tag{freshTags.length === 1 ? "" : "s"} will be created:</b>{" "}
+                {freshTags.slice(0, 12).join(", ")}{freshTags.length > 12 ? `, and ${freshTags.length - 12} more` : ""}.
+              </span>
+            </div>
+          ) : null}
 
           <div className="col" style={{ gap: 6 }}>
             <span className="small muted">{fileName} · map the columns</span>

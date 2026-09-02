@@ -28,17 +28,21 @@ export function parseCSV(text: string): string[][] {
   return rows.filter((r) => r.some((c) => c.trim() !== ""));
 }
 
-export type ColumnRole = "date" | "merchant" | "amount" | "debit" | "credit" | "category" | "account" | "notes" | "ignore";
+export type ColumnRole =
+  | "date" | "merchant" | "statement" | "amount" | "debit" | "credit"
+  | "category" | "tags" | "account" | "notes" | "ignore";
 
 const HINTS: [ColumnRole, RegExp][] = [
   ["date", /^(date|transaction date|posted date|post date|trans date)$/i],
   ["merchant", /^(merchant|description|name|payee|original description|details)$/i],
+  ["statement", /^(original statement|statement|raw description|bank description|original payee)$/i],
   ["amount", /^(amount|value)$/i],
   ["debit", /^(debit|withdrawal|outflow|charges?)$/i],
   ["credit", /^(credit|deposit|inflow|payments?)$/i],
   ["category", /^(category|categories)$/i],
   ["account", /^(account|account name|account_name)$/i],
   ["notes", /^(notes?|memo|comment)$/i],
+  ["tags", /^(tags?|labels?)$/i],
 ];
 
 /** Best-guess role for each header, covering Mint, Monarch and generic bank exports. */
@@ -48,6 +52,8 @@ export function guessColumns(header: string[]): ColumnRole[] {
     for (const [role, re] of HINTS) if (re.test(clean)) return role;
     if (/date/i.test(clean)) return "date";
     if (/amount/i.test(clean)) return "amount";
+    if (/statement/i.test(clean)) return "statement";
+    if (/^tags?$/i.test(clean)) return "tags";
     if (/desc|payee|merchant/i.test(clean)) return "merchant";
     return "ignore";
   });
@@ -72,10 +78,18 @@ export interface ImportRow {
   date: string;
   merchant: string;
   amount: number;
+  /** The bank's own wording, kept beside the tidied merchant name. */
+  statement?: string;
   categoryName?: string;
+  /** Tag names as written in the file; resolved to ids when the rows land. */
+  tagNames?: string[];
   notes?: string;
   accountName?: string;
 }
+
+/** "Business, Reimbursable" or "business;reimbursable" or "a|b". */
+export const splitTags = (raw: string | undefined): string[] =>
+  (raw ?? "").split(/[,;|]/).map((t) => t.trim()).filter(Boolean);
 
 export interface ImportPlan {
   rows: ImportRow[];
@@ -119,7 +133,9 @@ export function buildPlan(
     seen.add(key);
     out.push({
       date, merchant, amount,
+      statement: col("statement") >= 0 ? r[col("statement")]?.trim() || undefined : undefined,
       categoryName: col("category") >= 0 ? r[col("category")]?.trim() : undefined,
+      tagNames: col("tags") >= 0 ? splitTags(r[col("tags")]) : undefined,
       notes: col("notes") >= 0 ? r[col("notes")]?.trim() : undefined,
       accountName: col("account") >= 0 ? r[col("account")]?.trim() : undefined,
     });
@@ -136,19 +152,44 @@ export function resolveCategory(db: DB, name: string | undefined, amount: number
   return amount > 0 ? "c_other_income" : UNCATEGORIZED;
 }
 
-export function rowsToTransactions(db: DB, plan: ImportPlan, accountId: string): Transaction[] {
+/** Every tag named by a plan that this budget does not have yet. */
+export function newTagNames(plan: ImportPlan, existing: { name: string }[]): string[] {
+  const have = new Set(existing.map((t) => t.name.toLowerCase()));
+  const out = new Map<string, string>();
+  for (const r of plan.rows) {
+    for (const name of r.tagNames ?? []) {
+      if (!have.has(name.toLowerCase())) out.set(name.toLowerCase(), name);
+    }
+  }
+  return [...out.values()];
+}
+
+export interface RowsToTxOpts {
+  /** Lowercased tag name to id, covering both existing and just-created tags. */
+  tagIds?: Map<string, string>;
+  /** Imported rows are things you have already seen on a statement. */
+  reviewed?: boolean;
+}
+
+export function rowsToTransactions(
+  db: DB, plan: ImportPlan, accountId: string, opts: RowsToTxOpts = {},
+): Transaction[] {
   return plan.rows.map((r) => ({
     id: uid("t"),
     accountId,
     date: r.date,
     merchant: r.merchant,
-    statement: r.merchant,
+    // The file's own raw column when it has one; otherwise the merchant, which
+    // is all there was to go on before this could be mapped.
+    statement: r.statement || r.merchant,
     amount: r.amount,
     categoryId: resolveCategory(db, r.categoryName, r.amount),
     notes: r.notes || undefined,
-    tags: [],
+    tags: (r.tagNames ?? [])
+      .map((t) => opts.tagIds?.get(t.toLowerCase()))
+      .filter((id): id is string => !!id),
     pending: false,
-    reviewed: false,
+    reviewed: opts.reviewed ?? false,
     hideFromReports: false,
     importKey: importKeyFor(accountId, r.date, r.amount, r.merchant),
     createdAt: new Date().toISOString(),

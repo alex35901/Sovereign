@@ -178,6 +178,18 @@ export interface Actions {
 
   addTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
   addTransactions: (ts: Transaction[]) => void;
+  /**
+   * A CSV import, with any tags the file named created in the same write.
+   *
+   * `build` is handed the resolved tag ids, because the rows cannot be built
+   * until the tags exist and the tags must not exist unless the rows land —
+   * doing it in two steps would leave stray tags behind on a failure, and two
+   * entries on the undo stack.
+   */
+  importTransactions: (
+    tagNames: string[],
+    build: (tagIds: Map<string, string>) => Transaction[],
+  ) => void;
   updateTransaction: (id: ID, patch: Partial<Transaction>) => void;
   updateMany: (ids: ID[], patch: Partial<Transaction>, label: string) => void;
   addTagToMany: (ids: ID[], tagId: ID) => void;
@@ -347,6 +359,26 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
             .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
         };
       }),
+    importTransactions: (tagNames, build) =>
+      apply((db) => {
+        const tagIds = new Map(db.tags.map((t) => [t.name.toLowerCase(), t.id]));
+        const made: Tag[] = [];
+        for (const name of tagNames) {
+          if (tagIds.has(name.toLowerCase())) continue;
+          const tag: Tag = { id: uid("tg"), name, color: TAG_TONES[made.length % TAG_TONES.length]! };
+          made.push(tag);
+          tagIds.set(name.toLowerCase(), tag.id);
+        }
+        const ts = build(tagIds);
+        const at = new Date().toISOString();
+        const logged = ts.map((t) => (t.activity?.length ? t : { ...t, activity: [added("csv", t.createdAt || at)] }));
+        return {
+          ...db,
+          tags: [...db.tags, ...made],
+          transactions: [...logged, ...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
+        };
+      }, `import ${tagNames.length ? "transactions and tags" : "transactions"}`),
+
     addTransactions: (ts) =>
       apply((db) => {
         const at = new Date().toISOString();
