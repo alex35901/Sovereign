@@ -10,6 +10,10 @@ export interface RemoteAccount {
   currency: string;
   type: AccountType;
   balanceDate: string;
+  /** Institution logo, as a data URI. Plaid returns one; SimpleFIN does not. */
+  logo?: string;
+  /** Institution website, which a logo can be looked up from when there is none. */
+  domain?: string;
 }
 
 export interface RemoteTransaction {

@@ -52,6 +52,10 @@ export function mergeSync(
       accounts[idx] = {
         ...existing, balance: r.balance, history,
         syncId: r.syncId, syncSource: source, lastSyncedAt: payload.fetchedAt,
+        // Refreshed on every pull, but never blanked: a provider that stops
+        // sending one shouldn't lose the logo already held.
+        logo: r.logo ?? existing.logo,
+        domain: r.domain ?? existing.domain,
       };
       idBySyncId.set(r.syncId, existing.id);
       accountsUpdated++;
@@ -60,6 +64,7 @@ export function mergeSync(
       accounts.push({
         id, name: r.name, institution: r.institution, type: r.type,
         balance: r.balance, includeInNetWorth: true, hidden: false,
+        logo: r.logo, domain: r.domain,
         history: [{ date: r.balanceDate, balance: r.balance }],
         syncSource: source, syncId: r.syncId, lastSyncedAt: payload.fetchedAt,
         order: accounts.length,

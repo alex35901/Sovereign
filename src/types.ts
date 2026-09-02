@@ -24,6 +24,10 @@ export interface Account {
   closedAt?: ISODate;
   /** Sparse snapshots, ascending by date; forward-filled when charting. */
   history: { date: ISODate; balance: number }[];
+  /** The institution's logo as a data URI, when the provider supplies one. */
+  logo?: string;
+  /** The institution's website, used to look a logo up when it doesn't. */
+  domain?: string;
   syncSource?: "manual" | "csv" | "simplefin" | "plaid";
   syncId?: string;
   lastSyncedAt?: string;
@@ -177,6 +181,11 @@ export interface Settings {
   /** How often to pull from SimpleFIN while the app is open. */
   syncCadence?: SyncCadence;
   /**
+   * Look institution logos up from their domain when the provider gives no
+   * logo of its own. Off means initials, and nothing leaves this app for it.
+   */
+  institutionLogos?: boolean;
+  /**
    * Accounts deleted on purpose. Without this a provider hands the same account
    * back on the next pull and it reappears, which reads as the delete failing.
    */
@@ -195,6 +204,9 @@ export interface PlaidItemRef {
   accessToken: string;
   itemId: string;
   institution: string;
+  /** The institution's logo, fetched once when the item was connected. */
+  logo?: string;
+  domain?: string;
   kind: "bank" | "investment";
   addedAt: string;
   lastSyncAt?: string;

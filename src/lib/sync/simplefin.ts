@@ -79,6 +79,8 @@ export function toPayload(raw: BridgeResponse): SyncPayload {
       currency: a.currency ?? "USD",
       type: guessAccountType(`${a.org?.name ?? ""} ${a.name}`, balance),
       balanceDate: fromUnix(a["balance-date"]),
+      // SimpleFIN sends no logo, only where the institution lives.
+      domain: a.org?.domain,
     };
   });
   const transactions = (raw.accounts ?? []).flatMap((a) =>

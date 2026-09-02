@@ -54,6 +54,7 @@ await build({
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel } from "./src/lib/sync/schedule.ts";
       export { syncSimplefin } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
+      export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -761,6 +762,64 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+});
+
+/* ── institution logos ───────────────────────────────────────────────── */
+
+await test("initials are taken from the first two words, whatever the name", () => {
+  assert.equal(M.initialsOf("Wells Fargo"), "WF");
+  assert.equal(M.initialsOf("Elements Financial"), "EF");
+  assert.equal(M.initialsOf("Chase"), "C");
+  assert.equal(M.initialsOf("  ally   bank  "), "AB", "spacing must not change the answer");
+  assert.equal(M.initialsOf("First National Bank of Springfield"), "FN", "only the first two");
+  assert.equal(M.initialsOf(""), "?", "never blank");
+  assert.equal(M.initialsOf("   "), "?");
+});
+
+await test("an institution always gets the same colour", () => {
+  assert.equal(M.toneOf("Wells Fargo"), M.toneOf("Wells Fargo"));
+  assert.match(M.toneOf("Wells Fargo"), /^--c([1-9]|1[0-2])$/);
+  const tones = new Set(["Chase", "Wells Fargo", "Ally Bank", "Elements Financial", "Vanguard", "Fidelity"].map(M.toneOf));
+  assert.ok(tones.size > 1, "different institutions should not all land on one colour");
+});
+
+await test("a synced logo lands on the account and survives a pull without one", () => {
+  const payload = (over = {}) => ({
+    fetchedAt: "2026-09-01T12:00:00.000Z",
+    accounts: [{
+      syncId: "p-1", name: "Everyday", institution: "Chase", type: "checking",
+      balance: 1000, currency: "USD", balanceDate: "2026-09-01", ...over,
+    }],
+    transactions: [], errors: [],
+  });
+
+  const first = M.mergeSync(M.emptyDB(), payload({ logo: "data:image/png;base64,AAAA", domain: "chase.com" }), "plaid");
+  assert.equal(first.db.accounts[0].logo, "data:image/png;base64,AAAA");
+  assert.equal(first.db.accounts[0].domain, "chase.com");
+
+  // a later pull that omits it must not wipe what is already held
+  const second = M.mergeSync(first.db, payload(), "plaid");
+  assert.equal(second.db.accounts[0].logo, "data:image/png;base64,AAAA");
+  assert.equal(second.db.accounts[0].domain, "chase.com");
+
+  // but a new one replaces it
+  const third = M.mergeSync(second.db, payload({ logo: "data:image/png;base64,BBBB" }), "plaid");
+  assert.equal(third.db.accounts[0].logo, "data:image/png;base64,BBBB");
+});
+
+await test("SimpleFIN carries the domain it sends, and no logo", () => {
+  const raw = {
+    errors: [],
+    accounts: [{
+      id: "sf-1", name: "Joint Bills", currency: "USD", balance: "7662.61",
+      "balance-date": 1788000000, org: { name: "Elements Financial", domain: "elements.org" },
+      transactions: [],
+    }],
+  };
+  const out = M.toPayload(raw);
+  assert.equal(out.accounts[0].domain, "elements.org");
+  assert.equal(out.accounts[0].logo, undefined, "SimpleFIN sends no logo");
+  assert.equal(out.accounts[0].institution, "Elements Financial");
 });
 
 /* ── a transaction's history ─────────────────────────────────────────── */

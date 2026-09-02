@@ -112,10 +112,9 @@ export async function createLinkToken(kind: "bank" | "investment"): Promise<stri
 }
 
 export async function exchangePublicToken(publicToken: string, kind: "bank" | "investment"): Promise<PlaidItem> {
-  const res = await postJSON<{ accessToken: string; itemId: string; institution: string }>(PROXY, {
-    action: "exchange",
-    publicToken,
-  });
+  const res = await postJSON<{
+    accessToken: string; itemId: string; institution: string; logo?: string; domain?: string;
+  }>(PROXY, { action: "exchange", publicToken });
   return { ...res, kind, addedAt: new Date().toISOString() };
 }
 
@@ -156,6 +155,9 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
       currency: a.balances.iso_currency_code ?? "USD",
       type: mapAccountType(a.type, a.subtype),
       balanceDate: today,
+      // Carried from the item, which fetched it once when it was connected.
+      logo: item.logo,
+      domain: item.domain,
     };
   });
 

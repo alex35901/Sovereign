@@ -126,14 +126,23 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       const item = await call("/item/get", { access_token: data.access_token }).catch(() => null);
       const institutionId = (item?.item as { institution_id?: string } | undefined)?.institution_id;
       let institution = "Connected account";
+      let logo: string | undefined;
+      let domain: string | undefined;
       if (institutionId) {
         const inst = await call("/institutions/get_by_id", {
           institution_id: institutionId,
           country_codes: ["US"],
+          // Plaid withholds the logo, colour and website unless asked.
+          options: { include_optional_metadata: true },
         }).catch(() => null);
-        institution = ((inst?.institution as { name?: string } | undefined)?.name) ?? institution;
+        const found = inst?.institution as { name?: string; logo?: string; url?: string } | undefined;
+        institution = found?.name ?? institution;
+        // Base64 PNG straight from Plaid, so no third party ever sees which
+        // institutions these are.
+        if (found?.logo) logo = `data:image/png;base64,${found.logo}`;
+        if (found?.url) domain = hostOf(found.url);
       }
-      return send(200, { accessToken: data.access_token, itemId: data.item_id, institution });
+      return send(200, { accessToken: data.access_token, itemId: data.item_id, institution, logo, domain });
     }
 
     if (body.action === "sync") {
@@ -181,6 +190,15 @@ class PlaidError extends Error {
   constructor(public status: number, message: string, public code = "") {
     super(message);
     this.name = "PlaidError";
+  }
+}
+
+/** "https://www.chase.com/" → "chase.com" */
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return undefined;
   }
 }
 

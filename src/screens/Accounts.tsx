@@ -10,6 +10,7 @@ import { AreaChart, Sparkline } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
 import { RangePicker } from "../components/pickers";
 import { HiddenToggle } from "./AccountControls";
+import { InstitutionLogo } from "../components/InstitutionLogo";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
@@ -166,12 +167,7 @@ function AccountRow({ account, dates }: { account: Account; dates: ISODate[] }) 
   const history = useMemo(() => dates.map((d) => balanceAt(account, d)), [account, dates]);
   return (
     <Link to={`/accounts/${account.id}`} className="list-row click">
-      <span
-        className="avatar"
-        style={{ background: `color-mix(in srgb, var(--c2) 16%, transparent)`, color: "var(--c2)", fontWeight: 700, fontSize: 12 }}
-      >
-        {account.institution.slice(0, 2).toUpperCase()}
-      </span>
+      <InstitutionLogo account={account} />
       <div className="grow col" style={{ gap: 1 }}>
         <span className="truncate" style={{ fontWeight: 500 }}>{account.name}</span>
         <span className="tiny faint">

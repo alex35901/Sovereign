@@ -285,6 +285,20 @@ export default function Settings() {
           ) : null}
 
           <div className="divider" />
+          <div className="col" style={{ gap: 6 }}>
+            <Toggle
+              on={db.settings.institutionLogos !== false}
+              onChange={(v) => actions.patchSettings({ institutionLogos: v })}
+              label={<span className="small">Show bank logos</span>}
+            />
+            <span className="tiny faint" style={{ maxWidth: 560 }}>
+              Plaid sends its own logos, which never leave this app. SimpleFIN sends only the bank's
+              web address, so its logos are fetched from DuckDuckGo's icon service — which means that
+              service sees which banks you hold. Turn this off to use initials instead and ask nobody.
+            </span>
+          </div>
+
+          <div className="divider" />
           <div className="small muted">
             <b>Not everything is reachable this way.</b> SimpleFIN rides on MX, which carries no property values and
             no holdings, and some institutions — employer 401(k) recordkeepers especially — refuse aggregator access
