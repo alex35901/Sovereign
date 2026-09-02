@@ -38,7 +38,8 @@ await build({
       export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags } from "./src/lib/csv.ts";
-      export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor } from "./src/lib/select.ts";
+      export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
+      export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
@@ -3244,6 +3245,153 @@ await test("net worth series matches the account snapshots", () => {
   const series = M.netWorthSeries(demo, ["2026-07", "2026-08"]);
   assert.equal(series.length, 2);
   for (const p of series) assert.equal(p.net, p.assets + p.liabilities);
+});
+
+
+// --- day totals leave out money that is only moving ------------------------
+
+await test("a credit card payment is not counted as spending", () => {
+  const db = M.buildDemoDB();
+  const payment = db.categories.find((c) => c.name === "Credit Card Payment");
+  assert.ok(payment, "the demo data has no Credit Card Payment category");
+  const budgeted = M.budgetedCategoryIds(db);
+  assert.equal(budgeted.has(payment.id), false, "Credit Card Payment is being treated as spending");
+
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const day = [
+    { id: "t1", accountId: "a_checking", date: "2026-08-04", merchant: "Market", amount: -4_000, categoryId: groceries.id, tags: [] },
+    { id: "t2", accountId: "a_checking", date: "2026-08-04", merchant: "Payment", amount: -200_000, categoryId: payment.id, tags: [] },
+  ];
+  const sum = M.budgetedSum(db, day, budgeted);
+  assert.equal(sum.total, -4_000, "the payment leaked into the day total");
+  assert.equal(sum.excluded, -200_000);
+  assert.deepEqual(sum.excludedNames, ["Credit Card Payment"]);
+});
+
+await test("every transfer category is out, flag or no flag", () => {
+  const db = M.buildDemoDB();
+  const budgeted = M.budgetedCategoryIds(db);
+  const transferGroups = new Set(db.groups.filter((g) => g.kind === "transfer").map((g) => g.id));
+  for (const c of db.categories) {
+    if (c.excludeFromBudget || transferGroups.has(c.groupId)) {
+      assert.equal(budgeted.has(c.id), false, `${c.name} should be off budget`);
+    } else {
+      assert.equal(budgeted.has(c.id), true, `${c.name} should be on budget`);
+    }
+  }
+});
+
+await test("a category moved into Transfers goes off budget without being re-flagged", () => {
+  const db = M.buildDemoDB();
+  const transfers = db.groups.find((g) => g.kind === "transfer");
+  const victim = db.categories.find((c) => !c.excludeFromBudget && c.groupId !== transfers.id);
+  assert.equal(M.budgetedCategoryIds(db).has(victim.id), true);
+  // Only the group changes — excludeFromBudget stays false, the way a drag
+  // between groups in the UI leaves it.
+  const moved = { ...db, categories: db.categories.map((c) => (c.id === victim.id ? { ...c, groupId: transfers.id } : c)) };
+  assert.equal(M.budgetedCategoryIds(moved).has(victim.id), false);
+});
+
+await test("the Exclude from budget toggle is enough on its own", () => {
+  // Every category the default taxonomy flags also sits in Transfers, so the
+  // toggle would otherwise be covered only by the group check standing in for
+  // it — and it is the one of the two a person actually clicks.
+  const db = M.buildDemoDB();
+  const dining = db.categories.find((c) => c.name === "Restaurants & Bars");
+  assert.equal(M.budgetedCategoryIds(db).has(dining.id), true);
+
+  const off = { ...db, categories: db.categories.map((c) => (c.id === dining.id ? { ...c, excludeFromBudget: true } : c)) };
+  assert.equal(M.budgetedCategoryIds(off).has(dining.id), false, "the toggle did nothing");
+
+  const sum = M.budgetedSum(off, [
+    { id: "t1", accountId: "a_checking", date: "2026-08-04", merchant: "Dinner", amount: -6_000, categoryId: dining.id, tags: [] },
+  ]);
+  assert.equal(sum.total, 0);
+  assert.deepEqual(sum.excludedNames, ["Restaurants & Bars"]);
+});
+
+await test("the budget page and the day totals agree on what is off budget", () => {
+  const db = M.buildDemoDB();
+  const budgeted = M.budgetedCategoryIds(db);
+  const onTheBudgetPage = new Set(
+    M.budgetTable(db, "2026-08").flatMap((g) => g.rows.map((r) => r.category.id)),
+  );
+  for (const id of onTheBudgetPage) {
+    assert.equal(budgeted.has(id), true, `${id} is budgeted on the Budget page but excluded from day totals`);
+  }
+  // The other direction allows for archived categories, which the page hides.
+  for (const c of db.categories) {
+    if (budgeted.has(c.id) && !c.archived) {
+      assert.equal(onTheBudgetPage.has(c.id), true, `${c.name} counts in day totals but has no budget row`);
+    }
+  }
+});
+
+await test("a split counts for the half of it that is spending", () => {
+  const db = M.buildDemoDB();
+  const payment = db.categories.find((c) => c.name === "Credit Card Payment");
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const t = {
+    id: "t1", accountId: "a_checking", date: "2026-08-04", merchant: "Mixed", amount: -10_000,
+    categoryId: groceries.id, tags: [],
+    splits: [
+      { id: "s1", categoryId: groceries.id, amount: -3_000 },
+      { id: "s2", categoryId: payment.id, amount: -7_000 },
+    ],
+  };
+  const sum = M.budgetedSum(db, [t]);
+  assert.equal(sum.total, -3_000);
+  assert.equal(sum.excluded, -7_000);
+});
+
+await test("both sides of a transfer cancel out but are still reported as excluded", () => {
+  // The case that made the marker vanish exactly when it was needed: money out
+  // of checking and into savings on one day nets to zero, so an "excluded"
+  // amount of zero cannot mean "nothing was excluded".
+  const db = M.buildDemoDB();
+  const transfer = db.categories.find((c) => c.name === "Savings Transfer");
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const sum = M.budgetedSum(db, [
+    { id: "t1", accountId: "a_checking", date: "2026-08-04", merchant: "Market", amount: -4_000, categoryId: groceries.id, tags: [] },
+    { id: "t2", accountId: "a_checking", date: "2026-08-04", merchant: "To Ally", amount: -50_000, categoryId: transfer.id, tags: [] },
+    { id: "t3", accountId: "a_savings", date: "2026-08-04", merchant: "From Chase", amount: 50_000, categoryId: transfer.id, tags: [] },
+  ]);
+  assert.equal(sum.total, -4_000);
+  assert.equal(sum.excluded, 0, "the pair should net to nothing");
+  assert.equal(sum.excludedCount, 2, "…and still be reported, or the marker disappears");
+});
+
+await test("a day of nothing but transfers reports no total, not zero", () => {
+  const db = M.buildDemoDB();
+  const payment = db.categories.find((c) => c.name === "Credit Card Payment");
+  const sum = M.budgetedSum(db, [
+    { id: "t1", accountId: "a_checking", date: "2026-08-04", merchant: "Payment", amount: -200_000, categoryId: payment.id, tags: [] },
+  ]);
+  // Transactions.tsx draws the figure only when total or nothing was excluded;
+  // this is the case where it draws nothing rather than "$0.00".
+  assert.equal(sum.total, 0);
+  assert.equal(sum.excludedCount, 1);
+});
+
+// --- the palette -----------------------------------------------------------
+
+await test("grey is offered but never handed out on its own", () => {
+  assert.ok(M.GROUP_TONES.includes("--c13"), "the picker does not offer grey");
+  assert.equal(M.TONE_NAMES["--c13"], "Grey");
+  // Every tone the picker shows has a name, or the swatch is an unlabelled dot.
+  for (const tone of M.GROUP_TONES) assert.ok(M.TONE_NAMES[tone], `${tone} has no name`);
+
+  // A group with no colour of its own and no coloured members falls back to a
+  // hash of its id. Enough groups to cover the whole range of that hash, or the
+  // assertion below passes for the boring reason that grey never came up.
+  const db = M.buildDemoDB();
+  const groups = Array.from({ length: 300 }, (_, i) => ({ id: `g${i}`, name: `G${i}`, kind: "expense", order: i }));
+  const categories = groups.map((g, i) => ({
+    id: `c${i}`, groupId: g.id, name: `C${i}`, icon: "?", excludeFromBudget: false, rollover: false, order: i,
+  }));
+  const assigned = new Set(M.withGroupColors({ ...db, groups, categories }).categories.map((c) => c.color));
+  assert.equal(assigned.size, 12, `expected all twelve auto tones to come up, got ${[...assigned].sort().join(" ")}`);
+  assert.equal(assigned.has("--c13"), false, "a group was given grey without being asked");
 });
 
 

@@ -151,6 +151,77 @@ export function counts(t: Transaction, muted: Set<string>): boolean {
   return !t.hideFromReports && !muted.has(t.accountId);
 }
 
+/**
+ * The categories whose money is spending, as opposed to money moving.
+ *
+ * Two separate things put a category outside a budget: the per-category
+ * "Exclude from budget" toggle, and belonging to a group of kind transfer. They
+ * usually agree — a category made under Transfers gets the flag — but a
+ * category dragged into that group later would not, so both are checked.
+ *
+ * Why it matters beyond the budget page: a credit card payment is the same
+ * money twice. It leaves checking as the payment and it already left as the
+ * groceries bought on the card, so anything that adds up a day or a month
+ * double-counts it, and a payday shows as a wash.
+ *
+ * A set rather than a predicate, because the callers ask once per line across
+ * every transaction on screen.
+ */
+export function budgetedCategoryIds(db: DB): Set<string> {
+  const transfers = new Set(db.groups.filter((g) => g.kind === "transfer").map((g) => g.id));
+  return new Set(
+    db.categories
+      .filter((c) => !c.excludeFromBudget && !transfers.has(c.groupId))
+      .map((c) => c.id),
+  );
+}
+
+export interface BudgetedSum {
+  /** What the transactions come to, counting only budgeted categories. */
+  total: number;
+  /** What was left out, so a caller can say so rather than looking wrong. */
+  excluded: number;
+  /**
+   * How many lines were left out.
+   *
+   * Not derivable from `excluded`, which is what makes it worth carrying: a
+   * transfer is two rows, the money leaving one account and arriving in the
+   * other, so a day holding both nets to zero having excluded a great deal.
+   * A caller asking "was anything left out" has to ask this one.
+   */
+  excludedCount: number;
+  /** The categories it was left out of, named. */
+  excludedNames: string[];
+}
+
+/**
+ * Adds up transactions the way the budget would.
+ *
+ * Split transactions contribute split by split, so one that is half a card
+ * payment and half a purchase counts for the half that is spending.
+ */
+export function budgetedSum(
+  db: DB,
+  txns: Transaction[],
+  budgeted: Set<string> = budgetedCategoryIds(db),
+): BudgetedSum {
+  const names = byId(db.categories);
+  const left = new Map<string, string>();
+  let total = 0;
+  let excluded = 0;
+  let excludedCount = 0;
+  for (const t of txns) {
+    for (const l of lines(t)) {
+      if (budgeted.has(l.categoryId)) { total += l.amount; continue; }
+      excluded += l.amount;
+      excludedCount++;
+      const cat = names.get(l.categoryId);
+      if (cat) left.set(cat.id, cat.name);
+    }
+  }
+  return { total, excluded, excludedCount, excludedNames: [...left.values()].sort() };
+}
+
 /* ── cash flow ────────────────────────────────────────────────────────── */
 
 export interface FlowPoint { month: MonthKey; income: number; expense: number; net: number }
@@ -328,12 +399,15 @@ export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number
 
 export function budgetTable(db: DB, month: MonthKey): BudgetGroupRow[] {
   const actuals = actualsFor(db, month);
+  const budgeted = budgetedCategoryIds(db);
   const out: BudgetGroupRow[] = [];
   for (const g of [...db.groups].sort((a, b) => a.order - b.order)) {
-    if (g.kind === "transfer") continue;
     const rows: BudgetRow[] = [];
     for (const c of db.categories.filter((c) => c.groupId === g.id && !c.archived).sort((a, b) => a.order - b.order)) {
-      if (c.excludeFromBudget) continue;
+      // One test instead of the two this used to make — a transfer group and
+      // an excluded category — so that what the transaction list leaves out of
+      // a day total is exactly what this page declines to budget.
+      if (!budgeted.has(c.id)) continue;
       const p = plannedFor(db, month, c.id);
       const a = actuals.get(c.id) ?? 0;
       // Every category appears in every month. Hiding the quiet ones meant a

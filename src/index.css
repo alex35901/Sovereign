@@ -26,6 +26,11 @@
   --c1: #e8894a; --c2: #4a9fe8; --c3: #35c48c; --c4: #b47ae8;
   --c5: #e8c34a; --c6: #e85a8a; --c7: #4ad0e8; --c8: #8ae84a;
   --c9: #e8724a; --c10: #7a8ae8; --c11: #c9a227; --c12: #6fb3a0;
+  /* The one neutral. Shared by both themes like the rest of the palette,
+     so it is picked to read on the light surface and the dark one rather
+     than being ideal on either — it is what a group wears to say "this is
+     not spending", which is most of what anyone wants grey for. */
+  --c13: #7c8797;
 }
 
 :root[data-theme="light"] {
@@ -309,6 +314,11 @@ table.tbl { width: 100%; border-collapse: collapse; }
    Categories are one fixed-width pill each rather than a chip that grows with
    its name, so the column reads as a column instead of as ragged text. */
 .tx-amount { text-align: center; }
+/* The day total keeps the column's centre line whether or not it carries the
+   off-budget marker; the marker hangs off the end instead of shoving the
+   number sideways on exactly the days worth a second look. */
+.tx-day-total { position: relative; }
+.tx-day-total .excluded-note { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
 .tx-category { justify-content: center; text-align: center; }
 .tx-category .chip { width: 150px; justify-content: center; }
 .tx-category .chip .truncate { min-width: 0; }

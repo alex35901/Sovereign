@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { CheckCheck, CopyCheck, Download, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
+import { CheckCheck, CopyCheck, Download, EyeOff, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -8,12 +8,44 @@ import { InstitutionLogo } from "../components/InstitutionLogo";
 import { dateLabel, monthOf } from "../lib/date";
 import { hash } from "../lib/id";
 import { toCSV } from "../lib/csv";
+import { budgetedCategoryIds, budgetedSum } from "../lib/select";
+import type { BudgetedSum } from "../lib/select";
+import { fmt } from "../lib/money";
 import { download } from "../lib/storage";
 import { Btn, Card, Empty, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { TransactionModal } from "./TransactionModal";
 import { ImportModal } from "./ImportModal";
 import { DuplicatesModal } from "./DuplicatesModal";
+
+/**
+ * The mark next to a total that had something taken out of it.
+ *
+ * Without it the arithmetic on screen does not add up: a day showing a $40
+ * lunch and a $2,000 card payment totals $40, and the only honest thing to do
+ * is say why. Small and quiet because most days have nothing to say, and the
+ * detail is on hover rather than in the column, which is 118px wide.
+ */
+function ExcludedNote({ sum }: { sum: BudgetedSum }) {
+  const named = sum.excludedNames.slice(0, 3).join(", ");
+  const rest = sum.excludedNames.length - 3;
+  // Both sides of a transfer land on one day and cancel out, so the amount is
+  // often zero while a great deal was left out. Count what was skipped, and
+  // only quote a figure when there is one worth quoting.
+  const amount = sum.excluded ? `${fmt(sum.excluded)} in ` : "";
+  const rows = `${sum.excludedCount} ${sum.excludedCount === 1 ? "line" : "lines"}`;
+  return (
+    <span
+      className="faint row excluded-note"
+      style={{ flex: "none" }}
+      aria-label={`excludes ${rows} in off-budget categories`}
+      title={`Not counted: ${amount}${named}${rest > 0 ? ` and ${rest} more` : ""} (${rows}). `
+        + "Transfers and categories set to Exclude from budget are left out, so money moved between your own accounts isn't counted as spending."}
+    >
+      <EyeOff size={11} style={{ flex: "none" }} />
+    </span>
+  );
+}
 
 const TONES = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
 export const merchantTone = (name: string): string => TONES[Number.parseInt(hash(name.toLowerCase()), 36) % TONES.length];
@@ -83,7 +115,12 @@ export default function Transactions() {
     return [...map.entries()];
   }, [shown]);
 
-  const total = filtered.reduce((s, t) => s + t.amount, 0);
+  // Transfers and anything marked "Exclude from budget" are left out of every
+  // total on this page. A credit card payment is the same money as the
+  // groceries bought on the card, so counting both made a day look twice as
+  // expensive as it was and a payday look like a wash.
+  const budgeted = useMemo(() => budgetedCategoryIds(db), [db.categories, db.groups]);
+  const net = useMemo(() => budgetedSum(db, filtered, budgeted), [db, filtered, budgeted]);
   const allSelected = shown.length > 0 && shown.every((t) => selected.has(t.id));
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -159,7 +196,10 @@ export default function Transactions() {
               {filtered.length.toLocaleString()} transaction{filtered.length === 1 ? "" : "s"}
               {categoryId ? <> in <CategoryTag categoryId={categoryId} /></> : null}
             </span>
-            <span className="muted">Net <Money value={total} colored className="bold" /></span>
+            <span className="muted row" style={{ gap: 6 }}>
+              Net <Money value={net.total} colored className="bold" />
+              {net.excludedCount ? <ExcludedNote sum={net} /> : null}
+            </span>
           </div>
         </Card>
 
@@ -223,22 +263,28 @@ export default function Transactions() {
             <span className="tiny faint tx-amount">Amount</span>
           </div>
 
-          {grouped.map(([date, rows]) => (
-            <div key={date}>
-              <div className="date-head tx-grid">
-                <span className="date-head-label">{dateLabel(date, { weekday: true, year: true })}</span>
-                <span className="num tx-amount">
-                  <Money value={rows.reduce((s, t) => s + t.amount, 0)} colored />
-                </span>
+          {grouped.map(([date, rows]) => {
+            const day = budgetedSum(db, rows, budgeted);
+            return (
+              <div key={date}>
+                <div className="date-head tx-grid">
+                  <span className="date-head-label">{dateLabel(date, { weekday: true, year: true })}</span>
+                  <span className="num tx-amount tx-day-total">
+                    {/* A day of nothing but transfers has no budgeted total to
+                        show. Zero would read as "these cancelled out". */}
+                    {day.total || !day.excludedCount ? <Money value={day.total} colored /> : null}
+                    {day.excludedCount ? <ExcludedNote sum={day} /> : null}
+                  </span>
+                </div>
+                {rows.map((t) => (
+                  <Row
+                    key={t.id} txn={t} selected={selected.has(t.id)}
+                    onToggle={() => toggle(t.id)} onEdit={() => setEditing(t)}
+                  />
+                ))}
               </div>
-              {rows.map((t) => (
-                <Row
-                  key={t.id} txn={t} selected={selected.has(t.id)}
-                  onToggle={() => toggle(t.id)} onEdit={() => setEditing(t)}
-                />
-              ))}
-            </div>
-          ))}
+            );
+          })}
 
           {!filtered.length ? (
             <Empty

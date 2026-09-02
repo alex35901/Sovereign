@@ -5,7 +5,7 @@ import { useDB, useStore } from "../store";
 import { countMatches } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { AccountPicker, CategoryPicker } from "../components/pickers";
-import { groupColor, GROUP_TONES } from "../lib/category-colors";
+import { groupColor, GROUP_TONES, TONE_NAMES } from "../lib/category-colors";
 import { EmojiPicker } from "../components/EmojiPicker";
 
 const PALETTE = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
@@ -111,7 +111,8 @@ function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => v
         <div className="row wrap" style={{ gap: 6 }}>
           {GROUP_TONES.map((c) => (
             <button
-              key={c} onClick={() => setColor(c)} aria-label={c}
+              key={c} onClick={() => setColor(c)}
+              aria-label={TONE_NAMES[c] ?? c} title={TONE_NAMES[c] ?? c}
               style={{
                 width: 26, height: 26, borderRadius: "50%", cursor: "pointer",
                 background: `var(${c})`,
