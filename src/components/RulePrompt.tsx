@@ -25,6 +25,7 @@ export function RulePrompt() {
 
   if (!rulePrompt) return null;
   const category = db.categories.find((c) => c.id === rulePrompt.categoryId);
+  const into = rulePrompt.renameTo ?? category?.name ?? "category";
 
   if (editing) {
     return (
@@ -32,7 +33,8 @@ export function RulePrompt() {
         preset={{
           merchantContains: rulePrompt.merchant,
           categoryId: rulePrompt.categoryId,
-          name: `${rulePrompt.merchant} → ${category?.name ?? "category"}`,
+          renameMerchant: rulePrompt.renameTo,
+          name: `${rulePrompt.merchant} → ${into}`,
         }}
         onClose={() => { setEditing(false); dismissRulePrompt(); }}
       />
@@ -43,7 +45,9 @@ export function RulePrompt() {
     <div className="rule-prompt" role="status">
       <div className="rule-prompt-body">
         <div style={{ fontWeight: 600 }}>
-          Updated to {category?.icon ?? ""} {category?.name ?? "a category"}
+          {category ? <>Updated to {category.icon} {category.name}</> : null}
+          {category && rulePrompt.renameTo ? " and renamed" : null}
+          {!category && rulePrompt.renameTo ? <>Renamed to {rulePrompt.renameTo}</> : null}
         </div>
         <div className="small muted" style={{ marginTop: 2 }}>
           Create a rule to do this automatically in the future.

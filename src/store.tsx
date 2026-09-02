@@ -37,8 +37,11 @@ interface Store {
 
 /** What a "create a rule for this?" offer needs to know. */
 export interface RulePrompt {
+  /** The merchant as it arrived, which is what a rule has to match on. */
   merchant: string;
-  categoryId: ID;
+  categoryId?: ID;
+  /** The name it was changed to, when the edit was a rename. */
+  renameTo?: string;
   /** Changes on every offer, so the countdown restarts rather than carrying on. */
   key: number;
 }
@@ -79,8 +82,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [rulePrompt, setRulePrompt] = useState<RulePrompt | null>(null);
   const dismissRulePrompt = useCallback(() => setRulePrompt(null), []);
   const suggestRule = useCallback((p: Omit<RulePrompt, "key">) => {
-    // Nothing to match on without a merchant, and nothing to do without a category.
-    if (!p.merchant.trim() || !p.categoryId) return;
+    // Nothing to match on without a merchant, and nothing worth automating
+    // unless the edit actually set something.
+    if (!p.merchant.trim() || (!p.categoryId && !p.renameTo?.trim())) return;
     setRulePrompt({ ...p, key: Date.now() });
   }, []);
 
@@ -128,6 +132,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
 const replace = <T extends { id: ID }>(xs: T[], id: ID, patch: Partial<T>): T[] =>
   xs.map((x) => (x.id === id ? { ...x, ...patch } : x));
+
+/** Every transaction with one rule's actions applied. */
+const runRule = (db: DB, rule: Rule): Transaction[] => db.transactions.map((t) => applyRules([rule], t));
 
 export interface Actions {
   resetDemo: () => void;
@@ -180,8 +187,9 @@ export interface Actions {
   upsertRecurring: (r: Recurring) => void;
   dismissRecurring: (r: Recurring) => void;
 
-  addRule: (r: Omit<Rule, "id" | "order">) => void;
-  updateRule: (id: ID, patch: Partial<Rule>) => void;
+  /** `applyToExisting` runs the saved rule over the transactions already held. */
+  addRule: (r: Omit<Rule, "id" | "order">, applyToExisting?: boolean) => void;
+  updateRule: (id: ID, patch: Partial<Rule>, applyToExisting?: boolean) => void;
   deleteRule: (id: ID) => void;
   applyRuleToExisting: (id: ID) => void;
 
@@ -415,8 +423,24 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
           : [...db.recurring, { ...r, dismissed: true }],
       }), "dismiss recurring item"),
 
-    addRule: (r) => apply((db) => ({ ...db, rules: [...db.rules, { ...r, id: uid("r"), order: db.rules.length }] })),
-    updateRule: (id, patch) => apply((db) => ({ ...db, rules: replace(db.rules, id, patch) })),
+    addRule: (r, applyToExisting) =>
+      apply((db) => {
+        const rule = { ...r, id: uid("r"), order: db.rules.length };
+        const rules = [...db.rules, rule];
+        // Saving and back-filling is one step, so one undo puts back both the
+        // rule and every transaction it just rewrote.
+        return { ...db, rules, transactions: applyToExisting ? runRule(db, rule) : db.transactions };
+      }, "add rule"),
+
+    updateRule: (id, patch, applyToExisting) =>
+      apply((db) => {
+        const rules = replace(db.rules, id, patch);
+        const rule = rules.find((r) => r.id === id);
+        return {
+          ...db, rules,
+          transactions: applyToExisting && rule ? runRule(db, rule) : db.transactions,
+        };
+      }, "update rule"),
     deleteRule: (id) => apply((db) => ({ ...db, rules: db.rules.filter((r) => r.id !== id) }), "delete rule"),
     applyRuleToExisting: (id) =>
       apply((db) => {

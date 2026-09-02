@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import type { Category, CategoryGroup, ID, Rule } from "../types";
 import { useDB, useStore } from "../store";
 import { countMatches } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
-import { CategoryPicker } from "../components/pickers";
+import { AccountPicker, CategoryPicker } from "../components/pickers";
 import { EmojiPicker } from "../components/EmojiPicker";
 
 const PALETTE = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
@@ -247,10 +247,14 @@ export function RulesPanel() {
             <span style={{ fontWeight: 500 }}>{r.name}</span>
             <span className="tiny faint truncate">
               {r.criteria.merchantContains ? `merchant contains "${r.criteria.merchantContains}"` : "any merchant"}
+              {r.criteria.accountId ? ` · in ${db.accounts.find((a) => a.id === r.criteria.accountId)?.name ?? "an account"}` : ""}
               {r.criteria.direction ? ` · ${r.criteria.direction === "in" ? "money in" : "money out"}` : ""}
               {" → "}
               {r.actions.categoryId ? db.categories.find((c) => c.id === r.actions.categoryId)?.name : "no category change"}
               {r.actions.renameMerchant ? `, rename to "${r.actions.renameMerchant}"` : ""}
+              {r.actions.addTags?.length
+                ? `, tag ${r.actions.addTags.map((id) => db.tags.find((t) => t.id === id)?.name).filter(Boolean).join(", ")}`
+                : ""}
             </span>
           </div>
           <span className="tiny faint">{countMatches(db, r)} match</span>
@@ -265,39 +269,77 @@ export function RulesPanel() {
 }
 
 /** A new rule started from something the user just did, rather than from blank. */
-export interface RulePreset { merchantContains?: string; categoryId?: ID; name?: string }
+export interface RulePreset {
+  merchantContains?: string;
+  categoryId?: ID;
+  renameMerchant?: string;
+  name?: string;
+}
 
 export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: RulePreset; onClose: () => void }) {
-  const { actions } = useStore();
+  const db = useDB();
+  const { actions, notify } = useStore();
   const [name, setName] = useState(rule?.name ?? preset?.name ?? "");
   const [merchantContains, setMerchant] = useState(rule?.criteria.merchantContains ?? preset?.merchantContains ?? "");
   const [direction, setDirection] = useState<"" | "in" | "out">(rule?.criteria.direction ?? "");
   const [amountMin, setMin] = useState(rule?.criteria.amountMin ?? 0);
   const [amountMax, setMax] = useState(rule?.criteria.amountMax ?? 0);
+  const [accountId, setAccount] = useState(rule?.criteria.accountId ?? "");
   const [categoryId, setCategory] = useState(rule?.actions.categoryId ?? preset?.categoryId ?? "");
-  const [renameMerchant, setRename] = useState(rule?.actions.renameMerchant ?? "");
-  const [markReviewed, setReviewed] = useState(rule?.actions.markReviewed ?? false);
+  const [renameMerchant, setRename] = useState(rule?.actions.renameMerchant ?? preset?.renameMerchant ?? "");
+  const [addTags, setAddTags] = useState<ID[]>(rule?.actions.addTags ?? []);
+  // On by default: a rule firing is the review, so leaving them unreviewed just
+  // makes work. An existing rule keeps whatever it was saved with.
+  const [markReviewed, setReviewed] = useState(rule ? (rule.actions.markReviewed ?? false) : true);
   const [hideFromReports, setHide] = useState(rule?.actions.hideFromReports ?? false);
+  const [applyToExisting, setApplyToExisting] = useState(!rule);
+
+  const payload = useMemo(() => ({
+    name: name.trim() || merchantContains || "Untitled rule",
+    enabled: rule?.enabled ?? true,
+    criteria: {
+      merchantContains: merchantContains.trim() || undefined,
+      // was dropped on save before, so editing a rule scoped to an account
+      // silently widened it to every account
+      accountId: accountId || undefined,
+      direction: direction || undefined,
+      amountMin: amountMin || undefined,
+      amountMax: amountMax || undefined,
+    },
+    actions: {
+      categoryId: categoryId || undefined,
+      renameMerchant: renameMerchant.trim() || undefined,
+      addTags: addTags.length ? addTags : undefined,
+      markReviewed: markReviewed || undefined,
+      hideFromReports: hideFromReports || undefined,
+    },
+  }), [name, merchantContains, accountId, direction, amountMin, amountMax,
+       categoryId, renameMerchant, addTags, markReviewed, hideFromReports, rule]);
+
+  // What this rule would touch as it currently stands, counted live so the
+  // offer to back-fill says how much it is about to change.
+  const matches = useMemo(
+    () => countMatches(db, { ...payload, id: rule?.id ?? "draft", order: 0 }),
+    [db, payload, rule],
+  );
+  const doesSomething = Boolean(payload.actions.categoryId || payload.actions.renameMerchant
+    || payload.actions.addTags || payload.actions.markReviewed || payload.actions.hideFromReports);
+  const c = payload.criteria;
+  const hasCriteria = Boolean(c.merchantContains || c.accountId || c.direction || c.amountMin || c.amountMax);
+  // A rule with no conditions matches everything, and "Mark as reviewed" is on
+  // by default — so back-filling a blank rule would quietly rewrite the whole
+  // history. It stays unavailable until the rule says who it is for.
+  const canBackfill = hasCriteria && doesSomething;
 
   const save = () => {
-    const payload = {
-      name: name.trim() || merchantContains || "Untitled rule",
-      enabled: rule?.enabled ?? true,
-      criteria: {
-        merchantContains: merchantContains.trim() || undefined,
-        direction: direction || undefined,
-        amountMin: amountMin || undefined,
-        amountMax: amountMax || undefined,
-      },
-      actions: {
-        categoryId: categoryId || undefined,
-        renameMerchant: renameMerchant.trim() || undefined,
-        markReviewed: markReviewed || undefined,
-        hideFromReports: hideFromReports || undefined,
-      },
-    };
-    if (rule) actions.updateRule(rule.id, payload);
-    else actions.addRule(payload);
+    const backfill = applyToExisting && canBackfill;
+    if (rule) actions.updateRule(rule.id, payload, backfill);
+    else actions.addRule(payload, backfill);
+    notify(
+      backfill && matches
+        ? `Rule saved and applied to ${matches} transaction${matches === 1 ? "" : "s"}.`
+        : "Rule saved.",
+    );
     onClose();
   };
 
@@ -315,27 +357,78 @@ export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: Rul
       }
     >
       <Field label="Rule name"><TextInput value={name} onChange={setName} placeholder="Coffee runs" autoFocus /></Field>
-      <div className="section-title">When</div>
-      <Field label="Merchant or statement contains">
-        <TextInput value={merchantContains} onChange={setMerchant} placeholder="blue bottle" />
-      </Field>
-      <div className="row" style={{ gap: 12 }}>
-        <Field label="Direction">
-          <SelectInput
-            value={direction} onChange={(v) => setDirection(v as "" | "in" | "out")}
-            options={[{ value: "", label: "Any" }, { value: "out", label: "Money out" }, { value: "in", label: "Money in" }]}
-          />
-        </Field>
-        <Field label="Min amount"><MoneyInput value={amountMin} onChange={setMin} /></Field>
-        <Field label="Max amount"><MoneyInput value={amountMax} onChange={setMax} /></Field>
+
+      <section className="rule-block">
+        <header><span className="rule-when">When</span> a transaction matches all of these</header>
+        <div className="col" style={{ gap: 12 }}>
+          <Field label="Merchant or statement contains">
+            <TextInput value={merchantContains} onChange={setMerchant} placeholder="blue bottle" />
+          </Field>
+          <Field label="Account">
+            <AccountPicker value={accountId} onChange={setAccount} allowAll />
+          </Field>
+          <div className="row wrap" style={{ gap: 12 }}>
+            <Field label="Direction">
+              <SelectInput
+                value={direction} onChange={(v) => setDirection(v as "" | "in" | "out")}
+                options={[{ value: "", label: "Any" }, { value: "out", label: "Money out" }, { value: "in", label: "Money in" }]}
+              />
+            </Field>
+            <Field label="Min amount"><MoneyInput value={amountMin} onChange={setMin} /></Field>
+            <Field label="Max amount"><MoneyInput value={amountMax} onChange={setMax} /></Field>
+          </div>
+        </div>
+      </section>
+
+      <section className="rule-block">
+        <header><span className="rule-then">Then</span> do all of these</header>
+        <div className="col" style={{ gap: 12 }}>
+          <div className="row wrap" style={{ gap: 12, alignItems: "flex-end" }}>
+            <Field label="Set category"><CategoryPicker value={categoryId} onChange={setCategory} /></Field>
+            <Field label="Rename merchant to"><TextInput value={renameMerchant} onChange={setRename} placeholder="Leave blank to keep" /></Field>
+          </div>
+          <Field label="Set tags">
+            {db.tags.length ? (
+              <div className="row wrap" style={{ gap: 6 }}>
+                {db.tags.map((t) => (
+                  <button
+                    key={t.id} type="button"
+                    className={cx("chip", addTags.includes(t.id) && "on")}
+                    onClick={() => setAddTags((prev) => prev.includes(t.id) ? prev.filter((x) => x !== t.id) : [...prev, t.id])}
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span className="tiny faint">No tags yet — create them under Configuration → Tags.</span>
+            )}
+          </Field>
+          <div className="col" style={{ gap: 8 }}>
+            <Toggle on={markReviewed} onChange={setReviewed} label={<span className="small">Mark as reviewed</span>} />
+            <Toggle on={hideFromReports} onChange={setHide} label={<span className="small">Hide from reports</span>} />
+          </div>
+        </div>
+      </section>
+
+      <div className="rule-backfill">
+        <Toggle
+          on={applyToExisting && canBackfill}
+          onChange={(v) => { if (canBackfill) setApplyToExisting(v); }}
+          label={
+            <span className={cx("small", !canBackfill && "faint")}>
+              Also update transactions already here
+              <span className="faint">
+                {" · "}
+                {!doesSomething ? "add an action below first"
+                  : !hasCriteria ? "add a condition above first, or this would match everything"
+                    : matches === 0 ? "nothing matches right now"
+                      : `${matches} transaction${matches === 1 ? "" : "s"} would change`}
+              </span>
+            </span>
+          }
+        />
       </div>
-      <div className="section-title">Then</div>
-      <div className="row" style={{ gap: 12, alignItems: "flex-end" }}>
-        <Field label="Set category"><CategoryPicker value={categoryId} onChange={setCategory} /></Field>
-        <Field label="Rename merchant to"><TextInput value={renameMerchant} onChange={setRename} placeholder="Leave blank to keep" /></Field>
-      </div>
-      <Toggle on={markReviewed} onChange={setReviewed} label={<span className="small">Mark as reviewed</span>} />
-      <Toggle on={hideFromReports} onChange={setHide} label={<span className="small">Hide from reports</span>} />
     </Modal>
   );
 }

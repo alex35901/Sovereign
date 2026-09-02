@@ -37,10 +37,19 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
     };
     if (txn) actions.updateTransaction(txn.id, payload);
     else actions.addTransaction({ ...payload, statement: merchant.trim() });
-    // Only when the category actually moved, and only for an edit — a rule made
-    // from a transaction typed in by hand would match nothing yet.
-    if (txn && categoryId !== txn.categoryId && !splits.length) {
-      suggestRule({ merchant: payload.merchant, categoryId });
+    // Only for an edit that actually changed something — a rule made from a
+    // transaction typed in by hand would match nothing yet.
+    if (txn && !splits.length) {
+      const movedCategory = categoryId !== txn.categoryId;
+      const renamed = payload.merchant !== txn.merchant;
+      if (movedCategory || renamed) {
+        suggestRule({
+          // matched on the name as it arrived, so the next one is caught too
+          merchant: txn.merchant,
+          categoryId: movedCategory ? categoryId : undefined,
+          renameTo: renamed ? payload.merchant : undefined,
+        });
+      }
     }
     onClose();
   };

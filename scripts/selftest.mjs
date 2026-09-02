@@ -29,7 +29,7 @@ await build({
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor } from "./src/lib/select.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
-      export { applyRules } from "./src/lib/rules.ts";
+      export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
@@ -760,6 +760,76 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+});
+
+/* ── rules: account scope and tags ───────────────────────────────────── */
+
+const rule = (over = {}) => ({
+  id: "r1", name: "R", enabled: true, order: 0,
+  criteria: {}, actions: {}, ...over,
+});
+const txn = (over = {}) => ({
+  id: "t1", accountId: "a1", date: "2026-09-01", merchant: "Blue Bottle", amount: -450,
+  categoryId: "c_coffee", tags: [], pending: false, reviewed: false, hideFromReports: false,
+  createdAt: "", ...over,
+});
+
+await test("an account criterion keeps a rule to that account", () => {
+  const r = rule({ criteria: { accountId: "a1" } });
+  assert.equal(M.ruleMatches(r, txn({ accountId: "a1" })), true);
+  assert.equal(M.ruleMatches(r, txn({ accountId: "a2" })), false);
+  // and with no account set it applies everywhere
+  assert.equal(M.ruleMatches(rule(), txn({ accountId: "a2" })), true);
+});
+
+await test("account and merchant together must both hold", () => {
+  const r = rule({ criteria: { accountId: "a1", merchantContains: "blue bottle" } });
+  assert.equal(M.ruleMatches(r, txn({ accountId: "a1", merchant: "Blue Bottle" })), true);
+  assert.equal(M.ruleMatches(r, txn({ accountId: "a1", merchant: "Peets" })), false);
+  assert.equal(M.ruleMatches(r, txn({ accountId: "a2", merchant: "Blue Bottle" })), false);
+});
+
+await test("a tag action adds without dropping tags already there", () => {
+  const r = rule({ actions: { addTags: ["tag_work"] } });
+  const out = M.applyRules([r], txn({ tags: ["tag_trip"] }));
+  assert.deepEqual(out.tags.sort(), ["tag_trip", "tag_work"]);
+
+  // applying twice must not duplicate it
+  const again = M.applyRules([r], out);
+  assert.deepEqual(again.tags.sort(), ["tag_trip", "tag_work"]);
+});
+
+await test("several tags land at once, alongside the other actions", () => {
+  const r = rule({
+    criteria: { accountId: "a1" },
+    actions: { addTags: ["t1", "t2"], categoryId: "c_new", markReviewed: true, renameMerchant: "Blue Bottle Coffee" },
+  });
+  const out = M.applyRules([r], txn());
+  assert.deepEqual(out.tags.sort(), ["t1", "t2"]);
+  assert.equal(out.categoryId, "c_new");
+  assert.equal(out.merchant, "Blue Bottle Coffee");
+  assert.equal(out.reviewed, true);
+
+  // a transaction on another account is untouched by all of it
+  const other = txn({ accountId: "a2" });
+  assert.equal(M.applyRules([r], other), other, "an unmatched rule must return the same object");
+});
+
+await test("counting matches is what the back-fill offer promises", () => {
+  const db = {
+    ...M.emptyDB(),
+    transactions: [
+      txn({ id: "t1", accountId: "a1", merchant: "Blue Bottle" }),
+      txn({ id: "t2", accountId: "a1", merchant: "Blue Bottle #2" }),
+      txn({ id: "t3", accountId: "a2", merchant: "Blue Bottle" }),
+      txn({ id: "t4", accountId: "a1", merchant: "Peets" }),
+    ],
+  };
+  assert.equal(M.countMatches(db, rule({ criteria: { merchantContains: "blue bottle" } })), 3);
+  assert.equal(M.countMatches(db, rule({ criteria: { merchantContains: "blue bottle", accountId: "a1" } })), 2);
+  assert.equal(M.countMatches(db, rule({ criteria: { accountId: "a2" } })), 1);
+  // a disabled rule matches nothing, so it cannot promise to change anything
+  assert.equal(M.countMatches(db, rule({ enabled: false, criteria: { accountId: "a1" } })), 0);
 });
 
 /* ── assets and liabilities over a period ────────────────────────────── */
