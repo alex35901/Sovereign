@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Lock, LockOpen, ShieldCheck, ShieldAlert, Download } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Lock, LockOpen, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { cloudState, passphrase, peek, pull, push, setCloudState } from "../lib/cloud";
 import type { Envelope } from "../lib/crypto";
@@ -27,6 +27,78 @@ const strength = (p: string): { ok: boolean; note: string } => {
   }
   return { ok: true, note: "Good length. Write it down somewhere safe — it cannot be reset." };
 };
+
+/**
+ * The SimpleFIN access URL, shown so it can be put into Vercel.
+ *
+ * Once the document is encrypted the scheduled job can no longer read the URL
+ * out of it, so it needs its own copy in the environment. The app is the only
+ * place that value exists in readable form, which makes this the only place it
+ * can be got from — it is a live credential to the bank feed, so it stays
+ * hidden until asked for.
+ */
+function AccessUrl() {
+  const db = useDB();
+  const { notify } = useStore();
+  const [shown, setShown] = useState(false);
+  const field = useRef<HTMLInputElement>(null);
+  const url = db.settings.simplefinAccessUrl;
+
+  if (!url) {
+    return (
+      <div className="tiny faint">
+        SimpleFIN isn’t connected, so the scheduled job has nothing to pull yet. Connect it above first.
+      </div>
+    );
+  }
+
+  /**
+   * Copy, with somewhere to fall back to.
+   *
+   * navigator.clipboard can be missing, refused, or — in some browsers when the
+   * page isn't focused — simply never settle, which would leave this button
+   * doing nothing at all and saying nothing about it. So the text is revealed
+   * and selected first: whatever happens after that, Ctrl/Cmd+C works.
+   */
+  const copy = async () => {
+    setShown(true);
+    // after the re-render that reveals it, so the selection covers the real text
+    await new Promise((r) => setTimeout(r, 0));
+    field.current?.select();
+
+    try {
+      await Promise.race([
+        navigator.clipboard.writeText(url),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("no answer")), 1500)),
+      ]);
+      notify("Access URL copied. Paste it into Vercel as SIMPLEFIN_ACCESS_URL.");
+    } catch {
+      notify("Selected it for you — press Ctrl/Cmd+C to copy.");
+    }
+  };
+
+  return (
+    <div className="col" style={{ gap: 6, marginTop: 8 }}>
+      <div className="tiny faint">Value for SIMPLEFIN_ACCESS_URL</div>
+      <div className="row wrap" style={{ gap: 8 }}>
+        <input
+          ref={field}
+          className="input" readOnly value={shown ? url : "•".repeat(44)}
+          onFocus={(e) => e.currentTarget.select()}
+          style={{ maxWidth: 380, fontFamily: "var(--mono, monospace)", fontSize: 12 }}
+        />
+        <Btn onClick={() => setShown(!shown)}>
+          {shown ? <><EyeOff size={14} /> Hide</> : <><Eye size={14} /> Show</>}
+        </Btn>
+        <Btn onClick={() => void copy()}><Copy size={14} /> Copy</Btn>
+      </div>
+      <div className="tiny faint" style={{ maxWidth: 560 }}>
+        This is a live credential to your bank feed. Anyone holding it can read the same data SimpleFIN
+        sends here, so treat it like a password.
+      </div>
+    </div>
+  );
+}
 
 export function EncryptionCard() {
   const db = useDB();
@@ -170,6 +242,7 @@ export function EncryptionCard() {
               find it inside the document.
             </span>
           </div>
+          <AccessUrl />
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={backup}><Download size={14} /> Download a plain backup</Btn>
             <ConfirmButton
@@ -227,6 +300,14 @@ export function EncryptionCard() {
             />
           </div>
           {note ? <div className={`tiny ${note.ok ? "faint" : "neg"}`}>{note.note}</div> : null}
+          <div className="setting-row">
+            <span className="small">
+              <b>Set this up first.</b> Once the document is sealed, the scheduled 9am sync can no longer
+              read the SimpleFIN access URL out of it. Add the value below to Vercel as
+              <b> SIMPLEFIN_ACCESS_URL</b> and redeploy, or the overnight pull will stop until you do.
+            </span>
+          </div>
+          <AccessUrl />
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={backup}><Download size={14} /> Download a plain backup first</Btn>
             <Btn
