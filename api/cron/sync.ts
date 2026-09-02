@@ -4,7 +4,8 @@ import { mergeSync, syncWindowStart } from "../../src/lib/sync/merge.js";
 import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
 import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
 import { fetchAccountsText } from "../_simplefin.js";
-import { connectionString, readDoc, writeDoc } from "../_store.js";
+import { connectionString, queuePull, readDoc, trimQueue, writeDoc } from "../_store.js";
+import { isEnvelope, sealTo } from "../../src/lib/crypto.js";
 import { bearer, passphraseOk, secretOk } from "../_auth.js";
 import { callerKey, clearFailures, lockedFor, noteFailure, readAttempt, waitMessage } from "../_ratelimit.js";
 
@@ -69,6 +70,37 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try {
     const stored = await readDoc();
     if (!stored) return send(200, { ran: false, reason: "Nothing saved yet — open the app once to seed it." });
+
+    // An encrypted document cannot be merged into here, and must not be
+    // touched: writing a merge over an envelope would destroy it. Instead the
+    // pull is encrypted to the public key the envelope carries and left in the
+    // queue for the next browser that opens the app. Nothing this job holds
+    // can read it back afterwards.
+    if (isEnvelope(stored.doc)) {
+      const accessUrl = (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim();
+      if (!accessUrl) {
+        return send(200, {
+          ran: false,
+          reason: "This document is encrypted, so the scheduled pull needs its own copy of the SimpleFIN "
+            + "access URL. Add SIMPLEFIN_ACCESS_URL to the Vercel environment variables — Settings shows the value.",
+        });
+      }
+      const since = new Date(Date.now() - 45 * 24 * 60 * 60_000).toISOString().slice(0, 10);
+      const raw = await fetchAccountsText(accessUrl, startOfDayUnix(since));
+      const payload = toPayload(JSON.parse(raw) as BridgeResponse);
+      const id = await queuePull(await sealTo(stored.doc.pub, JSON.stringify(payload)));
+      const trimmed = await trimQueue();
+
+      return send(200, {
+        ran: true,
+        encrypted: true,
+        queued: id,
+        trimmed,
+        accounts: payload.accounts.length,
+        transactions: payload.transactions.length,
+        errors: payload.errors,
+      });
+    }
 
     const db = stored.doc as DB;
     const accessUrl = db.settings?.simplefinAccessUrl;

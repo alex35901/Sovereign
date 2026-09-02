@@ -12,6 +12,7 @@ import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } f
 import { Link } from "react-router-dom";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
+import { EncryptionCard } from "./EncryptionCard";
 import { ImportModal } from "./ImportModal";
 
 function PropertyValuesCard() {
@@ -308,6 +309,7 @@ export default function Settings() {
         </Card>
 
         <CloudCard />
+        <EncryptionCard />
 
         <PlaidCard />
 

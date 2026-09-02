@@ -67,6 +67,7 @@ await build({
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
       export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
+      export * as C from "./src/lib/crypto.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -75,6 +76,7 @@ await build({
   external: ["pg", "pg-native"],
 });
 const M = await import(entry);
+const C = M.C; // the crypto module, kept under its own name for readability
 
 /* ── SimpleFIN proxy, against a stub bridge ───────────────────────────── */
 
@@ -1821,6 +1823,158 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+/* ── end-to-end encryption ────────────────────────────────────────────── */
+
+// The real 600k iterations is ~0.3s a go; most of these only need the shape,
+// so they use a cheap count. One test below pins the real one.
+const FAST = { iterations: 1000 };
+const unlockFast = async (pass, salt) => {
+  const kdf = { name: "PBKDF2", hash: "SHA-256", iterations: FAST.iterations, salt: salt ?? C.toB64(C.newSalt()) };
+  const key = await C.deriveKey(pass, C.fromB64(kdf.salt), kdf.iterations);
+  const { pub, priv } = await C.newKeypair();
+  return { key, kdf, pub, priv, wrappedPriv: await C.seal(key, JSON.stringify(await crypto.subtle.exportKey("jwk", priv))) };
+};
+
+const sampleDoc = () => ({
+  version: 3,
+  accounts: [{ id: "a1", name: "Everyday Checking", institution: "Wells Fargo", balance: 412_33 }],
+  transactions: [{ id: "t1", merchant: "Philz Coffee", amount: -1000, date: "2026-09-02" }],
+  settings: { simplefinAccessUrl: "https://user:hunter2@bridge.simplefin.org/access" },
+});
+
+await test("a document survives the round trip byte for byte", async () => {
+  const at = await unlockFast("a long enough passphrase");
+  const doc = sampleDoc();
+  const env = await C.encryptDocument(doc, at);
+  assert.deepEqual(await C.decryptDocument(env, at), doc);
+});
+
+await test("nothing recognisable from the document appears in the envelope", async () => {
+  // The whole point: what Neon holds must give up nothing on inspection.
+  const at = await unlockFast("a long enough passphrase");
+  const env = await C.encryptDocument(sampleDoc(), at);
+  const wire = JSON.stringify(env);
+  for (const secret of ["Philz", "Wells Fargo", "Everyday Checking", "hunter2", "simplefin", "41233", "bridge.simplefin.org"]) {
+    assert.equal(wire.includes(secret), false, `"${secret}" is readable in the stored envelope`);
+  }
+  assert.equal(wire.includes("AES-256-GCM"), true, "the algorithm itself is not a secret");
+});
+
+await test("the wrong passphrase does not open it", async () => {
+  const at = await unlockFast("the right passphrase");
+  const env = await C.encryptDocument(sampleDoc(), at);
+
+  const wrong = await C.deriveKey("the wrong passphrase", C.fromB64(env.kdf.salt), env.kdf.iterations);
+  const failed = await caught(() => C.decryptDocument(env, { ...at, key: wrong }));
+  assert.ok(failed, "decrypting with the wrong key must throw, not return rubbish");
+});
+
+await test("a single altered byte is refused rather than decrypted wrong", async () => {
+  // GCM authenticates as well as encrypts: anyone with database access who
+  // edits the blob gets a failure, not a document that quietly says something
+  // different from what was saved.
+  const at = await unlockFast("a long enough passphrase");
+  const env = await C.encryptDocument(sampleDoc(), at);
+
+  const bytes = C.fromB64(env.ct);
+  bytes[Math.floor(bytes.length / 2)] ^= 0x01;
+  const tampered = { ...env, ct: C.toB64(bytes) };
+  assert.ok(await caught(() => C.decryptDocument(tampered, at)), "a flipped bit must be caught");
+});
+
+await test("the same document encrypted twice looks nothing alike", async () => {
+  // A fresh IV every time, or saving an unchanged budget would leak that it
+  // was unchanged, and repeated values would line up across saves.
+  const at = await unlockFast("a long enough passphrase");
+  const doc = sampleDoc();
+  const a = await C.encryptDocument(doc, at);
+  const b = await C.encryptDocument(doc, at);
+  assert.notEqual(a.iv, b.iv);
+  assert.notEqual(a.ct, b.ct);
+  assert.deepEqual(await C.decryptDocument(a, at), await C.decryptDocument(b, at));
+});
+
+await test("the same passphrase under a different salt is a different key", async () => {
+  const doc = sampleDoc();
+  const one = await unlockFast("same passphrase both times");
+  const two = await unlockFast("same passphrase both times");
+  assert.notEqual(one.kdf.salt, two.kdf.salt, "each installation gets its own salt");
+
+  const env = await C.encryptDocument(doc, one);
+  assert.ok(await caught(() => C.decryptDocument(env, two)), "the other salt's key must not open it");
+});
+
+await test("reopening an envelope recovers the same drop-box keypair", async () => {
+  // The scheduled job encrypts to the public key stored in the envelope. If
+  // reopening produced a new keypair, everything it had queued would be lost.
+  const at = await unlockFast("a long enough passphrase");
+  const env = await C.encryptDocument(sampleDoc(), at);
+
+  const again = await C.unlockExisting(env, "a long enough passphrase");
+  assert.equal(again.pub, at.pub, "the public key has to survive a reload");
+
+  const box = await C.sealTo(env.pub, "queued overnight");
+  assert.equal(await C.openFrom(again.priv, box), "queued overnight");
+});
+
+await test("an envelope is told apart from a document that was never encrypted", async () => {
+  const at = await unlockFast("a long enough passphrase");
+  assert.equal(C.isEnvelope(await C.encryptDocument(sampleDoc(), at)), true);
+  assert.equal(C.isEnvelope(sampleDoc()), false, "a plaintext document must be recognised as such");
+  assert.equal(C.isEnvelope(null), false);
+  assert.equal(C.isEnvelope("a string"), false);
+  assert.equal(C.isEnvelope({ v: 1 }), false, "half an envelope is not one");
+});
+
+await test("the iteration count is read from the envelope, not assumed", async () => {
+  // So that raising the cost later still opens documents written before.
+  const salt = C.toB64(C.newSalt());
+  const at = await unlockFast("a long enough passphrase", salt);
+  at.kdf.iterations = 1200;
+  at.key = await C.deriveKey("a long enough passphrase", C.fromB64(salt), 1200);
+  at.wrappedPriv = await C.seal(at.key, JSON.stringify(await crypto.subtle.exportKey("jwk", at.priv)));
+  const env = await C.encryptDocument(sampleDoc(), at);
+
+  assert.equal(env.kdf.iterations, 1200);
+  const reopened = await C.unlockExisting(env, "a long enough passphrase");
+  assert.deepEqual(await C.decryptDocument(env, reopened), sampleDoc());
+});
+
+await test("the real iteration count is the current OWASP floor and it works", async () => {
+  assert.equal(C.ITERATIONS, 600_000);
+  const at = await C.unlockNew("a long enough passphrase");
+  assert.equal(at.kdf.iterations, 600_000);
+  const env = await C.encryptDocument({ hello: "world" }, at);
+  assert.deepEqual(await C.decryptDocument(env, at), { hello: "world" });
+});
+
+/* ── the drop box the scheduled job writes into ───────────────────────── */
+
+await test("the job can write what only a browser can read", async () => {
+  const at = await unlockFast("a long enough passphrase");
+  // the job has the public key and nothing else
+  const box = await C.sealTo(at.pub, JSON.stringify({ transactions: [{ merchant: "Costco Gas" }] }));
+  assert.equal(JSON.stringify(box).includes("Costco"), false, "the queued pull must not be readable");
+  assert.deepEqual(JSON.parse(await C.openFrom(at.priv, box)), { transactions: [{ merchant: "Costco Gas" }] });
+});
+
+await test("nobody else's key opens the drop box", async () => {
+  const mine = await unlockFast("mine");
+  const theirs = await unlockFast("theirs");
+  const box = await C.sealTo(mine.pub, "for me only");
+  assert.ok(await caught(() => C.openFrom(theirs.priv, box)), "another keypair must not open it");
+});
+
+await test("each queued message uses a throwaway key, so one opened is not all opened", async () => {
+  const at = await unlockFast("a long enough passphrase");
+  const a = await C.sealTo(at.pub, "monday");
+  const b = await C.sealTo(at.pub, "tuesday");
+  assert.notEqual(a.epk, b.epk, "a reused ephemeral key would link the messages");
+  assert.notEqual(a.iv, b.iv);
+  assert.equal(await C.openFrom(at.priv, a), "monday");
+  assert.equal(await C.openFrom(at.priv, b), "tuesday");
 });
 
 /* ── the sync loop stands down when refused ───────────────────────────── */

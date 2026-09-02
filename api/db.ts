@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
-import { diagnose, findConnection, readDoc, writeDoc } from "./_store.js";
+import { clearQueue, diagnose, findConnection, readDoc, readQueue, writeDoc } from "./_store.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 
@@ -83,6 +83,21 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
       });
     }
 
+    // What the scheduled job left behind while the document was unreadable to
+    // it. Served as-is: these rows are ciphertext to everything but a browser
+    // holding the passphrase, this endpoint included.
+    if (req.method === "POST" && body0?.action === "queue") {
+      return send(200, { queued: await readQueue() });
+    }
+    if (req.method === "POST" && body0?.action === "queue_ack") {
+      const ids = Array.isArray((body0 as { ids?: unknown }).ids)
+        ? ((body0 as { ids: unknown[] }).ids).filter((n): n is number => typeof n === "number")
+        : [];
+      // Dropped only once the browser has merged them in and saved the result,
+      // so a failure part-way through leaves the work to be redone, not lost.
+      return send(200, { cleared: await clearQueue(ids) });
+    }
+
     if (req.method === "GET") {
       const stored = await readDoc();
       return send(200, stored ? { found: true, ...stored } : { found: false });
@@ -98,6 +113,13 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
       }
 
       const result = await writeDoc(body.doc, body.baseVersion, body.device?.slice(0, 60) || "a browser");
+      if (result.wouldDecrypt) {
+        return send(409, {
+          error: "This budget is encrypted, and this browser hasn't been unlocked. "
+            + "Enter the encryption passphrase in Settings before saving.",
+          locked: true,
+        });
+      }
       if (!result.ok) {
         return send(409, {
           error: "This budget was changed somewhere else. Reload to pick up that copy.",

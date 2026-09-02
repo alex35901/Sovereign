@@ -1,4 +1,8 @@
 import type { DB } from "../types";
+import type { Envelope } from "./crypto.js";
+import { decryptDocument, encryptDocument, isEnvelope } from "./crypto.js";
+import { restore, vault } from "./vault.js";
+import { haltSync, resumeSync, syncHalt } from "./sync-halt.js";
 
 /**
  * Talking to the stored budget document.
@@ -45,22 +49,9 @@ export const setPassphrase = (p: string): void => {
   // A passphrase entered by hand is the one thing that can clear a halt.
   resumeSync();
 };
-/**
- * Auto-sync stops dead the moment the server refuses the passphrase.
- *
- * The poll runs every minute and used to swallow every error and try again for
- * ever, which was harmless while wrong answers were free. They are not free any
- * more: rotating SYNC_PASSPHRASE in Vercel leaves every open browser holding
- * the old one, and a minute apart they would spend the household's whole
- * allowance and lock the address out for a day — from the app's own tabs, while
- * nobody was even sitting at them. So a refusal halts the loop until a
- * passphrase is entered by hand, which is the only thing that can fix it.
- */
-let halted: "refused" | "locked" | null = null;
-export const syncHalt = (): "refused" | "locked" | null => halted;
-export const resumeSync = (): void => { halted = null; };
+export { syncHalt, resumeSync } from "./sync-halt.js";
 
-export const cloudEnabled = (): boolean => halted === null && passphrase().length > 0;
+export const cloudEnabled = (): boolean => syncHalt() === null && passphrase().length > 0;
 
 /** A name for the row's "last changed by", so a surprise edit is traceable. */
 export function deviceName(): string {
@@ -76,6 +67,20 @@ export function deviceName(): string {
     : /Firefox\//.test(ua) ? "Firefox"
     : "browser";
   return `${browser} on ${os}`;
+}
+
+/**
+ * The document came back encrypted and this browser has no key for it.
+ *
+ * Distinct from a refusal: the passphrase that opens the API was right, so
+ * there is nothing wrong with the connection — the encryption passphrase is
+ * simply not on this device yet.
+ */
+export class LockedError extends Error {
+  constructor(public envelope: Envelope) {
+    super("This document is encrypted. Enter its passphrase to read it.");
+    this.name = "LockedError";
+  }
 }
 
 export class CloudError extends Error {
@@ -100,7 +105,7 @@ async function call(init: RequestInit, override?: string): Promise<Response> {
   // Only the stored passphrase can halt the loop. A wrong one typed into the
   // box is being checked on purpose, and stopping sync over it would be odd.
   if (override === undefined && (res.status === 401 || res.status === 429)) {
-    halted = res.status === 429 ? "locked" : "refused";
+    haltSync(res.status === 429 ? "locked" : "refused");
   }
   if (res.status === 404) {
     throw new CloudError("The /api/db function isn't running. This needs the deployed app, not `npm run dev`.", 404);
@@ -138,12 +143,30 @@ export interface RemoteDoc {
   doc: DB;
 }
 
-/** The stored document, or null when the database is still empty. */
+/**
+ * The stored document, or null when the database is still empty.
+ *
+ * What comes back is either an envelope this browser must open or, on an
+ * installation that has not been encrypted yet, the document itself.
+ */
 export async function pull(): Promise<RemoteDoc | null> {
   const res = await call({ method: "GET" });
   if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
-  const body = (await res.json()) as RemoteDoc;
-  return body.found ? body : null;
+  const body = (await res.json()) as RemoteDoc & { doc: DB | Envelope };
+  if (!body.found) return null;
+
+  if (isEnvelope(body.doc)) {
+    const at = vault() ?? await restore();
+    if (!at) {
+      // Stand the loop down. This browser cannot read the document and its own
+      // copy must not be saved over it — the server refuses that outright, but
+      // there is no sense hammering at it once a minute until someone unlocks.
+      haltSync("encrypted");
+      throw new LockedError(body.doc);
+    }
+    return { ...body, doc: await decryptDocument(body.doc, at) };
+  }
+  return body as RemoteDoc;
 }
 
 export interface PushResult {
@@ -157,14 +180,66 @@ export interface PushResult {
  * the one outcome worth avoiding.
  */
 export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
+  // Encrypted whenever this browser holds a key. An installation that has not
+  // been set up yet keeps saving in the clear rather than silently locking
+  // itself out of a document its other devices could no longer read.
+  const at = vault() ?? await restore();
+  const payload = at ? await encryptDocument(doc, at) : doc;
   const res = await call({
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc, baseVersion, device: deviceName() }),
+    body: JSON.stringify({ doc: payload, baseVersion, device: deviceName() }),
   });
   if (res.status === 409) throw new CloudError(await messageOf(res, "Changed elsewhere."), 409);
   if (!res.ok) throw new CloudError(await messageOf(res, `Save failed (${res.status})`), res.status);
   return (await res.json()) as PushResult;
+}
+
+/**
+ * What is stored, without opening it.
+ *
+ * Settings needs to know whether the document is encrypted before it can offer
+ * the right thing to do about it, and asking that question must not require the
+ * key — the whole point of the locked state is that there isn't one yet.
+ */
+export async function peek(): Promise<{ found: boolean; encrypted: boolean; envelope: Envelope | null }> {
+  const res = await call({ method: "GET" });
+  if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
+  const body = (await res.json()) as { found: boolean; doc?: unknown };
+  if (!body.found) return { found: false, encrypted: false, envelope: null };
+  const env = isEnvelope(body.doc) ? body.doc : null;
+  return { found: true, encrypted: env !== null, envelope: env };
+}
+
+/* ── what the scheduled job left behind ───────────────────────────────── */
+
+export interface QueuedPull { id: number; createdAt: string; epk: string; iv: string; ct: string }
+
+/**
+ * The overnight pulls waiting to be merged in.
+ *
+ * While the document is encrypted the scheduled job cannot merge into it, so
+ * it queues what it fetched, encrypted to this installation's public key. This
+ * is the browser end of that: the only place the queue can actually be read.
+ */
+export async function queued(): Promise<QueuedPull[]> {
+  const res = await call({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "queue" }),
+  });
+  if (!res.ok) throw new CloudError(await messageOf(res, `Could not read the sync queue (${res.status})`), res.status);
+  return ((await res.json()) as { queued: QueuedPull[] }).queued;
+}
+
+/** Called only after the merged result has been saved. */
+export async function ackQueued(ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  await call({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "queue_ack", ids }),
+  });
 }
 
 export interface CloudDiagnosis {

@@ -1,5 +1,6 @@
 // Type-only: erased at compile time, so nothing is required at module load.
 import type { Pool } from "pg";
+import { isEnvelope } from "../src/lib/crypto.js";
 
 /**
  * The one budget document, held server-side so every device sees the same data
@@ -249,6 +250,13 @@ export interface WriteResult {
   /** Set when the write was refused because someone else got there first. */
   conflict?: StoredDoc;
   stored?: StoredDoc;
+  /**
+   * Set when the write would have replaced an encrypted document with a
+   * readable one. A browser that has never been unlocked still holds its own
+   * plaintext copy, and saving that as-is would strip the encryption off every
+   * other device's document and overwrite it with whatever that browser had.
+   */
+  wouldDecrypt?: boolean;
 }
 
 /**
@@ -270,6 +278,14 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
     );
     const row = rows[0] as Record<string, unknown> | undefined;
     const currentVersion = row ? Number(row.version) : 0;
+
+    // A one-way ratchet, checked inside the same locked transaction as the
+    // version so it cannot be raced: once a document is sealed, nothing may
+    // put a readable one back in its place.
+    if (row && isEnvelope(row.doc) && !isEnvelope(doc)) {
+      await client.query("ROLLBACK");
+      return { ok: false, wouldDecrypt: true };
+    }
 
     if (!writeAllowed(currentVersion, baseVersion)) {
       await client.query("ROLLBACK");
@@ -306,4 +322,83 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
   } finally {
     client.release();
   }
+}
+
+/* ── the drop box ──────────────────────────────────────────────────────── */
+
+/**
+ * What the scheduled job leaves behind when the document is encrypted.
+ *
+ * It cannot merge into a document it cannot read, so instead it encrypts what
+ * it pulled to the public key stored in the envelope and queues it here. Only
+ * a browser holding the passphrase can open these rows; this server wrote them
+ * and still cannot read them back.
+ */
+export interface QueuedPull {
+  id: number;
+  createdAt: string;
+  epk: string;
+  iv: string;
+  ct: string;
+}
+
+async function ensureQueue(): Promise<void> {
+  await (await db()).query(`
+    CREATE TABLE IF NOT EXISTS sync_queue (
+      id bigserial PRIMARY KEY,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      epk text NOT NULL,
+      iv text NOT NULL,
+      ct text NOT NULL
+    )
+  `);
+}
+
+export async function queuePull(box: { epk: string; iv: string; ct: string }): Promise<number> {
+  await ensureQueue();
+  const { rows } = await (await db()).query(
+    "INSERT INTO sync_queue (epk, iv, ct) VALUES ($1, $2, $3) RETURNING id",
+    [box.epk, box.iv, box.ct],
+  );
+  return Number((rows[0] as { id: number }).id);
+}
+
+/** Oldest first, so a browser applies overnight pulls in the order they happened. */
+export async function readQueue(limit = 50): Promise<QueuedPull[]> {
+  await ensureQueue();
+  const { rows } = await (await db()).query(
+    "SELECT id, created_at, epk, iv, ct FROM sync_queue ORDER BY id ASC LIMIT $1",
+    [limit],
+  );
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    id: Number(r.id),
+    createdAt: new Date(r.created_at as string).toISOString(),
+    epk: String(r.epk),
+    iv: String(r.iv),
+    ct: String(r.ct),
+  }));
+}
+
+/** Dropped only once a browser has merged them in and saved the result. */
+export async function clearQueue(ids: number[]): Promise<number> {
+  if (!ids.length) return 0;
+  await ensureQueue();
+  const { rowCount } = await (await db()).query(
+    "DELETE FROM sync_queue WHERE id = ANY($1::bigint[])",
+    [ids],
+  );
+  return rowCount ?? 0;
+}
+
+/**
+ * Stops the queue growing without bound if nobody opens the app for months.
+ * A pull older than this is stale anyway — the next one supersedes it.
+ */
+export async function trimQueue(keepDays = 30): Promise<number> {
+  await ensureQueue();
+  const { rowCount } = await (await db()).query(
+    "DELETE FROM sync_queue WHERE created_at < now() - ($1 || ' days')::interval",
+    [String(keepDays)],
+  );
+  return rowCount ?? 0;
 }

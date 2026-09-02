@@ -266,7 +266,9 @@ export function CloudCard() {
                 <b>Syncing is paused.</b>{" "}
                 {halt === "locked"
                   ? "Too many wrong passphrases were sent from this network, so the server has shut it out for a while. Wait for the time it gave, then enter the passphrase again."
-                  : "The server refused the passphrase this browser had — the usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
+                  : halt === "encrypted"
+                    ? "This budget is encrypted and this browser has no key for it. Enter the encryption passphrase under Encryption below — the sync passphrase is fine."
+                    : "The server refused the passphrase this browser had — the usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
                 Nothing has been lost: this browser's copy is intact and will upload once it reconnects.
               </span>
             </div>

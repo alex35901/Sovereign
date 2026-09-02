@@ -3,6 +3,7 @@ import { useStore } from "../store";
 import {
   CloudError, cloudEnabled, cloudState, deviceName, pull, push, setCloudState, stashConflict,
 } from "../lib/cloud";
+import { drainQueue } from "../lib/sync/drain";
 
 /** Local edits settle before a save; a burst of typing makes one request. */
 const PUSH_DEBOUNCE_MS = 1500;
@@ -28,6 +29,15 @@ export function CloudSync() {
   const busy = useRef(false);
   const ready = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const drainNow = async () => {
+    const at = cloudState();
+    const out = await drainQueue(latest.current, at.version).catch(() => null);
+    if (!out) return;
+    act.current.replaceFromCloud(out.db);
+    setCloudState({ version: out.version, dirty: false });
+    if (out.said) act.current.notify(out.said);
+  };
 
   // ── first contact: reconcile this browser against the stored document ──
   useEffect(() => {
@@ -65,6 +75,10 @@ export function CloudSync() {
         } else {
           setCloudState({ version: remote.version, dirty: false });
         }
+
+        // Whatever the scheduled job pulled overnight is waiting encrypted in
+        // the queue; this is the first moment there is a key to open it with.
+        if (!cancelled) await drainNow();
       } catch (err) {
         if (!cancelled) {
           act.current.notify(err instanceof CloudError ? `Cloud sync: ${err.message}` : "Cloud sync failed.");
@@ -131,6 +145,7 @@ export function CloudSync() {
             setCloudState({ version: remote.version, dirty: false });
             if (remote.updatedBy !== deviceName()) notifyUpdate(act.current.notify, remote.updatedBy);
           }
+          await drainNow();
         } catch { /* offline, most likely; the next tick tries again */ } finally {
           busy.current = false;
         }
