@@ -6,10 +6,15 @@ import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
 import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
+import { toRules } from "./lib/rules-import";
+import type { ParsedRule } from "./lib/rules-import";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
 import { applyForward } from "./lib/select";
 import { moveBudget } from "./lib/budget-move";
+
+/** Tag colours for tags created by an import, spread across the palette. */
+const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
 import { accountKeys } from "./lib/sync/merge";
 import { added, record } from "./lib/activity";
 
@@ -207,11 +212,15 @@ export interface Actions {
   /** `applyToExisting` runs the saved rule over the transactions already held. */
   addRule: (r: Omit<Rule, "id" | "order">, applyToExisting?: boolean) => void;
   /**
-   * Adds many at once, as one step. An import of a hundred rules added one at a
-   * time would be a hundred entries on the undo stack, and undoing it would
-   * mean pressing undo a hundred times.
+   * Brings in a parsed Monarch export as one step. An import of a hundred rules
+   * added one at a time would be a hundred entries on the undo stack, and
+   * undoing it would mean pressing undo a hundred times.
+   *
+   * Tags an imported rule refers to are created here if they do not exist, in
+   * the same write, so a rule can never end up pointing at a tag id that isn't
+   * there. Returns how many rules were made.
    */
-  addRules: (rs: Omit<Rule, "id" | "order">[], applyToExisting?: boolean) => void;
+  importRules: (parsed: ParsedRule[], applyToExisting?: boolean) => void;
   updateRule: (id: ID, patch: Partial<Rule>, applyToExisting?: boolean) => void;
   deleteRule: (id: ID) => void;
   applyRuleToExisting: (id: ID) => void;
@@ -463,23 +472,29 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         return { ...db, rules, transactions: applyToExisting ? runRule(db, rule) : db.transactions };
       }, "add rule"),
 
-    addRules: (rs, applyToExisting) =>
+    importRules: (parsed, applyToExisting) =>
       apply((db) => {
-        if (!rs.length) return db;
-        let out = db;
-        const added: Rule[] = [];
-        rs.forEach((r, i) => {
-          added.push({ ...r, id: uid("r"), order: db.rules.length + i });
-        });
-        out = { ...out, rules: [...db.rules, ...added] };
+        if (!parsed.length) return db;
+
+        // Tags first, so every rule below resolves to an id that exists.
+        const tagIds = new Map(db.tags.map((t) => [t.name.toLowerCase(), t.id]));
+        const madeTags: Tag[] = [];
+        for (const name of new Set(parsed.flatMap((p) => p.tags))) {
+          if (tagIds.has(name.toLowerCase())) continue;
+          const tag: Tag = { id: uid("tg"), name, color: TAG_TONES[madeTags.length % TAG_TONES.length]! };
+          madeTags.push(tag);
+          tagIds.set(name.toLowerCase(), tag.id);
+        }
+
+        const added = toRules(parsed, db.rules.length, () => uid("r"), tagIds);
+        let out: DB = { ...db, tags: [...db.tags, ...madeTags], rules: [...db.rules, ...added] };
         if (applyToExisting) {
-          // Run in the order they were added, so a later rule wins over an
-          // earlier one on the same transaction — the same order they run in
-          // when a transaction arrives.
+          // In the order they were added, which is the order they run in when a
+          // transaction arrives, so a later rule wins the same way either time.
           for (const rule of added) out = { ...out, transactions: runRule(out, rule) };
         }
         return out;
-      }, `import ${rs.length} rule${rs.length === 1 ? "" : "s"}`),
+      }, `import ${parsed.length} rule${parsed.length === 1 ? "" : "s"}`),
 
     updateRule: (id, patch, applyToExisting) =>
       apply((db) => {

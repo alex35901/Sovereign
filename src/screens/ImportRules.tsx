@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, Check, FileInput, Info } from "lucide-react";
 import { useDB, useStore } from "../store";
-import { duplicatesOf, parseMonarchRules, toRules } from "../lib/rules-import";
+import { duplicatesOf, parseMonarchRules } from "../lib/rules-import";
+import type { ParsedRule } from "../lib/rules-import";
 import { Btn, Card, CardHead, Toggle } from "../components/ui";
 
 /**
@@ -18,6 +19,21 @@ const VERB: Record<string, string> = {
   exact: "is exactly", contains: "contains", starts: "starts with", ends: "ends with",
 };
 
+const money = (n: number): string =>
+  `$${(n / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+
+/** The amount and direction part of a rule, in words. */
+function criteriaTail(r: ParsedRule): string {
+  const bits: string[] = [];
+  if (r.amountMin !== undefined && r.amountMin === r.amountMax) bits.push(`exactly ${money(r.amountMin)}`);
+  else if (r.amountMin !== undefined && r.amountMax !== undefined) bits.push(`${money(r.amountMin)}–${money(r.amountMax)}`);
+  else if (r.amountMin !== undefined) bits.push(`over ${money(r.amountMin)}`);
+  else if (r.amountMax !== undefined) bits.push(`under ${money(r.amountMax)}`);
+  if (r.direction === "in") bits.push("money in");
+  if (r.direction === "out") bits.push("money out");
+  return bits.join(", ");
+}
+
 export function ImportRules() {
   const db = useDB();
   const { actions, notify } = useStore();
@@ -26,8 +42,8 @@ export function ImportRules() {
   const [done, setDone] = useState<number | null>(null);
 
   const parsed = useMemo(
-    () => (text.trim() ? parseMonarchRules(text, db.categories) : null),
-    [text, db.categories],
+    () => (text.trim() ? parseMonarchRules(text, db.categories, db.tags) : null),
+    [text, db.categories, db.tags],
   );
   const dupes = useMemo(
     () => (parsed ? duplicatesOf(parsed.rules, db.rules) : new Set<number>()),
@@ -37,13 +53,18 @@ export function ImportRules() {
   const ready = parsed?.rules.filter((r) => r.categoryId && !dupes.has(r.line)) ?? [];
   const unmapped = parsed?.rules.filter((r) => !r.categoryId) ?? [];
   const skipped = parsed?.rules.filter((r) => r.categoryId && dupes.has(r.line)) ?? [];
+  // Only tags the rules actually being imported ask for — a tag named only by
+  // a rule that is being skipped should not be created for nothing.
+  const newTags = [...new Set(ready.flatMap((r) => r.tags))]
+    .filter((t) => !db.tags.some((x) => x.name.toLowerCase() === t.toLowerCase()));
 
   const run = () => {
-    const rules = toRules(ready, 0, () => "");
-    actions.addRules(rules.map(({ id: _id, order: _order, ...r }) => r), backfill);
-    setDone(rules.length);
+    const n = ready.length;
+    const tags = newTags.length;
+    actions.importRules(ready, backfill);
+    setDone(n);
     setText("");
-    notify(`Imported ${rules.length} rule${rules.length === 1 ? "" : "s"}.`);
+    notify(`Imported ${n} rule${n === 1 ? "" : "s"}${tags ? `, and made ${tags} tag${tags === 1 ? "" : "s"}` : ""}.`);
   };
 
   return (
@@ -102,6 +123,16 @@ export function ImportRules() {
               ) : null}
             </div>
 
+            {newTags.length ? (
+              <div className="setting-row">
+                <span className="small">
+                  <b>{newTags.length} new tag{newTags.length === 1 ? "" : "s"} will be created:</b>{" "}
+                  {newTags.join(", ")}. Tags are just labels, so these are made as part of the import —
+                  unlike a category, which carries a budget and has to be set up deliberately.
+                </span>
+              </div>
+            ) : null}
+
             {parsed.unknownCategories.length ? (
               <div className="setting-row" style={{ borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
                 <span className="small">
@@ -141,9 +172,16 @@ export function ImportRules() {
                       <div key={r.line} className="list-row" style={{ opacity: cat && !dup ? 1 : 0.55 }}>
                         <span className="tiny faint num" style={{ width: 34, flex: "none", textAlign: "right" }}>{r.line}</span>
                         <span className="grow truncate small" style={{ minWidth: 0 }}>
-                          Merchant <span className="faint">{VERB[r.match]}</span>{" "}
-                          <b>{r.merchant}</b>
+                          {r.merchant ? (
+                            <>Merchant <span className="faint">{VERB[r.match]}</span> <b>{r.merchant}</b></>
+                          ) : null}
+                          {criteriaTail(r) ? (
+                            <span className="faint">{r.merchant ? " · " : ""}{criteriaTail(r)}</span>
+                          ) : null}
                         </span>
+                        {r.tags.map((t) => (
+                          <span key={t} className="tag" style={{ flex: "none" }}>{t}</span>
+                        ))}
                         {cat ? (
                           <span
                             className="chip" style={{

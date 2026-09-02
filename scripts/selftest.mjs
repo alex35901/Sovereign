@@ -1872,12 +1872,119 @@ await test("every match type Monarch writes comes across as itself", () => {
   }
 });
 
+await test("a credit clause run onto the merchant clause comes across whole", () => {
+  // Verbatim from the export: two If clauses concatenated, no separator, and
+  // "creditequals$350.00" with the spaces lost.
+  const line = "'If merchant name exactly matches automated credit If creditequals$350.00'\t'Recategorize to 🔁 Transfer'\t''";
+  const out = RI.parseMonarchRules(line, [...CATS, { id: "c_xfer", name: "Transfer", icon: "🔁", color: "--c5" }]);
+  assert.deepEqual(out.problems, [], "this has to be understood, not reported");
+  assert.equal(out.rules.length, 1);
+  const r = out.rules[0];
+  assert.equal(r.merchant, "automated credit", "the merchant must not swallow the second clause");
+  assert.equal(r.match, "exact");
+  assert.equal(r.direction, "in", "a credit is money in");
+  assert.equal(r.amountMin, 35000);
+  assert.equal(r.amountMax, 35000, "equals is a range with both ends the same");
+  assert.equal(r.categoryId, "c_xfer");
+});
+
+await test("a debit clause and a tag, from the same export", () => {
+  const line = "24\t'If merchant name exactly matches zelle If debitequals$462.00'\t'Recategorize to 👨‍👩‍👦‍👦 3122 HOA Dues Add tag Business'\t''";
+  const cats = [...CATS, { id: "c_hoa", name: "3122 HOA Dues", icon: "👨‍👩‍👦‍👦", color: "--c6" }];
+  const out = RI.parseMonarchRules(line, cats, [{ id: "tg1", name: "Household", color: "--c1" }]);
+  assert.deepEqual(out.problems, []);
+  const r = out.rules[0];
+  assert.equal(r.merchant, "zelle");
+  assert.equal(r.direction, "out", "a debit is money out");
+  assert.equal(r.amountMin, 46200);
+  assert.equal(r.categoryId, "c_hoa", "a family emoji with a ZWJ must not stop the name matching");
+  assert.deepEqual(r.tags, ["Business"], "the tag must not be eaten by the category name");
+  assert.deepEqual(out.newTags, ["Business"], "and it has to be reported as one that will be created");
+  assert.equal(r.line, 1, "a leading row number is not an action");
+});
+
+await test("every way an amount can be written", () => {
+  const cases = [
+    ["creditequals$350.00", "in", 35000, 35000],
+    ["debit equals $462", "out", 46200, 46200],
+    ["amount is greater than $100", undefined, 10000, undefined],
+    ["amount is less than $25.50", undefined, undefined, 2550],
+    ["amount is between $10 and $20", undefined, 1000, 2000],
+    ["expenseequals$1,234.56", "out", 123456, 123456],
+  ];
+  for (const [clause, dir, min, max] of cases) {
+    const out = RI.parseMonarchRules(`If merchant name contains x If ${clause}\tRecategorize to Gas`, CATS);
+    assert.deepEqual(out.problems, [], `"${clause}" was not understood`);
+    const r = out.rules[0];
+    assert.equal(r.direction, dir, clause);
+    assert.equal(r.amountMin, min, clause);
+    assert.equal(r.amountMax, max, clause);
+  }
+});
+
+await test("a merchant with IF in its name is not cut in half", () => {
+  // The reason clauses split on "If <known word>" rather than on every "If".
+  const out = RI.parseMonarchRules("If merchant name exactly matches WHAT IF COFFEE\tRecategorize to Coffee Shops", CATS);
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.rules[0].merchant, "WHAT IF COFFEE");
+});
+
+await test("a criteria clause it cannot read fails the whole line, not half of it", () => {
+  // A rule imported with only half its criteria would match far more than it
+  // was ever meant to — worse than not importing it.
+  const out = RI.parseMonarchRules(
+    "If merchant name contains zelle If account is Chase Checking\tRecategorize to Gas", CATS);
+  assert.equal(out.rules.length, 0, "it must not keep the merchant half and drop the account half");
+  assert.equal(out.problems.length, 1);
+  assert.match(out.problems[0].why, /account is Chase Checking/);
+});
+
+await test("the built rule carries the amount and the tag it was given", () => {
+  const cats = [...CATS, { id: "c_hoa", name: "3122 HOA Dues", icon: "👨‍👩‍👦‍👦", color: "--c6" }];
+  const out = RI.parseMonarchRules(
+    "If merchant name exactly matches zelle If debitequals$462.00\tRecategorize to 3122 HOA Dues Add tag Business", cats);
+  const [rule] = RI.toRules(out.rules, 0, () => "r1", new Map([["business", "tg9"]]));
+  assert.deepEqual(rule.criteria, {
+    merchantContains: "zelle", merchantMatch: "exact",
+    direction: "out", amountMin: 46200, amountMax: 46200,
+  });
+  assert.deepEqual(rule.actions.addTags, ["tg9"]);
+  assert.equal(rule.actions.markReviewed, true);
+  assert.match(rule.name, /zelle/);
+  assert.match(rule.name, /\$462/);
+});
+
+await test("an amount rule matches only that amount, in that direction", () => {
+  const out = RI.parseMonarchRules(
+    "If merchant name exactly matches zelle If debitequals$462.00\tRecategorize to Gas", CATS);
+  const [rule] = RI.toRules(out.rules, 0, () => "r1");
+  const txn = (amount) => ({
+    id: "t", accountId: "a", date: "2026-09-02", merchant: "zelle", amount,
+    categoryId: "uncat", tags: [], pending: false, reviewed: false, hideFromReports: false,
+  });
+  assert.equal(M.ruleMatches(rule, txn(-46200)), true, "the debit it names");
+  assert.equal(M.ruleMatches(rule, txn(46200)), false, "the same figure as a credit must not match");
+  assert.equal(M.ruleMatches(rule, txn(-46300)), false, "a dollar out is not this rule");
+});
+
+await test("two rules on one merchant at different amounts are not duplicates", () => {
+  const text = [
+    "If merchant name exactly matches zelle If debitequals$462.00\tRecategorize to Gas",
+    "If merchant name exactly matches zelle If debitequals$100.00\tRecategorize to Gas",
+    "If merchant name exactly matches zelle If debitequals$462.00\tRecategorize to Gas",
+  ].join("\n");
+  const out = RI.parseMonarchRules(text, CATS);
+  const dupes = RI.duplicatesOf(out.rules, []);
+  assert.equal(dupes.has(2), false, "a different figure is a different rule");
+  assert.equal(dupes.has(3), true, "the same figure twice is not");
+});
+
 await test("what it cannot read it reports, rather than dropping", () => {
   // The failure worth designing against: 6 of 118 vanish and nobody notices
   // until a transaction lands in the wrong place months later.
   const text = [
     "If merchant name exactly matches Philz\tRecategorize to Coffee Shops",
-    "If amount is greater than 100\tRecategorize to Gas",
+    "If merchant name contains x If account is Chase Checking\tRecategorize to Gas",
     "If merchant name exactly matches Shell\tHide from reports",
     "some nonsense line",
     "If merchant name exactly matches Chevron\tRecategorize to Gas",
@@ -1887,7 +1994,7 @@ await test("what it cannot read it reports, rather than dropping", () => {
   assert.equal(out.rules.length, 2, "the two it understood");
   assert.equal(out.problems.length, 3, "and it must account for all three it did not");
   assert.deepEqual(out.problems.map((p) => p.line), [2, 3, 4]);
-  assert.match(out.problems[0].why, /merchant name criteria/);
+  assert.match(out.problems[0].why, /account is Chase Checking/);
   assert.match(out.problems[1].why, /Recategorize/);
   for (const p of out.problems) assert.ok(p.raw.length, "a problem has to quote its own line back");
 });

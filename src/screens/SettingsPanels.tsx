@@ -228,6 +228,11 @@ export function TagsPanel() {
   );
 }
 
+/** How a rule's merchant test reads in its one-line summary. */
+const MATCH_WORD: Record<string, string> = {
+  contains: "contains", exact: "is exactly", starts: "starts with", ends: "ends with",
+};
+
 export function RulesPanel() {
   const db = useDB();
   const { actions } = useStore();
@@ -246,7 +251,7 @@ export function RulesPanel() {
           <div className="grow col" style={{ gap: 1 }}>
             <span style={{ fontWeight: 500 }}>{r.name}</span>
             <span className="tiny faint truncate">
-              {r.criteria.merchantContains ? `merchant contains "${r.criteria.merchantContains}"` : "any merchant"}
+              {r.criteria.merchantContains ? `merchant ${MATCH_WORD[r.criteria.merchantMatch ?? "contains"]} "${r.criteria.merchantContains}"` : "any merchant"}
               {r.criteria.accountId ? ` · in ${db.accounts.find((a) => a.id === r.criteria.accountId)?.name ?? "an account"}` : ""}
               {r.criteria.direction ? ` · ${r.criteria.direction === "in" ? "money in" : "money out"}` : ""}
               {" → "}
