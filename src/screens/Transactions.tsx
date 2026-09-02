@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { CheckCheck, Download, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { Transaction } from "../types";
 import { useDB, useStore } from "../store";
@@ -289,7 +289,14 @@ function Row({ txn, selected, onToggle, onEdit }: {
         </span>
         <span className="row tiny faint" style={{ gap: 5, minWidth: 0 }}>
           <span className="truncate">
-            <span className="tx-sub-account">{account?.name ?? "—"}</span>
+            {account ? (
+              <Link
+                to={`/accounts/${account.id}`} className="tx-sub-account"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {account.name}
+              </Link>
+            ) : <span className="tx-sub-account">—</span>}
             {txn.notes ? `${txn.notes}` : ""}
             {split ? ` · split ${txn.splits!.length} ways` : ""}
             {!txn.notes && !split ? "" : ""}
@@ -325,7 +332,11 @@ function Row({ txn, selected, onToggle, onEdit }: {
           />
         )}
       </div>
-      <span className="tiny truncate tx-account">{account?.name ?? "—"}</span>
+      {account ? (
+        <Link to={`/accounts/${account.id}`} className="tiny truncate tx-account">{account.name}</Link>
+      ) : (
+        <span className="tiny truncate tx-account">—</span>
+      )}
       <div className="right num bold" style={{ cursor: "pointer" }} onClick={onEdit}>
         <Money value={txn.amount} colored={txn.amount > 0} />
       </div>

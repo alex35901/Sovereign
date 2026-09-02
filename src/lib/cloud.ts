@@ -251,6 +251,14 @@ export interface CloudDiagnosis {
   passphraseSet: boolean;
   /** How many callers are currently shut out for guessing. */
   lockedOut?: number | null;
+  /** What the server can see of the encryption setup. Never any value itself. */
+  encryption?: {
+    documentSealed: boolean | null;
+    simplefinUrlSet: boolean;
+    cronSecretSet: boolean;
+    queued: number;
+    queuedOldest: string | null;
+  };
   connect: { ok: boolean; error: string | null; code: string | null };
   table: { ok: boolean; error: string | null };
   documents: number | null;

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Lock, LockOpen, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff } from "lucide-react";
+import { Lock, LockOpen, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff, Check, X, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
-import { cloudState, passphrase, peek, pull, push, setCloudState } from "../lib/cloud";
+import { cloudState, diagnose, passphrase, peek, pull, push, setCloudState } from "../lib/cloud";
+import type { CloudDiagnosis } from "../lib/cloud";
 import type { Envelope } from "../lib/crypto";
 import { isUnlocked, lock, restore, unlock } from "../lib/vault";
 import { drainQueue } from "../lib/sync/drain";
@@ -100,7 +101,91 @@ function AccessUrl() {
   );
 }
 
-export function EncryptionCard() {
+/** One line of the readiness check: what was looked at, and what was found. */
+function Row({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "flex-start" }}>
+      {ok
+        ? <Check size={15} className="pos" style={{ flex: "none", marginTop: 2 }} />
+        : <X size={15} className="neg" style={{ flex: "none", marginTop: 2 }} />}
+      <span className="small" style={{ minWidth: 0 }}>
+        <b>{label}</b> <span className="muted">{detail}</span>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Whether the setup is actually finished.
+ *
+ * Half of it cannot be seen from the browser: the scheduled job reads its
+ * SimpleFIN URL from the Vercel environment, and getting that wrong shows up
+ * only as an overnight pull that quietly never happens. The server reports
+ * whether the variables are set — presence only, never a value.
+ */
+function Readiness({ unlocked }: { unlocked: boolean }) {
+  const [seen, setSeen] = useState<CloudDiagnosis | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true); setError(null);
+    try { setSeen(await diagnose()); }
+    catch (err) { setError(err instanceof Error ? err.message : "Could not reach the server."); }
+    finally { setBusy(false); }
+  };
+
+  const e = seen?.encryption;
+  return (
+    <div className="col" style={{ gap: 10 }}>
+      <div className="row wrap" style={{ gap: 8 }}>
+        <Btn onClick={() => void run()} disabled={busy}>
+          <Stethoscope size={14} /> {busy ? "Checking…" : "Check the setup"}
+        </Btn>
+      </div>
+      {error ? <div className="small neg">{error}</div> : null}
+      {e ? (
+        <div className="col" style={{ gap: 7 }}>
+          <Row
+            ok={e.documentSealed === true}
+            label="The stored document"
+            detail={e.documentSealed === true
+              ? "is encrypted — what the database holds is ciphertext."
+              : e.documentSealed === null
+                ? "is not there yet — save once from this browser."
+                : "is still readable. Set a passphrase above."}
+          />
+          <Row
+            ok={unlocked}
+            label="The key on this browser"
+            detail={unlocked ? "is held — it can read and save." : "is missing. Enter the encryption passphrase."}
+          />
+          <Row
+            ok={e.simplefinUrlSet}
+            label="SIMPLEFIN_ACCESS_URL in Vercel"
+            detail={e.simplefinUrlSet
+              ? "is set — the 9am pull can reach SimpleFIN."
+              : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
+          />
+          <Row
+            ok={e.cronSecretSet}
+            label="CRON_SECRET in Vercel"
+            detail={e.cronSecretSet ? "is set — the scheduled job can authenticate." : "is not set, so the 9am job cannot run."}
+          />
+          <div className="tiny faint" style={{ marginTop: 2 }}>
+            {e.queued === 0
+              ? "Nothing waiting in the overnight queue."
+              : `${e.queued} overnight pull${e.queued === 1 ? "" : "s"} waiting to be merged in${
+                  e.queuedOldest ? `, oldest from ${new Date(e.queuedOldest).toLocaleString()}` : ""}.`}
+            {" "}Only a browser with the passphrase can open them.
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function EncryptionCard(){
   const db = useDB();
   const { notify, replaceFromCloud } = useStore();
 
@@ -243,6 +328,7 @@ export function EncryptionCard() {
             </span>
           </div>
           <AccessUrl />
+          <Readiness unlocked />
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={backup}><Download size={14} /> Download a plain backup</Btn>
             <ConfirmButton

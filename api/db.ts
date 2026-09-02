@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
 import { clearQueue, diagnose, findConnection, readDoc, readQueue, writeDoc } from "./_store.js";
+import { isEnvelope } from "../src/lib/crypto.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 
@@ -70,7 +71,24 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     const body0 = (typeof req.body === "string" ? safeParse(req.body) : req.body) as { action?: string } | undefined;
     if (req.method === "POST" && body0?.action === "diagnose") {
       const lockedOut = await lockedOutNow().catch(() => null);
-      return send(200, { ...(await diagnose()), passphraseSet: true, lockedOut });
+      const stored = await readDoc().catch(() => null);
+      const waiting = await readQueue(200).catch(() => []);
+      return send(200, {
+        ...(await diagnose()),
+        passphraseSet: true,
+        lockedOut,
+        // Everything the encryption setup depends on, answered from the server
+        // where the browser cannot see: whether the environment actually holds
+        // what the scheduled job needs, and whether the stored document really
+        // is sealed. Presence only — no value ever comes back.
+        encryption: {
+          documentSealed: stored ? isEnvelope(stored.doc) : null,
+          simplefinUrlSet: (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim().length > 0,
+          cronSecretSet: (process.env.CRON_SECRET ?? "").trim().length > 0,
+          queued: waiting.length,
+          queuedOldest: waiting[0]?.createdAt ?? null,
+        },
+      });
     }
 
     const conn = findConnection();
