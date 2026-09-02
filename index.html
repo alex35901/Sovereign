@@ -2,9 +2,25 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/butterfly.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0F1319" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- The same drawing three ways, because nothing agrees on how to ask for an
+         icon. The SVG is for tabs; iOS refuses SVG for a home screen icon and
+         wants an opaque PNG; the manifest is for everyone else. All of them come
+         out of public/icon.svg via `npm run icons`, so they cannot drift. -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- Added to a phone's home screen, this is what makes it open as an app
+         rather than a bookmark: no address bar, its own name under the icon,
+         and a status bar the colour of the page instead of a white strip. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Sovereign" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="theme-color" content="#0e1116" />
+
     <title>Sovereign — personal finance</title>
   </head>
   <body>

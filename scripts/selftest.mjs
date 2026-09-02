@@ -6,8 +6,9 @@
  */
 import assert from "node:assert/strict";
 import http from "node:http";
+import { existsSync } from "node:fs";
 import { build } from "esbuild";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 const results = [];
@@ -3243,6 +3244,81 @@ await test("net worth series matches the account snapshots", () => {
   const series = M.netWorthSeries(demo, ["2026-07", "2026-08"]);
   assert.equal(series.length, 2);
   for (const p of series) assert.equal(p.net, p.assets + p.liabilities);
+});
+
+
+// --- what a phone needs to install this ---------------------------------
+//
+// Added to a home screen the app is judged on files nobody looks at again: a
+// missing PNG is a white square with no error anywhere, and it only shows up on
+// somebody's phone. So the head, the manifest and the files on disk are checked
+// against each other here rather than trusted.
+
+const head = await readFile("index.html", "utf8");
+const manifest = JSON.parse(await readFile("public/manifest.webmanifest", "utf8"));
+
+/** Width, height and whether it carries transparency, straight out of the PNG header. */
+const pngHeader = async (file) => {
+  const b = await readFile(file);
+  assert.equal(b.subarray(1, 4).toString("ascii"), "PNG", `${file} is not a PNG`);
+  return {
+    width: b.readUInt32BE(16),
+    height: b.readUInt32BE(20),
+    // Colour types 4 and 6 are the ones with an alpha channel.
+    hasAlpha: (b.readUInt8(25) & 4) !== 0,
+  };
+};
+
+await test("every icon the page and the manifest name is actually there", async () => {
+  const referenced = [
+    ...[...head.matchAll(/(?:href|content)="(\/[^"]+\.(?:png|svg|webmanifest))"/g)].map((m) => m[1]),
+    ...manifest.icons.map((i) => i.src),
+  ];
+  assert.ok(referenced.length >= 4, "expected the head and the manifest to name several icons");
+  for (const src of new Set(referenced)) {
+    assert.ok(existsSync(join("public", src.slice(1))), `${src} is referenced but missing from public/`);
+  }
+});
+
+await test("the manifest icons are the size they claim, and opaque", async () => {
+  for (const icon of manifest.icons.filter((i) => i.type === "image/png")) {
+    const [w, h] = icon.sizes.split("x").map(Number);
+    const png = await pngHeader(join("public", icon.src.slice(1)));
+    assert.equal(png.width, w, `${icon.src} is ${png.width}px wide, not ${w}`);
+    assert.equal(png.height, h, `${icon.src} is ${png.height}px tall, not ${h}`);
+    // A maskable icon is cropped to a circle; a transparent corner would be
+    // filled by whatever the launcher felt like, usually white.
+    assert.equal(png.hasAlpha, false, `${icon.src} has an alpha channel`);
+  }
+});
+
+await test("the apple touch icon is 180px and opaque", async () => {
+  const png = await pngHeader("public/apple-touch-icon.png");
+  assert.deepEqual([png.width, png.height], [180, 180]);
+  // iOS composites transparency onto black, which would put a dark halo around
+  // the mark on an orange ground.
+  assert.equal(png.hasAlpha, false, "iOS will composite the transparency onto black");
+});
+
+await test("the head says this opens as an app, not a bookmark", () => {
+  for (const tag of [
+    'rel="apple-touch-icon"',
+    'rel="manifest"',
+    'name="apple-mobile-web-app-capable" content="yes"',
+    'name="apple-mobile-web-app-title" content="Sovereign"',
+    'name="theme-color"',
+  ]) {
+    assert.ok(head.includes(tag), `index.html is missing ${tag}`);
+  }
+});
+
+await test("the manifest launches somewhere the app actually routes", () => {
+  assert.equal(manifest.display, "standalone");
+  assert.ok(manifest.start_url.startsWith(manifest.scope), "start_url falls outside scope");
+  // Landing on "/" would redirect, which costs a visible flash on every launch.
+  assert.equal(manifest.start_url, "/dashboard");
+  const maskable = manifest.icons.filter((i) => (i.purpose ?? "").split(" ").includes("maskable"));
+  assert.ok(maskable.length >= 2, "Android needs a maskable icon or it draws its own white background");
 });
 
 await rm(dir, { recursive: true, force: true });

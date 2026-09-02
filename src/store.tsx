@@ -79,6 +79,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = db.settings.theme;
+    // The phone paints its status bar this colour when the app is running from a
+    // home screen. index.html can only name one, and the theme is a stored
+    // setting rather than a system preference, so the answer is only known here
+    // — otherwise light mode gets a black bar sitting above a white page.
+    document.querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", db.settings.theme === "light" ? "#f4f6f9" : "#0e1116");
   }, [db.settings.theme]);
   useEffect(() => {
     const flush = () => saveNow(db);

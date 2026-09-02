@@ -551,9 +551,20 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   /* ── shell ── */
   .sidebar { display: none; }
   .main { margin-left: 0; }
-  .page { padding: 16px 14px 80px; }
+  .page { padding: 16px 14px calc(80px + env(safe-area-inset-bottom)); }
   .mobile-tabs { display: flex !important; }
-  .rule-prompt { bottom: 86px; }
+
+  /* ── the phone's own chrome ──
+     index.html asks for viewport-fit=cover, so on a home screen the app's
+     colours reach the edges of the screen instead of sitting in a letterbox.
+     The cost is that the bottom of the page now runs under the home
+     indicator, and everything pinned there has to be lifted clear of it —
+     by nothing at all on a phone that has no indicator, which is why this is
+     an env() and not a number. The tab bar's own padding is set on the
+     element in Sidebar.tsx: an inline style beats any rule written here. */
+  .rule-prompt { bottom: calc(86px + env(safe-area-inset-bottom)); }
+  /* The toast sat at 20px, which put it behind the tab bar on every phone. */
+  .toast { bottom: calc(66px + env(safe-area-inset-bottom)); }
 
   /* ── topbar ──
      A page's own actions plus its title are wider than a phone: Budget's ran

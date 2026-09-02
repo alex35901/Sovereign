@@ -11,7 +11,8 @@
     "lint": "oxlint",
     "test:db": "node scripts/dbtest.mjs",
     "check:api": "node scripts/check-api.mjs",
-    "test:ui": "node scripts/breakpoints.mjs"
+    "test:ui": "node scripts/breakpoints.mjs",
+    "icons": "node scripts/icons.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.24.0",

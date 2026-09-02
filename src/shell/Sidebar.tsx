@@ -76,7 +76,10 @@ export function MobileTabs() {
     <nav
       style={{
         position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50, display: "none",
-        background: "var(--surface)", borderTop: "1px solid var(--line)", padding: "6px 4px 8px",
+        background: "var(--surface)", borderTop: "1px solid var(--line)",
+        // Clear of the home indicator when the app is running from a home
+        // screen, and unchanged on a phone that does not have one.
+        padding: "6px 4px calc(8px + env(safe-area-inset-bottom))",
       }}
       className="mobile-tabs"
     >

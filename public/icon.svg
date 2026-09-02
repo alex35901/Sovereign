@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Sovereign">
+  <!-- Full bleed on purpose: iOS rounds the corners of a home screen icon itself,
+       and any transparency it finds is composited onto black. The mark sits well
+       inside the 80% circle Android's maskable icons crop to, so one drawing
+       serves the home screen, the tab and the install prompt. -->
+  <rect width="512" height="512" fill="#e8894a"/>
+  <g fill="none" stroke="#1a1105" stroke-width="36" stroke-linejoin="round">
+    <path d="M256 124 388 256 256 388 124 256Z"/>
+  </g>
+  <path d="M256 200 312 256 256 312 200 256Z" fill="#1a1105"/>
+</svg>
