@@ -87,7 +87,7 @@ export function CloudSync() {
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       void (async () => {
-        if (busy.current) return;
+        if (busy.current || !cloudEnabled()) return;
         busy.current = true;
         try {
           const at = cloudState();
@@ -118,7 +118,9 @@ export function CloudSync() {
     if (!cloudEnabled()) return;
     const id = window.setInterval(() => {
       void (async () => {
-        if (busy.current || !ready.current) return;
+        // Re-checked every tick rather than at mount: a refusal part-way
+        // through a session has to stop the loop where it stands.
+        if (busy.current || !ready.current || !cloudEnabled()) return;
         const at = cloudState();
         if (at.dirty) return; // our own unsent work comes first
         busy.current = true;

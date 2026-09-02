@@ -190,7 +190,7 @@ async function loadPool(): Promise<new (config: unknown) => Pool> {
   }
 }
 
-async function db(): Promise<Pool> {
+export async function db(): Promise<Pool> {
   const url = connectionString();
   if (!url) throw new Error("No database is configured.");
   if (!pool) {

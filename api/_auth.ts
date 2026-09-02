@@ -21,6 +21,17 @@ export function passphraseOk(supplied: string | undefined): boolean {
   return timingSafeEqual(digest(supplied), digest(expected));
 }
 
+/**
+ * The same fixed-length comparison for any other shared secret — CRON_SECRET,
+ * for one. A plain `===` on a secret returns as soon as two bytes differ, which
+ * is exactly the leak timingSafeEqual exists to close.
+ */
+export function secretOk(expected: string, supplied: string | undefined): boolean {
+  if (!expected) return false;
+  if (typeof supplied !== "string" || supplied.length === 0) return false;
+  return timingSafeEqual(digest(supplied), digest(expected));
+}
+
 /** Reads the passphrase out of `Authorization: Bearer …`. */
 export function bearer(header: string | string[] | undefined): string | undefined {
   const raw = Array.isArray(header) ? header[0] : header;

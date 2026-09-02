@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Cloud, CloudOff, Download, RefreshCw, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
-  cloudEnabled, cloudState, clearConflict, diagnose, probe, pull, push,
-  setCloudState, setPassphrase, takeConflict,
+  cloudEnabled, cloudState, clearConflict, diagnose, passphrase, probe, pull, push,
+  setCloudState, setPassphrase, syncHalt, takeConflict,
 } from "../lib/cloud";
 import type { CloudDiagnosis, Probe, RemoteDoc } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -104,6 +104,15 @@ export function CloudCard() {
   const [checked, setChecked] = useState(false);
   const on = cloudEnabled();
   const stashed = takeConflict();
+
+  // The halt is module state, not React state, so it is polled: a sync paused
+  // mid-session has to say so rather than quietly looking like it was never on.
+  const [halt, setHalt] = useState(syncHalt());
+  useEffect(() => {
+    const id = window.setInterval(() => setHalt(syncHalt()), 3000);
+    return () => window.clearInterval(id);
+  }, []);
+  const paused = halt !== null && passphrase().length > 0;
 
   useEffect(() => {
     if (!on) { setChecked(true); return; }
@@ -251,8 +260,19 @@ export function CloudCard() {
         </div>
       ) : (
         <div className="col" style={{ gap: 10 }}>
+          {paused ? (
+            <div className="setting-row" style={{ borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
+              <span className="small">
+                <b>Syncing is paused.</b>{" "}
+                {halt === "locked"
+                  ? "Too many wrong passphrases were sent from this network, so the server has shut it out for a while. Wait for the time it gave, then enter the passphrase again."
+                  : "The server refused the passphrase this browser had — the usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
+                Nothing has been lost: this browser's copy is intact and will upload once it reconnects.
+              </span>
+            </div>
+          ) : null}
           <span className="small row" style={{ gap: 6, color: "var(--muted)" }}>
-            <CloudOff size={14} /> This browser keeps its own private copy
+            <CloudOff size={14} /> {paused ? "Not syncing until the passphrase is re-entered" : "This browser keeps its own private copy"}
           </span>
           <div className="row wrap" style={{ gap: 8 }}>
             <input

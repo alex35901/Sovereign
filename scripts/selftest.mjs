@@ -19,6 +19,16 @@ const test = async (name, fn) => {
 // bundle the TS modules under test into plain ESM
 // Inside the project: pg stays external (esbuild can't turn its dynamic
 // requires into ESM), so the bundle has to see node_modules.
+// cloud.ts reads localStorage. Shimmed before the bundle loads
+// so the sync-halt logic can be exercised outside a browser.
+const store = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(k, String(v)),
+  removeItem: (k) => store.delete(k),
+  clear: () => store.clear(),
+};
+
 const dir = await mkdtemp(join(process.cwd(), "node_modules", ".selftest-"));
 const entry = join(dir, "entry.js");
 await build({
@@ -39,6 +49,7 @@ await build({
       export { default as cronHandler } from "./api/cron/sync.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { findConnection } from "./api/_store.ts";
+      export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution } from "./src/lib/sync/plaid.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
@@ -55,6 +66,7 @@ await build({
       export { syncSimplefin } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
+      export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -1809,6 +1821,131 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+/* ── the sync loop stands down when refused ───────────────────────────── */
+
+await test("a refused passphrase halts auto-sync instead of retrying into a lockout", async () => {
+  // The loop polls every minute and used to swallow every error. Once wrong
+  // answers cost something, that turns a passphrase change in Vercel into the
+  // household locking itself out from its own open tabs.
+  M.setPassphrase("the-old-one");
+  assert.equal(M.cloudEnabled(), true, "a stored passphrase means sync is on");
+
+  await withFetch(async () => new Response(JSON.stringify({ error: "nope" }), { status: 401 }),
+    () => caught(() => M.cloudPull()));
+
+  assert.equal(M.syncHalt(), "refused");
+  assert.equal(M.cloudEnabled(), false, "the loop must stop, not keep trying");
+});
+
+await test("being locked out halts it too, and re-entering the passphrase resumes", async () => {
+  M.setPassphrase("the-old-one");
+  M.resumeSync();
+
+  await withFetch(async () => new Response(JSON.stringify({ error: "Too many wrong passphrases." }), { status: 429 }),
+    () => caught(() => M.cloudPull()));
+  assert.equal(M.syncHalt(), "locked");
+  assert.equal(M.cloudEnabled(), false);
+
+  // typing a passphrase by hand is the one thing that can clear it
+  M.setPassphrase("the-new-one");
+  assert.equal(M.syncHalt(), null);
+  assert.equal(M.cloudEnabled(), true);
+});
+
+await test("an ordinary failure does not halt the loop", async () => {
+  M.setPassphrase("the-right-one");
+  M.resumeSync();
+
+  // a 500, or being offline, is transient — the next tick should still try
+  await withFetch(async () => new Response("upstream blew up", { status: 500 }),
+    () => caught(() => M.cloudPull()));
+  assert.equal(M.syncHalt(), null);
+  assert.equal(M.cloudEnabled(), true);
+
+  await withFetch(async () => { throw new Error("offline"); }, () => caught(() => M.cloudPull()));
+  assert.equal(M.cloudEnabled(), true, "a dropped connection is not a refusal");
+  M.setPassphrase("");
+});
+
+/* ── guessing the passphrase ──────────────────────────────────────────── */
+
+await test("wrong answers accumulate and the eighth shuts the door", () => {
+  const t0 = Date.parse("2026-09-02T12:00:00Z");
+  let a = null;
+  for (let i = 1; i < M.MAX_FAILURES; i++) {
+    a = M.afterFailure(a, t0 + i * 1000);
+    assert.equal(a.failures, i);
+    assert.equal(M.lockedFor(a, t0 + i * 1000), 0, `guess ${i} should still be allowed`);
+  }
+  a = M.afterFailure(a, t0 + 8000);
+  assert.equal(M.lockedFor(a, t0 + 8000), 15 * 60, "the eighth wrong answer costs 15 minutes");
+  // and the guesses that earned the lock aren't also spent against the next one
+  assert.equal(a.failures, 0);
+});
+
+await test("each successive lockout costs more than the last", () => {
+  const t0 = Date.parse("2026-09-02T12:00:00Z");
+  const waits = [];
+  let a = null;
+  let now = t0;
+  for (let round = 0; round < 5; round++) {
+    for (let i = 0; i < M.MAX_FAILURES; i++) { now += 1000; a = M.afterFailure(a, now); }
+    waits.push(M.lockedFor(a, now));
+    now = a.lockedUntil; // wait it out, then start guessing again
+  }
+  assert.deepEqual(waits, [15 * 60, 60 * 60, 6 * 3600, 24 * 3600, 24 * 3600],
+    "15m, 1h, 6h, then a day and stays there");
+});
+
+await test("a stale window starts over, so an old typo doesn't count", () => {
+  const t0 = Date.parse("2026-09-02T12:00:00Z");
+  let a = null;
+  for (let i = 0; i < M.MAX_FAILURES - 1; i++) a = M.afterFailure(a, t0 + i * 1000);
+  assert.equal(a.failures, M.MAX_FAILURES - 1);
+
+  // one more, but long after the window closed
+  const later = t0 + M.WINDOW_MS + 60_000;
+  a = M.afterFailure(a, later);
+  assert.equal(a.failures, 1, "the count restarts rather than tipping into a lockout");
+  assert.equal(M.lockedFor(a, later), 0);
+});
+
+await test("a lockout expires exactly when it says it will", () => {
+  const t0 = Date.parse("2026-09-02T12:00:00Z");
+  let a = null;
+  for (let i = 0; i < M.MAX_FAILURES; i++) a = M.afterFailure(a, t0 + i * 1000);
+  const until = a.lockedUntil;
+  assert.equal(M.lockedFor(a, until - 1000), 1);
+  assert.equal(M.lockedFor(a, until), 0, "told to wait n seconds, waiting n gets you in");
+  assert.equal(M.lockedFor(a, until + 60_000), 0);
+  assert.equal(M.lockedFor(null, t0), 0, "a caller never seen before is not locked");
+});
+
+await test("callers are told apart by address, and the address never stored", () => {
+  const a = M.callerKey("db", { "x-real-ip": "203.0.113.9" });
+  const b = M.callerKey("db", { "x-real-ip": "203.0.113.10" });
+  assert.notEqual(a, b);
+  assert.equal(a, M.callerKey("db", { "x-real-ip": "203.0.113.9" }), "same caller, same key");
+  assert.equal(a.includes("203.0.113.9"), false, "the address itself must not be stored");
+
+  // the two endpoints keep separate counters
+  assert.notEqual(a, M.callerKey("cron", { "x-real-ip": "203.0.113.9" }));
+
+  // x-forwarded-for is the fallback, and only its first entry is the client
+  assert.equal(
+    M.callerKey("db", { "x-forwarded-for": "203.0.113.9, 70.0.0.1" }),
+    M.callerKey("db", { "x-forwarded-for": "203.0.113.9" }));
+  // nothing to go on: everyone shares a bucket rather than nobody being limited
+  assert.equal(M.callerKey("db", {}), M.callerKey("db", {}));
+});
+
+await test("the wait is described in units a person reads", () => {
+  assert.equal(M.waitMessage(1), "Too many wrong passphrases. Try again in 1 minute.");
+  assert.equal(M.waitMessage(15 * 60), "Too many wrong passphrases. Try again in 15 minutes.");
+  assert.equal(M.waitMessage(60 * 60), "Too many wrong passphrases. Try again in 1 hour.");
+  assert.equal(M.waitMessage(6 * 3600), "Too many wrong passphrases. Try again in 6 hours.");
 });
 
 await test("a sync never touches Plaid's metered endpoints", async () => {

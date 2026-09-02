@@ -5,7 +5,8 @@ import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
 import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
 import { fetchAccountsText } from "../_simplefin.js";
 import { connectionString, readDoc, writeDoc } from "../_store.js";
-import { bearer, passphraseOk } from "../_auth.js";
+import { bearer, passphraseOk, secretOk } from "../_auth.js";
+import { callerKey, clearFailures, lockedFor, noteFailure, readAttempt, waitMessage } from "../_ratelimit.js";
 
 /**
  * The scheduled pull, run by Vercel on the timetable in vercel.json.
@@ -29,10 +30,41 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   // sync passphrase is accepted too, so the run can be triggered by hand.
   const token = bearer(req.headers.authorization);
   const cronSecret = (process.env.CRON_SECRET ?? "").trim();
-  const authorised = (cronSecret && token === cronSecret) || passphraseOk(token);
-  if (!authorised) return send(401, { error: "Not authorised." });
 
   if (!connectionString()) return send(503, { error: "No database configured." });
+
+  // Two secrets open this door, so it is worth the same limit the document
+  // endpoint has. Vercel's own run always carries the right one and so never
+  // accumulates against it.
+  const key = callerKey("cron", req.headers);
+  let limited = true;
+  // Kept from this read so the success path below can skip a pointless DELETE
+  // on every ordinary request — by far the common case is no row at all.
+  let seen = null;
+  try {
+    seen = await readAttempt(key);
+    const wait = lockedFor(seen, Date.now());
+    if (wait > 0) {
+      res.setHeader("retry-after", String(wait));
+      return send(429, { error: waitMessage(wait), retryAfter: wait });
+    }
+  } catch {
+    limited = false;
+  }
+
+  if (!(secretOk(cronSecret, token) || passphraseOk(token))) {
+    if (limited) {
+      try {
+        const wait = await noteFailure(key);
+        if (wait > 0) {
+          res.setHeader("retry-after", String(wait));
+          return send(429, { error: waitMessage(wait), retryAfter: wait });
+        }
+      } catch { /* the counter is not worth failing the response over */ }
+    }
+    return send(401, { error: "Not authorised." });
+  }
+  if (limited && seen) await clearFailures(key).catch(() => {});
 
   try {
     const stored = await readDoc();

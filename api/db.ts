@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
+import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
 import { diagnose, findConnection, readDoc, writeDoc } from "./_store.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
@@ -27,9 +28,40 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
       error: "Set SYNC_PASSPHRASE in your Vercel environment variables and redeploy. It is the passphrase this app will ask for.",
     });
   }
+  // Best effort on purpose: the limiter lives in the same database the document
+  // does, so if it cannot be reached there is nothing here worth guessing at
+  // anyway — every path below fails at the data step. Failing closed would
+  // turn a database blip into a lockout with no way back in.
+  const key = callerKey("db", req.headers);
+  let limited = true;
+  // Kept from this read so the success path below can skip a pointless DELETE
+  // on every ordinary request — by far the common case is no row at all.
+  let seen = null;
+  try {
+    seen = await readAttempt(key);
+    const wait = lockedFor(seen, Date.now());
+    if (wait > 0) {
+      res.setHeader("retry-after", String(wait));
+      return send(429, { error: waitMessage(wait), retryAfter: wait });
+    }
+  } catch {
+    limited = false;
+  }
+
   if (!passphraseOk(bearer(req.headers.authorization))) {
+    if (limited) {
+      try {
+        const wait = await noteFailure(key);
+        if (wait > 0) {
+          res.setHeader("retry-after", String(wait));
+          return send(429, { error: waitMessage(wait), retryAfter: wait });
+        }
+      } catch { /* the counter is not worth failing the response over */ }
+    }
     return send(401, { error: "That passphrase doesn't match." });
   }
+  // Right answer: forget the wrong ones, so an honest typo costs nothing later.
+  if (limited && seen) await clearFailures(key).catch(() => {});
 
   try {
     // Answered before the database is required, because a missing or unusable
@@ -37,7 +69,8 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     // that check would make it useless in the only case that needs it.
     const body0 = (typeof req.body === "string" ? safeParse(req.body) : req.body) as { action?: string } | undefined;
     if (req.method === "POST" && body0?.action === "diagnose") {
-      return send(200, { ...(await diagnose()), passphraseSet: true });
+      const lockedOut = await lockedOutNow().catch(() => null);
+      return send(200, { ...(await diagnose()), passphraseSet: true, lockedOut });
     }
 
     const conn = findConnection();

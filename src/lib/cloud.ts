@@ -42,8 +42,25 @@ export const setPassphrase = (p: string): void => {
     if (p) localStorage.setItem(PASS_KEY, p);
     else localStorage.removeItem(PASS_KEY);
   } catch { /* nothing to do */ }
+  // A passphrase entered by hand is the one thing that can clear a halt.
+  resumeSync();
 };
-export const cloudEnabled = (): boolean => passphrase().length > 0;
+/**
+ * Auto-sync stops dead the moment the server refuses the passphrase.
+ *
+ * The poll runs every minute and used to swallow every error and try again for
+ * ever, which was harmless while wrong answers were free. They are not free any
+ * more: rotating SYNC_PASSPHRASE in Vercel leaves every open browser holding
+ * the old one, and a minute apart they would spend the household's whole
+ * allowance and lock the address out for a day — from the app's own tabs, while
+ * nobody was even sitting at them. So a refusal halts the loop until a
+ * passphrase is entered by hand, which is the only thing that can fix it.
+ */
+let halted: "refused" | "locked" | null = null;
+export const syncHalt = (): "refused" | "locked" | null => halted;
+export const resumeSync = (): void => { halted = null; };
+
+export const cloudEnabled = (): boolean => halted === null && passphrase().length > 0;
 
 /** A name for the row's "last changed by", so a surprise edit is traceable. */
 export function deviceName(): string {
@@ -79,6 +96,11 @@ async function call(init: RequestInit, override?: string): Promise<Response> {
     });
   } catch {
     throw new CloudError("Couldn't reach the sync service. Check your connection.", 0);
+  }
+  // Only the stored passphrase can halt the loop. A wrong one typed into the
+  // box is being checked on purpose, and stopping sync over it would be odd.
+  if (override === undefined && (res.status === 401 || res.status === 429)) {
+    halted = res.status === 429 ? "locked" : "refused";
   }
   if (res.status === 404) {
     throw new CloudError("The /api/db function isn't running. This needs the deployed app, not `npm run dev`.", 404);
@@ -152,6 +174,8 @@ export interface CloudDiagnosis {
   database: string | null;
   ssl: boolean;
   passphraseSet: boolean;
+  /** How many callers are currently shut out for guessing. */
+  lockedOut?: number | null;
   connect: { ok: boolean; error: string | null; code: string | null };
   table: { ok: boolean; error: string | null };
   documents: number | null;

@@ -29,6 +29,8 @@ await build({
     contents: `
       export { readDoc, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
       export { default as dbHandler } from "./api/db.ts";
+      export { default as cronHandler } from "./api/cron/sync.ts";
+      export { readAttempt, noteFailure, clearFailures, lockedOutNow, callerKey, MAX_FAILURES } from "./api/_ratelimit.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -43,6 +45,7 @@ const wipe = async () => {
   const c = new Client({ connectionString: process.env.DATABASE_URL });
   await c.connect();
   await c.query("DROP TABLE IF EXISTS budget_document");
+  await c.query("DROP TABLE IF EXISTS auth_attempt");
   await c.end();
 };
 
@@ -57,6 +60,13 @@ const invokeWith = (handler, { method = "POST", body, headers = {} } = {}) =>
     };
     Promise.resolve(handler({ method, body, headers }, res)).catch((e) => { clearTimeout(timer); reject(e); });
   });
+
+const clearAttempts = async () => {
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  await c.connect();
+  await c.query("DROP TABLE IF EXISTS auth_attempt");
+  await c.end();
+};
 
 await wipe();
 
@@ -160,6 +170,105 @@ await test("the endpoint serves and saves through the same store", async () => {
   assert.equal(JSON.parse(after.text).doc.hello, "world", "the refused save must not have landed");
   assert.equal(JSON.parse(after.text).updatedBy, "Chrome on Mac");
 });
+
+/* ── the guessing limit, against real SQL ─────────────────────────────── */
+
+const guess = (pass, ip = "203.0.113.7") =>
+  invokeWith(M.dbHandler, { method: "GET", headers: { authorization: `Bearer ${pass}`, "x-real-ip": ip } });
+
+await test("the eighth wrong passphrase is refused with 429 and a Retry-After", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await clearAttempts();
+
+  for (let i = 1; i < M.MAX_FAILURES; i++) {
+    const r = await guess("nope" + i);
+    assert.equal(r.status, 401, `guess ${i} should still be an ordinary refusal`);
+  }
+  const shut = await guess("nope8");
+  assert.equal(shut.status, 429);
+  const body = JSON.parse(shut.text);
+  assert.match(body.error, /Too many wrong passphrases/);
+  assert.ok(body.retryAfter > 0 && body.retryAfter <= 15 * 60, `retryAfter was ${body.retryAfter}`);
+});
+
+await test("a locked-out caller is refused even with the right passphrase", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await clearAttempts();
+  for (let i = 0; i < M.MAX_FAILURES; i++) await guess("wrong" + i);
+
+  const r = await guess("the-right-one");
+  assert.equal(r.status, 429, "the lock has to hold, or it buys nothing");
+});
+
+await test("one caller's lockout does not shut anyone else out", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await clearAttempts();
+  for (let i = 0; i < M.MAX_FAILURES; i++) await guess("wrong" + i, "198.51.100.1");
+
+  assert.equal((await guess("the-right-one", "198.51.100.1")).status, 429, "the guesser is locked");
+  const other = await guess("the-right-one", "203.0.113.200");
+  assert.notEqual(other.status, 429, "a different address must still get in");
+});
+
+await test("the right passphrase wipes the wrong ones, so a typo costs nothing later", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await clearAttempts();
+  const ip = "192.0.2.55";
+  for (let i = 0; i < M.MAX_FAILURES - 1; i++) await guess("typo" + i, ip);
+  assert.equal((await M.readAttempt(M.callerKey("db", { "x-real-ip": ip }))).failures, M.MAX_FAILURES - 1);
+
+  assert.notEqual((await guess("the-right-one", ip)).status, 429);
+  assert.equal(await M.readAttempt(M.callerKey("db", { "x-real-ip": ip })), null, "the slate is clean");
+
+  // and the next seven typos are therefore free again
+  for (let i = 0; i < M.MAX_FAILURES - 1; i++) {
+    assert.equal((await guess("typo" + i, ip)).status, 401);
+  }
+});
+
+await test("the count survives a cold start, which is the whole reason it is in the database", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await clearAttempts();
+  const ip = "192.0.2.99";
+  for (let i = 0; i < 5; i++) await guess("wrong" + i, ip);
+
+  // a fresh import is a fresh module instance: exactly what a cold start gives
+  const cold = await import(entry + "?cold=1");
+  const seen = await cold.readAttempt(cold.callerKey("db", { "x-real-ip": ip }));
+  assert.equal(seen.failures, 5, "an in-memory counter would have read 0 here");
+});
+
+await test("the scheduled job's secret is limited too, and its own counter", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  await clearAttempts();
+  const ip = "203.0.113.77";
+
+  for (let i = 1; i < M.MAX_FAILURES; i++) {
+    const r = await invokeWith(M.cronHandler, { headers: { authorization: `Bearer bad${i}`, "x-real-ip": ip } });
+    assert.equal(r.status, 401, `cron guess ${i}`);
+  }
+  const shut = await invokeWith(M.cronHandler, { headers: { authorization: "Bearer bad8", "x-real-ip": ip } });
+  assert.equal(shut.status, 429);
+
+  // the document endpoint keeps a separate tally for the same address
+  assert.notEqual((await guess("the-right-one", ip)).status, 429);
+});
+
+await test("the diagnostics report how many callers are shut out", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await clearAttempts();
+  assert.equal(await M.lockedOutNow(), 0);
+  for (let i = 0; i < M.MAX_FAILURES; i++) await guess("wrong" + i, "198.51.100.9");
+  assert.equal(await M.lockedOutNow(), 1);
+
+  const r = await invokeWith(M.dbHandler, {
+    method: "POST", body: { action: "diagnose" },
+    headers: { authorization: "Bearer the-right-one", "x-real-ip": "203.0.113.250" },
+  });
+  assert.equal(JSON.parse(r.text).lockedOut, 1);
+});
+
 
 await wipe();
 await rm(dir, { recursive: true, force: true });
