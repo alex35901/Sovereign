@@ -10,7 +10,8 @@
     "test": "node scripts/selftest.mjs && node scripts/check-api.mjs && node scripts/dbtest.mjs",
     "lint": "oxlint",
     "test:db": "node scripts/dbtest.mjs",
-    "check:api": "node scripts/check-api.mjs"
+    "check:api": "node scripts/check-api.mjs",
+    "test:ui": "node scripts/breakpoints.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.24.0",

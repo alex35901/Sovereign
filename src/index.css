@@ -296,43 +296,29 @@ table.tbl { width: 100%; border-collapse: collapse; }
    than across a canyon of empty space on a wide screen */
 .tx-grid {
   display: grid;
-  grid-template-columns: 16px 32px minmax(0, 34rem) minmax(140px, 1fr) 28px 118px;
+  grid-template-columns: 16px 32px minmax(0, 34rem) 64px minmax(140px, 1fr) 118px;
   gap: 12px;
   align-items: center;
 }
 .tx-grid.head { padding: 9px 16px; background: var(--surface-2); }
-.tx-account { text-align: right; color: var(--muted); }
+.tx-account { text-align: center; color: var(--muted); }
 /* The institution's mark, standing in for the account's name. Dimmed until
    pointed at, so a column of logos sits quietly behind the figures rather than
    competing with them. */
-a.tx-account { display: flex; justify-content: flex-end; text-decoration: none; opacity: 0.82; }
-a.tx-account:hover { opacity: 1; }
-a.tx-account .avatar { outline: 2px solid transparent; transition: outline-color 90ms; }
-a.tx-account:hover .avatar { outline-color: var(--accent); }
+.tx-account-link { display: flex; justify-content: center; text-decoration: none; opacity: 0.82; }
+.tx-account-link:hover { opacity: 1; }
+.tx-account-link .avatar { outline: 2px solid transparent; transition: outline-color 90ms; }
+.tx-account-link:hover .avatar { outline-color: var(--accent); }
 /* On a phone the account is a name on the sub-line instead, where a mark would
    only crowd the one line of text there is. */
 a.tx-sub-account { color: inherit; text-decoration: none; cursor: pointer; }
 a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 .tx-sub-account { display: none; }
-@media (max-width: 900px) {
-  .tx-grid { grid-template-columns: 16px 28px minmax(0, 1fr) max-content 118px; gap: 8px; }
-  .tx-account, a.tx-account { display: none; }
-  .tx-sub-account { display: inline; }
-}
 /* The mark is one grid cell holding two faces: the merchant initial on a wide
    screen, the category's icon on a phone, where the category chip is gone and
    the icon is the only thing left saying what this was. */
 .tx-mark { display: contents; }
 .tx-mark .tx-cat-mark { display: none; }
-@media (max-width: 720px) {
-  /* A phone row is the icon, the merchant and the amount — nothing else fits
-     without clipping the name to a letter. The category is still one tap away
-     in the transaction itself. */
-  .tx-grid { grid-template-columns: 15px 30px minmax(0, 1fr) max-content; gap: 9px; }
-  .tx-category { display: none; }
-  .tx-mark .avatar:not(.tx-cat-mark) { display: none; }
-  .tx-mark .tx-cat-mark { display: grid; font-size: 15px; }
-}
 .date-head { padding: 8px 16px; background: var(--surface-2); font-size: 11.5px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line-soft); position: sticky; top: 57px; z-index: 5; }
 
 /* ── bits ─────────────────────────────────────────────────────────────── */
@@ -396,7 +382,6 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 }
 @keyframes rule-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @media (prefers-reduced-motion: reduce) { .rule-prompt-timer { display: none; } }
-@media (max-width: 720px) { .rule-prompt { bottom: 86px; } }
 
 /* ── charts ───────────────────────────────────────────────────────────── */
 .chart-tip { position: absolute; pointer-events: none; background: var(--surface-3); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 12px; box-shadow: var(--shadow); z-index: 20; white-space: nowrap; }
@@ -404,50 +389,8 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 svg .grid-line { stroke: var(--line-soft); stroke-width: 1; }
 svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 
-@media (max-width: 1000px) {
-  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .g-2-1 { grid-template-columns: minmax(0, 1fr); }
-  /* Three number tiles still fit here — dropping straight to one column stacked
-     net worth, assets and liabilities down the page for no reason. */
-}
-@media (max-width: 720px) {
-  .sidebar { display: none; }
-  .main { margin-left: 0; }
-  .page { padding: 16px 14px 80px; }
-  .topbar { padding: 10px 14px; }
-  .g2, .g4 { grid-template-columns: minmax(0, 1fr); }
-  /* A page's own actions plus the title is wider than a phone — Budget's ran
-     115px past the edge. Let them fall to a second line when they don't fit,
-     rather than off the screen. Pages with no actions of their own keep the
-     single line. */
-  .topbar { flex-wrap: wrap; row-gap: 8px; }
-  .topbar-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-  /* Without this the title is the thing that gives: flex shrank "Reports" into
-     12px of ellipsis to keep the buttons on one line. The buttons wrap instead. */
-  /* .grow gives the title flex-basis 0, so it was the thing that gave: flex
-     squeezed "Transactions" down to "Tra…" to keep the buttons on one line.
-     Sized from its own text and refusing to shrink, the buttons wrap instead. */
-  .topbar h1 { flex: 1 0 auto; max-width: 100%; }
-  /* Its label alone was the difference between two rows of chrome and three.
-     The + on an accent button says "add", and the title attribute says what. */
-  .topbar-actions .btn-label { display: none; }
-  /* Same trade as the transaction list: the 90px category chip was leaving the
-     merchant 60px, so a bill read "State Farm Insuran…". The name wins. */
-  .rec-category { display: none; }
-  /* A card's title and its own buttons are wider than a phone on a couple of
-     cards (the balance-history one ran 21px over) — let them stack. */
-  .card-head { flex-wrap: wrap; row-gap: 8px; }
-  /* The topbar's height is no longer fixed, so a date header pinned under it
-     would sit at the wrong offset. On a phone the date is a plain section
-     heading, as it is in Monarch's own list. */
-  .date-head { position: static; }
-}
-@media (max-width: 560px) {
-  .g3 { grid-template-columns: minmax(0, 1fr); }
-}
 
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 720px) { .mobile-tabs { display: flex !important; } }
 
 /* ── emoji picker ─────────────────────────────────────────────────────── */
 .menu.emoji-menu { padding: 0; max-height: none; overflow: visible; }
@@ -502,29 +445,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .btn.bcol-menu { padding-left: 0; padding-right: 0; }
 .budget-head { align-items: flex-end; gap: 12px; }
 
-@media (max-width: 720px) {
-  /* 116 + 100 + 100 + 29 and the gaps between them is wider than a phone, so
-     the category name was being squeezed down to a single letter and the
-     remaining pill pushed off the right edge. Actual gives way: it is the one
-     column you never edit here, and it is still on the card behind Remaining. */
-  .bcol-actual { display: none; }
-  .bcol-plan { width: 88px; }
-  .bcol-left { width: 84px; }
-  .bcol-menu { width: 22px; }
-  .btn.bcol-menu { min-width: 0; }
-  .budget-head { gap: 8px; }
-  .list-row { gap: 8px; padding: 10px 12px; }
-}
 
-/* One more step down for the common phone widths, where 88 + 84 left the
-   category name 18px on a 320px screen — a single letter. Kept next to the
-   rules it narrows: placed earlier in the file it lost to them on source
-   order, both media queries matching. */
-@media (max-width: 400px) {
-  .bcol-plan { width: 76px; }
-  .bcol-left { width: 72px; }
-  .list-row { gap: 6px; padding: 10px 10px; }
-}
 
 /* A switch and the sentence that says what it does. */
 .setting-row {
@@ -548,15 +469,6 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .acct-amount { width: 130px; flex: none; text-align: right; }
 .acct-chevron { width: 15px; flex: none; }
 
-@media (max-width: 720px) {
-  /* An 88px sparkline is unreadable on a phone and costs the account name the
-     width it actually needs. The net-worth chart above the list stays. Kept
-     next to the rules it overrides: in the shared mobile block further up it
-     lost to these on source order. */
-  .acct-spark { display: none; }
-  .acct-amount { width: auto; min-width: 88px; }
-  .list-row .tiny { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-}
 
 /* The month for one category, on hover over what's left. */
 .menu.hover-card { padding: 0; max-height: none; overflow: visible; cursor: default; }
@@ -584,3 +496,117 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .move-row .btn.move-pick:hover { background: var(--surface-3); }
 .move-arrow { display: flex; align-items: center; gap: 6px; color: var(--faint); padding-left: 40px; }
 .move-arrow::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
+
+/* ── responsive ───────────────────────────────────────────────────────────
+ *
+ * Every width-based override lives here and nowhere else, widest first.
+ *
+ * They used to sit beside the rules they changed, scattered through six
+ * separate 720px blocks, and that cost real bugs: whether an override won
+ * depended on where it happened to fall relative to its base rule. The
+ * sparkline rule had a comment explaining it had been moved down to win; the
+ * budget columns had another; the account mark leaked onto phones because a
+ * base rule out-specified the one hiding it.
+ *
+ * Two rules keep that from coming back:
+ *
+ *   1. Being last in the file, an override always wins on source order
+ *      against an equally specific base rule.
+ *   2. So write them equally specific. A base rule that needs an element
+ *      qualifier (a.foo) beats a plain .foo override no matter where it
+ *      sits — give the element its own class instead.
+ *
+ * scripts/breakpoints.mjs walks these widths in a browser and asserts what is
+ * actually visible at each, so a regression here fails loudly rather than on
+ * someone's phone.
+ */
+
+@media (max-width: 1000px) {
+  .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Three number tiles still fit here — dropping straight to one column
+     stacked net worth, assets and liabilities down the page for no reason. */
+  .g-2-1 { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 900px) {
+  /* The account's mark gives way first: it is the one column whose absence
+     costs no information, since the account is named on the sub-line below
+     the merchant from here down. */
+  .tx-grid { grid-template-columns: 16px 28px minmax(0, 1fr) max-content 118px; gap: 8px; }
+  .tx-account { display: none; }
+  .tx-sub-account { display: inline; }
+}
+
+@media (max-width: 720px) {
+  /* ── shell ── */
+  .sidebar { display: none; }
+  .main { margin-left: 0; }
+  .page { padding: 16px 14px 80px; }
+  .mobile-tabs { display: flex !important; }
+  .rule-prompt { bottom: 86px; }
+
+  /* ── topbar ──
+     A page's own actions plus its title are wider than a phone: Budget's ran
+     115px past the edge. They wrap to a second line rather than off the
+     screen, and the title no longer shrinks to make room — flex had squeezed
+     "Transactions" down to "Tra…". The primary button drops its label, which
+     is the difference between two rows of chrome and three. */
+  .topbar { padding: 10px 14px; flex-wrap: wrap; row-gap: 8px; }
+  .topbar h1 { flex: 1 0 auto; max-width: 100%; }
+  .topbar-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+  .topbar-actions .btn-label { display: none; }
+  /* A card's title and its own buttons overflow on a couple of cards too. */
+  .card-head { flex-wrap: wrap; row-gap: 8px; }
+
+  /* ── grids ── */
+  .g2, .g4 { grid-template-columns: minmax(0, 1fr); }
+
+  /* ── transactions ──
+     A phone row is the icon, the merchant and the amount; nothing else fits
+     without clipping the name to a letter. With the category chip gone the
+     icon is the only thing left saying what a transaction was, so the mark
+     switches from the merchant's initial to the category's icon. The date
+     header stops being sticky because the topbar's height is no longer fixed,
+     so anything pinned under it would sit at the wrong offset. */
+  .tx-grid { grid-template-columns: 15px 30px minmax(0, 1fr) max-content; gap: 9px; }
+  .tx-category { display: none; }
+  .tx-mark .avatar:not(.tx-cat-mark) { display: none; }
+  .tx-mark .tx-cat-mark { display: grid; font-size: 15px; }
+  .date-head { position: static; }
+
+  /* ── budget ──
+     116 + 100 + 100 + 29 and the gaps between them is wider than a phone, so
+     the category name was squeezed to a single letter and the remaining pill
+     pushed off the right edge. Actual gives way: it is the one column you
+     never edit here, and it is still on the card behind Remaining. */
+  .bcol-actual { display: none; }
+  .bcol-plan { width: 88px; }
+  .bcol-left { width: 84px; }
+  .bcol-menu { width: 22px; }
+  .btn.bcol-menu { min-width: 0; }
+  .budget-head { gap: 8px; }
+  .list-row { gap: 8px; padding: 10px 12px; }
+
+  /* ── accounts ──
+     An 88px sparkline is unreadable on a phone and costs the account name the
+     width it actually needs. The net-worth chart above the list stays. */
+  .acct-spark { display: none; }
+  .acct-amount { width: auto; min-width: 88px; }
+  .list-row .tiny { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── recurring ──
+     Same trade as the transaction list: the 90px category chip left the
+     merchant 60px, so a bill read "State Farm Insuran…". The name wins. */
+  .rec-category { display: none; }
+}
+
+@media (max-width: 560px) {
+  .g3 { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 400px) {
+  /* 88 + 84 still left the budget's category name 18px on a 320px screen. */
+  .bcol-plan { width: 76px; }
+  .bcol-left { width: 72px; }
+  .list-row { gap: 6px; padding: 10px 10px; }
+}
