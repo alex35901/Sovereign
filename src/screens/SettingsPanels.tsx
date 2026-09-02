@@ -5,6 +5,7 @@ import { useDB, useStore } from "../store";
 import { countMatches } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { AccountPicker, CategoryPicker } from "../components/pickers";
+import { groupColor, GROUP_TONES } from "../lib/category-colors";
 import { EmojiPicker } from "../components/EmojiPicker";
 
 const PALETTE = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
@@ -21,9 +22,19 @@ export function CategoriesPanel() {
       {[...db.groups].sort((a, b) => a.order - b.order).map((g) => (
         <div key={g.id}>
           <div className="date-head spread" style={{ position: "static" }}>
-            <span>{g.name} <span className="faint">· {g.kind}</span></span>
+            <span className="row" style={{ gap: 8 }}>
+              {/* the group's colour, which every category under it now wears */}
+              <span
+                style={{
+                  width: 11, height: 11, borderRadius: "50%", flex: "none",
+                  background: `var(${groupColor(g, db.categories)})`,
+                }}
+              />
+              {g.name} <span className="faint">· {g.kind}</span>
+            </span>
             <span className="row" style={{ gap: 12 }}>
-              <button className="link tiny" onClick={() => setEditingGroup(g)}>Rename</button>
+              {/* "Rename" undersold it once the modal set colour and kind too */}
+              <button className="link tiny" onClick={() => setEditingGroup(g)}>Edit</button>
               <button className="link tiny" onClick={() => setAddingTo(g.id)}>+ Add category</button>
             </span>
           </div>
@@ -63,12 +74,13 @@ function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => v
   const { actions } = useStore();
   const [name, setName] = useState(group.name);
   const members = db.categories.filter((c) => c.groupId === group.id);
+  const [color, setColor] = useState(() => groupColor(group, db.categories));
   const isTransfer = group.kind === "transfer";
   const [kind, setKind] = useState<"income" | "expense">(group.kind === "income" ? "income" : "expense");
 
   return (
     <Modal
-      title="Rename group"
+      title="Edit group"
       onClose={onClose}
       footer={
         <>
@@ -83,7 +95,9 @@ function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => v
           <Btn
             variant="primary"
             onClick={() => {
-              actions.updateGroup(group.id, { name: name.trim() || group.name, ...(isTransfer ? {} : { kind }) });
+              actions.updateGroup(group.id, {
+                name: name.trim() || group.name, color, ...(isTransfer ? {} : { kind }),
+              });
               onClose();
             }}
           >
@@ -92,6 +106,26 @@ function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => v
         </>
       }
     >
+      <div className="col" style={{ gap: 6, marginBottom: 14 }}>
+        <span className="small muted">Colour</span>
+        <div className="row wrap" style={{ gap: 6 }}>
+          {GROUP_TONES.map((c) => (
+            <button
+              key={c} onClick={() => setColor(c)} aria-label={c}
+              style={{
+                width: 26, height: 26, borderRadius: "50%", cursor: "pointer",
+                background: `var(${c})`,
+                border: color === c ? "2px solid var(--fg)" : "2px solid transparent",
+              }}
+            />
+          ))}
+        </div>
+        <span className="tiny faint">
+          Every category in this group wears it — {members.length} of them
+          {members.length ? `, including ${members.slice(0, 3).map((m) => m.name).join(", ")}` : ""}.
+        </span>
+      </div>
+
       <Field label="Group name" hint="Shown on the Budget and Reports screens">
         <TextInput value={name} onChange={setName} autoFocus />
       </Field>
@@ -140,14 +174,14 @@ function CategoryModal({ category, groupId, onClose }: { category?: Category; gr
   const { actions } = useStore();
   const [name, setName] = useState(category?.name ?? "");
   const [icon, setIcon] = useState(category?.icon ?? "🏷️");
-  const [color, setColor] = useState(category?.color ?? "--c1");
   const [group, setGroup] = useState(category?.groupId ?? groupId);
   const [rollover, setRollover] = useState(category?.rollover ?? false);
   const [excludeFromBudget, setExclude] = useState(category?.excludeFromBudget ?? false);
   const [reassignTo, setReassign] = useState("c_uncategorized");
 
   const save = () => {
-    const payload = { name: name.trim() || "New category", icon, color, groupId: group, rollover, excludeFromBudget };
+    // No colour here: it comes from the group, and withGroupColors puts it on.
+    const payload = { name: name.trim() || "New category", icon, color: "--c1", groupId: group, rollover, excludeFromBudget };
     if (category) actions.updateCategory(category.id, payload);
     else actions.addCategory({ ...payload, archived: false });
     onClose();
@@ -166,20 +200,14 @@ function CategoryModal({ category, groupId, onClose }: { category?: Category; gr
       <Field label="Group">
         <SelectInput value={group} onChange={setGroup} options={db.groups.map((g) => ({ value: g.id, label: g.name }))} />
       </Field>
-      <div className="col" style={{ gap: 6 }}>
-        <span className="small muted">Color</span>
-        <div className="row wrap" style={{ gap: 6 }}>
-          {PALETTE.map((c) => (
-            <button
-              key={c} onClick={() => setColor(c)}
-              className={cx("dot")}
-              style={{
-                width: 22, height: 22, border: color === c ? "2px solid var(--text)" : "2px solid transparent",
-                background: `var(${c})`, cursor: "pointer", borderRadius: "50%",
-              }}
-            />
-          ))}
-        </div>
+      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        <span
+          style={{ width: 14, height: 14, borderRadius: "50%", flex: "none",
+            background: `var(${groupColor(db.groups.find((g) => g.id === group) ?? db.groups[0]!, db.categories)})` }}
+        />
+        <span className="tiny faint">
+          Colour comes from the group. Change it there and every category in it follows.
+        </span>
       </div>
       <Toggle on={rollover} onChange={setRollover} label={<span className="small">Roll unspent money into next month</span>} />
       <Toggle on={excludeFromBudget} onChange={setExclude} label={<span className="small">Exclude from budget</span>} />

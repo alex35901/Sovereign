@@ -12,6 +12,7 @@ import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
 import { applyForward } from "./lib/select";
 import { moveBudget } from "./lib/budget-move";
+import { withGroupColors } from "./lib/category-colors";
 
 /** Tag colours for tags created by an import, spread across the palette. */
 const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
@@ -63,7 +64,7 @@ export const useDB = (): DB => useStore().db;
 export const useActions = (): Actions => useStore().actions;
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DB>(() => loadDB() ?? buildDemoDB());
+  const [db, setDb] = useState<DB>(() => withGroupColors(loadDB() ?? buildDemoDB()));
   const [toast, setToast] = useState<string | null>(null);
   const undoStack = useRef<{ db: DB; label: string }[]>([]);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
@@ -106,7 +107,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setUndoLabel(label);
         window.setTimeout(() => setUndoLabel((l) => (l === label ? null : l)), 6000);
       }
-      return fn(prev);
+      return withGroupColors(fn(prev));
     });
   }, []);
 
@@ -122,7 +123,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const replaceFromCloud = useCallback((next: DB) => {
     undoStack.current = [];
     setUndoLabel(null);
-    setDb(next);
+    setDb(withGroupColors(next));
   }, []);
 
   const actions = useMemo(() => makeActions(apply, notify), [apply, notify]);
@@ -245,6 +246,8 @@ export interface Actions {
    * gets one entry in its history rather than two.
    */
   applyAllRules: () => void;
+  /** Recolours a whole group; every category in it follows. */
+  setGroupColor: (id: ID, color: string) => void;
 
   addHolding: (h: Omit<Holding, "id">) => void;
   updateHolding: (id: ID, patch: Partial<Holding>) => void;
@@ -556,6 +559,12 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         notify(`Rule applied to ${touched} transaction${touched === 1 ? "" : "s"}.`);
         return { ...db, transactions };
       }, "apply rule to existing transactions"),
+
+    setGroupColor: (id, color) =>
+      apply((db) => ({
+        ...db,
+        groups: db.groups.map((g) => (g.id === id ? { ...g, color } : g)),
+      }), "recolour group"),
 
     applyAllRules: () =>
       apply((db) => {

@@ -70,6 +70,7 @@ await build({
       export * as C from "./src/lib/crypto.ts";
       export * as RI from "./src/lib/rules-import.ts";
       export * as D from "./src/lib/dedupe.ts";
+      export { groupColor, withGroupColors, GROUP_TONES } from "./src/lib/category-colors.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -1827,6 +1828,100 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+/* ── colour belongs to the group ──────────────────────────────────────── */
+
+const grp = (id, over = {}) => ({ id, name: id, kind: "expense", order: 0, ...over });
+const cat = (id, groupId, color) => ({ id, groupId, name: id, icon: "🏷️", color, excludeFromBudget: false });
+
+await test("setting a group's colour paints every category in it", () => {
+  const db = {
+    ...M.emptyDB(),
+    groups: [grp("g_food", { color: "--c7" }), grp("g_xfer", { color: "--c9" })],
+    categories: [
+      cat("c1", "g_food", "--c1"), cat("c2", "g_food", "--c2"), cat("c3", "g_xfer", "--c3"),
+    ],
+  };
+  const out = M.withGroupColors(db);
+  assert.deepEqual(out.categories.map((c) => c.color), ["--c7", "--c7", "--c9"]);
+});
+
+await test("moving a category to another group recolours it", () => {
+  // The case a hand-maintained copy always misses: the group did not change,
+  // the category did.
+  const db = {
+    ...M.emptyDB(),
+    groups: [grp("g_food", { color: "--c7" }), grp("g_xfer", { color: "--c9" })],
+    categories: [cat("c1", "g_food", "--c7")],
+  };
+  const moved = { ...db, categories: [{ ...db.categories[0], groupId: "g_xfer" }] };
+  assert.equal(M.withGroupColors(moved).categories[0].color, "--c9");
+});
+
+await test("a group with no colour yet takes the one its categories mostly are", () => {
+  // So the collapse to a single colour lands on the most familiar tone rather
+  // than an arbitrary one, and the fewest categories visibly move.
+  const db = {
+    ...M.emptyDB(),
+    groups: [grp("g_food")],
+    categories: [cat("c1", "g_food", "--c5"), cat("c2", "g_food", "--c5"), cat("c3", "g_food", "--c2")],
+  };
+  assert.equal(M.groupColor(db.groups[0], db.categories), "--c5", "the majority wins");
+  // and the odd one out is brought into line — one colour per group is the point
+  assert.deepEqual(M.withGroupColors(db).categories.map((c) => c.color), ["--c5", "--c5", "--c5"]);
+});
+
+await test("an inferred colour does not depend on the order categories are stored in", () => {
+  const g = grp("g_food");
+  const a = [cat("c1", "g_food", "--c2"), cat("c2", "g_food", "--c8")];
+  assert.equal(M.groupColor(g, a), M.groupColor(g, [...a].reverse()), "a tie has to break the same way both times");
+});
+
+await test("a group with nothing in it still gets a colour, and the same one each time", () => {
+  const g = grp("g_empty");
+  const tone = M.groupColor(g, []);
+  assert.ok(M.GROUP_TONES.includes(tone), `${tone} is not in the palette`);
+  assert.equal(M.groupColor(g, []), tone, "stable across calls");
+  assert.notEqual(M.groupColor(grp("g_other"), []), undefined);
+});
+
+await test("an explicit colour beats whatever the categories happen to be", () => {
+  const db = {
+    ...M.emptyDB(),
+    groups: [grp("g_food", { color: "--c11" })],
+    categories: [cat("c1", "g_food", "--c5"), cat("c2", "g_food", "--c5")],
+  };
+  assert.equal(M.withGroupColors(db).categories.every((c) => c.color === "--c11"), true);
+});
+
+await test("running it twice changes nothing the second time", () => {
+  // It runs on every single write, so it has to settle rather than churn.
+  const db = {
+    ...M.emptyDB(),
+    groups: [grp("g_food", { color: "--c7" })],
+    categories: [cat("c1", "g_food", "--c1")],
+  };
+  const once = M.withGroupColors(db);
+  assert.notEqual(once, db, "the first pass had work to do");
+  assert.equal(M.withGroupColors(once), once, "the second must return the very same object");
+});
+
+await test("a category in no group at all is left alone rather than blanked", () => {
+  const db = {
+    ...M.emptyDB(),
+    groups: [grp("g_food", { color: "--c7" })],
+    categories: [cat("c1", "g_gone", "--c3")],
+  };
+  assert.equal(M.withGroupColors(db).categories[0].color, "--c3");
+});
+
+await test("the demo budget's groups each come out with one colour", () => {
+  const db = M.withGroupColors(M.buildDemoDB());
+  for (const g of db.groups) {
+    const tones = new Set(db.categories.filter((c) => c.groupId === g.id).map((c) => c.color));
+    assert.ok(tones.size <= 1, `${g.name} has ${tones.size} colours: ${[...tones].join(", ")}`);
+  }
 });
 
 /* ── finding duplicate transactions ───────────────────────────────────── */

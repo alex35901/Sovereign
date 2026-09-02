@@ -48,13 +48,28 @@ export interface Account {
 
 export type GroupKind = "income" | "expense" | "transfer";
 
-export interface CategoryGroup { id: ID; name: string; kind: GroupKind; order: number }
+export interface CategoryGroup {
+  id: ID;
+  name: string;
+  kind: GroupKind;
+  order: number;
+  /**
+   * The colour every category in this group wears. Absent means it has never
+   * been chosen, and one is inferred from the categories already inside.
+   */
+  color?: string;
+}
 
 export interface Category {
   id: ID;
   groupId: ID;
   name: string;
   icon: string;
+  /**
+   * Derived from the group, not set here — withGroupColors keeps it in step on
+   * every write. Kept on the category because everything that draws one reads
+   * it from here.
+   */
   color: string;
   excludeFromBudget: boolean;
   rollover: boolean;
