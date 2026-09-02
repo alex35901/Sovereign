@@ -118,6 +118,32 @@ export async function exchangePublicToken(publicToken: string, kind: "bank" | "i
   return { ...res, kind, addedAt: new Date().toISOString() };
 }
 
+/**
+ * The institution behind an access token, asked for again.
+ *
+ * An item connected before the app kept logos has none, and nothing in a sync
+ * would ever fill that in: the logo rides along on the item, so an item without
+ * one hands `undefined` to every account on every pull, for ever.
+ */
+export const fetchInstitution = (accessToken: string): Promise<InstitutionMark> =>
+  postJSON<InstitutionMark>(PROXY, { action: "institution", accessToken });
+
+export interface InstitutionMark { institution: string; logo?: string; domain?: string }
+
+/** Long enough that a bank Plaid holds no logo for isn't asked again every sync. */
+const RECHECK_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Whether an item is still missing its mark and is due another ask. */
+export function needsInstitution(
+  item: { logo?: string; domain?: string; institutionCheckedAt?: string },
+  now: number = Date.now(),
+): boolean {
+  if (item.logo || item.domain) return false;
+  if (!item.institutionCheckedAt) return true;
+  const at = Date.parse(item.institutionCheckedAt);
+  return !Number.isFinite(at) || now - at > RECHECK_MS;
+}
+
 export interface RemoteHolding {
   /** the Plaid account this position sits in */
   accountSyncId: string;

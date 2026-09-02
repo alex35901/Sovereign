@@ -4,7 +4,7 @@ import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { mergeSync, syncWindowStart } from "../lib/sync";
-import { createLinkToken, diagnosePlaid, exchangePublicToken, fetchItem } from "../lib/sync/plaid";
+import { createLinkToken, diagnosePlaid, exchangePublicToken, fetchInstitution, fetchItem, needsInstitution } from "../lib/sync/plaid";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -111,7 +111,24 @@ export function PlaidCard() {
     }
   };
 
-  const syncItem = async (item: PlaidItemRef) => {
+  /**
+   * Fills in the institution's mark for an item connected before the app kept
+   * one. Not worth failing a sync over — the initials still stand — and the
+   * attempt is stamped either way so a logo-less bank isn't asked every time.
+   */
+  const withInstitution = async (item: PlaidItemRef): Promise<PlaidItemRef> => {
+    if (!needsInstitution(item)) return item;
+    const asked = { ...item, institutionCheckedAt: new Date().toISOString() };
+    try {
+      const mark = await fetchInstitution(item.accessToken);
+      return { ...asked, logo: mark.logo ?? item.logo, domain: mark.domain ?? item.domain };
+    } catch {
+      return asked;
+    }
+  };
+
+  const syncItem = async (rawItem: PlaidItemRef) => {
+    const item = await withInstitution(rawItem);
     const payload = await fetchItem(item, syncWindowStart(db));
     let summary = "";
     apply((cur) => {
@@ -121,7 +138,9 @@ export function PlaidCard() {
         `, ${res.accountsAdded + res.accountsUpdated} account${res.accountsAdded + res.accountsUpdated === 1 ? "" : "s"}` +
         (res.holdingsUpdated ? `, ${res.holdingsUpdated} holdings` : "");
       const stamped = (cur.settings.plaidItems ?? []).map((i) =>
-        i.itemId === item.itemId ? { ...i, lastSyncAt: payload.fetchedAt } : i);
+        i.itemId === item.itemId
+          ? { ...i, ...item, lastSyncAt: payload.fetchedAt }
+          : i);
       return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
     }, `sync ${item.institution}`);
     notify(summary);

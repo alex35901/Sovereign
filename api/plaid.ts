@@ -21,8 +21,9 @@ type ApiResponse = ServerResponse;
 interface DiagnoseBody { action: "diagnose" }
 interface LinkTokenBody { action: "link_token"; products?: string[] }
 interface ExchangeBody { action: "exchange"; publicToken: string }
+interface InstitutionBody { action: "institution"; accessToken: string }
 interface SyncBody { action: "sync"; accessToken: string; startDate: string; endDate: string; withHoldings?: boolean }
-type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | SyncBody;
+type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | SyncBody;
 
 const CHECK_POINTER = " Press “Check configuration” below to see which one Plaid is refusing.";
 type PlaidEnv = "sandbox" | "production";
@@ -120,10 +121,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       return send(200, { linkToken: data.link_token, environment: env() });
     }
 
-    if (body.action === "exchange") {
-      if (!body.publicToken) return send(400, { error: "No public token supplied." });
-      const data = await call("/item/public_token/exchange", { public_token: body.publicToken });
-      const item = await call("/item/get", { access_token: data.access_token }).catch(() => null);
+    /**
+     * Who an access token belongs to, and their mark. Neither endpoint is
+     * billed per call, so this is safe to ask again for an item connected
+     * before the app knew to keep the answer.
+     */
+    const identify = async (accessToken: string) => {
+      const item = await call("/item/get", { access_token: accessToken }).catch(() => null);
       const institutionId = (item?.item as { institution_id?: string } | undefined)?.institution_id;
       let institution = "Connected account";
       let logo: string | undefined;
@@ -142,7 +146,19 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         if (found?.logo) logo = `data:image/png;base64,${found.logo}`;
         if (found?.url) domain = hostOf(found.url);
       }
-      return send(200, { accessToken: data.access_token, itemId: data.item_id, institution, logo, domain });
+      return { institution, logo, domain };
+    };
+
+    if (body.action === "exchange") {
+      if (!body.publicToken) return send(400, { error: "No public token supplied." });
+      const data = await call("/item/public_token/exchange", { public_token: body.publicToken });
+      const who = await identify(data.access_token as string);
+      return send(200, { accessToken: data.access_token, itemId: data.item_id, ...who });
+    }
+
+    if (body.action === "institution") {
+      if (!body.accessToken) return send(400, { error: "No access token supplied." });
+      return send(200, await identify(body.accessToken));
     }
 
     if (body.action === "sync") {

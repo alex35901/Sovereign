@@ -204,9 +204,15 @@ export interface PlaidItemRef {
   accessToken: string;
   itemId: string;
   institution: string;
-  /** The institution's logo, fetched once when the item was connected. */
+  /** The institution's logo, fetched when the item was connected or backfilled. */
   logo?: string;
   domain?: string;
+  /**
+   * When the institution was last asked about. Items connected before the app
+   * kept logos have neither mark, and a sync backfills them; this stops a bank
+   * Plaid holds no logo for from being asked again on every single sync.
+   */
+  institutionCheckedAt?: string;
   kind: "bank" | "investment";
   addedAt: string;
   lastSyncAt?: string;

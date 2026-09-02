@@ -40,7 +40,7 @@ await build({
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { findConnection } from "./api/_store.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
-      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken } from "./src/lib/sync/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution } from "./src/lib/sync/plaid.ts";
       export { estimateHomeValue, canValue } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
@@ -1828,6 +1828,59 @@ await test("a sync never touches Plaid's metered endpoints", async () => {
   for (const metered of ["/auth/get", "/identity/get", "/accounts/balance/get", "/transactions/refresh", "/investments/refresh"]) {
     assert.equal(hit.includes(metered), false, `${metered} is billed per call and must not be used`);
   }
+});
+
+await test("the institution lookup asks only the two free endpoints", async () => {
+  // The whole point of backfilling a logo is that it costs nothing. /item/get
+  // and /institutions/get_by_id are unmetered; if this ever reaches for one of
+  // the billed endpoints the logo stops being worth having.
+  const hit = [];
+  const r = await withEnv(creds, () =>
+    withFetch(async (url) => {
+      const path = new URL(String(url)).pathname;
+      hit.push(path);
+      if (path === "/item/get") return new Response(JSON.stringify({ item: { institution_id: "ins_127989" } }), { status: 200 });
+      return new Response(JSON.stringify({
+        institution: { name: "Wells Fargo", logo: "iVBORw0KGgo=", url: "https://www.wellsfargo.com/" },
+      }), { status: 200 });
+    }, () => invokePlaid({ action: "institution", accessToken: "tok" })));
+
+  assert.deepEqual(hit, ["/item/get", "/institutions/get_by_id"]);
+  const body = JSON.parse(r.text);
+  assert.equal(body.institution, "Wells Fargo");
+  assert.equal(body.logo, "data:image/png;base64,iVBORw0KGgo=");
+  assert.equal(body.domain, "wellsfargo.com");
+});
+
+await test("the institution lookup asks for the optional metadata that carries the logo", async () => {
+  // Plaid returns neither logo nor url unless include_optional_metadata is set,
+  // which is the whole reason this endpoint is being called.
+  let sent = null;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/item/get") return new Response(JSON.stringify({ item: { institution_id: "ins_1" } }), { status: 200 });
+      sent = JSON.parse(init.body);
+      return new Response(JSON.stringify({ institution: { name: "A Bank" } }), { status: 200 });
+    }, () => invokePlaid({ action: "institution", accessToken: "tok" })));
+
+  assert.equal(sent.options.include_optional_metadata, true);
+});
+
+await test("a logo-less item is asked again later, one that has a mark never is", () => {
+  const day = 24 * 60 * 60 * 1000;
+  const now = Date.parse("2026-09-02T00:00:00Z");
+  const at = (daysAgo) => new Date(now - daysAgo * day).toISOString();
+
+  // The case the user hit: connected before the app kept logos.
+  assert.equal(M.needsInstitution({}, now), true);
+  // Already has a mark from either source — never ask again.
+  assert.equal(M.needsInstitution({ logo: "data:image/png;base64,x" }, now), false);
+  assert.equal(M.needsInstitution({ domain: "wellsfargo.com" }, now), false);
+  // Asked, and Plaid had nothing: don't ask on every sync, but don't give up.
+  assert.equal(M.needsInstitution({ institutionCheckedAt: at(1) }, now), false);
+  assert.equal(M.needsInstitution({ institutionCheckedAt: at(31) }, now), true);
+  assert.equal(M.needsInstitution({ institutionCheckedAt: "not a date" }, now), true);
 });
 
 await test("plaid account types map onto this app's types", () => {
