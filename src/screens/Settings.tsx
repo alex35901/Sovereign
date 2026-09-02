@@ -7,7 +7,10 @@ import { toCSV } from "../lib/csv";
 import { download, exportJSON, importJSON } from "../lib/storage";
 import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
 import type { SyncCadence } from "../lib/sync";
-import { canValue, estimateHomeValue } from "../lib/property";
+import {
+  MONTHLY_LOOKUPS, cadenceLabel, canValue, estimateHomeValue,
+  lookupsPerMonth, refreshEveryHours,
+} from "../lib/property";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { Link } from "react-router-dom";
 import { PlaidCard } from "./PlaidCard";
@@ -24,6 +27,10 @@ function PropertyValuesCard() {
   const key = db.settings.rentcastApiKey ?? "";
   const properties = db.accounts.filter((a) => canValue(a.type) && !a.hidden);
   const withAddress = properties.filter((a) => a.address?.trim());
+
+  const auto = db.settings.propertyAutoRefresh !== false;
+  const every = refreshEveryHours(withAddress.length);
+  const spend = lookupsPerMonth(withAddress.length, every);
 
   const refreshAll = async () => {
     setBusy(true);
@@ -67,8 +74,31 @@ function PropertyValuesCard() {
       <ol className="small muted" style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
         <li>Sign up at <b>rentcast.io</b> and create an API key on the Developer (free) plan.</li>
         <li>Paste it below, then add each property's address on its account page.</li>
-        <li>Refresh whenever you like — monthly is plenty, and 2 properties uses 2 of the 50.</li>
+        <li>Leave the switch below on and the values keep themselves current, within the free allowance.</li>
       </ol>
+
+      <div className="setting-row" style={{ marginBottom: 12 }}>
+        <Toggle
+          on={auto}
+          onChange={(v) => actions.patchSettings({ propertyAutoRefresh: v })}
+          label={<span className="small">Keep property values up to date on their own</span>}
+        />
+      </div>
+      {withAddress.length ? (
+        <div className="tiny faint" style={{ maxWidth: 620, marginBottom: 14 }}>
+          {auto ? (
+            <>
+              {withAddress.length} propert{withAddress.length === 1 ? "y" : "ies"} refreshed{" "}
+              <b>{cadenceLabel(every)}</b> — about {spend} of RentCast&rsquo;s {MONTHLY_LOOKUPS} free lookups a
+              month, leaving {MONTHLY_LOOKUPS - spend} for pressing Update now. The cadence is worked out from
+              how many properties you have, so adding one slows them all down rather than running past the
+              allowance.
+            </>
+          ) : (
+            <>Values only change when you press Update now.</>
+          )}
+        </div>
+      ) : null}
 
       <Field label="RentCast API key">
         <TextInput

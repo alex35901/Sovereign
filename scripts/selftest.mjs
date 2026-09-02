@@ -52,7 +52,7 @@ await build({
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution } from "./src/lib/sync/plaid.ts";
-      export { estimateHomeValue, canValue } from "./src/lib/property.ts";
+      export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, balanceAt, netWorthSplitAt, netWorthNow } from "./src/lib/select.ts";
@@ -1825,6 +1825,80 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+/* ── how often property values refresh ────────────────────────────────── */
+
+await test("two properties use the allowance without spending the reserve", () => {
+  const every = M.refreshEveryHours(2);
+  const spend = M.lookupsPerMonth(2, every);
+  assert.ok(spend <= M.MONTHLY_LOOKUPS - M.MANUAL_RESERVE,
+    `${spend} lookups would eat into the ${M.MANUAL_RESERVE} held back for manual refreshes`);
+  assert.ok(spend >= 40, `only ${spend} of a possible 44 — that is not making use of the tier`);
+  assert.equal(every, 34, "roughly a day and a half apart");
+});
+
+await test("the cadence never overruns the tier, however many properties", () => {
+  for (let n = 1; n <= 12; n++) {
+    const every = M.refreshEveryHours(n);
+    const spend = M.lookupsPerMonth(n, every);
+    assert.ok(spend <= M.MONTHLY_LOOKUPS - M.MANUAL_RESERVE,
+      `${n} properties would spend ${spend}, over the ${M.MONTHLY_LOOKUPS - M.MANUAL_RESERVE} budget`);
+  }
+});
+
+await test("adding a property slows the others down rather than overspending", () => {
+  const two = M.refreshEveryHours(2);
+  const three = M.refreshEveryHours(3);
+  assert.ok(three > two, "three properties have to wait longer between refreshes");
+  assert.ok(M.lookupsPerMonth(3, three) <= 44);
+});
+
+await test("more properties than the tier can serve is said, not silently starved", () => {
+  // 44 lookups cannot give 50 properties even one refresh each.
+  assert.equal(M.refreshEveryHours(50), Infinity);
+  assert.equal(M.lookupsPerMonth(50, Infinity), 0);
+  assert.match(M.cadenceLabel(Infinity), /too many properties/);
+  assert.equal(M.propertyDue({ address: "1 Main St" }, Infinity), false,
+    "an impossible cadence must refresh nothing rather than everything");
+});
+
+await test("the cadence reads as words", () => {
+  assert.equal(M.cadenceLabel(34), "about daily");
+  assert.equal(M.cadenceLabel(12), "every 12 hours");
+  assert.equal(M.cadenceLabel(72), "about every 3 days");
+  assert.equal(M.cadenceLabel(24), "about daily");
+});
+
+await test("a property is due only once its interval has passed", () => {
+  const now = Date.parse("2026-09-02T12:00:00Z");
+  const ago = (h) => new Date(now - h * 3600_000).toISOString();
+  const at = (h) => ({ address: "1 Main St", valuation: { at: ago(h) } });
+
+  assert.equal(M.propertyDue(at(33), 34, now), false);
+  assert.equal(M.propertyDue(at(34), 34, now), true);
+  assert.equal(M.propertyDue(at(100), 34, now), true);
+  assert.equal(M.propertyDue({ address: "1 Main St" }, 34, now), true, "never valued means due");
+  assert.equal(M.propertyDue({ valuation: { at: ago(99) } }, 34, now), false, "no address, nothing to ask about");
+  assert.equal(M.propertyDue({ address: " " }, 34, now), false);
+});
+
+await test("a failed attempt ages the same as a successful one", () => {
+  // Otherwise an address RentCast cannot find is retried on every tick and
+  // burns the whole month's allowance on an answer that never comes.
+  const now = Date.parse("2026-09-02T12:00:00Z");
+  const ago = (h) => new Date(now - h * 3600_000).toISOString();
+  const failed = { address: "nowhere at all", valuationTriedAt: ago(2) };
+  assert.equal(M.propertyDue(failed, 34, now), false, "it was tried two hours ago");
+  assert.equal(M.propertyDue({ ...failed, valuationTriedAt: ago(40) }, 34, now), true);
+
+  // and the attempt wins over an older success, not the other way round
+  const both = { address: "1 Main St", valuation: { at: ago(90) }, valuationTriedAt: ago(1) };
+  assert.equal(M.propertyDue(both, 34, now), false);
+});
+
+await test("an unreadable timestamp counts as due rather than never", () => {
+  assert.equal(M.propertyDue({ address: "1 Main St", valuation: { at: "not a date" } }, 34), true);
 });
 
 /* ── the statement, tags and reviewed columns on a CSV import ─────────── */

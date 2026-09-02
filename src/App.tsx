@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { MobileTabs, Sidebar } from "./shell/Sidebar";
 import { AutoSync } from "./components/AutoSync";
+import { PropertyRefresh } from "./components/PropertyRefresh";
 import { CloudSync } from "./components/CloudSync";
 import { RulePrompt } from "./components/RulePrompt";
 import { useStore } from "./store";
@@ -24,6 +25,7 @@ export default function App() {
   return (
     <div className="app">
       <AutoSync />
+      <PropertyRefresh />
       <CloudSync />
       <Sidebar />
       <div className="main">

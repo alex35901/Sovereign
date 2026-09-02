@@ -35,6 +35,12 @@ export interface Account {
   address?: string;
   /** The most recent automated valuation, kept for provenance. */
   valuation?: { source: "rentcast"; low?: number; high?: number; at: string };
+  /**
+   * When a valuation was last attempted, whether or not it worked. A failure
+   * has to age like a success, or an address RentCast cannot find would be
+   * retried on every tick and spend the month's allowance getting nowhere.
+   */
+  valuationTriedAt?: string;
   /** Depreciation inputs for a vehicle account. */
   vehicle?: VehicleProfile;
   order: number;
@@ -181,6 +187,12 @@ export interface Settings {
   simplefinAccessUrl?: string;
   /** RentCast API key for property valuations, stored locally. */
   rentcastApiKey?: string;
+  /**
+   * Whether property values refresh on their own. The cadence is not stored:
+   * it is worked out from how many properties there are against RentCast's
+   * monthly allowance, so adding one slows them all rather than overrunning.
+   */
+  propertyAutoRefresh?: boolean;
   /** Connected Plaid items. Credentials for Plaid itself live server-side. */
   plaidItems?: PlaidItemRef[];
   lastSyncAt?: string;
