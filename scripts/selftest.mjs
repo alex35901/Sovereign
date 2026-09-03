@@ -43,6 +43,7 @@ await build({
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime } from "./src/lib/select.ts";
       export * as B from "./src/lib/buckets.ts";
+      export * as DF from "./src/lib/date-filter.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
@@ -3630,6 +3631,111 @@ await test("the drill-down and the Budget screen report the same actual", () => 
     assert.equal(mine.planned, r.planned, `${r.category.name} disagrees on planned`);
     assert.equal(mine.remaining, r.remaining, `${r.category.name} disagrees on remaining`);
   }
+});
+
+
+// --- narrowing a list to a span of dates ---------------------------------
+
+await test("all time admits everything, and says so by admitting nothing in particular", () => {
+  assert.equal(M.DF.bounds({ kind: "all" }), null);
+  assert.equal(M.DF.isNarrowed({ kind: "all" }), false);
+  assert.equal(M.DF.admits({ kind: "all" }, "1999-01-01"), true);
+  assert.equal(M.DF.admits({ kind: "all" }, "2099-12-31"), true);
+});
+
+await test("a year is the whole year and a month is the whole month", () => {
+  assert.deepEqual(M.DF.bounds({ kind: "year", year: "2026" }), { from: "2026-01-01", to: "2026-12-31" });
+  assert.deepEqual(M.DF.bounds({ kind: "month", month: "2026-02" }), { from: "2026-02-01", to: "2026-02-28" });
+  // A leap February is the case a hand-rolled calendar gets wrong. 2028 is one;
+  // 2026 is not, which is worth asserting in the same breath.
+  assert.deepEqual(M.DF.bounds({ kind: "month", month: "2028-02" }), { from: "2028-02-01", to: "2028-02-29" });
+  assert.equal(M.DF.admits({ kind: "month", month: "2028-02" }, "2028-02-29"), true);
+  assert.equal(M.DF.admits({ kind: "month", month: "2026-02" }, "2026-02-29"), false, "2026 is not a leap year");
+  assert.equal(M.DF.admits({ kind: "month", month: "2026-02" }, "2026-03-01"), false);
+  assert.equal(M.DF.admits({ kind: "year", year: "2026" }, "2025-12-31"), false);
+  assert.equal(M.DF.admits({ kind: "year", year: "2026" }, "2026-12-31"), true);
+});
+
+await test("both ends of a between are inclusive", () => {
+  const f = { kind: "between", from: "2026-03-04", to: "2026-03-06" };
+  assert.deepEqual(["2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07"]
+    .map((d) => M.DF.admits(f, d)), [false, true, true, true, false]);
+});
+
+await test("half a between is a question people actually ask", () => {
+  // "everything since March" and "up to the end of last year" are the reason
+  // this exists; refusing until both ends are filled in would make it useless.
+  const since = { kind: "between", from: "2026-03-01", to: "" };
+  assert.equal(M.DF.isNarrowed(since), true);
+  assert.equal(M.DF.admits(since, "2026-02-28"), false);
+  assert.equal(M.DF.admits(since, "2099-01-01"), true);
+
+  const until = { kind: "between", from: "", to: "2025-12-31" };
+  assert.equal(M.DF.admits(until, "2025-12-31"), true);
+  assert.equal(M.DF.admits(until, "2026-01-01"), false);
+
+  // Neither end is not a filter at all.
+  assert.equal(M.DF.bounds({ kind: "between", from: "", to: "" }), null);
+});
+
+await test("dates typed backwards are read the way they were meant", () => {
+  // Nobody means "show me nothing" by it, and swapping is what they would do.
+  const back = M.DF.bounds({ kind: "between", from: "2026-06-01", to: "2026-01-01" });
+  assert.deepEqual(back, { from: "2026-01-01", to: "2026-06-01" });
+});
+
+await test("a half-typed date narrows nothing rather than everything", () => {
+  // A date input reports "2026-0" mid-keystroke. Treating that as a bound
+  // would empty the list under the cursor.
+  for (const bad of ["2026", "2026-0", "20260101", "", "not a date"]) {
+    assert.equal(M.DF.bounds({ kind: "between", from: bad, to: "" }), null, `from=${bad}`);
+  }
+  assert.equal(M.DF.bounds({ kind: "year", year: "20" }), null);
+  assert.equal(M.DF.bounds({ kind: "month", month: "2026" }), null);
+});
+
+await test("a filter survives a round trip through the URL", () => {
+  const cases = [
+    { kind: "all" },
+    { kind: "year", year: "2025" },
+    { kind: "month", month: "2026-08" },
+    { kind: "between", from: "2026-01-01", to: "2026-03-31" },
+    { kind: "between", from: "2026-01-01", to: "" },
+    { kind: "between", from: "", to: "2026-03-31" },
+  ];
+  for (const f of cases) {
+    const params = new URLSearchParams(M.DF.toParams(f));
+    const back = M.DF.fromParams((k) => params.get(k));
+    assert.deepEqual(M.DF.bounds(back), M.DF.bounds(f), JSON.stringify(f));
+  }
+});
+
+await test("a bookmarked ?month= link still works", () => {
+  // Links from the Budget screen carry it, and so does anything anyone saved.
+  const params = new URLSearchParams("category=c_groceries&month=2026-08");
+  const f = M.DF.fromParams((k) => params.get(k));
+  assert.deepEqual(f, { kind: "month", month: "2026-08" });
+  assert.deepEqual(M.DF.bounds(f), { from: "2026-08-01", to: "2026-08-31" });
+});
+
+await test("switching kinds leaves no stale params behind", () => {
+  // year= left over from a previous choice would win on the next page load,
+  // because fromParams reads between, then year, then month.
+  const params = new URLSearchParams("year=2025&q=coffee");
+  for (const k of M.DF.PARAM_KEYS) params.delete(k);
+  for (const [k, v] of Object.entries(M.DF.toParams({ kind: "month", month: "2026-08" }))) params.set(k, v);
+  assert.equal(params.get("year"), null);
+  assert.equal(params.get("month"), "2026-08");
+  assert.equal(params.get("q"), "coffee", "an unrelated filter was thrown away");
+});
+
+await test("the filter describes itself in words", () => {
+  assert.equal(M.DF.describe({ kind: "all" }), "All time");
+  assert.equal(M.DF.describe({ kind: "year", year: "2026" }), "2026");
+  assert.equal(M.DF.describe({ kind: "month", month: "2026-08" }), "August 2026");
+  assert.equal(M.DF.describe({ kind: "between", from: "2026-03-01", to: "" }), "From 2026-03-01");
+  assert.equal(M.DF.describe({ kind: "between", from: "", to: "2026-03-01" }), "Up to 2026-03-01");
+  assert.equal(M.DF.describe({ kind: "between", from: "2026-01-01", to: "2026-03-01" }), "2026-01-01 to 2026-03-01");
 });
 
 

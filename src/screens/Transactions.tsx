@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
-import type { Transaction } from "../types";
+import type { DB, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { InstitutionLogo } from "../components/InstitutionLogo";
-import { dateLabel, monthOf } from "../lib/date";
+import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
 import { toCSV } from "../lib/csv";
 import { budgetedCategoryIds, budgetedSum } from "../lib/select";
@@ -14,6 +14,8 @@ import { fmt } from "../lib/money";
 import { download } from "../lib/storage";
 import { Btn, Card, Empty, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
+import type { DateFilter } from "../lib/date-filter";
+import { ALL, FILTER_KINDS, PARAM_KEYS, bounds, fromParams, isNarrowed, toParams } from "../lib/date-filter";
 import { TransactionModal } from "./TransactionModal";
 import { ImportModal } from "./ImportModal";
 import { DuplicatesModal } from "./DuplicatesModal";
@@ -76,7 +78,7 @@ export default function Transactions() {
   const [preset, setPreset] = useState<Preset>("all");
   const [accountId, setAccountId] = useState(params.get("account") ?? "");
   const [categoryId, setCategoryId] = useState(params.get("category") ?? "");
-  const [month, setMonth] = useState(params.get("month") ?? "");
+  const [period, setPeriodState] = useState<DateFilter>(() => fromParams((k) => params.get(k)));
   const [tagId, setTagId] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Transaction | null>(null);
@@ -84,12 +86,16 @@ export default function Transactions() {
   const [deduping, setDeduping] = useState(false);
   const [limit, setLimit] = useState(120);
 
+  // Worked out once rather than per transaction: a between-dates filter over
+  // several thousand rows should not re-parse its own bounds for each one.
+  const span = useMemo(() => bounds(period), [period]);
+
   const filtered = useMemo(() => {
     const needle = q.toLowerCase().trim();
     return db.transactions.filter((t) => {
       if (accountId && t.accountId !== accountId) return false;
       if (categoryId && t.categoryId !== categoryId && !t.splits?.some((s) => s.categoryId === categoryId)) return false;
-      if (month && monthOf(t.date) !== month) return false;
+      if (span && (t.date < span.from || t.date > span.to)) return false;
       if (tagId && !t.tags.includes(tagId)) return false;
       if (preset === "unreviewed" && t.reviewed) return false;
       if (preset === "uncategorized" && t.categoryId !== "c_uncategorized") return false;
@@ -102,7 +108,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [db.transactions, q, accountId, categoryId, month, tagId, preset]);
+  }, [db.transactions, q, accountId, categoryId, span, tagId, preset]);
 
   const shown = filtered.slice(0, limit);
   const grouped = useMemo(() => {
@@ -129,11 +135,38 @@ export default function Transactions() {
       return next;
     });
 
+  /**
+   * Keeps the URL in step, so a filtered view is a link and a reload lands
+   * where you were.
+   *
+   * Every filter that is read out of the URL has to be written back to it. The
+   * category was read and not written, so a reload quietly dropped it and the
+   * count went up with nothing on screen explaining why.
+   */
+  const patchParams = (patch: Record<string, string>, drop: readonly string[] = []) => {
+    const p = new URLSearchParams(params);
+    for (const k of drop) p.delete(k);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) p.set(k, v);
+      else p.delete(k);
+    }
+    setParams(p, { replace: true });
+  };
+
+  const setPeriod = (next: DateFilter) => {
+    setPeriodState(next);
+    patchParams(toParams(next), PARAM_KEYS);
+  };
+  const pickCategory = (id: string) => { setCategoryId(id); patchParams({ category: id }); };
+  const pickAccount = (id: string) => { setAccountId(id); patchParams({ account: id }); };
+
   const clearFilters = () => {
-    setQ(""); setPreset("all"); setAccountId(""); setCategoryId(""); setMonth(""); setTagId("");
+    setQ(""); setPreset("all"); setAccountId(""); setCategoryId(""); setTagId("");
+    setPeriodState(ALL);
     setParams({});
   };
-  const filterCount = [accountId, categoryId, month, tagId].filter(Boolean).length + (preset === "all" ? 0 : 1);
+  const filterCount = [accountId, categoryId, tagId].filter(Boolean).length
+    + (preset === "all" ? 0 : 1) + (isNarrowed(period) ? 1 : 0);
 
   return (
     <>
@@ -170,14 +203,19 @@ export default function Transactions() {
               ]}
             />
             <SelectInput
-              value={accountId} onChange={setAccountId} placeholder="All accounts"
+              value={accountId} onChange={pickAccount} placeholder="All accounts"
               options={db.accounts.map((a) => ({ value: a.id, label: a.name }))}
             />
-            <SelectInput
-              value={month} onChange={setMonth} placeholder="All time"
-              options={[...new Set(db.transactions.map((t) => monthOf(t.date)))].sort().reverse().slice(0, 36)
-                .map((m) => ({ value: m, label: m }))}
+            <CategoryPicker
+              value={categoryId} onChange={pickCategory} clearLabel="Any category"
+              trigger={(cat, open) => (
+                <button className="btn" onClick={open} style={{ maxWidth: 190 }}>
+                  <span>{cat ? cat.icon : "🏷"}</span>
+                  <span className="truncate">{cat ? cat.name : "Any category"}</span>
+                </button>
+              )}
             />
+            <PeriodFilter db={db} value={period} onChange={setPeriod} />
             {db.tags.length ? (
               <SelectInput
                 value={tagId} onChange={setTagId} placeholder="Any tag"
@@ -307,6 +345,71 @@ export default function Transactions() {
       {editing ? <TransactionModal txn={editing} onClose={() => setEditing(null)} /> : null}
       {importing ? <ImportModal onClose={() => setImporting(false)} /> : null}
       {deduping ? <DuplicatesModal onClose={() => setDeduping(false)} /> : null}
+    </>
+  );
+}
+
+/**
+ * All time, a year, a month, or two dates.
+ *
+ * The kind comes first and the rest follows from it, rather than four controls
+ * competing for the same question. Years and months are offered from what the
+ * data actually contains — a list of every year since 1970 is not a filter,
+ * it is a haystack — and both ends of "between" are optional, because "since
+ * March" is a question people have and "March to today" is them working around
+ * a form.
+ */
+function PeriodFilter({ db, value, onChange }: {
+  db: DB; value: DateFilter; onChange: (f: DateFilter) => void;
+}) {
+  const { years, months } = useMemo(() => {
+    const y = new Set<string>();
+    const m = new Set<string>();
+    for (const t of db.transactions) { y.add(t.date.slice(0, 4)); m.add(t.date.slice(0, 7)); }
+    return {
+      years: [...y].sort().reverse(),
+      months: [...m].sort().reverse().slice(0, 60),
+    };
+  }, [db.transactions]);
+
+  const pick = (kind: DateFilter["kind"]) => {
+    if (kind === "year") onChange({ kind: "year", year: value.kind === "year" ? value.year : years[0] ?? "" });
+    else if (kind === "month") onChange({ kind: "month", month: value.kind === "month" ? value.month : months[0] ?? "" });
+    else if (kind === "between") onChange({ kind: "between", from: "", to: "" });
+    else onChange(ALL);
+  };
+
+  return (
+    <>
+      <SelectInput
+        value={value.kind} onChange={(v) => pick(v as DateFilter["kind"])}
+        options={FILTER_KINDS.map((k) => ({ value: k.value, label: k.label }))}
+      />
+      {value.kind === "year" ? (
+        <SelectInput
+          value={value.year} onChange={(year) => onChange({ kind: "year", year })}
+          options={years.map((y) => ({ value: y, label: y }))}
+        />
+      ) : null}
+      {value.kind === "month" ? (
+        <SelectInput
+          value={value.month} onChange={(month) => onChange({ kind: "month", month })}
+          options={months.map((m) => ({ value: m, label: monthLabel(m) }))}
+        />
+      ) : null}
+      {value.kind === "between" ? (
+        <span className="row wrap" style={{ gap: 6 }}>
+          <input
+            className="input date-bound" type="date" aria-label="From"
+            value={value.from} onChange={(e) => onChange({ ...value, from: e.target.value })}
+          />
+          <span className="tiny faint">to</span>
+          <input
+            className="input date-bound" type="date" aria-label="To"
+            value={value.to} onChange={(e) => onChange({ ...value, to: e.target.value })}
+          />
+        </span>
+      ) : null}
     </>
   );
 }

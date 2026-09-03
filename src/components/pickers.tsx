@@ -8,10 +8,13 @@ import type { RangeKey } from "../lib/range";
 import { RANGES } from "../lib/range";
 
 /** Searchable category menu, grouped the way the budget screen groups them. */
-export function CategoryPicker({ value, onChange, trigger }: {
+export function CategoryPicker({ value, onChange, trigger, clearLabel }: {
   value: string;
   onChange: (id: string) => void;
   trigger?: (cat: Category | undefined, open: () => void) => React.ReactNode;
+  /** Offers a row that picks nothing, for a filter. Absent on a transaction's
+   *  own category, where "no category" is Uncategorized rather than empty. */
+  clearLabel?: string;
 }) {
   const db = useDB();
   const [q, setQ] = useState("");
@@ -47,6 +50,12 @@ export function CategoryPicker({ value, onChange, trigger }: {
             <Search size={13} />
             <input className="input" autoFocus placeholder="Search categories" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
+          {clearLabel ? (
+            <button onClick={() => { onChange(""); setQ(""); close(); }}>
+              <span className="grow truncate">{clearLabel}</span>
+              {!value ? <span className="tiny" style={{ color: "var(--accent)" }}>✓</span> : null}
+            </button>
+          ) : null}
           {grouped.map(({ group, cats }) => (
             <div key={group.id}>
               <div className="tiny faint" style={{ padding: "6px 9px 3px", textTransform: "uppercase", letterSpacing: ".06em" }}>
