@@ -210,6 +210,9 @@ export interface Peek {
   found: boolean;
   encrypted: boolean;
   envelope: Envelope | null;
+  /** The stored version, so a browser that cannot read the document can still
+   *  write over it without racing another device. */
+  version: number;
   /** When the stored copy was last written, and by what. Carried because a
    *  passphrase that stopped working is nearly always a document that was
    *  re-sealed, and the date is the only thing that can say so. */
@@ -220,13 +223,18 @@ export interface Peek {
 export async function peek(): Promise<Peek> {
   const res = await call({ method: "GET" });
   if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
-  const body = (await res.json()) as { found: boolean; doc?: unknown; updatedAt?: string; updatedBy?: string };
-  if (!body.found) return { found: false, encrypted: false, envelope: null, updatedAt: null, updatedBy: null };
+  const body = (await res.json()) as {
+    found: boolean; doc?: unknown; version?: number; updatedAt?: string; updatedBy?: string;
+  };
+  if (!body.found) {
+    return { found: false, encrypted: false, envelope: null, version: 0, updatedAt: null, updatedBy: null };
+  }
   const env = isEnvelope(body.doc) ? body.doc : null;
   return {
     found: true,
     encrypted: env !== null,
     envelope: env,
+    version: Number(body.version ?? 0),
     updatedAt: body.updatedAt ?? null,
     updatedBy: body.updatedBy ?? null,
   };

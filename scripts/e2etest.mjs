@@ -215,6 +215,78 @@ try {
   check("a wrong encryption passphrase is refused and says so",
     wrong.includes("doesn't open this document") && !wrong.includes("End-to-end encrypted"),
     wrong.slice(0, 120));
+  // ── a forgotten passphrase is not a lost budget ──
+  //
+  // The server's ratchet will not let a readable document replace a sealed
+  // one, which is right, and which is exactly why there has to be a way to
+  // seal it again — otherwise someone whose passphrase is gone is left looking
+  // at their own budget with nowhere to save it.
+  const RESEAL = "a brand new one they will write down";
+  const forgot = await browser.newContext({ viewport: { width: 950, height: 1500 } });
+  const g = await settings(forgot);
+  await card(g, "Sync across devices").locator('input[name="sovereign-sync"]').fill(SYNC);
+  await card(g, "Sync across devices").locator('button:text-is("Connect")').click();
+  await g.waitForTimeout(2500);
+  await tryStep("the forgetful device can unlock once", async () => {
+    await card(g, "Encryption").locator('input[name="sovereign-encryption-unlock"]').fill(CRYPT, { timeout: 5000 });
+    await card(g, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click({ timeout: 5000 });
+  });
+  await g.waitForTimeout(2500);
+
+  const held = await g.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length);
+  await tryStep("the key can be forgotten", async () => {
+    await card(g, "Encryption").locator("button").filter({ hasText: /Forget the key/i }).click({ timeout: 5000 });
+    await card(g, "Encryption").locator("button").filter({ hasText: /Click again to forget/i }).click({ timeout: 5000 });
+  });
+  await g.waitForTimeout(1500);
+
+  // The reassurance the whole recovery rests on.
+  check("forgetting the key does not touch this browser's own copy",
+    await g.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length) === held,
+    "the local budget changed when the key was forgotten");
+
+  await tryStep("there is a way out offered", () =>
+    card(g, "Encryption").locator("summary", { hasText: "Lost the passphrase" }).click({ timeout: 5000 }));
+  await tryStep("a new passphrase can be set from a locked browser", async () => {
+    await card(g, "Encryption").locator('input[name="sovereign-encryption-reseal"]').fill(RESEAL, { timeout: 5000 });
+    await card(g, "Encryption").locator('input[name="sovereign-encryption-reseal-again"]').fill(RESEAL, { timeout: 5000 });
+    await card(g, "Encryption").locator("button").filter({ hasText: /^Seal again/ }).click({ timeout: 5000 });
+    await card(g, "Encryption").locator("button").filter({ hasText: /the old copy goes/ }).click({ timeout: 5000 });
+  });
+  await g.waitForTimeout(3000);
+  check("sealing again succeeds even though the old copy could not be read",
+    (await textOf(g, "Encryption")).includes("End-to-end encrypted"),
+    (await textOf(g, "Encryption")).slice(0, 110));
+  check("the budget survived being sealed again",
+    await g.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length) === held,
+    "the local budget changed while re-sealing");
+
+  // And the new passphrase is the one that works now, on a device that has
+  // never seen either.
+  const after = await browser.newContext({ viewport: { width: 390, height: 1500 } });
+  const n = await settings(after);
+  await card(n, "Sync across devices").locator('input[name="sovereign-sync"]').fill(SYNC);
+  await card(n, "Sync across devices").locator('button:text-is("Connect")').click();
+  await n.waitForTimeout(2500);
+  await tryStep("the old passphrase can be tried", async () => {
+    await card(n, "Encryption").locator('input[name="sovereign-encryption-unlock"]').fill(CRYPT, { timeout: 5000 });
+    await card(n, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click({ timeout: 5000 });
+  });
+  await n.waitForTimeout(2500);
+  check("the passphrase that sealed the old copy no longer opens the new one",
+    (await textOf(n, "Encryption")).includes("That passphrase doesn't open this document"),
+    (await textOf(n, "Encryption")).slice(0, 110));
+  await tryStep("the new passphrase can be tried", async () => {
+    await card(n, "Encryption").locator('input[name="sovereign-encryption-unlock"]').fill(RESEAL, { timeout: 5000 });
+    await card(n, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click({ timeout: 5000 });
+  });
+  await n.waitForTimeout(3000);
+  check("the new passphrase opens it on a device that has seen neither",
+    (await textOf(n, "Encryption")).includes("End-to-end encrypted"),
+    (await textOf(n, "Encryption")).slice(0, 110));
+  check("and that device gets the whole budget",
+    await n.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length) === held,
+    "the recovered budget is a different size");
 } finally {
   await browser.close();
 }

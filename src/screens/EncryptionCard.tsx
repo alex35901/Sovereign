@@ -199,6 +199,8 @@ export function EncryptionCard(){
   const [unlocked, setUnlocked] = useState(isUnlocked());
   const [entry, setEntry] = useState("");
   const [again, setAgain] = useState("");
+  const [fresh, setFresh] = useState("");
+  const [freshAgain, setFreshAgain] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -323,6 +325,42 @@ export function EncryptionCard(){
     } finally { setBusy(false); }
   };
 
+  /**
+   * Starting again when the passphrase is gone.
+   *
+   * Nobody can open the stored copy without it — that is the point, and no
+   * amount of wanting to changes it. But this browser's own copy was never
+   * encrypted and is sitting right here, so the budget is not lost; only the
+   * stored copy is. This seals that copy again under a new passphrase.
+   *
+   * The server's ratchet forbids putting a readable document back, and rightly
+   * so, which is exactly why this exists: without it a forgotten passphrase
+   * leaves someone with their data on screen and no way to save it anywhere.
+   */
+  const reseal = async () => {
+    const phrase = fresh.trim();
+    if (phrase !== freshAgain.trim()) return setError("The two passphrases don't match.");
+    if (!strength(phrase).ok) return setError(strength(phrase).note);
+    setBusy(true);
+    setError(null);
+    try {
+      // The stored version, so this does not race a device that can still read
+      // the document and is saving to it right now.
+      const seen = await peek();
+      await unlock(null, phrase);
+      const res = await push(db, seen.version);
+      setCloudState({ version: res.version, dirty: false });
+      setUnlocked(true);
+      setEncrypted(true);
+      setFresh(""); setFreshAgain("");
+      notify("Sealed again from this browser's copy. Your other devices will each ask for the new passphrase.");
+    } catch (err) {
+      // Nothing was sealed with it, so the key is no use and is not kept.
+      await lock();
+      setError(err instanceof Error ? err.message : "Could not seal it again.");
+    } finally { setBusy(false); }
+  };
+
   const note = entry ? strength(entry) : null;
 
   return (
@@ -408,6 +446,47 @@ export function EncryptionCard(){
               <LockOpen size={14} /> {busy ? "Opening…" : "Unlock"}
             </Btn>
           </div>
+
+          <details className="col" style={{ gap: 10 }}>
+            <summary className="small muted" style={{ cursor: "pointer" }}>Lost the passphrase?</summary>
+            <div className="col" style={{ gap: 10, marginTop: 10 }}>
+              <div className="small muted" style={{ maxWidth: 620 }}>
+                Then the stored copy can never be opened again — not by you, not by this app, not by anyone
+                holding the database. That part is not recoverable and is the whole point of it.
+                <b> Your budget is not lost, though.</b> This browser keeps its own readable copy, and it is
+                what you are looking at right now: {db.transactions.length.toLocaleString()} transactions
+                across {db.accounts.length} accounts. Sealing again replaces the stored copy with this one.
+              </div>
+              <div className="setting-row" style={{ borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
+                <span className="small">
+                  <b>Anything that exists only in the stored copy goes with it.</b> Edits made on a device
+                  you can no longer open, and any overnight pulls not yet merged in, are inside a document
+                  nobody can read — sealing again writes over it. Take the backup first.
+                </span>
+              </div>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <SecretInput
+                  name="sovereign-encryption-reseal" placeholder="New passphrase"
+                  value={fresh} onChange={setFresh} maxWidth={260}
+                />
+                <SecretInput
+                  name="sovereign-encryption-reseal-again" placeholder="Type it again"
+                  value={freshAgain} onChange={setFreshAgain} maxWidth={260}
+                />
+              </div>
+              {fresh ? (
+                <div className={`tiny ${strength(fresh).ok ? "faint" : "neg"}`}>{strength(fresh).note}</div>
+              ) : null}
+              <div className="row wrap" style={{ gap: 8 }}>
+                <Btn onClick={backup}><Download size={14} /> Download a plain backup first</Btn>
+                <ConfirmButton
+                  label="Seal again with a new passphrase"
+                  confirmLabel="Click again — the old copy goes"
+                  onConfirm={() => void reseal()}
+                />
+              </div>
+            </div>
+          </details>
         </div>
       ) : (
         <div className="col" style={{ gap: 10 }}>
