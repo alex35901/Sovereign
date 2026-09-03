@@ -6,7 +6,7 @@ import {
   setCloudState, setPassphrase, subscribeSync, syncEpoch, syncHalt, takeConflict,
 } from "../lib/cloud";
 import type { CloudDiagnosis, Probe, RemoteDoc } from "../lib/cloud";
-import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
+import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/ui";
 
 /**
  * Shown when /api/db could not answer at all. Names which of its dependencies
@@ -286,11 +286,9 @@ export function CloudCard() {
             <CloudOff size={14} /> {paused ? "Not syncing until the passphrase is re-entered" : "This browser keeps its own private copy"}
           </span>
           <div className="row wrap" style={{ gap: 8 }}>
-            <input
-              className="input" type="password" style={{ maxWidth: 260 }}
-              placeholder="Sync passphrase" value={entry}
-              onChange={(e) => setEntry(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void connect(); }}
+            <SecretInput
+              name="sovereign-sync" placeholder="Sync passphrase"
+              value={entry} onChange={setEntry} onEnter={() => void connect()} maxWidth={260}
             />
             <Btn variant="primary" onClick={() => void connect()} disabled={busy !== null || !entry.trim()}>
               {busy === "connect" ? "Connecting…" : "Connect"}

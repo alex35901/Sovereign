@@ -9,7 +9,7 @@ import type { Envelope } from "../lib/crypto";
 import { WrongPassphrase } from "../lib/crypto";
 import { isUnlocked, lock, restore, unlock } from "../lib/vault";
 import { drainQueue } from "../lib/sync/drain";
-import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
+import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/ui";
 
 /**
  * Turning end-to-end encryption on, and opening it on a new browser.
@@ -195,6 +195,7 @@ export function EncryptionCard(){
   const [ready, setReady] = useState(false);
   const [encrypted, setEncrypted] = useState(false);
   const [envelope, setEnvelope] = useState<Envelope | null>(null);
+  const [sealed, setSealed] = useState<{ at: string | null; by: string | null }>({ at: null, by: null });
   const [unlocked, setUnlocked] = useState(isUnlocked());
   const [entry, setEntry] = useState("");
   const [again, setAgain] = useState("");
@@ -223,6 +224,7 @@ export function EncryptionCard(){
         if (dead) return;
         setEncrypted(seen.encrypted);
         setEnvelope(seen.envelope);
+        setSealed({ at: seen.updatedAt, by: seen.updatedBy });
       } catch { /* the sync card reports why; this one just stays quiet */ }
       if (!dead) setReady(true);
     })();
@@ -378,6 +380,11 @@ export function EncryptionCard(){
               }}
             />
           </div>
+          <div className="tiny faint" style={{ maxWidth: 620 }}>
+            Forgetting the key here is also the only way to check that a passphrase is the right one: this
+            browser will ask for it back, and what it says is the truth. Take the backup first — if the
+            passphrase turns out not to be the one, that file is how you get the budget back.
+          </div>
         </div>
       ) : encrypted ? (
         <div className="col" style={{ gap: 10 }}>
@@ -385,12 +392,17 @@ export function EncryptionCard(){
             This budget is encrypted and this browser has no key for it. Enter the encryption passphrase —
             not the sync passphrase — to read it here.
           </div>
+          {sealed.at ? (
+            <div className="tiny faint">
+              The stored copy was last written {new Date(sealed.at).toLocaleString()}
+              {sealed.by ? ` by ${sealed.by}` : ""}. A passphrase that used to work and no longer does means
+              the document was sealed again — check that date against when you last set one.
+            </div>
+          ) : null}
           <div className="row wrap" style={{ gap: 8 }}>
-            <input
-              className="input" type="password" style={{ maxWidth: 300 }}
-              placeholder="Encryption passphrase" value={entry}
-              onChange={(e) => setEntry(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void openIt(); }}
+            <SecretInput
+              name="sovereign-encryption-unlock" placeholder="Encryption passphrase"
+              value={entry} onChange={setEntry} onEnter={() => void openIt()}
             />
             <Btn variant="primary" onClick={() => void openIt()} disabled={busy || !entry.trim()}>
               <LockOpen size={14} /> {busy ? "Opening…" : "Unlock"}
@@ -412,16 +424,13 @@ export function EncryptionCard(){
             </span>
           </div>
           <div className="row wrap" style={{ gap: 8 }}>
-            <input
-              className="input" type="password" style={{ maxWidth: 260 }}
-              placeholder="Encryption passphrase" value={entry}
-              onChange={(e) => setEntry(e.target.value)}
+            <SecretInput
+              name="sovereign-encryption-new" placeholder="Encryption passphrase"
+              value={entry} onChange={setEntry} maxWidth={260}
             />
-            <input
-              className="input" type="password" style={{ maxWidth: 260 }}
-              placeholder="Type it again" value={again}
-              onChange={(e) => setAgain(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void turnOn(); }}
+            <SecretInput
+              name="sovereign-encryption-again" placeholder="Type it again"
+              value={again} onChange={setAgain} onEnter={() => void turnOn()} maxWidth={260}
             />
           </div>
           {note ? <div className={`tiny ${note.ok ? "faint" : "neg"}`}>{note.note}</div> : null}

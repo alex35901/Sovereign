@@ -206,13 +206,30 @@ export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
  * the right thing to do about it, and asking that question must not require the
  * key — the whole point of the locked state is that there isn't one yet.
  */
-export async function peek(): Promise<{ found: boolean; encrypted: boolean; envelope: Envelope | null }> {
+export interface Peek {
+  found: boolean;
+  encrypted: boolean;
+  envelope: Envelope | null;
+  /** When the stored copy was last written, and by what. Carried because a
+   *  passphrase that stopped working is nearly always a document that was
+   *  re-sealed, and the date is the only thing that can say so. */
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export async function peek(): Promise<Peek> {
   const res = await call({ method: "GET" });
   if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
-  const body = (await res.json()) as { found: boolean; doc?: unknown };
-  if (!body.found) return { found: false, encrypted: false, envelope: null };
+  const body = (await res.json()) as { found: boolean; doc?: unknown; updatedAt?: string; updatedBy?: string };
+  if (!body.found) return { found: false, encrypted: false, envelope: null, updatedAt: null, updatedBy: null };
   const env = isEnvelope(body.doc) ? body.doc : null;
-  return { found: true, encrypted: env !== null, envelope: env };
+  return {
+    found: true,
+    encrypted: env !== null,
+    envelope: env,
+    updatedAt: body.updatedAt ?? null,
+    updatedBy: body.updatedBy ?? null,
+  };
 }
 
 /* ── what the scheduled job left behind ───────────────────────────────── */

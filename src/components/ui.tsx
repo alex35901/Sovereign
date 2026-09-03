@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Eye, EyeOff, X } from "lucide-react";
 import { fmt, fmt0, parseMoney, toInput } from "../lib/money";
 import { useStore } from "../store";
 
@@ -99,6 +99,59 @@ export function TextInput({ value, onChange, placeholder, type = "text", autoFoc
       className="input" type={type} value={value} placeholder={placeholder} autoFocus={autoFocus}
       onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
     />
+  );
+}
+
+/**
+ * A passphrase field you can look at.
+ *
+ * Two things a bare <input type="password"> gets wrong on a phone. A password
+ * manager holding the sync passphrase will happily offer it for the encryption
+ * box — they are both nameless password fields on one page — and you cannot
+ * see that it did, so a rejected passphrase looks like a rejected passphrase
+ * rather than the wrong one pasted in. Hence a name, autocomplete off, and an
+ * eye.
+ *
+ * autoCapitalize and autoCorrect are off because iOS applies both to some
+ * fields and a capitalised first letter is a different passphrase.
+ */
+export function SecretInput({ value, onChange, placeholder, name, onEnter, maxWidth = 300 }: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  /** Distinct per field, so nothing cross-fills between them. */
+  name: string;
+  onEnter?: () => void;
+  maxWidth?: number;
+}) {
+  const [shown, setShown] = useState(false);
+  return (
+    <span className="row" style={{ gap: 6, position: "relative", maxWidth, flex: `1 1 ${maxWidth}px` }}>
+      <input
+        className="input"
+        type={shown ? "text" : "password"}
+        name={name}
+        value={value}
+        placeholder={placeholder}
+        autoComplete="off"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && onEnter) onEnter(); }}
+        style={{ paddingRight: 34 }}
+      />
+      <button
+        type="button"
+        className="btn btn-ghost btn-icon"
+        title={shown ? "Hide" : "Show"}
+        aria-label={shown ? "Hide the passphrase" : "Show the passphrase"}
+        onClick={() => setShown((v) => !v)}
+        style={{ position: "absolute", right: 2, top: "50%", transform: "translateY(-50%)", padding: 4 }}
+      >
+        {shown ? <EyeOff size={14} /> : <Eye size={14} />}
+      </button>
+    </span>
   );
 }
 
