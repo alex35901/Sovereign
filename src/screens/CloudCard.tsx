@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Cloud, CloudOff, Download, RefreshCw, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
-  cloudEnabled, cloudState, clearConflict, diagnose, passphrase, probe, pull, push,
-  setCloudState, setPassphrase, syncHalt, takeConflict,
+  LockedError, cloudEnabled, cloudState, clearConflict, diagnose, passphrase, probe, pull, push,
+  setCloudState, setPassphrase, subscribeSync, syncEpoch, syncHalt, takeConflict,
 } from "../lib/cloud";
 import type { CloudDiagnosis, Probe, RemoteDoc } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -105,13 +105,11 @@ export function CloudCard() {
   const on = cloudEnabled();
   const stashed = takeConflict();
 
-  // The halt is module state, not React state, so it is polled: a sync paused
-  // mid-session has to say so rather than quietly looking like it was never on.
-  const [halt, setHalt] = useState(syncHalt());
-  useEffect(() => {
-    const id = window.setInterval(() => setHalt(syncHalt()), 3000);
-    return () => window.clearInterval(id);
-  }, []);
+  // The halt and the passphrase are module state, not React state. Subscribed
+  // rather than polled, so a sync that stands down mid-session says so at once
+  // instead of within three seconds — and so does the card below this one.
+  useSyncExternalStore(subscribeSync, syncEpoch);
+  const halt = syncHalt();
   const paused = halt !== null && passphrase().length > 0;
 
   useEffect(() => {
@@ -144,8 +142,19 @@ export function CloudCard() {
       setEntry("");
       setRemote(await pull());
     } catch (err) {
-      setPassphrase("");
-      setError(err instanceof Error ? err.message : "Could not connect.");
+      // An encrypted document is not a failed connection. The server took this
+      // passphrase and handed back the document; it is only sealed, and the key
+      // for it is entered under Encryption below. Wiping the passphrase here
+      // was a dead end with no way out of it: without one, that card showed
+      // "connect this browser first", and connecting landed back here.
+      if (err instanceof LockedError) {
+        setEntry("");
+        setError(null);
+        notify("Connected. This budget is encrypted — enter its passphrase under Encryption to open it.");
+      } else {
+        setPassphrase("");
+        setError(err instanceof Error ? err.message : "Could not connect.");
+      }
     } finally {
       setBusy(null);
     }

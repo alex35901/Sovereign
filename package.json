@@ -12,7 +12,8 @@
     "test:db": "node scripts/dbtest.mjs",
     "check:api": "node scripts/check-api.mjs",
     "test:ui": "node scripts/breakpoints.mjs",
-    "icons": "node scripts/icons.mjs"
+    "icons": "node scripts/icons.mjs",
+    "test:e2e": "node scripts/e2etest.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.24.0",

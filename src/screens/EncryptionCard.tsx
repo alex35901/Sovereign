@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Lock, LockOpen, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff, Check, X, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
-import { cloudState, diagnose, passphrase, peek, pull, push, setCloudState } from "../lib/cloud";
+import {
+  cloudState, diagnose, passphrase, peek, pull, push, setCloudState, subscribeSync, syncEpoch,
+} from "../lib/cloud";
 import type { CloudDiagnosis } from "../lib/cloud";
 import type { Envelope } from "../lib/crypto";
 import { isUnlocked, lock, restore, unlock } from "../lib/vault";
@@ -201,6 +203,11 @@ export function EncryptionCard(){
   // Whether this browser is connected at all — deliberately not cloudEnabled(),
   // which is false while sync has stood down. Being locked is the very reason
   // to show this card, so keying it off that would hide the way back in.
+  //
+  // Subscribed, because the passphrase is module state: connecting happens in
+  // the card above this one, and without this that leaves no React state
+  // changing here, so this card would keep saying to go and connect.
+  useSyncExternalStore(subscribeSync, syncEpoch);
   const on = passphrase().length > 0;
 
   useEffect(() => {
@@ -297,16 +304,24 @@ export function EncryptionCard(){
       <CardHead
         title="Encryption"
         sub="Who can read the copy stored in the cloud"
-        right={unlocked && encrypted
-          ? <span className="small pos row" style={{ gap: 6 }}><ShieldCheck size={15} /> End-to-end encrypted</span>
-          : encrypted
-            ? <span className="small row" style={{ gap: 6, color: "var(--muted)" }}><Lock size={15} /> Locked on this browser</span>
-            : <span className="small neg row" style={{ gap: 6 }}><ShieldAlert size={15} /> Stored in the clear</span>}
+        right={!on
+          // Nothing has been looked at yet, so nothing is claimed. Saying
+          // "stored in the clear" here was a statement about someone's
+          // security made without checking, and on an encrypted document it
+          // was the opposite of the truth.
+          ? <span className="small row" style={{ gap: 6, color: "var(--muted)" }}><Lock size={15} /> Not checked</span>
+          : unlocked && encrypted
+            ? <span className="small pos row" style={{ gap: 6 }}><ShieldCheck size={15} /> End-to-end encrypted</span>
+            : encrypted
+              ? <span className="small row" style={{ gap: 6, color: "var(--muted)" }}><Lock size={15} /> Locked on this browser</span>
+              : <span className="small neg row" style={{ gap: 6 }}><ShieldAlert size={15} /> Stored in the clear</span>}
       />
 
       {!on ? (
         <div className="small muted">
-          This applies to the cloud copy. Connect this browser under “Sync across devices” first.
+          This applies to the cloud copy, so there is nothing to say until this browser is talking to it.
+          Connect it under “Sync across devices” above — if the budget turns out to be encrypted, the box
+          for opening it appears here.
         </div>
       ) : !ready ? (
         <div className="small muted">Checking…</div>

@@ -2,7 +2,7 @@ import type { DB } from "../types";
 import type { Envelope } from "./crypto.js";
 import { decryptDocument, encryptDocument, isEnvelope } from "./crypto.js";
 import { restore, vault } from "./vault.js";
-import { haltSync, resumeSync, syncHalt } from "./sync-halt.js";
+import { haltSync, notifySync, resumeSync, syncHalt } from "./sync-halt.js";
 
 /**
  * Talking to the stored budget document.
@@ -48,8 +48,12 @@ export const setPassphrase = (p: string): void => {
   } catch { /* nothing to do */ }
   // A passphrase entered by hand is the one thing that can clear a halt.
   resumeSync();
+  // resumeSync only tells anyone when a halt was actually lifted, and this may
+  // have changed nothing but the passphrase — which is the very thing the
+  // Encryption card keys off.
+  notifySync();
 };
-export { syncHalt, resumeSync } from "./sync-halt.js";
+export { syncHalt, resumeSync, subscribeSync, syncEpoch } from "./sync-halt.js";
 
 export const cloudEnabled = (): boolean => syncHalt() === null && passphrase().length > 0;
 
