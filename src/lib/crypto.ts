@@ -227,15 +227,40 @@ export async function unlockNew(passphrase: string): Promise<Unlocked> {
 }
 
 /**
+ * The one failure that really does mean the passphrase was wrong.
+ *
+ * Everything else that can go wrong while opening a document — a key the
+ * browser will not import, storage it will not write to, a server that will
+ * not answer — used to be reported as a bad passphrase too, which sent people
+ * to look for a typo in something that was correct all along.
+ */
+export class WrongPassphrase extends Error {
+  constructor() {
+    super("That passphrase doesn't open this document.");
+    this.name = "WrongPassphrase";
+  }
+}
+
+/**
  * Opens an envelope, or throws if the passphrase is wrong.
  *
  * There is deliberately no way to tell a wrong passphrase from a corrupted
  * document: GCM's tag check fails identically for both, and inventing a
  * distinction would mean storing something that confirms a correct guess.
+ * Anything after that check is a different kind of problem and says so.
  */
 export async function unlockExisting(env: Envelope, passphrase: string): Promise<Unlocked> {
   const key = await deriveKey(passphrase, fromB64(env.kdf.salt), env.kdf.iterations);
-  const priv = await importPriv(await unseal(key, env.wrappedPriv));
+  let privJwk: string;
+  try {
+    privJwk = await unseal(key, env.wrappedPriv);
+  } catch {
+    throw new WrongPassphrase();
+  }
+  // Past here the passphrase is known to be right: it just decrypted something
+  // only it could. A failure now is the browser's, and blaming the passphrase
+  // for it would be a lie the person cannot check.
+  const priv = await importPriv(privJwk);
   return { key, kdf: env.kdf, pub: env.pub, priv, wrappedPriv: env.wrappedPriv };
 }
 

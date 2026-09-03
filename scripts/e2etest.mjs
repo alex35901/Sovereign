@@ -160,6 +160,45 @@ try {
   });
   check("the budget itself arrived, not just the padlock", loaded > 0, `${loaded} transactions`);
 
+  // ── a right passphrase must not be reported as a wrong one ──
+  //
+  // Everything after the decryption can fail for reasons that have nothing to
+  // do with the passphrase — the network dropped, the address is being timed
+  // out — and all of it used to come back as "that passphrase doesn't open
+  // this document", while discarding the key it had just correctly derived.
+  const flaky = await browser.newContext({ viewport: { width: 390, height: 1500 } });
+  const f = await settings(flaky);
+  await card(f, "Sync across devices").locator('input[type="password"]').fill(SYNC);
+  await card(f, "Sync across devices").locator('button:text-is("Connect")').click();
+  await f.waitForTimeout(2500);
+  await tryStep("a passphrase can be typed on the flaky device", () =>
+    card(f, "Encryption").locator('input[type="password"]').first().fill(CRYPT, { timeout: 5000 }));
+  // The peek has already happened; everything from the unlock onwards fails.
+  await f.route("**/api/db", (route) => route.fulfill({
+    status: 429, contentType: "application/json",
+    body: JSON.stringify({ error: "Too many attempts from this address. Try again in 15 minutes." }),
+  }));
+  await tryStep("the flaky device can press unlock", () =>
+    card(f, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click({ timeout: 5000 }));
+  await f.waitForTimeout(3000);
+
+  const flakyText = await textOf(f, "Encryption");
+  check("a correct passphrase is not blamed when the server is the problem",
+    !flakyText.includes("That passphrase doesn't open this document"), flakyText.slice(0, 140));
+  check("it says what actually went wrong instead",
+    flakyText.includes("could not be fetched") && flakyText.includes("Too many attempts"),
+    flakyText.slice(0, 160));
+  check("the key it correctly derived is kept rather than thrown away",
+    await f.evaluate(() => new Promise((res) => {
+      const r = indexedDB.open("sovereign.vault", 1);
+      r.onsuccess = () => {
+        const q = r.result.transaction("keys", "readonly").objectStore("keys").get("current");
+        q.onsuccess = () => res(!!q.result);
+        q.onerror = () => res(false);
+      };
+      r.onerror = () => res(false);
+    })), "the vault was emptied after a successful decryption");
+
   // A wrong passphrase must not look like a right one.
   const third = await browser.newContext({ viewport: { width: 390, height: 1500 } });
   const w = await settings(third);

@@ -6,6 +6,7 @@ import {
 } from "../lib/cloud";
 import type { CloudDiagnosis } from "../lib/cloud";
 import type { Envelope } from "../lib/crypto";
+import { WrongPassphrase } from "../lib/crypto";
 import { isUnlocked, lock, restore, unlock } from "../lib/vault";
 import { drainQueue } from "../lib/sync/drain";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -262,22 +263,48 @@ export function EncryptionCard(){
     } finally { setBusy(false); }
   };
 
+  /**
+   * Opening the document on this browser.
+   *
+   * Deliberately two steps, because they fail for unrelated reasons and only
+   * the first one is about the passphrase. Loading the budget afterwards can
+   * fail because the network dropped or the server is timing this address out,
+   * and reporting that as "that passphrase doesn't open this document" sent
+   * people hunting for a typo in a passphrase that had just worked — while
+   * throwing away the key it had correctly derived.
+   */
   const openIt = async () => {
     const phrase = entry.trim();
     if (!phrase || !envelope) return;
     setBusy(true);
     setError(null);
+
     try {
       await unlock(envelope, phrase);
+    } catch (err) {
+      await lock();
+      setError(err instanceof WrongPassphrase
+        ? err.message
+        // The passphrase decrypted something only it could, and then something
+        // else went wrong. Saying so is the difference between a person
+        // re-typing for ever and a person knowing to tell someone.
+        : `The passphrase was right, but this browser could not finish opening the document: ${
+          err instanceof Error ? err.message : String(err)}`);
+      setBusy(false);
+      return;
+    }
+
+    // The key is good and kept from here on, whatever else happens.
+    setUnlocked(true);
+    setEntry("");
+    notify("Unlocked. This browser can read the budget again.");
+
+    try {
       const found = await pull();
       if (found) {
         replaceFromCloud(found.doc);
         setCloudState({ version: found.version, dirty: false });
       }
-      setUnlocked(true);
-      setEntry("");
-      notify("Unlocked. This browser can read the budget again.");
-
       // Anything the scheduled job queued has been waiting for exactly this
       // key. Taken now rather than on the next poll a minute from now, so the
       // figures are current the moment the budget appears.
@@ -288,12 +315,9 @@ export function EncryptionCard(){
         setCloudState({ version: drained.version, dirty: false });
         if (drained.said) notify(drained.said);
       }
-    } catch {
-      await lock();
-      // GCM fails identically for a wrong passphrase and a damaged document,
-      // and inventing a distinction would mean storing something that confirms
-      // a correct guess.
-      setError("That passphrase doesn't open this document.");
+    } catch (err) {
+      setError(`Unlocked, but the budget could not be fetched just now: ${
+        err instanceof Error ? err.message : String(err)} The key is kept, and syncing will retry.`);
     } finally { setBusy(false); }
   };
 
