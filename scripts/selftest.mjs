@@ -47,6 +47,7 @@ await build({
       export * as PP from "./src/lib/passphrase.ts";
       export * as GF from "./src/lib/goal-funding.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
+      export { migrate } from "./src/lib/storage.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -4014,6 +4015,78 @@ await test("a rounding error cannot accumulate into a different month", () => {
   assert.equal(line.at(-1).month, o.projected);
   assert.ok(line[o.monthsNeeded].value >= 400_000_00);
   assert.ok(line[o.monthsNeeded - 1].value < 400_000_00);
+});
+
+
+// --- bringing an old document up to date ---------------------------------
+
+/** The shape a document had before tags, balance history or allocations. */
+const oldShape = () => ({
+  version: 1,
+  accounts: [{ id: "a1", name: "Everyday", type: "checking", balance: 1_000_00, includeInNetWorth: true, hidden: false }],
+  groups: [], categories: [], tags: [],
+  transactions: [{ id: "t1", date: "2026-01-05", amount: -12_00, merchant: "Cafe", categoryId: "c", accountId: "a1" }],
+  budgets: {}, goals: [], recurring: [], rules: [], holdings: [],
+  settings: { theme: "dark" },
+});
+
+await test("an old document has the fields it is missing filled in", () => {
+  const out = M.migrate(oldShape());
+  assert.deepEqual(out.transactions[0].tags, [], "a transaction without tags gets an empty list, not undefined");
+  assert.deepEqual(out.accounts[0].history, [], "and an account without history gets an empty one");
+  assert.equal(out.settings.currency, "USD", "settings added later are filled in from the defaults");
+  assert.equal(out.settings.householdName, "My household");
+  assert.equal(out.settings.theme, "dark", "and what was already set is kept");
+  assert.equal(out.transactions[0].merchant, "Cafe", "nothing else is touched");
+  assert.equal(out.accounts[0].balance, 1_000_00);
+});
+
+await test("a document that is already current comes back as the very same object", () => {
+  // Not merely equal — the same object. The sync loop tells "this is what the
+  // server holds" from "this needed changing" by identity alone, so a
+  // migration that rebuilt an up-to-date document would make every pull look
+  // like a local edit and push it straight back.
+  const current = M.migrate(oldShape());
+  assert.equal(M.migrate(current), current, "running it twice must change nothing at all");
+
+  const demo = M.buildDemoDB();
+  assert.equal(M.migrate(demo), demo, "and a document built by this version is already current");
+
+  const empty = M.emptyDB();
+  assert.equal(M.migrate(empty), empty);
+});
+
+await test("only what actually needed changing is rebuilt", () => {
+  // One transaction of a thousand missing its tags must not detach the other
+  // nine hundred and ninety-nine, or every pull rewrites the whole document.
+  const db = M.migrate(M.emptyDB());
+  const transactions = [];
+  for (let i = 0; i < 50; i++) transactions.push({ id: "t" + i, date: "2026-01-01", amount: -1, merchant: "m", categoryId: "c", accountId: "a", tags: [] });
+  const stale = { ...transactions[7] };
+  delete stale.tags;
+  transactions[7] = stale;
+
+  const out = M.migrate({ ...db, transactions });
+  assert.notEqual(out, db, "it did have something to do");
+  assert.deepEqual(out.transactions[7].tags, []);
+  for (let i = 0; i < 50; i++) {
+    if (i === 7) continue;
+    assert.equal(out.transactions[i], transactions[i], `transaction ${i} was rebuilt for no reason`);
+  }
+});
+
+await test("a goal that named accounts is migrated wherever the document came from", () => {
+  // The one migration with real arithmetic behind it, run through the same
+  // door the cloud comes in by.
+  const db = {
+    ...M.emptyDB(),
+    accounts: [{ id: "sav", name: "Savings", type: "savings", balance: 1_000_00, history: [], includeInNetWorth: true, hidden: false }],
+    goals: [{ id: "g", name: "Boat", emoji: "*", targetAmount: 5_000_00, accountIds: ["sav"], startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false }],
+  };
+  const out = M.migrate(db);
+  assert.deepEqual(out.goals[0].allocations, { sav: 1_000_00 }, "the account it named becomes an amount it holds");
+  assert.equal(out.accounts[0].goalAccount, true, "and the account is marked as one goals draw on");
+  assert.equal(M.migrate(out), out, "and it does not run a second time");
 });
 
 

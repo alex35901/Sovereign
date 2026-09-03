@@ -93,6 +93,58 @@ try {
   await card(a, "Sync across devices").locator('button:text-is("Connect")').click();
   await a.waitForTimeout(1800);
 
+  // ── a document saved by an older version of the app ──
+  //
+  // Only the local copy was ever migrated. A document coming down from the
+  // cloud went straight into the store in whatever shape the device that saved
+  // it used, so a browser on a newer version could be handed fields that were
+  // not there yet. It survived on luck: the copy landed in storage and got
+  // migrated on the next load, which is not the same as working.
+  const auth = { authorization: `Bearer ${SYNC}`, "content-type": "application/json" };
+  /** The demo is half a megabyte; the first upload is not instant. */
+  const untilStored = async () => {
+    for (let i = 0; i < 40; i++) {
+      const r = await (await fetch(`${APP}/api/db`, { headers: auth })).json();
+      if (r.found && r.doc) return r;
+      await new Promise((res) => setTimeout(res, 500));
+    }
+    throw new Error("nothing was ever stored");
+  };
+  const stored = await untilStored();
+  const old = JSON.parse(JSON.stringify(stored.doc));
+  const savingsId = old.accounts.find((x) => x.type === "savings").id;
+  delete old.transactions[0].tags;
+  delete old.accounts[0].history;
+  delete old.settings.currency;
+  // The shape goals had before they held amounts: a list of whole accounts.
+  old.goals[0] = { ...old.goals[0], accountIds: [savingsId] };
+  delete old.goals[0].allocations;
+  await fetch(`${APP}/api/db`, {
+    method: "PUT", headers: auth,
+    body: JSON.stringify({ doc: old, baseVersion: stored.version, device: "An older version" }),
+  });
+
+  await a.reload({ waitUntil: "networkidle" });
+  await a.waitForTimeout(3500);
+  const brought = await a.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")));
+  check("a document pulled from the cloud is brought up to date, not taken as it comes",
+    Array.isArray(brought.transactions[0].tags)
+      && Array.isArray(brought.accounts[0].history)
+      && brought.settings.currency === "USD",
+    JSON.stringify({ tags: brought.transactions[0].tags, history: brought.accounts[0].history, currency: brought.settings.currency }));
+  check("and the migration with real arithmetic behind it runs too",
+    brought.goals[0].allocations && brought.goals[0].allocations[savingsId] > 0,
+    JSON.stringify(brought.goals[0].allocations));
+
+  // Having had to change it, this browser owes the change back — otherwise
+  // every device migrates the same document for ever.
+  await a.waitForTimeout(2500);
+  const savedBack = await (await fetch(`${APP}/api/db`, { headers: auth })).json();
+  check("and the brought-up-to-date copy is saved back, so nobody does it twice",
+    savedBack.version > stored.version + 1 && savedBack.doc.goals[0].allocations
+      && Array.isArray(savedBack.doc.transactions[0].tags),
+    `version ${savedBack.version}, allocations ${JSON.stringify(savedBack.doc.goals[0].allocations)}`);
+
   // ── the setup flow: four steps, and the gates between them ──
   check("setting up encryption starts by saying which passphrase this is not",
     (await textOf(a, "Encryption")).includes("Do not reuse your SYNC_PASSPHRASE"),

@@ -36,15 +36,41 @@ export function clearDB(): void {
   localStorage.removeItem(KEY);
 }
 
-/** Fill in fields added by later versions so old exports keep working. */
-function migrate(db: DB): DB {
+/**
+ * Fill in fields added by later versions so old exports keep working.
+ *
+ * Exported because a document does not only arrive through localStorage. One
+ * saved by another device comes down from the cloud and used to skip all of
+ * this, so a browser on the new version could be handed the old shape and go
+ * looking for fields that were not there. It survived only because the copy
+ * went into storage and got migrated on the next load, which is luck rather
+ * than design.
+ *
+ * Every step returns the document it was given when it has nothing to change,
+ * so a document that is already current comes back as the very same object.
+ * That is what lets a caller tell "this is exactly what the server holds" from
+ * "this needed bringing up to date, and the server should be told".
+ */
+export function migrate(db: DB): DB {
   const base = emptyDB();
-  const merged: DB = { ...base, ...db, settings: { ...base.settings, ...db.settings } };
-  merged.transactions = merged.transactions.map((t) => ({ ...t, tags: t.tags ?? [] }));
-  merged.accounts = merged.accounts.map((a) => ({ ...a, history: a.history ?? [] }));
+  let out = db;
+
+  const settings = (out.settings ?? {}) as unknown as Record<string, unknown>;
+  const missingField = (Object.keys(base) as (keyof DB)[]).some((k) => out[k] === undefined);
+  const missingSetting = Object.keys(base.settings).some((k) => settings[k] === undefined);
+  if (missingField || missingSetting) {
+    out = { ...base, ...out, settings: { ...base.settings, ...out.settings } };
+  }
+
+  const transactions = out.transactions.map((t) => (t.tags ? t : { ...t, tags: [] }));
+  if (transactions.some((t, i) => t !== out.transactions[i])) out = { ...out, transactions };
+
+  const accounts = out.accounts.map((a) => (a.history ? a : { ...a, history: [] }));
+  if (accounts.some((a, i) => a !== out.accounts[i])) out = { ...out, accounts };
+
   // Goals used to name whole accounts; they hold amounts now. Runs once — it
   // leaves a document that already has allocations alone.
-  return migrateGoalAccounts(merged);
+  return migrateGoalAccounts(out);
 }
 
 export { buildDemoDB, emptyDB };

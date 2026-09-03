@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Account, Category, DB, Goal, Holding, ID, MonthKey, Recurring, Rule, Tag, Transaction } from "./types";
-import { buildDemoDB, emptyDB, loadDB, saveDB, saveNow } from "./lib/storage";
+import { buildDemoDB, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
 import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
 import { uid } from "./lib/id";
@@ -39,7 +39,8 @@ interface Store {
    * this is not an edit, so it must not land on the undo stack, where one
    * ctrl-Z would silently put a stale copy back and push it to every device.
    */
-  replaceFromCloud: (next: DB) => void;
+  /** Installs an outside document, migrated, and hands back what it installed. */
+  replaceFromCloud: (next: DB) => DB;
   actions: Actions;
 }
 
@@ -65,7 +66,11 @@ export const useDB = (): DB => useStore().db;
 export const useActions = (): Actions => useStore().actions;
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DB>(() => withGroupColors(loadDB() ?? buildDemoDB()));
+  // Migrated on the way in whichever branch it came from. loadDB does its own,
+  // but the demo did not, so a first run got whatever shape the seed happened
+  // to be written in — and a goal that named an account showed nothing saved
+  // until the page was next reloaded. Free when there is nothing to do.
+  const [db, setDb] = useState<DB>(() => withGroupColors(migrate(loadDB() ?? buildDemoDB())));
   const [toast, setToast] = useState<string | null>(null);
   const undoStack = useRef<{ db: DB; label: string }[]>([]);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
@@ -127,10 +132,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     notify(`Undid: ${top.label}`);
   }, [notify]);
 
-  const replaceFromCloud = useCallback((next: DB) => {
+  /**
+   * Take a document from outside and make it this browser's.
+   *
+   * Migrated here rather than at each call site because this is the one door
+   * an outside document comes through — the sync loop, the Settings card's
+   * Load button, and the unlock screen all arrive at it — and one of them
+   * skipping the migration is exactly the bug this prevents.
+   *
+   * Returns what it installed. A caller that needs to know whether the
+   * document it handed over is still what the server holds can compare the two
+   * by identity: an unchanged document comes back as the very same object.
+   */
+  const replaceFromCloud = useCallback((next: DB): DB => {
+    const normalized = withGroupColors(migrate(next));
     undoStack.current = [];
     setUndoLabel(null);
-    setDb(withGroupColors(next));
+    setDb(normalized);
+    return normalized;
   }, []);
 
   const actions = useMemo(() => makeActions(apply, notify), [apply, notify]);

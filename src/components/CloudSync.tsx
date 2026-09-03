@@ -5,7 +5,6 @@ import {
   stashConflict, subscribeSync,
 } from "../lib/cloud";
 import { drainQueue } from "../lib/sync/drain";
-import { withGroupColors } from "../lib/category-colors";
 import type { DB } from "../types";
 
 /** Local edits settle before a save; a burst of typing makes one request. */
@@ -42,10 +41,8 @@ export function CloudSync() {
    * the other tab sees a new version and does the same. Nobody has touched
    * anything and half a megabyte crosses the wire each way, every minute.
    *
-   * Colours are applied here rather than in the store so the object compared
-   * below is the object the store ends up holding: withGroupColors returns its
-   * argument untouched when there is nothing to change, so running it twice
-   * keeps the identity.
+   * Set from what the store says it installed, which is the same object when
+   * the document needed nothing doing to it.
    */
   const fromCloud = useRef<DB | null>(null);
 
@@ -61,9 +58,12 @@ export function CloudSync() {
   const atMount = useRef<DB | null>(db);
 
   const install = (doc: DB) => {
-    const next = withGroupColors(doc);
-    fromCloud.current = next;
-    act.current.replaceFromCloud(next);
+    const installed = act.current.replaceFromCloud(doc);
+    // Only the same document the server holds when nothing had to be brought
+    // up to date. One that needed migrating is genuinely different now, and
+    // that difference is worth saving back — which happens once, because the
+    // next device to pull it finds nothing left to migrate.
+    fromCloud.current = installed === doc ? installed : null;
   };
 
   /**

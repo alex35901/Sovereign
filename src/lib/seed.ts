@@ -84,7 +84,10 @@ export function buildDemoDB(): DB {
 
   const accounts: Account[] = [
     acct("a_checking", "Everyday Checking", "Chase", "checking", "4412", 0),
-    acct("a_savings", "High Yield Savings", "Ally Bank", "savings", "8821", 1),
+    // Money set aside, some of it already spoken for. Marked as an account
+    // goals draw on so a fresh demo has something in "available for goals" to
+    // decide about, rather than an empty box.
+    { ...acct("a_savings", "High Yield Savings", "Ally Bank", "savings", "8821", 1), goalAccount: true },
     acct("a_sapphire", "Sapphire Reserve", "Chase", "credit", "9013", 2),
     acct("a_amex", "Blue Cash Preferred", "American Express", "credit", "1007", 3),
     acct("a_brokerage", "Individual Brokerage", "Fidelity", "investment", "5520", 4),
@@ -292,10 +295,17 @@ export function buildDemoDB(): DB {
     a.balance = target;
   }
 
+  // Written in the shape the app uses today rather than the one it used to, so
+  // a fresh demo has nothing to migrate. Clamped to what the savings account
+  // actually holds, because that total comes out of the generated
+  // transactions and is not a number anyone here can promise.
+  const savingsBalance = accounts.find((a) => a.id === "a_savings")?.balance ?? 0;
+  const efundHeld = Math.max(0, Math.min(cents(24000), savingsBalance));
+
   const goals: Goal[] = [
-    { id: "gl_efund", name: "Emergency Fund", emoji: "\u{1F6DF}", targetAmount: cents(30000), accountIds: ["a_savings"], startingAmount: 0, monthlyContribution: cents(600), priority: 0, archived: false },
-    { id: "gl_kitchen", name: "Kitchen Remodel", emoji: "\u{1F373}", targetAmount: cents(28000), targetDate: `${addMonths(thisMonth(), 14)}-01`, accountIds: [], startingAmount: cents(6400), monthlyContribution: cents(900), priority: 1, archived: false },
-    { id: "gl_japan", name: "Japan 2027", emoji: "\u{1F1EF}\u{1F1F5}", targetAmount: cents(9500), targetDate: `${addMonths(thisMonth(), 10)}-01`, accountIds: [], startingAmount: cents(2100), monthlyContribution: cents(450), priority: 2, archived: false },
+    { id: "gl_efund", name: "Emergency Fund", emoji: "\u{1F6DF}", targetAmount: cents(30000), accountIds: [], allocations: { a_savings: efundHeld }, startingAmount: 0, monthlyContribution: cents(600), priority: 0, archived: false },
+    { id: "gl_kitchen", name: "Kitchen Remodel", emoji: "\u{1F373}", targetAmount: cents(28000), targetDate: `${addMonths(thisMonth(), 14)}-01`, accountIds: [], allocations: {}, startingAmount: cents(6400), monthlyContribution: cents(900), priority: 1, archived: false },
+    { id: "gl_japan", name: "Japan 2027", emoji: "\u{1F1EF}\u{1F1F5}", targetAmount: cents(9500), targetDate: `${addMonths(thisMonth(), 10)}-01`, accountIds: [], allocations: {}, startingAmount: cents(2100), monthlyContribution: cents(450), priority: 2, archived: false },
   ];
 
   const rules: Rule[] = [
