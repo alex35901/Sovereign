@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
-import { clearQueue, diagnose, findConnection, readDoc, readQueue, writeDoc } from "./_store.js";
-import { isEnvelope } from "../src/lib/crypto.js";
+import {
+  clearQueue, diagnose, findConnection, readDoc, readMeta, readQueue, writeDoc,
+} from "./_store.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 
@@ -71,7 +72,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     const body0 = (typeof req.body === "string" ? safeParse(req.body) : req.body) as { action?: string } | undefined;
     if (req.method === "POST" && body0?.action === "diagnose") {
       const lockedOut = await lockedOutNow().catch(() => null);
-      const stored = await readDoc().catch(() => null);
+      const meta = await readMeta().catch(() => null);
       const waiting = await readQueue(200).catch(() => []);
       return send(200, {
         ...(await diagnose()),
@@ -82,7 +83,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         // what the scheduled job needs, and whether the stored document really
         // is sealed. Presence only — no value ever comes back.
         encryption: {
-          documentSealed: stored ? isEnvelope(stored.doc) : null,
+          documentSealed: meta ? meta.sealed : null,
           simplefinUrlSet: (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim().length > 0,
           cronSecretSet: (process.env.CRON_SECRET ?? "").trim().length > 0,
           queued: waiting.length,
@@ -117,6 +118,13 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     }
 
     if (req.method === "GET") {
+      // ?meta=1 answers "has it changed, and is it sealed" without moving the
+      // document. The polling loop asks this once a minute and only asks for
+      // the document itself when the version has actually advanced.
+      if (/[?&]meta=1(&|$)/.test(req.url ?? "")) {
+        const meta = await readMeta();
+        return send(200, meta ? { found: true, ...meta } : { found: false });
+      }
       const stored = await readDoc();
       return send(200, stored ? { found: true, ...stored } : { found: false });
     }

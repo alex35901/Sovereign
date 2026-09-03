@@ -2,10 +2,10 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Cloud, CloudOff, Download, RefreshCw, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
-  LockedError, cloudEnabled, cloudState, clearConflict, diagnose, passphrase, probe, pull, push,
-  setCloudState, setPassphrase, subscribeSync, syncEpoch, syncHalt, takeConflict,
+  LockedError, clearConflict, cloudEnabled, cloudState, diagnose, head, passphrase, probe,
+  pull, push, setCloudState, setPassphrase, subscribeSync, syncEpoch, syncHalt, takeConflict,
 } from "../lib/cloud";
-import type { CloudDiagnosis, Probe, RemoteDoc } from "../lib/cloud";
+import type { CloudDiagnosis, Meta, Probe } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/ui";
 
 /**
@@ -98,7 +98,7 @@ export function CloudCard() {
   const [entry, setEntry] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [remote, setRemote] = useState<RemoteDoc | null>(null);
+  const [remote, setRemote] = useState<Meta | null>(null);
   const [check, setCheck] = useState<CloudDiagnosis | null>(null);
   const [fallback, setFallback] = useState<Probe | null>(null);
   const [checked, setChecked] = useState(false);
@@ -115,8 +115,10 @@ export function CloudCard() {
   useEffect(() => {
     if (!on) { setChecked(true); return; }
     let dead = false;
-    pull()
-      .then((r) => { if (!dead) { setRemote(r); setError(null); } })
+    // Metadata only: this line says which version is stored and who saved it,
+    // and none of that requires the document to leave the database.
+    head()
+      .then((r) => { if (!dead) { setRemote(r.found ? r : null); setError(null); } })
       .catch((e: unknown) => { if (!dead) setError(e instanceof Error ? e.message : "Could not reach the sync service."); })
       .finally(() => { if (!dead) setChecked(true); });
     return () => { dead = true; };
@@ -140,7 +142,7 @@ export function CloudCard() {
         notify("This budget is now the cloud copy. Open the app anywhere with the same passphrase.");
       }
       setEntry("");
-      setRemote(await pull());
+      setRemote(await head());
     } catch (err) {
       // An encrypted document is not a failed connection. The server took this
       // passphrase and handed back the document; it is only sealed, and the key
@@ -168,7 +170,7 @@ export function CloudCard() {
       if (!found) { setError("Nothing is stored yet."); return; }
       replaceFromCloud(found.doc);
       setCloudState({ version: found.version, dirty: false });
-      setRemote(found);
+      setRemote(await head());
       notify(`Loaded version ${found.version}, last saved by ${found.updatedBy}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load.");
@@ -184,7 +186,7 @@ export function CloudCard() {
       const at = cloudState();
       const res = await push(db, at.version);
       setCloudState({ version: res.version, dirty: false });
-      setRemote(await pull());
+      setRemote(await head());
       notify(`Saved as version ${res.version}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save.");
@@ -249,7 +251,7 @@ export function CloudCard() {
           <span className="small muted">
             {!checked ? "Checking…"
               : remote
-                ? `Cloud copy is version ${remote.version}, saved ${new Date(remote.updatedAt).toLocaleString()} by ${remote.updatedBy}.`
+                ? `Cloud copy is version ${remote.version}, saved ${remote.updatedAt ? new Date(remote.updatedAt).toLocaleString() : "recently"} by ${remote.updatedBy ?? "a browser"}.`
                 : "Nothing stored yet — press Save now."}
           </span>
           <div className="row wrap" style={{ gap: 8 }}>

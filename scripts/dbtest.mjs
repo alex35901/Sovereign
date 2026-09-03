@@ -27,7 +27,7 @@ const entry = join(dir, "entry.js");
 await build({
   stdin: {
     contents: `
-      export { readDoc, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
+      export { readDoc, readMeta, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
       export { default as dbHandler } from "./api/db.ts";
       export { default as cronHandler } from "./api/cron/sync.ts";
       export { readAttempt, noteFailure, clearFailures, lockedOutNow, callerKey, MAX_FAILURES } from "./api/_ratelimit.ts";
@@ -56,7 +56,7 @@ const wipe = async () => {
   await c.end();
 };
 
-const invokeWith = (handler, { method = "POST", body, headers = {} } = {}) =>
+const invokeWith = (handler, { method = "POST", body, headers = {}, url = "/api/db" } = {}) =>
   new Promise((resolve, reject) => {
     const out = {};
     const timer = setTimeout(() => reject(new Error("handler never wrote a response")), 10000);
@@ -65,7 +65,7 @@ const invokeWith = (handler, { method = "POST", body, headers = {} } = {}) =>
       setHeader: (k, v) => { out[k.toLowerCase()] = v; },
       end: (text) => { clearTimeout(timer); resolve({ status: res.statusCode, text: text ?? "" }); },
     };
-    Promise.resolve(handler({ method, body, headers }, res)).catch((e) => { clearTimeout(timer); reject(e); });
+    Promise.resolve(handler({ method, url, body, headers }, res)).catch((e) => { clearTimeout(timer); reject(e); });
   });
 
 const clearAttempts = async () => {
@@ -177,6 +177,62 @@ await test("the endpoint serves and saves through the same store", async () => {
   const after = await invokeWith(M.dbHandler, { method: "GET", headers: auth });
   assert.equal(JSON.parse(after.text).doc.hello, "world", "the refused save must not have landed");
   assert.equal(JSON.parse(after.text).updatedBy, "Chrome on Mac");
+});
+
+/* ── the cheap read the polling loop uses ─────────────────────────────── */
+
+await test("the metadata read answers the poll's question without moving the document", async () => {
+  const doc = { filler: "x".repeat(200000) };
+  const before = await M.readDoc();
+  await M.writeDoc(doc, before.version, "the big device");
+
+  const meta = await M.readMeta();
+  const full = await M.readDoc();
+  assert.equal(meta.version, full.version, "the version must agree with the full read");
+  assert.equal(meta.updatedBy, "the big device");
+  assert.equal(meta.updatedAt, full.updatedAt);
+  assert.equal(meta.sealed, false, "a plain document is not sealed");
+  assert.equal(meta.doc, undefined, "the document itself must not come back — that is the whole point");
+  assert.equal(JSON.stringify(meta).length < 200, true, "the metadata reply must stay tiny");
+});
+
+await test("the metadata read says whether the document is sealed, without opening it", async () => {
+  await wipe();
+  await M.writeDoc({ plain: true }, 0, "plain device");
+  assert.equal((await M.readMeta()).sealed, false, "a plain document reads as unsealed");
+
+  const at = await M.readMeta();
+  await M.writeDoc({ v: 1, alg: "AES-GCM", kdf: "PBKDF2", iter: 600000, salt: "s", iv: "i", ct: "sealed-bytes" }, at.version, "sealed device");
+  const sealed = await M.readMeta();
+  assert.equal(sealed.sealed, true, "sealing must be visible without fetching the envelope");
+  assert.equal(sealed.updatedBy, "sealed device");
+});
+
+await test("the metadata read on an empty store is not an error", async () => {
+  await wipe();
+  assert.equal(await M.readMeta(), null);
+  await M.writeDoc({ hello: 1 }, 0, "device");
+  assert.equal((await M.readMeta()).version, 1);
+});
+
+await test("GET ?meta=1 serves the metadata and nothing else", async () => {
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  const auth = { authorization: "Bearer open sesame" };
+
+  const fullRes = await invokeWith(M.dbHandler, { method: "GET", headers: auth });
+  const full = JSON.parse(fullRes.text);
+  const r = await invokeWith(M.dbHandler, { method: "GET", headers: auth, url: "/api/db?meta=1" });
+  assert.equal(r.status, 200);
+  const meta = JSON.parse(r.text);
+  assert.equal(meta.found, true);
+  assert.equal(meta.version, full.version);
+  assert.equal(meta.doc, undefined, "?meta=1 must not carry the document");
+  assert.ok(r.text.length < fullRes.text.length, "the metadata reply must be smaller than the full one");
+
+  const wrong = await invokeWith(M.dbHandler, {
+    method: "GET", headers: { authorization: "Bearer not-it" }, url: "/api/db?meta=1", 
+  });
+  assert.equal(wrong.status, 401, "?meta=1 is behind the same passphrase as everything else");
 });
 
 /* ── the guessing limit, against real SQL ─────────────────────────────── */

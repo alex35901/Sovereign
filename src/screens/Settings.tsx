@@ -197,6 +197,7 @@ export default function Settings() {
             <div className="col" style={{ gap: 14 }}>
               <Field label="Household name">
                 <TextInput
+                  name="sovereign-household"
                   value={db.settings.householdName}
                   onChange={(v) => actions.patchSettings({ householdName: v })}
                 />

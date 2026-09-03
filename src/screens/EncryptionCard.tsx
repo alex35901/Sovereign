@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Lock, LockOpen, RefreshCw, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff, Check, X, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
-  cloudState, diagnose, passphrase, peek, pull, push, setCloudState, subscribeSync, syncEpoch,
+  cloudState, diagnose, head, passphrase, peek, pull, push, setCloudState, subscribeSync, syncEpoch,
 } from "../lib/cloud";
 import type { CloudDiagnosis } from "../lib/cloud";
 import type { Envelope } from "../lib/crypto";
@@ -211,11 +211,22 @@ export function EncryptionCard(){
       setUnlocked(isUnlocked());
       if (!on) { setReady(true); return; }
       try {
-        const seen = await peek();
+        // The cheap question first. The document itself is only needed to
+        // unlock with, so an unlocked browser never asks for it — this used to
+        // pull the whole thing every time Settings was opened.
+        const meta = await head();
         if (dead) return;
-        setEncrypted(seen.encrypted);
-        setEnvelope(seen.envelope);
-        setSealed({ at: seen.updatedAt, by: seen.updatedBy });
+        setEncrypted(meta.sealed);
+        setSealed({ at: meta.updatedAt, by: meta.updatedBy });
+        if (meta.sealed && !isUnlocked()) {
+          const seen = await peek();
+          if (dead) return;
+          setEnvelope(seen.envelope);
+        } else {
+          // No envelope to hold: either there is nothing sealed, or this
+          // browser has the key and does not need one to prove it.
+          setEnvelope(null);
+        }
       } catch { /* the sync card reports why; this one just stays quiet */ }
       if (!dead) setReady(true);
     })();

@@ -91,12 +91,16 @@ export function Field({ label, children, hint }: { label: string; children: Reac
   );
 }
 
-export function TextInput({ value, onChange, placeholder, type = "text", autoFocus }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; type?: string; autoFocus?: boolean;
+export function TextInput({ value, onChange, placeholder, type = "text", autoFocus, name }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; type?: string;
+  autoFocus?: boolean;
+  /** Optional, and only for telling one field on a page from another. */
+  name?: string;
 }) {
   return (
     <input
       className="input" type={type} value={value} placeholder={placeholder} autoFocus={autoFocus}
+      name={name}
       onChange={(e: ChangeEvent<HTMLInputElement>) => onChange(e.target.value)}
     />
   );

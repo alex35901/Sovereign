@@ -94,12 +94,12 @@ export class CloudError extends Error {
   }
 }
 
-async function call(init: RequestInit, override?: string): Promise<Response> {
+async function call(init: RequestInit, override?: string, query = ""): Promise<Response> {
   const pass = override ?? passphrase();
   if (!pass) throw new CloudError("No passphrase set on this device.", 0);
   let res: Response;
   try {
-    res = await fetch(ENDPOINT, {
+    res = await fetch(ENDPOINT + query, {
       ...init,
       headers: { ...(init.headers ?? {}), authorization: `Bearer ${pass}` },
     });
@@ -205,7 +205,40 @@ export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
  * Settings needs to know whether the document is encrypted before it can offer
  * the right thing to do about it, and asking that question must not require the
  * key — the whole point of the locked state is that there isn't one yet.
+ *
+ * There are two of these. `head` answers the version-and-sealed question with a
+ * reply small enough to ask every minute; `peek` answers it and hands back the
+ * envelope, which only the unlock screen actually needs.
  */
+
+/**
+ * Has it changed, and is it sealed — without moving the document.
+ *
+ * The whole reason the sync is cheap. A poll that fetched the document to
+ * compare a version number moved half a megabyte a minute out of the database
+ * per open tab, which exhausted a 5 GB monthly allowance in about two days.
+ */
+export interface Meta {
+  found: boolean;
+  version: number;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  sealed: boolean;
+}
+
+export async function head(): Promise<Meta> {
+  const res = await call({ method: "GET" }, undefined, "?meta=1");
+  if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
+  const body = (await res.json()) as Partial<Meta> & { found: boolean };
+  return {
+    found: !!body.found,
+    version: Number(body.version ?? 0),
+    updatedAt: body.updatedAt ?? null,
+    updatedBy: body.updatedBy ?? null,
+    sealed: !!body.sealed,
+  };
+}
+
 export interface Peek {
   found: boolean;
   encrypted: boolean;
@@ -220,6 +253,12 @@ export interface Peek {
   updatedBy: string | null;
 }
 
+/**
+ * The same question as `head`, plus the envelope when there is one.
+ *
+ * Only the Encryption card needs the envelope, and only to unlock with it, so
+ * everything else asks `head` and never touches the document.
+ */
 export async function peek(): Promise<Peek> {
   const res = await call({ method: "GET" });
   if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);

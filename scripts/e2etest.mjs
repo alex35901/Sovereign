@@ -341,6 +341,129 @@ try {
   check("and that device gets the whole budget",
     await n.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length) === held,
     "the recovered budget is a different size");
+
+  // ── what two tabs left open actually cost ──────────────────────────────
+  //
+  // This is a bill, not a bug report, which is why it went unnoticed for
+  // months: everything worked. The poll fetched the whole document once a
+  // minute to compare a version number, and a pull handed the store a freshly
+  // parsed object that the save effect could not tell from a typed edit, so
+  // each tab pushed back what it had just been given and gave the other tab
+  // something new to fetch. Two idle tabs moved about 640 MB a day in each
+  // direction and exhausted a month of database transfer in two days.
+  //
+  // Playwright's clock makes the minute-long poll instant, so the traffic is
+  // measured rather than reasoned about.
+  // Every device from the sections above is still open and still polling on a
+  // real timer. They would push their own copy over the top of what this
+  // section is measuring, and their traffic would be counted as it.
+  for (const ctx of [first, second, flaky, third, forgot, after]) await ctx.close();
+
+  const meter = [];
+  const openTab = async (label) => {
+    const ctx = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+    const page = await ctx.newPage();
+    await page.clock.install();
+    await page.goto(`${APP}/settings`, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1200);
+    await card(page, "Sync across devices").locator('input[name="sovereign-sync"]').fill(SYNC);
+    await card(page, "Sync across devices").locator('button:text-is("Connect")').click();
+    await page.waitForTimeout(2000);
+    await card(page, "Encryption").locator('input[name="sovereign-encryption-unlock"]').fill(RESEAL);
+    await card(page, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click();
+    await page.waitForTimeout(2500);
+    await page.clock.fastForward("00:20");
+    await page.waitForTimeout(2500);
+    page.on("response", async (res) => {
+      if (!res.url().includes("/api/db")) return;
+      let bytes = 0;
+      try { bytes = (await res.body()).length; } catch { /* aborted */ }
+      meter.push({
+        label, method: res.request().method(),
+        meta: res.url().includes("meta=1"),
+        down: bytes, up: res.request().postData()?.length ?? 0,
+      });
+    });
+    return page;
+  };
+
+  const t1 = await openTab("one");
+  const t2 = await openTab("two");
+  // Let them agree with the server first — the second tab's own arrival is a
+  // change the first one has to fetch, and that is not idle traffic.
+  for (let i = 0; i < 3; i++) {
+    await t1.clock.fastForward("01:00");
+    await t2.clock.fastForward("01:00");
+    await t1.waitForTimeout(1200);
+  }
+  meter.length = 0;
+
+  const POLLS = 8;
+  for (let i = 0; i < POLLS; i++) {
+    await t1.clock.fastForward("01:00");
+    await t2.clock.fastForward("01:00");
+    await t1.waitForTimeout(800);
+  }
+  const down = meter.reduce((x, r) => x + r.down, 0);
+  const up = meter.reduce((x, r) => x + r.up, 0);
+  const perDay = ((down + up) / POLLS) * 1440;
+
+  const fetchedDoc = (r) => r.method === "GET" && !r.meta;
+  check("an idle tab asks for the version, not the document",
+    !meter.some(fetchedDoc),
+    meter.filter(fetchedDoc).map((r) => `${r.label} fetched ${(r.down / 1024).toFixed(0)} KB`).join(", ") || "none");
+  check("two idle tabs do not push the document back and forth at each other",
+    up < 4096, `${(up / 1024).toFixed(0)} KB was uploaded by tabs nobody touched`);
+  check("a day of two idle tabs costs kilobytes, not hundreds of megabytes",
+    perDay < 5e6, `${(perDay / 1e6).toFixed(1)} MB/day`);
+
+  // The saving is worthless if a real change stops arriving.
+  await t1.locator('input[name="sovereign-household"]').fill("Changed on the first tab");
+  await t1.waitForTimeout(600);
+  await t1.clock.fastForward("00:10");
+  await t1.waitForTimeout(2500);
+  await t2.clock.fastForward("01:00");
+  await t2.waitForTimeout(3000);
+  const crossed = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.householdName);
+  check("an edit on one tab still reaches the other", crossed === "Changed on the first tab", crossed);
+
+  // Typed in the second before the tab has finished reconciling with the
+  // server. This used to be dropped: the save effect stood down until first
+  // contact was over and never marked the edit as unsent, so nothing pushed
+  // it and the next change from elsewhere wrote over it.
+  // The handshake is held open on purpose, or it finishes before anyone could
+  // realistically have typed and the test proves nothing.
+  let firstHandshake = true;
+  const meta1 = (url) => url.href.includes("/api/db") && url.href.includes("meta=1");
+  await t1.route(meta1, async (route) => {
+    if (firstHandshake) { firstHandshake = false; await new Promise((r) => setTimeout(r, 5000)); }
+    await route.continue();
+  });
+  await t1.reload({ waitUntil: "domcontentloaded" });
+  await t1.locator('input[name="sovereign-household"]').fill("Typed during the handshake", { timeout: 8000 });
+  await t1.waitForTimeout(600);
+  await t1.clock.fastForward("00:10");
+  await t1.waitForTimeout(6000);
+  await t1.unroute(meta1);
+  // Whatever the timing did to the debounce, the poll has to flush it.
+  await t1.clock.fastForward("01:00");
+  await t1.waitForTimeout(3000);
+  await t2.clock.fastForward("01:00");
+  await t2.waitForTimeout(3000);
+  const early = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.householdName);
+  check("an edit typed before the tab has finished syncing is not dropped",
+    early === "Typed during the handshake", early);
+
+  // And they settle again rather than resuming the loop.
+  meter.length = 0;
+  for (let i = 0; i < 4; i++) {
+    await t1.clock.fastForward("01:00");
+    await t2.clock.fastForward("01:00");
+    await t1.waitForTimeout(800);
+  }
+  check("and the tabs go quiet again afterwards",
+    !meter.some(fetchedDoc) && meter.every((r) => r.up < 4096),
+    meter.filter((r) => fetchedDoc(r) || r.up).map((r) => `${r.label} ${r.method} ${r.down + r.up}B`).join(", ") || "none");
 } finally {
   await browser.close();
 }

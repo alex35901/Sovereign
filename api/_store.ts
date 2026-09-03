@@ -224,6 +224,42 @@ async function ensureTable(): Promise<void> {
   `);
 }
 
+export interface DocMeta {
+  version: number;
+  updatedAt: string;
+  updatedBy: string;
+  /** Whether the stored document is sealed, answered without fetching it. */
+  sealed: boolean;
+}
+
+/**
+ * Everything about the stored document except the document.
+ *
+ * The reason this exists: the browsers poll once a minute to notice edits made
+ * elsewhere, and each poll used to drag the whole document out of the database
+ * and throw it away when the version had not moved. Half a megabyte, sixty
+ * times an hour, per open tab — which is how a 5 GB monthly allowance goes in
+ * two days without anybody doing anything.
+ *
+ * `doc ? 'ct'` is evaluated by Postgres and comes back as one boolean, so
+ * asking whether the document is sealed costs nothing either.
+ */
+export async function readMeta(): Promise<DocMeta | null> {
+  await ensureTable();
+  const { rows } = await (await db()).query(
+    "SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed FROM budget_document WHERE id = $1",
+    [ROW_ID],
+  );
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    version: Number(row.version),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    updatedBy: String(row.updated_by),
+    sealed: row.sealed === true,
+  };
+}
+
 export async function readDoc(): Promise<StoredDoc | null> {
   await ensureTable();
   const { rows } = await (await db()).query(
