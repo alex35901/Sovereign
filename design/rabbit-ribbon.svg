@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Sovereign">
+  <!-- Two — the ribbon — The ears cross at a neck, the way the reference's wings cross at a waist.
+       Full bleed on purpose: iOS rounds the corners of a home screen icon
+       itself, and any transparency it finds is composited onto black. -->
+  <rect width="512" height="512" fill="#e8894a"/>
+  <g fill="none" stroke="#ffffff" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M232 296
+           C176 258 116 196 122 148
+           C127 108 172 96 192 136
+           C216 186 262 264 290 296
+           C326 320 366 332 366 384
+           C366 440 316 474 256 474
+           C196 474 146 440 146 384
+           C146 332 186 320 222 296
+           C250 264 296 186 320 136
+           C340 96 385 108 390 148
+           C396 196 336 258 280 296 Z"/>
+  </g>
+</svg>

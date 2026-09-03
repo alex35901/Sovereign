@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Sovereign">
+  <!-- Three — the sovereign — Ears raked back to leave the crown of the head free for a crown.
+       Full bleed on purpose: iOS rounds the corners of a home screen icon
+       itself, and any transparency it finds is composited onto black. -->
+  <rect width="512" height="512" fill="#e8894a"/>
+  <g fill="none" stroke="#ffffff" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M256 460 C198 460 152 422 152 376 C152 330 198 292 256 292
+           C314 292 360 330 360 376 C360 422 314 460 256 460 Z"/>
+  <path d="M176 324 C138 292 78 216 82 174 C86 142 122 134 144 172
+           C166 214 188 272 192 306 C186 320 186 328 176 324 Z"/>
+  <path d="M336 324 C374 292 434 216 430 174 C426 142 390 134 368 172
+           C346 214 324 272 320 306 C326 320 326 328 336 324 Z"/>
+  <path fill="#fff" stroke="none"
+        d="M186 266 L186 222 L209 176 L233 222 L256 160 L279 222 L302 176 L326 222 L326 266
+           C306 254 206 254 186 266 Z"/>
+  </g>
+</svg>
