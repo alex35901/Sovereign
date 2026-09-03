@@ -106,24 +106,29 @@ export default function GoalDetail() {
         <Card>
           <CardHead
             title="Timeline"
-            sub={projection.length
-              ? "What is saved now, plus the monthly amount — no assumed growth, so a long goal will beat this"
-              : "Set a monthly amount or a target date to see where this is heading"}
+            sub={!projection.length
+              ? "Set a monthly amount or a target date to see where this is heading"
+              : outlook.growth
+                ? `What is saved now and the monthly amount, growing at ${outlook.growth}% a year`
+                : "What is saved now, plus the monthly amount — no growth assumed, so anything invested will beat this"}
           />
           {projection.length ? (
-            <AreaChart
-              points={projection.map((p) => ({
-                label: monthLabel(p.month, true),
-                value: p.value,
-                sub: monthLabel(p.month),
-              }))}
-              height={220}
-              tone="--pos"
-              negativeTone="--pos"
-              zeroBase
-              markLine={goal.targetAmount}
-              markLabel={`target ${fmt0(goal.targetAmount, { compact: true })}`}
-            />
+            <>
+              <AreaChart
+                points={projection.map((p) => ({
+                  label: monthLabel(p.month, true),
+                  value: p.value,
+                  sub: monthLabel(p.month),
+                }))}
+                height={220}
+                tone="--pos"
+                negativeTone="--pos"
+                zeroBase
+                markLine={goal.targetAmount}
+                markLabel={`target ${fmt0(goal.targetAmount, { compact: true })}`}
+              />
+              <GrowthSplit projection={projection} rate={outlook.growth} onEdit={() => setEditing(true)} />
+            </>
           ) : (
             <div className="small faint" style={{ padding: "28px 0", textAlign: "center" }}>
               Nothing to project yet.
@@ -165,6 +170,10 @@ export default function GoalDetail() {
                   value={goal.targetDate ? dateLabel(goal.targetDate, { year: true }) : <span className="muted">none</span>}
                 />
                 <Row label="Monthly contribution" value={<span><Money value={goal.monthlyContribution} />/mo</span>} />
+                <Row
+                  label="Assumed annual growth"
+                  value={goal.growthRate ? `${goal.growthRate}%` : <span className="muted">none</span>}
+                />
                 {goal.startingAmount ? <Row label="Counted by hand" value={<Money value={goal.startingAmount} />} /> : null}
               </div>
             </Card>
@@ -176,6 +185,39 @@ export default function GoalDetail() {
 
       {editing ? <GoalModal goal={goal} onClose={() => setEditing(false)} /> : null}
     </>
+  );
+}
+
+/**
+ * What the growth assumption is actually claiming.
+ *
+ * A compounding line is easy to draw and hard to argue with, which is exactly
+ * why the two halves belong in words underneath it: this much is money going
+ * in, and this much is a number somebody typed into a box.
+ */
+function GrowthSplit({ projection, rate, onEdit }: {
+  projection: { value: number; contributed: number }[];
+  rate: number;
+  onEdit: () => void;
+}) {
+  const end = projection[projection.length - 1];
+  if (!end) return null;
+  const growth = Math.round(end.value - end.contributed);
+
+  return (
+    <div className="spread wrap tiny faint" style={{ gap: 8, paddingTop: 10 }}>
+      {rate ? (
+        <span>
+          By the end of this line, <Money value={end.contributed} cents={false} /> is money put in
+          and <Money value={growth} cents={false} /> is the assumed {rate}% growth.
+        </span>
+      ) : (
+        <span>No growth assumed — every penny on this line is money put in.</span>
+      )}
+      <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit}>
+        {rate ? "Change the rate" : "Assume a rate"}
+      </button>
+    </div>
   );
 }
 
@@ -195,6 +237,7 @@ const STATUS: Record<GoalStatus, { text: string; tone: string }> = {
   "on track": { text: "On track", tone: "pos" },
   "no date": { text: "No target date", tone: "muted" },
   "no plan": { text: "Nothing going in", tone: "muted" },
+  stalled: { text: "Never at this rate", tone: "neg" },
 };
 
 function StatusPill({ status }: { status: GoalStatus }) {
@@ -215,6 +258,9 @@ function StatusPill({ status }: { status: GoalStatus }) {
 /** The sentence beside the pill: when, and how that compares to the plan. */
 function whenLine(o: ReturnType<typeof goalOutlook>): string {
   if (o.status === "reached") return "Fully funded";
+  if (o.status === "stalled") {
+    return "At this rate it never gets there — the amount going in, or the growth assumed, has to change";
+  }
   if (!o.projected) {
     return o.targetMonth ? `Due ${monthLabel(o.targetMonth)} — nothing going in yet` : "No monthly amount set";
   }

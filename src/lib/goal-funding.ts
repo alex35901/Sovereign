@@ -202,7 +202,12 @@ export function migrateGoalAccounts(db: DB): DB {
 
 /* ── where a goal is heading ──────────────────────────────────────────── */
 
-export type GoalStatus = "reached" | "ahead" | "behind" | "on track" | "no date" | "no plan";
+export type GoalStatus =
+  | "reached" | "ahead" | "behind" | "on track" | "no date"
+  /** Nothing is going in and nothing is growing. */
+  | "no plan"
+  /** Something is going in, and it still never gets there. */
+  | "stalled";
 
 export interface GoalOutlook {
   saved: number;
@@ -210,7 +215,9 @@ export interface GoalOutlook {
   /** Still to find. Zero once the goal is reached, never negative. */
   remaining: number;
   monthly: number;
-  /** Months of contributions still needed, or null when nothing is being put in. */
+  /** The assumed annual return, as a percentage. Zero when none is assumed. */
+  growth: number;
+  /** Months still needed, or null when it would never get there. */
   monthsNeeded: number | null;
   /** The month it would be reached at the current rate. */
   projected: string | null;
@@ -221,25 +228,81 @@ export interface GoalOutlook {
 }
 
 /**
+ * The furthest ahead any of this is worth projecting.
+ *
+ * Eighty years. Past that a goal is not late, it is impossible, and saying
+ * "reached in 2431" is a worse answer than saying it never gets there.
+ */
+const HORIZON = 960;
+
+/**
+ * An annual percentage as a monthly one.
+ *
+ * Compounded, not divided by twelve: 12% a year is 0.949% a month, and a month
+ * of 1% is 12.68% a year. Over thirty years the difference is not a rounding.
+ */
+export const monthlyRate = (annualPercent: number): number =>
+  annualPercent === 0 ? 0 : Math.pow(1 + annualPercent / 100, 1 / 12) - 1;
+
+/**
+ * The balance after one more month.
+ *
+ * The month's return first, then the contribution — money paid in at the end
+ * of a month has not been invested during it. The optimistic order would
+ * flatter every projection here by one month of growth.
+ *
+ * Rounded to whole cents like every other amount in the app, and rounded here
+ * rather than at the point of display so the date and the line that draws it
+ * are walking exactly the same steps.
+ */
+const step = (value: number, rate: number, monthly: number): number =>
+  Math.round(value * (1 + rate) + monthly);
+
+/**
+ * How many months until this reaches the target, or null if it never does.
+ *
+ * Walked a month at a time rather than solved, because the closed form has a
+ * different shape for a zero rate, another for no contributions, and quietly
+ * returns nonsense for a negative one. Eighty steps of arithmetic per goal is
+ * nothing, and this way every case is the same case.
+ */
+export function monthsToReach(saved: number, target: number, monthly: number, annualPercent: number): number | null {
+  if (saved >= target) return 0;
+  const rate = monthlyRate(annualPercent);
+  let value = saved;
+  for (let n = 1; n <= HORIZON; n++) {
+    value = step(value, rate, monthly);
+    if (value >= target) return n;
+  }
+  // The horizon is what ends this, including the cases that go nowhere at all:
+  // with a fixed rate and a fixed contribution, a balance that has stopped
+  // climbing never starts again, so there is nothing an early exit would say
+  // that eighty years of the same arithmetic does not.
+  return null;
+}
+
+/**
  * When this goal gets there, at the rate money is going in.
  *
- * Contributions only — no assumed rate of return. A retirement goal decades
- * out really will grow faster than this says, but the alternative is inventing
- * a percentage on someone's behalf and presenting the result as a date, which
- * is a worse kind of wrong than being conservative.
+ * Contributions plus whatever growth the goal assumes, which is nothing until
+ * someone says otherwise. Inventing a return on someone's behalf and
+ * presenting the result as a date would be the worse mistake, so the number is
+ * theirs to enter; but with it entered, a retirement goal thirty years out
+ * stops being wrong by a factor of three.
  */
 export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): GoalOutlook {
   const goal = db.goals.find((g) => g.id === goalId);
   if (!goal) {
-    return { saved: 0, target: 0, remaining: 0, monthly: 0, monthsNeeded: null, projected: null, targetMonth: null, slack: null, status: "no plan" };
+    return { saved: 0, target: 0, remaining: 0, monthly: 0, growth: 0, monthsNeeded: null, projected: null, targetMonth: null, slack: null, status: "no plan" };
   }
   const saved = goalSaved(db, goalId);
   const target = goal.targetAmount;
   const remaining = Math.max(0, target - saved);
   const monthly = goal.monthlyContribution;
+  const growth = goal.growthRate ?? 0;
   const targetMonth = goal.targetDate ? goal.targetDate.slice(0, 7) : null;
 
-  const monthsNeeded = remaining === 0 ? 0 : monthly > 0 ? Math.ceil(remaining / monthly) : null;
+  const monthsNeeded = monthsToReach(saved, target, monthly, growth);
   const projected = monthsNeeded === null ? null : addMonthsKey(now, monthsNeeded);
   // Target minus projected, so reaching it early is positive. The other way
   // round reads as "two months ahead" for a goal that lands two months late.
@@ -247,14 +310,24 @@ export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): G
 
   const status: GoalStatus =
     remaining === 0 ? "reached"
-    : monthsNeeded === null ? "no plan"
+    // Never getting there is two different things. Nothing going in is a plan
+    // waiting to be made; money going in that still falls short is a plan that
+    // does not work, and saying "nothing going in" about it would be a lie.
+    : monthsNeeded === null ? (monthly <= 0 && growth <= 0 ? "no plan" : "stalled")
     : targetMonth === null ? "no date"
     : slack === null ? "no date"
     : slack > 0 ? "ahead"
     : slack < 0 ? "behind"
     : "on track";
 
-  return { saved, target, remaining, monthly, monthsNeeded, projected, targetMonth, slack, status };
+  return { saved, target, remaining, monthly, growth, monthsNeeded, projected, targetMonth, slack, status };
+}
+
+export interface ProjectedMonth {
+  month: string;
+  value: number;
+  /** What it would be with no growth: the money actually put in. */
+  contributed: number;
 }
 
 /**
@@ -263,21 +336,28 @@ export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): G
  * Runs to whichever is later, the target date or the month it would actually
  * be reached, so a goal that is behind shows how far past the date it lands
  * rather than stopping at the date and looking finished.
+ *
+ * Carries the contributions on their own alongside the total, so the gap
+ * between the two — which is the entire claim a growth rate makes — can be
+ * shown rather than asserted.
  */
 export function goalProjection(
   db: DB,
   goalId: ID,
   now: string = thisMonthKey(),
   cap = 480,
-): { month: string; value: number }[] {
+): ProjectedMonth[] {
   const o = goalOutlook(db, goalId, now);
   const ends = [o.targetMonth, o.projected].filter((m): m is string => !!m);
   if (!ends.length) return [];
   const last = ends.sort()[ends.length - 1]!;
   const span = Math.min(cap, Math.max(1, monthsBetween(last, now)));
-  const out: { month: string; value: number }[] = [];
+  const rate = monthlyRate(o.growth);
+  const out: ProjectedMonth[] = [];
+  let value = o.saved;
   for (let i = 0; i <= span; i++) {
-    out.push({ month: addMonthsKey(now, i), value: o.saved + o.monthly * i });
+    if (i > 0) value = step(value, rate, o.monthly);
+    out.push({ month: addMonthsKey(now, i), value, contributed: o.saved + o.monthly * i });
   }
   return out;
 }

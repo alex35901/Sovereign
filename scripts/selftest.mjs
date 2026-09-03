@@ -3906,6 +3906,117 @@ await test("a goal with no dates at all has no line to draw", () => {
 });
 
 
+// --- and what it is assumed to earn on the way ---------------------------
+
+await test("an annual rate is compounded into a monthly one, not divided by twelve", () => {
+  // Twelve months of the monthly rate has to come back to the annual one. A
+  // twelfth of 12% is 1% a month, which is 12.68% a year — over thirty years
+  // that error is about a third of the answer.
+  const r = M.GF.monthlyRate(12);
+  assert.ok(Math.abs(Math.pow(1 + r, 12) - 1.12) < 1e-12, `${r} does not compound to 12%`);
+  assert.ok(r < 0.01, "and it is smaller than a twelfth, not equal to it");
+  assert.equal(M.GF.monthlyRate(0), 0, "no assumption is exactly no growth");
+});
+
+await test("with no growth assumed, the answer is the one it always was", () => {
+  // $10,000 to go at $1,000 a month.
+  assert.equal(M.GF.monthsToReach(10_000_00, 20_000_00, 1_000_00, 0), 10);
+  assert.equal(M.GF.monthsToReach(0, 1_000_00, 100_00, 0), 10);
+  assert.equal(M.GF.monthsToReach(20_000_00, 20_000_00, 0, 0), 0, "already there is no months at all");
+});
+
+await test("growth gets a long goal there sooner, by an amount that is checkable", () => {
+  // $100,000 in, $1,000 a month, no growth: 400 months.
+  assert.equal(M.GF.monthsToReach(100_000_00, 500_000_00, 1_000_00, 0), 400);
+  // The same at 7%: the balance alone earns about $580 in the first month, so
+  // it must land far sooner — but not absurdly so.
+  const grown = M.GF.monthsToReach(100_000_00, 500_000_00, 1_000_00, 7);
+  assert.ok(grown < 400, `${grown} months is not sooner`);
+  assert.ok(grown > 100, `${grown} months is too good to be true`);
+
+  // Checked against the recurrence by hand rather than against itself.
+  const r = M.GF.monthlyRate(7);
+  let v = 100_000_00, n = 0;
+  while (v < 500_000_00) { v = v * (1 + r) + 1_000_00; n++; }
+  assert.equal(grown, n, "the closed answer and the long way round must agree");
+});
+
+await test("money that is only growing still gets there; money doing neither does not", () => {
+  // A retirement pot nobody is adding to is not a pot going nowhere.
+  const coasting = M.GF.monthsToReach(100_000_00, 200_000_00, 0, 7);
+  assert.ok(coasting !== null && coasting > 0, `saw ${coasting}`);
+  // Doubling at 7% a year is a bit over ten years.
+  assert.ok(coasting >= 118 && coasting <= 124, `${coasting} months is not about ten years`);
+
+  assert.equal(M.GF.monthsToReach(100_000_00, 200_000_00, 0, 0), null, "nothing in, nothing earned");
+  assert.equal(M.GF.monthsToReach(0, 1_000_00, 0, 7), null, "and no percentage of nothing is anything");
+});
+
+await test("a goal that never gets there says so instead of naming a year in the 2400s", () => {
+  // $50 a month against a million, shrinking 5% a year: the growth eats the
+  // contributions and the balance falls.
+  assert.equal(M.GF.monthsToReach(500_000_00, 1_000_000_00, 50_00, -5), null);
+  // And an ordinary target that is simply beyond the horizon.
+  assert.equal(M.GF.monthsToReach(0, 1_000_000_000_00, 1_00, 0), null);
+});
+
+await test("a goal that is going nowhere is told apart from one with no plan", () => {
+  const nothing = M.GF.goalOutlook(outlookDb({ monthlyContribution: 0 }), "g", "2026-01");
+  assert.equal(nothing.status, "no plan", "nothing going in, nothing assumed");
+
+  const stalled = M.GF.goalOutlook(
+    outlookDb({ monthlyContribution: 1_00, growthRate: -20, targetAmount: 50_000_00 }), "g", "2026-01");
+  assert.equal(stalled.monthsNeeded, null);
+  assert.equal(stalled.status, "stalled", "money is going in — saying nothing is would be a lie");
+});
+
+await test("the outlook carries the rate it used, so the screen cannot claim a different one", () => {
+  assert.equal(M.GF.goalOutlook(outlookDb({ growthRate: 6 }), "g", "2026-01").growth, 6);
+  assert.equal(M.GF.goalOutlook(outlookDb(), "g", "2026-01").growth, 0, "absent is none, not undefined");
+});
+
+await test("the projected line compounds, and carries the contributions beside it", () => {
+  const line = M.GF.goalProjection(outlookDb({ growthRate: 12 }), "g", "2026-01");
+  const r = M.GF.monthlyRate(12);
+
+  assert.equal(line[0].value, 10_000_00, "it still starts at what is saved");
+  assert.equal(line[0].contributed, 10_000_00);
+
+  // One month on: a month's growth on the balance, then the contribution.
+  assert.equal(line[1].value, Math.round(10_000_00 * (1 + r) + 1_000_00), "growth first, then the payment");
+  assert.equal(line[1].contributed, 11_000_00, "the contributions alone are unchanged");
+
+  for (let i = 1; i < line.length; i++) {
+    assert.ok(line[i].value > line[i].contributed, `month ${i} must be ahead of the contributions alone`);
+    assert.ok(line[i].value > line[i - 1].value, "and always climbing");
+  }
+});
+
+await test("the line stops where the goal is actually reached, growth included", () => {
+  const line = M.GF.goalProjection(outlookDb({ growthRate: 12 }), "g", "2026-01");
+  const o = M.GF.goalOutlook(outlookDb({ growthRate: 12 }), "g", "2026-01");
+  // The target date is January 2027 and growth gets there before it, so the
+  // line runs to the date. The month it crosses has to be the one named.
+  assert.ok(line[o.monthsNeeded].value >= 20_000_00, "the named month must actually be there");
+  assert.ok(line[o.monthsNeeded - 1].value < 20_000_00, "and the one before it must not be");
+  assert.ok(o.monthsNeeded < 10, "12% has to beat the ten months it takes with none");
+});
+
+await test("a rounding error cannot accumulate into a different month", () => {
+  // The chart and the date must agree exactly, so both walk the same steps in
+  // the same order. Drawn from the projection, the crossing month is the one
+  // the outlook names — for a long goal where a per-month rounding drift would
+  // have hundreds of chances to show up.
+  const db = outlookDb({ growthRate: 7, monthlyContribution: 500_00, targetAmount: 400_000_00, targetDate: undefined });
+  const o = M.GF.goalOutlook(db, "g", "2026-01");
+  const line = M.GF.goalProjection(db, "g", "2026-01");
+  assert.ok(o.monthsNeeded > 200, `${o.monthsNeeded} is not the long goal this is meant to test`);
+  assert.equal(line.at(-1).month, o.projected);
+  assert.ok(line[o.monthsNeeded].value >= 400_000_00);
+  assert.ok(line[o.monthsNeeded - 1].value < 400_000_00);
+});
+
+
 // --- choosing the passphrase -------------------------------------------
 
 await test("the word list is exactly a power of two, with no repeats", () => {

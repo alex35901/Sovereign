@@ -8,7 +8,10 @@ import { addMonths, dateLabel, monthLabel, thisMonth } from "../lib/date";
 import { goalProgress } from "../lib/select";
 import { goalSources } from "../lib/goal-funding";
 import { fmt0 } from "../lib/money";
-import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, Progress, TextInput, Tile, cx } from "../components/ui";
+import {
+  Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, PercentInput, Progress, TextInput,
+  Tile, cx,
+} from "../components/ui";
 import { EmojiPicker } from "../components/EmojiPicker";
 import { GoalFunding } from "./GoalFunding";
 
@@ -137,12 +140,19 @@ export function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void 
   const [targetDate, setTargetDate] = useState(goal?.targetDate ?? "");
   const [monthlyContribution, setMonthly] = useState(goal?.monthlyContribution ?? 0);
   const [startingAmount, setStarting] = useState(goal?.startingAmount ?? 0);
+  const [growthRate, setGrowth] = useState(goal?.growthRate ?? 0);
   // Carried through untouched: superseded by allocations, kept so an older
   // document is not quietly rewritten by opening this dialog.
   const accountIds = goal?.accountIds ?? [];
 
   const save = () => {
-    const payload = { name: name.trim() || "New goal", emoji, targetAmount, targetDate: targetDate || undefined, monthlyContribution, startingAmount, accountIds };
+    const payload = {
+      name: name.trim() || "New goal", emoji, targetAmount, targetDate: targetDate || undefined,
+      monthlyContribution, startingAmount, accountIds,
+      // Stored only when it says something, so a goal nobody set a rate on
+      // stays visibly without one rather than carrying a zero around.
+      growthRate: growthRate || undefined,
+    };
     if (goal) actions.updateGoal(goal.id, payload);
     else actions.addGoal(payload);
     onClose();
@@ -179,6 +189,12 @@ export function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void 
           <MoneyInput value={startingAmount} onChange={setStarting} />
         </Field>
       </div>
+      <Field
+        label="Assumed annual growth"
+        hint="Zero for money sitting in cash. For anything invested, a projection without it is badly wrong by the time a goal is decades out — and the right number is a judgement about where the money is, so it is yours."
+      >
+        <PercentInput value={growthRate} onChange={setGrowth} />
+      </Field>
       <div className="setting-row">
         <span className="small">
           <b>Money is assigned to a goal, not tracked by it.</b> Nominate the accounts that hold money set

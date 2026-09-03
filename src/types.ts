@@ -171,6 +171,17 @@ export interface Goal {
   /** Manual starting contribution when no account is linked. */
   startingAmount: number;
   monthlyContribution: number;
+  /**
+   * Assumed annual return, as a percentage. Absent means none assumed.
+   *
+   * Contributions alone answer "when will I have put this much aside", which
+   * is the right question for a kitchen and the wrong one for retirement:
+   * thirty years of a balance that never earns anything is not conservative,
+   * it is wrong by a factor of three. It is per goal and never filled in for
+   * anyone, because the number is a judgement about where the money is, and
+   * the app has no business making it silently.
+   */
+  growthRate?: number;
   priority: number;
   archived: boolean;
 }

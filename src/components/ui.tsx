@@ -175,6 +175,41 @@ export function MoneyInput({ value, onChange, placeholder, autoFocus }: {
   );
 }
 
+/**
+ * A rate, typed as a percentage.
+ *
+ * Same free-text buffer trick as MoneyInput, for the same reason: "6." is a
+ * legitimate thing to be half way through typing, and a field that reformats
+ * on every keystroke will not let you get to "6.5".
+ */
+export function PercentInput({ value, onChange, placeholder }: {
+  value: number; onChange: (percent: number) => void; placeholder?: string;
+}) {
+  const [buf, setBuf] = useState<string | null>(null);
+  return (
+    <span style={{ position: "relative", display: "flex", width: "100%" }}>
+      <input
+        className="input num" inputMode="decimal" placeholder={placeholder ?? "0"}
+        value={buf ?? String(value)}
+        onChange={(e) => {
+          setBuf(e.target.value);
+          const n = Number.parseFloat(e.target.value);
+          onChange(Number.isFinite(n) ? n : 0);
+        }}
+        onFocus={(e) => { setBuf(e.target.value); e.currentTarget.select(); }}
+        onBlur={() => setBuf(null)}
+        style={{ paddingRight: 26 }}
+      />
+      <span
+        className="tiny faint"
+        style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}
+      >
+        %
+      </span>
+    </span>
+  );
+}
+
 export function SelectInput<T extends string>({ value, onChange, options, placeholder }: {
   value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; placeholder?: string;
 }) {
