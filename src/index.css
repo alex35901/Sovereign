@@ -406,6 +406,34 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); }
 .modal-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line-soft); }
+/* ── the More sheet ──
+   Rises from the bottom bar rather than floating in the middle, so it comes
+   from where the thumb pressed and lands under it. Only ever opened from the
+   tab bar, which is itself only shown below 720px, so it needs no breakpoint
+   of its own. */
+.more-scrim { align-items: flex-end; padding: 0; }
+.more-sheet {
+  width: 100%; background: var(--surface); border-top: 1px solid var(--line);
+  border-radius: 16px 16px 0 0; box-shadow: var(--shadow);
+  padding: 8px 12px calc(14px + env(safe-area-inset-bottom));
+}
+.more-grip { width: 34px; height: 4px; border-radius: 2px; background: var(--line); margin: 2px auto 10px; }
+.more-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.more-label {
+  grid-column: 1 / -1; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--faint); padding: 8px 2px 2px;
+}
+.more-item {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  /* Tall enough to be a thumb target rather than a link that happens to have
+     an icon beside it. */
+  min-height: 70px; padding: 8px 4px; border-radius: 12px;
+  background: var(--surface-2); color: var(--text);
+  font-size: 11.5px; font-weight: 600; text-align: center;
+}
+.more-item.active { background: var(--accent-soft); color: var(--accent); }
+.more-item:active { background: var(--surface-3); }
+
 .menu { z-index: 120; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 5px; min-width: 190px; max-height: 320px; overflow-y: auto; }
 .menu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 7px 9px; border: 0; background: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .menu button:hover { background: var(--surface-2); }

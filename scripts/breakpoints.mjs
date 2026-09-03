@@ -45,6 +45,20 @@ const check = (name, ok, detail = "") => {
   results.push([ok ? "PASS" : "FAIL", name, ok ? "" : detail]);
 };
 
+/**
+ * A step that is allowed to be impossible.
+ *
+ * Against a broken build the thing to click is not there, and a locator timing
+ * out would abandon the run with a stack trace instead of the list of what
+ * passed and what did not — which is the moment the list matters most.
+ */
+const tryStep = async (what, fn) => {
+  try { await fn(); return true; } catch (err) {
+    results.push(["FAIL", what, (err instanceof Error ? err.message : String(err)).split("\n")[0]]);
+    return false;
+  }
+};
+
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/cashflow", "/reports",
@@ -230,6 +244,72 @@ try {
     !!sub && sub.text.length > 1 && /^\/accounts\//.test(sub.href ?? ""),
     `saw ${JSON.stringify(sub)}`);
   await phone.close();
+
+  // ── every screen is reachable on a phone ──
+  //
+  // The bottom bar has room for four, and the fifth used to say "More" and go
+  // straight to Settings. Goals, Cash Flow, Reports, Recurring, Investments,
+  // Rules, Categories and Tags had no way in at all on a phone — the sidebar
+  // that lists them is hidden below 720px. Checked by walking to each one and
+  // reading the address back, because a link that renders is not the same as
+  // a screen you can get to.
+  const nav = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await nav.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+  await nav.waitForTimeout(500);
+
+  // What the wide layout offers, taken from the running app rather than
+  // listed here, so a screen added to the sidebar is covered the same day.
+  const desktop = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+  await desktop.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+  await desktop.waitForTimeout(500);
+  const everywhere = await desktop.evaluate(() =>
+    [...document.querySelectorAll(".sidebar a[href^='/']")].map((a) => a.getAttribute("href")));
+  await desktop.close();
+
+  const more = nav.locator('.mobile-tabs button[aria-label="More screens"]');
+  check("390px — the fifth tab opens a menu rather than being one more screen",
+    await more.count() === 1, "no More button in the tab bar — it is a link to one more screen");
+
+  await tryStep("390px — the menu can be opened", () => more.click({ timeout: 5000 }));
+  await nav.waitForTimeout(400);
+  const inBar = await nav.$$eval(".mobile-tabs a[href^='/']", (as) => as.map((a) => a.getAttribute("href")));
+  const inSheet = await nav.$$eval(".more-sheet a[href^='/']", (as) => as.map((a) => a.getAttribute("href")));
+  const reachable = new Set([...inBar, ...inSheet]);
+  const missing = everywhere.filter((h) => h !== "/dashboard" && !reachable.has(h));
+
+  check("390px — every screen the sidebar offers can be reached from the tab bar",
+    everywhere.length > 8 && missing.length === 0,
+    missing.length ? `no way to ${missing.join(", ")}` : `only saw ${everywhere.length} in the sidebar`);
+  check("390px — and nothing is offered in both the bar and the menu",
+    !inBar.some((h) => inSheet.includes(h)),
+    inBar.filter((h) => inSheet.includes(h)).join(", "));
+
+  // Tapping one has to land there and put the menu away.
+  await tryStep("390px — Goals can be reached from the menu", () =>
+    nav.locator('.more-sheet a[href="/goals"]').click({ timeout: 5000 }));
+  await nav.waitForTimeout(800);
+  check("390px — tapping a screen in the menu goes there and closes it",
+    new URL(nav.url()).pathname === "/goals" && await nav.locator(".more-sheet").count() === 0,
+    `landed on ${new URL(nav.url()).pathname}`);
+
+  // And the bar must not look as though nothing is selected while you stand
+  // on one of the screens behind the menu.
+  const lit = await nav.evaluate(() => {
+    const b = document.querySelector('.mobile-tabs button[aria-label="More screens"]');
+    const link = document.querySelector('.mobile-tabs a[href="/dashboard"]');
+    return b && link ? getComputedStyle(b).color !== getComputedStyle(link).color : null;
+  });
+  check("390px — More is lit while you are on one of the screens behind it", lit === true, `saw ${lit}`);
+
+  // Closing it without going anywhere.
+  await tryStep("390px — the menu can be opened again", () => more.click({ timeout: 5000 }));
+  await nav.waitForTimeout(350);
+  await nav.mouse.click(195, 40);
+  await nav.waitForTimeout(400);
+  check("390px — tapping outside the menu closes it without navigating",
+    await nav.locator(".more-sheet").count() === 0 && new URL(nav.url()).pathname === "/goals",
+    `at ${new URL(nav.url()).pathname}`);
+  await nav.close();
 } finally {
   await browser.close();
 }
