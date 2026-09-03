@@ -14,6 +14,7 @@ import Reports from "./screens/Reports";
 import Budget from "./screens/Budget";
 import Recurring from "./screens/Recurring";
 import Goals from "./screens/Goals";
+import GoalDetail from "./screens/GoalDetail";
 import Investments from "./screens/Investments";
 import Settings from "./screens/Settings";
 import Rules from "./screens/Rules";
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/budget" element={<Budget />} />
           <Route path="/recurring" element={<Recurring />} />
           <Route path="/goals" element={<Goals />} />
+          <Route path="/goals/:id" element={<GoalDetail />} />
           <Route path="/investments" element={<Investments />} />
           <Route path="/rules" element={<Rules />} />
           <Route path="/categories" element={<Categories />} />

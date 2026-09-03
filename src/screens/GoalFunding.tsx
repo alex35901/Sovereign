@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { ChevronDown, ChevronRight, Info, Settings2, Sparkles, TriangleAlert, Wallet } from "lucide-react";
 import type { Account, Goal } from "../types";
 import { useDB, useStore } from "../store";
@@ -90,7 +91,6 @@ export function GoalFunding() {
         <div style={{ maxHeight: 420, overflowY: "auto" }}>
           {f.accounts.map((row) => {
             const expanded = open === row.account.id;
-            const auto = goals.find((g) => g.id === row.account.autoGoalId);
             return (
               <div key={row.account.id}>
                 <div
@@ -99,16 +99,7 @@ export function GoalFunding() {
                 >
                   {expanded ? <ChevronDown size={14} className="faint" /> : <ChevronRight size={14} className="faint" />}
                   <InstitutionLogo account={row.account} size={26} round />
-                  <div className="grow col" style={{ gap: 1, minWidth: 0 }}>
-                    <span className="truncate" style={{ fontWeight: 500 }}>{row.account.name}</span>
-                    <span className="tiny faint truncate">
-                      {auto ? `${auto.emoji} everything here goes to ${auto.name}` : (
-                        row.allocated > 0
-                          ? `${fmtish(row.allocated)} of ${fmtish(row.balance)} assigned`
-                          : `${fmtish(row.balance)}, none assigned yet`
-                      )}
-                    </span>
-                  </div>
+                  <span className="grow truncate" style={{ fontWeight: 500 }}>{row.account.name}</span>
                   {row.over > 0 ? (
                     <span className="tag" style={{ background: "var(--neg-soft)", color: "var(--neg)" }}>
                       <Money value={row.over} /> over
@@ -120,32 +111,59 @@ export function GoalFunding() {
                 </div>
 
                 {expanded ? (
-                  <div className="col" style={{ gap: 8, padding: "4px 16px 14px 40px", background: "var(--surface-2)" }}>
-                    {auto ? (
-                      <div className="small muted">
-                        Every penny in here counts toward <b>{auto.name}</b>, including money that arrives
-                        later. Nothing to allocate, and nothing to keep up with.
-                      </div>
-                    ) : goals.length ? (
-                      goals.map((g) => {
-                        const held = Math.min(claimOn(g, row.account.id), row.balance);
-                        if (!held) return null;
-                        return (
-                          <div key={g.id} className="spread small">
-                            <span className="row" style={{ gap: 6 }}><span>{g.emoji}</span> {g.name}</span>
-                            <span className="num"><Money value={held} /></span>
-                          </div>
-                        );
-                      })
-                    ) : null}
-                    {!auto && !goals.some((g) => claimOn(g, row.account.id)) ? (
-                      <div className="small faint">Nothing from this account is assigned to a goal yet.</div>
-                    ) : null}
-                    <div className="row wrap" style={{ gap: 8, marginTop: 4 }}>
-                      <Btn size="sm" onClick={() => setAllocating(row.account)}>
-                        <Sparkles size={13} /> Allocate this account
-                      </Btn>
+                  /* The balance, then what each goal holds of it, then what is
+                     left — which says "everything here goes to Retirement"
+                     better than the sentence that used to, because it shows
+                     the figures the claim is made of. */
+                  <div className="col" style={{ gap: 8, padding: "6px 16px 14px 42px", background: "var(--surface-2)" }}>
+                    <div className="spread small">
+                      <span style={{ fontWeight: 500 }}>Account balance</span>
+                      <span className="num" style={{ fontWeight: 500 }}><Money value={row.balance} /></span>
                     </div>
+
+                    {goals.map((g) => {
+                      const held = Math.min(claimOn(g, row.account.id), row.balance)
+                        + (row.account.autoGoalId === g.id ? row.auto : 0);
+                      if (!held) return null;
+                      return (
+                        <Link
+                          key={g.id} to={`/goals/${g.id}`}
+                          className="spread small cat-open" style={{ marginLeft: 6 }}
+                        >
+                          <span className="row truncate" style={{ gap: 6, minWidth: 0 }}>
+                            <span>{g.emoji}</span>
+                            <span className="truncate">{g.name}</span>
+                            {row.account.autoGoalId === g.id ? (
+                              <span className="tiny faint nowrap">· all of it</span>
+                            ) : null}
+                          </span>
+                          <span className="num"><Money value={held} /></span>
+                        </Link>
+                      );
+                    })}
+
+                    {row.over > 0 ? (
+                      <div className="spread small neg" style={{ marginLeft: 6 }}>
+                        <span>Assigned beyond the balance</span>
+                        <span className="num"><Money value={row.over} /></span>
+                      </div>
+                    ) : null}
+
+                    <div className="divider" style={{ margin: "2px 0" }} />
+                    <div className="spread small">
+                      <span style={{ fontWeight: 500 }}>Available</span>
+                      <span className={`num ${row.available > 0 ? "pos" : "faint"}`} style={{ fontWeight: 500 }}>
+                        {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={0} />}
+                      </span>
+                    </div>
+
+                    {!row.account.autoGoalId ? (
+                      <div className="row wrap" style={{ gap: 8, marginTop: 4 }}>
+                        <Btn size="sm" onClick={() => setAllocating(row.account)}>
+                          <Sparkles size={13} /> Allocate this account
+                        </Btn>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

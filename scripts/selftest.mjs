@@ -3822,6 +3822,90 @@ await test("old goals that named whole accounts are carried over once", () => {
 });
 
 
+// --- where a goal is heading ---------------------------------------------
+
+const outlookDb = (over = {}) => ({
+  ...M.emptyDB(),
+  accounts: [{ id: "sav", name: "Savings", type: "savings", balance: 10_000_00, history: [], includeInNetWorth: true, hidden: false, goalAccount: true }],
+  goals: [{
+    id: "g", name: "Boat", emoji: "*", targetAmount: 20_000_00, targetDate: "2027-01-15",
+    accountIds: [], allocations: { sav: 10_000_00 }, startingAmount: 0,
+    monthlyContribution: 1_000_00, priority: 0, archived: false, ...over,
+  }],
+});
+
+await test("the projected date comes from what is actually going in", () => {
+  // $10,000 saved, $10,000 to go, $1,000 a month: ten months from January.
+  const o = M.GF.goalOutlook(outlookDb(), "g", "2026-01");
+  assert.equal(o.saved, 10_000_00);
+  assert.equal(o.remaining, 10_000_00);
+  assert.equal(o.monthsNeeded, 10);
+  assert.equal(o.projected, "2026-11");
+});
+
+await test("ahead, behind and on track are measured against the target date", () => {
+  // Reached November 2026 against a January 2027 date: two months of slack.
+  const ahead = M.GF.goalOutlook(outlookDb(), "g", "2026-01");
+  assert.equal(ahead.slack, 2);
+  assert.equal(ahead.status, "ahead");
+
+  const behind = M.GF.goalOutlook(outlookDb({ monthlyContribution: 200_00 }), "g", "2026-01");
+  assert.equal(behind.monthsNeeded, 50, "fifty months at $200");
+  assert.equal(behind.status, "behind");
+  assert.ok(behind.slack < 0);
+
+  const exact = M.GF.goalOutlook(outlookDb({ targetDate: "2026-11-30" }), "g", "2026-01");
+  assert.equal(exact.slack, 0);
+  assert.equal(exact.status, "on track");
+});
+
+await test("a goal already reached says so rather than projecting a date", () => {
+  const done = M.GF.goalOutlook(outlookDb({ targetAmount: 5_000_00 }), "g", "2026-01");
+  assert.equal(done.remaining, 0, "and never a negative amount left");
+  assert.equal(done.monthsNeeded, 0);
+  assert.equal(done.status, "reached");
+});
+
+await test("a goal with nothing going in projects nothing at all", () => {
+  // Rather than a date infinitely far away, or today's.
+  const idle = M.GF.goalOutlook(outlookDb({ monthlyContribution: 0 }), "g", "2026-01");
+  assert.equal(idle.monthsNeeded, null);
+  assert.equal(idle.projected, null);
+  assert.equal(idle.status, "no plan");
+
+  const undated = M.GF.goalOutlook(outlookDb({ targetDate: undefined }), "g", "2026-01");
+  assert.equal(undated.projected, "2026-11", "it still knows when");
+  assert.equal(undated.status, "no date", "it just has nothing to compare it to");
+});
+
+await test("the projection starts where the goal is and ends past the later date", () => {
+  const line = M.GF.goalProjection(outlookDb(), "g", "2026-01");
+  assert.equal(line[0].month, "2026-01");
+  assert.equal(line[0].value, 10_000_00, "it starts at what is saved, not at zero");
+  assert.equal(line.at(-1).month, "2027-01", "runs to the target date, which is later than the projection");
+  assert.equal(line[10].value, 20_000_00, "and crosses the target in month ten");
+  // Months are consecutive, including over the turn of the year.
+  for (let i = 1; i < line.length; i++) {
+    const [py, pm] = line[i - 1].month.split("-").map(Number);
+    const [cy, cm] = line[i].month.split("-").map(Number);
+    assert.equal(cy * 12 + cm, py * 12 + pm + 1, `${line[i - 1].month} -> ${line[i].month}`);
+  }
+});
+
+await test("a goal that lands late is drawn all the way to where it lands", () => {
+  // Stopping at the target date would make a goal fifty months out look as
+  // though it arrived on time.
+  const line = M.GF.goalProjection(outlookDb({ monthlyContribution: 200_00 }), "g", "2026-01");
+  assert.equal(line.at(-1).month, "2030-03");
+  assert.ok(line.at(-1).value >= 20_000_00);
+});
+
+await test("a goal with no dates at all has no line to draw", () => {
+  const none = M.GF.goalProjection(outlookDb({ targetDate: undefined, monthlyContribution: 0 }), "g", "2026-01");
+  assert.deepEqual(none, []);
+});
+
+
 // --- choosing the passphrase -------------------------------------------
 
 await test("the word list is exactly a power of two, with no repeats", () => {

@@ -53,6 +53,8 @@ const PAGES = [
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
   "/merchants/Amazon", "/merchants/Amazon?by=year",
+  // A goal's own page: a wide header, four tiles, a chart and two columns.
+  "/goals/gl_efund", "/goals/gl_kitchen",
 ];
 
 /**

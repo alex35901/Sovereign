@@ -67,8 +67,14 @@ const niceTicks = (min: number, max: number, count = 4): number[] => {
 
 export interface Point { label: string; value: number; sub?: string }
 
-export function AreaChart({ points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false }: {
+export function AreaChart({
+  points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
+  markLine, markLabel,
+}: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
+  /** A horizontal line to aim at — a goal's target, and where the line meets it. */
+  markLine?: number;
+  markLabel?: string;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -87,8 +93,10 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
   // The axis spans exactly the period's min and max. Zero is only forced in
   // where a caller asks for it; on a balance chart it would flatten the line
   // into a straight edge at the bottom.
-  let lo = Math.min(...values, zeroBase ? 0 : Infinity);
-  let hi = Math.max(...values, zeroBase ? 0 : -Infinity);
+  // The mark is part of the range, or a target above everything saved so far
+  // would sit off the top of its own chart.
+  let lo = Math.min(...values, zeroBase ? 0 : Infinity, markLine ?? Infinity);
+  let hi = Math.max(...values, zeroBase ? 0 : -Infinity, markLine ?? -Infinity);
   // a flat or near-flat series still needs a readable band
   const minSpan = Math.max(100, Math.abs(hi) * 0.001);
   if (hi - lo < minSpan) {
@@ -166,6 +174,18 @@ export function AreaChart({ points, height = 190, tone = "--accent", negativeTon
 
         {showZeroLine ? (
           <line x1={padL} x2={padL + innerW} y1={zeroY} y2={zeroY} stroke={color("--muted")} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+        ) : null}
+
+        {markLine !== undefined ? (
+          <g>
+            <line
+              x1={padL} x2={padL + innerW} y1={y(markLine)} y2={y(markLine)}
+              stroke={color("--muted")} strokeWidth={1} strokeDasharray="4 4" opacity={0.85}
+            />
+            {markLabel ? (
+              <text className="axis-text" x={padL + innerW} y={y(markLine) - 5} textAnchor="end">{markLabel}</text>
+            ) : null}
+          </g>
         ) : null}
 
         {startLine ? (

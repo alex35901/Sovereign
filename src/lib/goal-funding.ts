@@ -199,3 +199,102 @@ export function migrateGoalAccounts(db: DB): DB {
       : a)),
   };
 }
+
+/* ── where a goal is heading ──────────────────────────────────────────── */
+
+export type GoalStatus = "reached" | "ahead" | "behind" | "on track" | "no date" | "no plan";
+
+export interface GoalOutlook {
+  saved: number;
+  target: number;
+  /** Still to find. Zero once the goal is reached, never negative. */
+  remaining: number;
+  monthly: number;
+  /** Months of contributions still needed, or null when nothing is being put in. */
+  monthsNeeded: number | null;
+  /** The month it would be reached at the current rate. */
+  projected: string | null;
+  targetMonth: string | null;
+  /** Months of slack against the target date. Negative means late. */
+  slack: number | null;
+  status: GoalStatus;
+}
+
+/**
+ * When this goal gets there, at the rate money is going in.
+ *
+ * Contributions only — no assumed rate of return. A retirement goal decades
+ * out really will grow faster than this says, but the alternative is inventing
+ * a percentage on someone's behalf and presenting the result as a date, which
+ * is a worse kind of wrong than being conservative.
+ */
+export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): GoalOutlook {
+  const goal = db.goals.find((g) => g.id === goalId);
+  if (!goal) {
+    return { saved: 0, target: 0, remaining: 0, monthly: 0, monthsNeeded: null, projected: null, targetMonth: null, slack: null, status: "no plan" };
+  }
+  const saved = goalSaved(db, goalId);
+  const target = goal.targetAmount;
+  const remaining = Math.max(0, target - saved);
+  const monthly = goal.monthlyContribution;
+  const targetMonth = goal.targetDate ? goal.targetDate.slice(0, 7) : null;
+
+  const monthsNeeded = remaining === 0 ? 0 : monthly > 0 ? Math.ceil(remaining / monthly) : null;
+  const projected = monthsNeeded === null ? null : addMonthsKey(now, monthsNeeded);
+  // Target minus projected, so reaching it early is positive. The other way
+  // round reads as "two months ahead" for a goal that lands two months late.
+  const slack = projected && targetMonth ? monthsBetween(targetMonth, projected) : null;
+
+  const status: GoalStatus =
+    remaining === 0 ? "reached"
+    : monthsNeeded === null ? "no plan"
+    : targetMonth === null ? "no date"
+    : slack === null ? "no date"
+    : slack > 0 ? "ahead"
+    : slack < 0 ? "behind"
+    : "on track";
+
+  return { saved, target, remaining, monthly, monthsNeeded, projected, targetMonth, slack, status };
+}
+
+/**
+ * The line from here to the target, a month at a time.
+ *
+ * Runs to whichever is later, the target date or the month it would actually
+ * be reached, so a goal that is behind shows how far past the date it lands
+ * rather than stopping at the date and looking finished.
+ */
+export function goalProjection(
+  db: DB,
+  goalId: ID,
+  now: string = thisMonthKey(),
+  cap = 480,
+): { month: string; value: number }[] {
+  const o = goalOutlook(db, goalId, now);
+  const ends = [o.targetMonth, o.projected].filter((m): m is string => !!m);
+  if (!ends.length) return [];
+  const last = ends.sort()[ends.length - 1]!;
+  const span = Math.min(cap, Math.max(1, monthsBetween(last, now)));
+  const out: { month: string; value: number }[] = [];
+  for (let i = 0; i <= span; i++) {
+    out.push({ month: addMonthsKey(now, i), value: o.saved + o.monthly * i });
+  }
+  return out;
+}
+
+/* Local date helpers, so this module stays free of the date module's DOM-free
+ * import rules and can be read on its own. */
+const thisMonthKey = (): string => new Date().toISOString().slice(0, 7);
+
+function addMonthsKey(key: string, n: number): string {
+  const [y, m] = key.split("-").map(Number);
+  const total = y! * 12 + (m! - 1) + n;
+  return `${Math.floor(total / 12)}-${String((total % 12) + 1).padStart(2, "0")}`;
+}
+
+/** Months from `b` to `a`. Positive when `a` is later. */
+function monthsBetween(a: string, b: string): number {
+  const [ay, am] = a.split("-").map(Number);
+  const [by, bm] = b.split("-").map(Number);
+  return (ay! * 12 + am!) - (by! * 12 + bm!);
+}

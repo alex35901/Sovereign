@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Plus, Target } from "lucide-react";
 import type { Goal } from "../types";
 import { useDB, useStore } from "../store";
@@ -44,9 +45,18 @@ export default function Goals() {
             return (
               <Card key={g.id}>
                 <CardHead
-                  title={<span className="row" style={{ gap: 8 }}><span style={{ fontSize: 20 }}>{g.emoji}</span> {g.name}</span>}
+                  title={
+                    <Link to={`/goals/${g.id}`} className="row cat-open" style={{ gap: 8 }}>
+                      <span style={{ fontSize: 20 }}>{g.emoji}</span> {g.name}
+                    </Link>
+                  }
                   sub={g.targetDate ? `Target ${monthLabel(g.targetDate.slice(0, 7))}` : "No target date"}
-                  right={<Btn size="sm" onClick={() => setEditing(g)}>Edit</Btn>}
+                  right={
+                    <span className="row" style={{ gap: 6 }}>
+                      <Btn size="sm" onClick={() => setEditing(g)}>Edit</Btn>
+                      <Link to={`/goals/${g.id}`}><Btn size="sm" variant="ghost">Open</Btn></Link>
+                    </span>
+                  }
                 />
                 <div className="spread" style={{ marginBottom: 6 }}>
                   <span className="num bold" style={{ fontSize: 20 }}><Money value={p.saved} cents={false} /></span>
@@ -119,7 +129,7 @@ export default function Goals() {
   );
 }
 
-function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void }) {
+export function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void }) {
   const { actions } = useStore();
   const [name, setName] = useState(goal?.name ?? "");
   const [emoji, setEmoji] = useState(goal?.emoji ?? "🎯");
