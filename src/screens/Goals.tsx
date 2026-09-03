@@ -5,8 +5,11 @@ import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { addMonths, dateLabel, monthLabel, thisMonth } from "../lib/date";
 import { goalProgress } from "../lib/select";
+import { goalSources } from "../lib/goal-funding";
+import { fmt0 } from "../lib/money";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, Progress, TextInput, Tile, cx } from "../components/ui";
 import { EmojiPicker } from "../components/EmojiPicker";
+import { GoalFunding } from "./GoalFunding";
 
 export default function Goals() {
   const db = useDB();
@@ -31,6 +34,8 @@ export default function Goals() {
           <Tile label="Monthly contributions" value={<Money value={monthly} cents={false} />} />
           <Tile label="Active goals" value={String(goals.length)} />
         </div>
+
+        <GoalFunding />
 
         <div className="grid g2">
           {goals.map((g) => {
@@ -77,11 +82,18 @@ export default function Goals() {
                     </span>
                   </div>
                 </div>
-                {g.accountIds.length ? (
-                  <div className="tiny faint" style={{ marginTop: 10 }}>
-                    Tracking {g.accountIds.map((id) => db.accounts.find((a) => a.id === id)?.name).filter(Boolean).join(", ")}
-                  </div>
-                ) : null}
+                {(() => {
+                  // Where the money actually is, rather than which accounts the
+                  // goal happens to name — a shared savings backs three goals
+                  // and each of them holds only its own share of it.
+                  const from = goalSources(db, g.id);
+                  if (!from.length) return null;
+                  return (
+                    <div className="tiny faint" style={{ marginTop: 10 }}>
+                      {from.map((x) => `${x.account.name} ${fmt0(x.amount)}${x.auto ? " (all of it)" : ""}`).join(" · ")}
+                    </div>
+                  );
+                })()}
                 {p.monthsLeft !== null && !p.onTrack ? (
                   <div className="tiny neg" style={{ marginTop: 8 }}>
                     Behind pace — raise the monthly amount or push the target date past {dateLabel(g.targetDate!)}.
@@ -108,7 +120,6 @@ export default function Goals() {
 }
 
 function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void }) {
-  const db = useDB();
   const { actions } = useStore();
   const [name, setName] = useState(goal?.name ?? "");
   const [emoji, setEmoji] = useState(goal?.emoji ?? "🎯");
@@ -116,7 +127,9 @@ function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void }) {
   const [targetDate, setTargetDate] = useState(goal?.targetDate ?? "");
   const [monthlyContribution, setMonthly] = useState(goal?.monthlyContribution ?? 0);
   const [startingAmount, setStarting] = useState(goal?.startingAmount ?? 0);
-  const [accountIds, setAccounts] = useState<string[]>(goal?.accountIds ?? []);
+  // Carried through untouched: superseded by allocations, kept so an older
+  // document is not quietly rewritten by opening this dialog.
+  const accountIds = goal?.accountIds ?? [];
 
   const save = () => {
     const payload = { name: name.trim() || "New goal", emoji, targetAmount, targetDate: targetDate || undefined, monthlyContribution, startingAmount, accountIds };
@@ -156,19 +169,12 @@ function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void }) {
           <MoneyInput value={startingAmount} onChange={setStarting} />
         </Field>
       </div>
-      <div className="col" style={{ gap: 6 }}>
-        <span className="small muted">Track these accounts</span>
-        <div className="row wrap" style={{ gap: 6 }}>
-          {db.accounts.filter((a) => !a.hidden).map((a) => (
-            <button
-              key={a.id}
-              className={cx("chip", accountIds.includes(a.id) && "on")}
-              onClick={() => setAccounts((prev) => (prev.includes(a.id) ? prev.filter((x) => x !== a.id) : [...prev, a.id]))}
-            >
-              {a.name}
-            </button>
-          ))}
-        </div>
+      <div className="setting-row">
+        <span className="small">
+          <b>Money is assigned to a goal, not tracked by it.</b> Nominate the accounts that hold money set
+          aside under &ldquo;Edit goal accounts&rdquo; on this page, then allocate from them — one account can
+          back several goals, and each holds only its own share.
+        </span>
       </div>
     </Modal>
   );

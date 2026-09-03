@@ -13,6 +13,7 @@ import { refreshVehicleValues } from "./lib/vehicle";
 import { applyForward } from "./lib/select";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
+import { allocate } from "./lib/goal-funding";
 
 /** Tag colours for tags created by an import, spread across the palette. */
 const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
@@ -222,6 +223,12 @@ export interface Actions {
   clearBudget: (month: MonthKey) => void;
 
   addGoal: (g: Omit<Goal, "id" | "priority" | "archived">) => void;
+  /** Whether an account's balance is money set aside for goals. */
+  setGoalAccount: (accountId: ID, on: boolean) => void;
+  /** Send an account's leftovers to one goal, or stop. */
+  setAutoGoal: (accountId: ID, goalId: ID | null) => void;
+  /** Give a goal `amount` of one account, clamped to what is unassigned. */
+  allocateToGoal: (goalId: ID, accountId: ID, amount: number) => void;
   updateGoal: (id: ID, patch: Partial<Goal>) => void;
   deleteGoal: (id: ID) => void;
 
@@ -496,6 +503,32 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     addGoal: (g) =>
       apply((db) => ({ ...db, goals: [...db.goals, { ...g, id: uid("gl"), priority: db.goals.length, archived: false }] })),
     updateGoal: (id, patch) => apply((db) => ({ ...db, goals: replace(db.goals, id, patch) })),
+
+    setGoalAccount: (accountId, on) =>
+      apply((db) => ({
+        ...db,
+        // Dropping an account releases what the goals held there. Leaving the
+        // allocations behind would keep them in every total while the account
+        // they refer to is no longer on the table.
+        goals: on ? db.goals : db.goals.map((g) => {
+          if (!g.allocations?.[accountId]) return g;
+          const allocations = { ...g.allocations };
+          delete allocations[accountId];
+          return { ...g, allocations };
+        }),
+        accounts: db.accounts.map((a) => (a.id === accountId
+          ? { ...a, goalAccount: on, autoGoalId: on ? a.autoGoalId : undefined }
+          : a)),
+      }), on ? "add goal account" : "remove goal account"),
+
+    setAutoGoal: (accountId, goalId) =>
+      apply((db) => ({
+        ...db,
+        accounts: db.accounts.map((a) => (a.id === accountId ? { ...a, autoGoalId: goalId ?? undefined } : a)),
+      }), "auto-allocate"),
+
+    allocateToGoal: (goalId, accountId, amount) =>
+      apply((db) => allocate(db, goalId, accountId, amount), "allocate"),
     deleteGoal: (id) => apply((db) => ({ ...db, goals: db.goals.filter((g) => g.id !== id) }), "delete goal"),
 
     upsertRecurring: (r) =>

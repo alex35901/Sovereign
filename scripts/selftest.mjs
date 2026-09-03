@@ -45,6 +45,7 @@ await build({
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
       export * as PP from "./src/lib/passphrase.ts";
+      export * as GF from "./src/lib/goal-funding.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
@@ -3649,6 +3650,175 @@ await test("the drill-down and the Budget screen report the same actual", () => 
     assert.equal(mine.planned, r.planned, `${r.category.name} disagrees on planned`);
     assert.equal(mine.remaining, r.remaining, `${r.category.name} disagrees on remaining`);
   }
+});
+
+
+// --- money set aside for goals -------------------------------------------
+
+/** Two goal accounts and three goals, built rather than borrowed. */
+const funded = (over = {}) => ({
+  ...M.emptyDB(),
+  accounts: [
+    { id: "sav", name: "Joint Savings", type: "savings", balance: 1_000_00, history: [], includeInNetWorth: true, hidden: false, goalAccount: true },
+    { id: "ira", name: "Roth IRA", type: "retirement", balance: 500_00, history: [], includeInNetWorth: true, hidden: false, goalAccount: true },
+    { id: "chk", name: "Everyday", type: "checking", balance: 9_999_00, history: [], includeInNetWorth: true, hidden: false },
+  ],
+  goals: [
+    { id: "emg", name: "Emergency", emoji: "*", targetAmount: 10_000_00, accountIds: [], allocations: {}, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false },
+    { id: "kit", name: "Kitchen", emoji: "*", targetAmount: 20_000_00, accountIds: [], allocations: {}, startingAmount: 0, monthlyContribution: 0, priority: 1, archived: false },
+    { id: "ret", name: "Retirement", emoji: "*", targetAmount: 900_000_00, accountIds: [], allocations: {}, startingAmount: 0, monthlyContribution: 0, priority: 2, archived: false },
+  ],
+  ...over,
+});
+
+await test("only the accounts you nominate are on the table", () => {
+  const f = M.GF.funding(funded());
+  assert.deepEqual(f.accounts.map((a) => a.account.id), ["sav", "ira"]);
+  // The current account holds ten thousand dollars and none of it is for goals.
+  assert.equal(f.pooled, 1_500_00);
+  assert.equal(f.available, 1_500_00, "untouched balances are all available");
+  assert.equal(f.allocated, 0);
+});
+
+await test("one account splits across several goals", () => {
+  // The case the old model could not express: a joint savings behind three
+  // goals at once, each holding its own share rather than all of it.
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 600_00);
+  db = M.GF.allocate(db, "kit", "sav", 250_00);
+  const f = M.GF.funding(db);
+  assert.equal(f.accounts.find((a) => a.account.id === "sav").allocated, 850_00);
+  assert.equal(f.accounts.find((a) => a.account.id === "sav").available, 150_00);
+  assert.equal(M.GF.goalSaved(db, "emg"), 600_00);
+  assert.equal(M.GF.goalSaved(db, "kit"), 250_00);
+  assert.equal(M.GF.goalSaved(db, "ret"), 0);
+});
+
+await test("the goals together can never claim more than is there", () => {
+  // The invariant the headline figure rests on.
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 900_00);
+  db = M.GF.allocate(db, "kit", "sav", 900_00);
+  const f = M.GF.funding(db);
+  assert.equal(f.accounts.find((a) => a.account.id === "sav").allocated, 1_000_00);
+  assert.equal(M.GF.goalSaved(db, "kit"), 100_00, "the second goal got only what was left");
+  assert.equal(f.available, 500_00, "and nothing was conjured");
+});
+
+await test("allocating is a set, not an add, so a slider can come back down", () => {
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 600_00);
+  db = M.GF.allocate(db, "emg", "sav", 200_00);
+  assert.equal(M.GF.goalSaved(db, "emg"), 200_00);
+  assert.equal(M.GF.funding(db).available, 1_300_00);
+  // Down to nothing removes the claim rather than storing a zero.
+  db = M.GF.allocate(db, "emg", "sav", 0);
+  assert.deepEqual(db.goals.find((g) => g.id === "emg").allocations, {});
+});
+
+await test("the ceiling includes what this goal already holds", () => {
+  // Or a slider could only ever be dragged one way.
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 600_00);
+  assert.equal(M.GF.ceilingFor(db, "emg", "sav"), 1_000_00);
+  assert.equal(M.GF.ceilingFor(db, "kit", "sav"), 400_00, "another goal only sees what is spare");
+});
+
+await test("an account tied to one goal needs no allocating at all", () => {
+  // "anytime new money shows up here, it belongs to retirement"
+  const db = funded({
+    accounts: funded().accounts.map((a) => (a.id === "ira" ? { ...a, autoGoalId: "ret" } : a)),
+  });
+  const f = M.GF.funding(db);
+  const ira = f.accounts.find((a) => a.account.id === "ira");
+  assert.equal(ira.auto, 500_00);
+  assert.equal(ira.available, 0, "an account with a goal of its own is never 'available'");
+  assert.equal(M.GF.goalSaved(db, "ret"), 500_00);
+  assert.equal(f.available, 1_000_00, "only the shared account is still to decide about");
+});
+
+await test("new money in an auto account counts without anyone doing anything", () => {
+  const before = funded({
+    accounts: funded().accounts.map((a) => (a.id === "ira" ? { ...a, autoGoalId: "ret" } : a)),
+  });
+  const after = { ...before, accounts: before.accounts.map((a) => (a.id === "ira" ? { ...a, balance: 700_00 } : a)) };
+  assert.equal(M.GF.goalSaved(before, "ret"), 500_00);
+  assert.equal(M.GF.goalSaved(after, "ret"), 700_00);
+  assert.equal(M.GF.funding(after).available, 1_000_00, "and it never shows up as needing a decision");
+});
+
+await test("new money in a shared account is flagged rather than absorbed", () => {
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 1_000_00);
+  assert.equal(M.GF.funding(db).available, 500_00);
+  // A payday lands.
+  const paid = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 1_400_00 } : a)) };
+  assert.equal(M.GF.goalSaved(paid, "emg"), 1_000_00, "the goal does not quietly grow");
+  assert.equal(M.GF.funding(paid).available, 900_00, "the new money is there to be assigned");
+});
+
+await test("a balance falling below what was allocated is reported, not hidden", () => {
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 900_00);
+  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
+  const f = M.GF.funding(dropped);
+  const sav = f.accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.over, 500_00, "the shortfall has to be visible");
+  assert.equal(sav.available, 0);
+  assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00, "and the goal reports what is really there");
+});
+
+await test("an archived goal stops holding money", () => {
+  let db = funded();
+  db = M.GF.allocate(db, "emg", "sav", 600_00);
+  const archived = { ...db, goals: db.goals.map((g) => (g.id === "emg" ? { ...g, archived: true } : g)) };
+  assert.equal(M.GF.funding(archived).available, 1_500_00, "its claim was still being counted");
+});
+
+await test("a negative goal account offers nothing rather than a negative", () => {
+  const db = funded({ accounts: funded().accounts.map((a) => (a.id === "sav" ? { ...a, balance: -50_00 } : a)) });
+  const f = M.GF.funding(db);
+  const sav = f.accounts.find((a) => a.account.id === "sav");
+  assert.equal(f.available, 500_00);
+  assert.ok(f.accounts.every((a) => a.available >= 0));
+  // Nothing is allocated against it, so it is not over-allocated either — an
+  // overdrawn account is a different problem from a mis-assigned one, and
+  // saying it is $50 over would send someone looking for an allocation that
+  // does not exist.
+  assert.equal(sav.over, 0);
+  assert.equal(sav.allocated, 0);
+  assert.equal(f.over, 0);
+});
+
+await test("a goal's card can say where its money is", () => {
+  let db = funded({ accounts: funded().accounts.map((a) => (a.id === "ira" ? { ...a, autoGoalId: "ret" } : a)) });
+  db = M.GF.allocate(db, "ret", "sav", 300_00);
+  const src = M.GF.goalSources(db, "ret");
+  assert.deepEqual(src.map((x) => [x.account.id, x.amount, x.auto]), [["ira", 500_00, true], ["sav", 300_00, false]]);
+  assert.equal(src.reduce((s, x) => s + x.amount, 0), M.GF.goalSaved(db, "ret"));
+});
+
+await test("old goals that named whole accounts are carried over once", () => {
+  const old = {
+    ...M.emptyDB(),
+    accounts: [
+      { id: "sav", name: "Savings", type: "savings", balance: 1_000_00, history: [], includeInNetWorth: true, hidden: false },
+      { id: "chk", name: "Everyday", type: "checking", balance: 500_00, history: [], includeInNetWorth: true, hidden: false },
+    ],
+    goals: [
+      { id: "a", name: "A", emoji: "*", targetAmount: 100, accountIds: ["sav"], startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false },
+      { id: "b", name: "B", emoji: "*", targetAmount: 100, accountIds: ["sav"], startingAmount: 0, monthlyContribution: 0, priority: 1, archived: false },
+    ],
+  };
+  const moved = M.GF.migrateGoalAccounts(old);
+  assert.equal(moved.accounts.find((a) => a.id === "sav").goalAccount, true, "the named account joins the pool");
+  assert.equal(moved.accounts.find((a) => a.id === "chk").goalAccount, undefined, "and nothing else does");
+  // Both goals used to claim all $1,000 — $2,000 between them, out of $1,000.
+  assert.equal(M.GF.goalSaved(moved, "a"), 1_000_00);
+  assert.equal(M.GF.goalSaved(moved, "b"), 0, "the double count is gone");
+  assert.equal(M.GF.funding(moved).available, 0);
+  // And it does not run twice.
+  assert.deepEqual(M.GF.migrateGoalAccounts(moved), moved);
 });
 
 

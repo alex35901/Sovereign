@@ -1,5 +1,6 @@
 import type { Account, Category, DB, ISODate, MonthKey, Recurring, Transaction } from "../types";
 import { addMonths, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
+import { goalSaved } from "./goal-funding.js";
 
 /* ── lookups ──────────────────────────────────────────────────────────── */
 
@@ -599,8 +600,9 @@ export function portfolioSummary(db: DB) {
 export function goalProgress(db: DB, goalId: string): { saved: number; pct: number; monthsLeft: number | null; onTrack: boolean } {
   const g = db.goals.find((x) => x.id === goalId);
   if (!g) return { saved: 0, pct: 0, monthsLeft: null, onTrack: false };
-  const linked = g.accountIds.reduce((s, id) => s + (db.accounts.find((a) => a.id === id)?.balance ?? 0), 0);
-  const saved = linked + g.startingAmount;
+  // What is actually allocated to it, rather than the whole balance of every
+  // account it happens to name — see lib/goal-funding.
+  const saved = goalSaved(db, goalId);
   const pct = g.targetAmount ? Math.min(100, (saved / g.targetAmount) * 100) : 0;
   const monthsLeft = g.targetDate ? Math.max(0, diffMonths(thisMonth(), monthOf(g.targetDate))) : null;
   const needed = monthsLeft && monthsLeft > 0 ? (g.targetAmount - saved) / monthsLeft : 0;

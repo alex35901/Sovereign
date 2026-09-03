@@ -20,6 +20,24 @@ export interface Account {
   hidden: boolean;
   /** Keep this account's transactions out of cash flow, budgets and reports. */
   hideTransactions?: boolean;
+  /**
+   * This account's balance is money set aside for goals.
+   *
+   * Only these accounts are pooled and allocated. Everything else — the
+   * current account the bills come out of, the mortgage — is deliberately not
+   * offered, because "available for goals" means nothing if it includes the
+   * rent.
+   */
+  goalAccount?: boolean;
+  /**
+   * Whatever is left over here belongs to this goal, without being allocated.
+   *
+   * For an account with exactly one purpose — a 401(k) that is retirement and
+   * nothing else — so money arriving in it counts immediately rather than
+   * waiting to be assigned. Computed rather than swept on a schedule, so it is
+   * right the moment a balance changes.
+   */
+  autoGoalId?: ID;
   /** Closed on this date: balance zeroed, history kept, sync stops touching it. */
   closedAt?: ISODate;
   /** Sparse snapshots, ascending by date; forward-filled when charting. */
@@ -133,7 +151,23 @@ export interface Goal {
   emoji: string;
   targetAmount: number;
   targetDate?: ISODate;
+  /**
+   * Superseded by `allocations`, kept so old documents still open.
+   *
+   * A goal used to take the whole balance of every account listed here, which
+   * meant one account could not be shared: two goals pointing at the same
+   * savings account each counted all of it, and the two of them together
+   * claimed twice the money that existed.
+   */
   accountIds: ID[];
+  /**
+   * How much of each goal account this goal has claimed, in cents.
+   *
+   * The sum across every goal can never exceed an account's balance — that is
+   * what makes "available for goals" a real figure rather than an optimistic
+   * one.
+   */
+  allocations?: Record<ID, number>;
   /** Manual starting contribution when no account is linked. */
   startingAmount: number;
   monthlyContribution: number;

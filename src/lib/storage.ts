@@ -1,5 +1,6 @@
 import type { DB } from "../types";
 import { buildDemoDB, emptyDB } from "./seed";
+import { migrateGoalAccounts } from "./goal-funding.js";
 
 const KEY = "sovereign.db.v1";
 
@@ -41,7 +42,9 @@ function migrate(db: DB): DB {
   const merged: DB = { ...base, ...db, settings: { ...base.settings, ...db.settings } };
   merged.transactions = merged.transactions.map((t) => ({ ...t, tags: t.tags ?? [] }));
   merged.accounts = merged.accounts.map((a) => ({ ...a, history: a.history ?? [] }));
-  return merged;
+  // Goals used to name whole accounts; they hold amounts now. Runs once — it
+  // leaves a document that already has allocations alone.
+  return migrateGoalAccounts(merged);
 }
 
 export { buildDemoDB, emptyDB };
