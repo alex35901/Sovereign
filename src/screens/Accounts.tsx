@@ -38,6 +38,9 @@ export default function Accounts() {
     }));
   }, [db, start]);
 
+  // Where the line ended against where it began, which is what colours it.
+  const netWorthTone = trendTone(series.map((p) => p.value));
+
   const then = useMemo(() => netWorthSplitAt(db, start), [db, start]);
   const change = nw.net - then.net;
   const assetChange = nw.assets - then.assets;
@@ -95,11 +98,12 @@ export default function Accounts() {
             sub={series.length ? `${series[0].sub} — today` : undefined}
             right={<RangePicker value={range} onChange={setRange} />}
           />
-          {/* Green while it is positive, red below zero, split at the axis by
-              the chart itself. Net worth is the one figure where the sign is
-              the headline, and it was drawn in the accent colour, which says
-              nothing at all about it. */}
-          <AreaChart points={series} height={230} tone="--pos" startLine />
+          {/* One colour across the whole line, decided by where it ended
+              against where it started — the dashed line the chart draws at the
+              opening value. Not by its sign: a net worth under water all year
+              and climbing is good news, and the range picker above is what
+              decides which "started" we mean. */}
+          <AreaChart points={series} height={230} tone={netWorthTone} negativeTone={netWorthTone} startLine />
         </Card>
 
         {groups.map((g) => (

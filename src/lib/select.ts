@@ -104,16 +104,29 @@ export function aggregateSeries(accounts: Account[], dates: ISODate[]): number[]
 /**
  * Colours a series by whether it improved, not by its sign.
  *
+ * The comparison is the last reading against the first one in the period on
+ * screen, so changing the range changes the answer — which is right: a year of
+ * growth and a bad fortnight are different questions and the range picker is
+ * how you ask them.
+ *
  * Balances are stored signed, so a loan paid down moves from -30,000 toward
  * zero — an increase, and good news, exactly as a rising asset is. Both add to
- * net worth, so both are green.
+ * net worth, so both are green. A net worth that is negative throughout and
+ * climbing is green too: it is going the right way, which is the thing worth
+ * knowing.
  */
 export function trendTone(values: number[]): string {
-  if (values.length < 2) return "--muted";
-  const delta = values[values.length - 1] - values[0];
-  if (Math.abs(delta) < 100) return "--muted";
+  // A dollar either way is not a movement, it is rounding. Genuinely flat is
+  // rare enough to be worth its own colour rather than being lumped in with
+  // one of the two directions it did not go.
+  if (values.length < 2) return FLAT_TONE;
+  const delta = values[values.length - 1]! - values[0]!;
+  if (Math.abs(delta) < 100) return FLAT_TONE;
   return delta > 0 ? "--pos" : "--neg";
 }
+
+/** Neither up nor down. Yellow, so it reads as an answer rather than an absence. */
+export const FLAT_TONE = "--c5";
 
 /** Earliest snapshot across the given accounts, if any. */
 export function earliestHistoryDate(accounts: Account[]): ISODate | undefined {

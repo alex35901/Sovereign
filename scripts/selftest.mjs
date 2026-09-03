@@ -62,7 +62,7 @@ await build({
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
-      export { aggregateSeries, trendTone, balanceAt, netWorthSplitAt, netWorthNow } from "./src/lib/select.ts";
+      export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
@@ -1338,11 +1338,28 @@ await test("assets follow the same rule", () => {
   assert.equal(M.trendTone([250000, 100000]), "--neg");
 });
 
-await test("a flat or unknowable series is neither", () => {
-  assert.equal(M.trendTone([500000, 500000]), "--muted");
-  assert.equal(M.trendTone([500000, 500050]), "--muted", "under a dollar is not a trend");
-  assert.equal(M.trendTone([500000]), "--muted");
-  assert.equal(M.trendTone([]), "--muted");
+await test("the colour is the first reading against the last, not the sign", () => {
+  // The case that prompted this: net worth under water the whole way and
+  // climbing is good news, and was being drawn as though it were not.
+  assert.equal(M.trendTone([-500000, -400000, -100000]), "--pos");
+  // And one above water the whole way but falling is not.
+  assert.equal(M.trendTone([900000, 800000, 100000]), "--neg");
+  // Nothing in between matters — only the ends.
+  assert.equal(M.trendTone([100000, 5000000, 200000]), "--pos", "a peak in the middle is not the answer");
+  assert.equal(M.trendTone([200000, 10, 100000]), "--neg", "a dip in the middle is not either");
+});
+
+await test("flat is its own answer rather than one of the two it is not", () => {
+  assert.equal(M.FLAT_TONE, "--c5");
+  assert.equal(M.trendTone([250000, 250000]), M.FLAT_TONE);
+  // A dollar either way is rounding, not a movement.
+  assert.equal(M.trendTone([250000, 250099]), M.FLAT_TONE);
+  assert.equal(M.trendTone([250000, 249901]), M.FLAT_TONE);
+  assert.equal(M.trendTone([250000, 250100]), "--pos", "a dollar and one cent is a movement");
+  assert.equal(M.trendTone([250000, 249900]), "--neg");
+  // Nothing to compare against is not a rise or a fall either.
+  assert.equal(M.trendTone([250000]), M.FLAT_TONE);
+  assert.equal(M.trendTone([]), M.FLAT_TONE);
 });
 
 /* ── account grouping ─────────────────────────────────────────────────── */

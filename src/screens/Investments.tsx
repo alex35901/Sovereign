@@ -5,7 +5,7 @@ import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, today } from "../lib/date";
 import { fmtPct } from "../lib/money";
-import { ASSET_CLASS_LABEL, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary } from "../lib/select";
+import { ASSET_CLASS_LABEL, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary, trendTone } from "../lib/select";
 import { AreaChart, Donut } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
 import { RangePicker } from "../components/pickers";
@@ -38,6 +38,8 @@ export default function Investments() {
     }));
   }, [p.invAccounts, range]);
 
+  const portfolioTone = trendTone(series.map((x) => x.value));
+
   const start = series[0]?.value ?? 0;
   const growth = p.accountsValue - start;
 
@@ -62,7 +64,13 @@ export default function Investments() {
         <div className="grid g-2-1">
           <Card>
             <CardHead title="Portfolio value" sub="Brokerage plus retirement balances" right={<RangePicker value={range} onChange={setRange} />} />
-            <AreaChart points={series} height={240} tone="--pos" />
+            {/* Same rule as net worth: green if the period ended above where
+                it opened, red if below, and the dashed line says where that
+                was. */}
+            <AreaChart
+              points={series} height={240} startLine
+              tone={portfolioTone} negativeTone={portfolioTone}
+            />
           </Card>
           <Card>
             <CardHead title="Allocation" sub="By asset class" />
