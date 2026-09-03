@@ -95,7 +95,11 @@ export default function Accounts() {
             sub={series.length ? `${series[0].sub} — today` : undefined}
             right={<RangePicker value={range} onChange={setRange} />}
           />
-          <AreaChart points={series} height={230} startLine />
+          {/* Green while it is positive, red below zero, split at the axis by
+              the chart itself. Net worth is the one figure where the sign is
+              the headline, and it was drawn in the accent colour, which says
+              nothing at all about it. */}
+          <AreaChart points={series} height={230} tone="--pos" startLine />
         </Card>
 
         {groups.map((g) => (

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, Plus, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { DB, Transaction } from "../types";
@@ -67,6 +67,9 @@ export function MerchantAvatar({ name, size = 32 }: { name: string; size?: numbe
   );
 }
 
+/** How many rows to add at a time as the list is scrolled. */
+const PAGE = 120;
+
 type Preset = "all" | "unreviewed" | "uncategorized" | "income" | "expense" | "hidden";
 
 export default function Transactions() {
@@ -85,7 +88,8 @@ export default function Transactions() {
   const [importing, setImporting] = useState(false);
   const [deduping, setDeduping] = useState(false);
   const [adding, setAdding] = useState(false);
-  const [limit, setLimit] = useState(120);
+  const [limit, setLimit] = useState(PAGE);
+  const bottom = useRef<HTMLDivElement>(null);
 
   // Worked out once rather than per transaction: a between-dates filter over
   // several thousand rows should not re-parse its own bounds for each one.
@@ -112,6 +116,35 @@ export default function Transactions() {
   }, [db.transactions, q, accountId, categoryId, span, tagId, preset]);
 
   const shown = filtered.slice(0, limit);
+  const more = filtered.length > shown.length;
+
+  // Narrowing the list starts the window again. Without this, filtering after
+  // a long scroll would render every match at once, which is the opposite of
+  // what the scrolling was for.
+  useEffect(() => { setLimit(PAGE); }, [q, accountId, categoryId, span, tagId, preset]);
+
+  /**
+   * Loads the next batch when the end of the list comes into view.
+   *
+   * The observer is rebuilt whenever `limit` changes, on purpose. An
+   * IntersectionObserver reports crossings, not states: once the marker is in
+   * view it has already said so, and growing the list underneath it says
+   * nothing new — so one observer loads a single batch and then sits there
+   * until you scroll again. Rebuilding re-asks the question.
+   *
+   * rootMargin starts the load 500px early, so on an ordinary scroll the rows
+   * are there before the bottom is.
+   */
+  useEffect(() => {
+    const el = bottom.current;
+    if (!el || !more || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) setLimit((l) => l + PAGE); },
+      { rootMargin: "500px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [more, limit, filtered.length]);
   const grouped = useMemo(() => {
     const map = new Map<string, Transaction[]>();
     for (const t of shown) {
@@ -343,11 +376,17 @@ export default function Transactions() {
             />
           ) : null}
 
-          {filtered.length > shown.length ? (
-            <div style={{ padding: 14, textAlign: "center" }}>
-              <Btn onClick={() => setLimit((l) => l + 200)}>
-                Show more ({(filtered.length - shown.length).toLocaleString()} remaining)
+          {/* Both the marker the observer watches and a button, because a
+              browser without one still has to be able to reach row 500. */}
+          {more ? (
+            <div ref={bottom} style={{ padding: 14, textAlign: "center" }}>
+              <Btn onClick={() => setLimit((l) => l + PAGE)}>
+                Loading more… ({(filtered.length - shown.length).toLocaleString()} to go)
               </Btn>
+            </div>
+          ) : filtered.length > PAGE ? (
+            <div className="tiny faint" style={{ padding: 14, textAlign: "center" }}>
+              That is all {filtered.length.toLocaleString()} of them.
             </div>
           ) : null}
         </Card>

@@ -62,7 +62,7 @@ export default function Investments() {
         <div className="grid g-2-1">
           <Card>
             <CardHead title="Portfolio value" sub="Brokerage plus retirement balances" right={<RangePicker value={range} onChange={setRange} />} />
-            <AreaChart points={series} height={240} tone="--c2" />
+            <AreaChart points={series} height={240} tone="--pos" />
           </Card>
           <Card>
             <CardHead title="Allocation" sub="By asset class" />

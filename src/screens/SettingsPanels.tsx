@@ -311,10 +311,10 @@ export function TagsPanel() {
             <button className="btn btn-ghost btn-icon" onClick={() => actions.deleteTag(t.id)}><Trash2 size={12} /></button>
           </span>
         ))}
-        {!db.tags.length ? <span className="small faint">No tags yet.</span> : null}
+        {!db.tags.length ? (
+          <span className="small faint">No tags yet — the button at the top of the page makes one.</span>
+        ) : null}
       </div>
-      <div className="divider" />
-      <NewTagForm />
     </Card>
   );
 }
