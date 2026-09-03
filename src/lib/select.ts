@@ -652,24 +652,25 @@ export function monthOptions(db: DB): MonthKey[] {
   return out.reverse();
 }
 
-/* ── one category, up close ───────────────────────────────────────────── */
+/* ── one subject, up close ────────────────────────────────────────────── */
 
 /**
- * A transaction's contribution to one category.
+ * A transaction's contribution to whatever is being looked at.
  *
  * `amount` is not always the transaction's amount: a transaction split three
- * ways contributes only the split that belongs here. `partial` says so, because
- * a row reading $40 inside a $300 purchase needs to explain itself.
+ * ways contributes only the split that belongs to the category being read, and
+ * `partial` says so, because a row reading $40 inside a $300 purchase needs to
+ * explain itself. A merchant is never partial — a transaction has one.
  */
-export interface CategoryEntry {
+export interface Entry {
   txn: Transaction;
   amount: number;
   partial: boolean;
 }
 
-export interface CategoryActivity {
+export interface Activity {
   /** Newest first, the order a transaction list is read in. */
-  entries: CategoryEntry[];
+  entries: Entry[];
   /**
    * Transactions in this category over the same span that were left out, being
    * hidden from reports or in a muted account. Counted so the page can say so:
@@ -680,9 +681,9 @@ export interface CategoryActivity {
 }
 
 /** Everything in one category between two dates, both ends inclusive. */
-export function categoryActivity(db: DB, categoryId: string, from: ISODate, to: ISODate): CategoryActivity {
+export function categoryActivity(db: DB, categoryId: string, from: ISODate, to: ISODate): Activity {
   const muted = mutedAccountIds(db);
-  const entries: CategoryEntry[] = [];
+  const entries: Entry[] = [];
   let skipped = 0;
   for (const t of db.transactions) {
     if (t.date < from || t.date > to) continue;
@@ -700,7 +701,7 @@ export function categoryActivity(db: DB, categoryId: string, from: ISODate, to: 
   return { entries, skipped };
 }
 
-export interface CategoryStats {
+export interface EntryStats {
   count: number;
   /** Signed and summed, so income reads positive and spending negative. */
   total: number;
@@ -709,7 +710,7 @@ export interface CategoryStats {
   largest: number;
 }
 
-export function categoryStats(entries: CategoryEntry[]): CategoryStats {
+export function entryStats(entries: Entry[]): EntryStats {
   const total = entries.reduce((s, e) => s + e.amount, 0);
   let largest = 0;
   for (const e of entries) if (Math.abs(e.amount) > Math.abs(largest)) largest = e.amount;
@@ -729,8 +730,8 @@ export function categoryStats(entries: CategoryEntry[]): CategoryStats {
  * no spending is a bar of no height, and leaving it out would put July beside
  * September and redraw the trend.
  */
-export function categoryByPeriod(
-  entries: CategoryEntry[],
+export function entriesByPeriod(
+  entries: Entry[],
   keys: string[],
   keyOf: (date: ISODate) => string,
 ): Map<string, number> {
@@ -768,4 +769,142 @@ export function categoryBudget(db: DB, categoryId: string, months: MonthKey[]): 
   // the first are inside this total already.
   const rollover = months.length ? rolloverFor(db, months[0]!, categoryId) : 0;
   return { months, planned, actual, rollover, remaining: planned + rollover - actual };
+}
+
+/* ── one merchant, up close ───────────────────────────────────────────── */
+
+/**
+ * The key two spellings of the same merchant share.
+ *
+ * A merchant is a string on a transaction, not a record with an id, so
+ * "Whole Foods" typed by hand and "WHOLE FOODS " off a statement are the same
+ * shop and have to land on the same page. Case and surrounding space are the
+ * differences worth ignoring; anything more aggressive starts merging shops
+ * that really are different.
+ */
+export const merchantKey = (name: string): string => name.toLowerCase().trim();
+
+/**
+ * Every merchant that has ever appeared, with the spelling to show.
+ *
+ * The display name is the most common spelling rather than the first or the
+ * last, so a merchant typed once in capitals does not rename the other forty.
+ */
+export function merchantIndex(db: DB): Map<string, { name: string; count: number }> {
+  const spellings = new Map<string, Map<string, number>>();
+  for (const t of db.transactions) {
+    const key = merchantKey(t.merchant);
+    if (!key) continue;
+    const forms = spellings.get(key) ?? new Map<string, number>();
+    forms.set(t.merchant, (forms.get(t.merchant) ?? 0) + 1);
+    spellings.set(key, forms);
+  }
+  const out = new Map<string, { name: string; count: number }>();
+  for (const [key, forms] of spellings) {
+    let best = "";
+    let most = 0;
+    let count = 0;
+    for (const [form, n] of forms) {
+      count += n;
+      // Ties break on the spelling itself, so the answer never depends on the
+      // order the transactions happen to be stored in.
+      if (n > most || (n === most && form < best)) { best = form; most = n; }
+    }
+    out.set(key, { name: best, count });
+  }
+  return out;
+}
+
+/** Everything bought from one merchant between two dates, both ends inclusive. */
+export function merchantActivity(db: DB, name: string, from: ISODate, to: ISODate): Activity {
+  const key = merchantKey(name);
+  const muted = mutedAccountIds(db);
+  const entries: Entry[] = [];
+  let skipped = 0;
+  for (const t of db.transactions) {
+    if (t.date < from || t.date > to) continue;
+    if (merchantKey(t.merchant) !== key) continue;
+    if (!counts(t, muted)) { skipped++; continue; }
+    // A merchant owns the whole transaction even when its categories are split
+    // several ways, so nothing here is ever partial.
+    entries.push({ txn: t, amount: t.amount, partial: false });
+  }
+  entries.sort((a, b) => b.txn.date.localeCompare(a.txn.date));
+  return { entries, skipped };
+}
+
+export interface MerchantSlice {
+  categoryId: string;
+  count: number;
+  total: number;
+}
+
+/**
+ * Which categories a merchant's money went to, biggest first.
+ *
+ * A merchant with one category says so in a line; Amazon does not, and the
+ * split is the whole point of looking. Counted through the splits, so a
+ * transaction divided between two categories appears under both.
+ */
+export function merchantCategories(entries: Entry[]): MerchantSlice[] {
+  const tally = new Map<string, MerchantSlice>();
+  for (const e of entries) {
+    for (const l of lines(e.txn)) {
+      const cur = tally.get(l.categoryId) ?? { categoryId: l.categoryId, count: 0, total: 0 };
+      cur.count++;
+      cur.total += l.amount;
+      tally.set(l.categoryId, cur);
+    }
+  }
+  return [...tally.values()].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+}
+
+export interface MerchantAccountSlice {
+  accountId: string;
+  count: number;
+  total: number;
+}
+
+/**
+ * Which accounts a merchant gets charged to, biggest first.
+ *
+ * The other half of "where does this go". Most shops are one card and say so
+ * in a line; the ones that are not are worth knowing about, because a
+ * subscription quietly renewing on an old card is exactly the kind of thing
+ * this page should surface.
+ */
+export function merchantAccounts(entries: Entry[]): MerchantAccountSlice[] {
+  const tally = new Map<string, MerchantAccountSlice>();
+  for (const e of entries) {
+    const cur = tally.get(e.txn.accountId) ?? { accountId: e.txn.accountId, count: 0, total: 0 };
+    cur.count++;
+    cur.total += e.amount;
+    tally.set(e.txn.accountId, cur);
+  }
+  return [...tally.values()].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+}
+
+export interface MerchantLifetime {
+  first: ISODate | null;
+  last: ISODate | null;
+  count: number;
+  total: number;
+}
+
+/** The whole history, for the line under the title. */
+export function merchantLifetime(db: DB, name: string): MerchantLifetime {
+  const key = merchantKey(name);
+  const muted = mutedAccountIds(db);
+  let first: ISODate | null = null;
+  let last: ISODate | null = null;
+  let count = 0;
+  let total = 0;
+  for (const t of db.transactions) {
+    if (merchantKey(t.merchant) !== key || !counts(t, muted)) continue;
+    if (first === null || t.date < first) first = t.date;
+    if (last === null || t.date > last) last = t.date;
+    count++;
+    total += t.amount;
+  }
+  return { first, last, count, total };
 }

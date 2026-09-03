@@ -14,6 +14,14 @@ import { rangeMonths } from "../lib/range";
 type Tab = "spending" | "income" | "savings" | "networth";
 type GroupBy = "category" | "group" | "merchant" | "account";
 
+/** Where a breakdown row leads. A group has no page of its own, so it filters. */
+function destination(groupBy: GroupBy, key: string): string {
+  if (groupBy === "category") return `/categories/${key}`;
+  if (groupBy === "merchant") return `/merchants/${encodeURIComponent(key)}`;
+  if (groupBy === "account") return `/accounts/${key}`;
+  return `/transactions`;
+}
+
 export default function Reports() {
   const db = useDB();
   const [tab, setTab] = useState<Tab>("spending");
@@ -207,10 +215,10 @@ export default function Reports() {
                     {rows.map((r) => (
                       <tr key={r.key}>
                         <td>
-                          <Link
-                            to={groupBy === "category" ? `/transactions?category=${r.key}` : "/transactions"}
-                            className="row" style={{ gap: 7 }}
-                          >
+                          {/* Each row goes to that thing's own page. Merchant and
+                              account used to land on the unfiltered transaction
+                              list, which answered nothing about the row clicked. */}
+                          <Link to={destination(groupBy, r.key)} className="row cat-open" style={{ gap: 7 }}>
                             {r.icon ? <span>{r.icon}</span> : <span className="dot" style={{ background: `var(${r.tone})` }} />}
                             <span className="truncate">{r.label}</span>
                             <span className="tiny faint">{r.count}</span>

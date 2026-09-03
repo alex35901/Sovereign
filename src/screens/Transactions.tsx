@@ -348,6 +348,15 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
       <div className="col" style={{ gap: 1, cursor: "pointer", minWidth: 0 }} onClick={onEdit}>
         <span className="row" style={{ gap: 6 }}>
           <span className="truncate" style={{ fontWeight: 500 }}>{txn.merchant}</span>
+          {/* Inline rather than pinned like the category's: this column is
+              left-aligned, so nothing shifts when it appears. */}
+          <Link
+            to={`/merchants/${encodeURIComponent(txn.merchant)}`} className="tx-open tx-merchant-open"
+            title={`View ${txn.merchant}`} aria-label={`View ${txn.merchant}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ArrowRight size={13} />
+          </Link>
           {txn.pending ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>Pending</span> : null}
           {!txn.reviewed ? <span className="dot" style={{ background: "var(--accent)" }} title="Needs review" /> : null}
         </span>
@@ -407,7 +416,7 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           {/* Kept out of the flow so the chip stays on the column's centre
               line whether or not the pointer is over the row. */}
           <Link
-            to={`/categories/${txn.categoryId}`} className="tx-cat-open"
+            to={`/categories/${txn.categoryId}`} className="tx-open tx-cat-open"
             title={`View ${category?.name ?? "category"}`} aria-label={`View ${category?.name ?? "category"}`}
             onClick={(e) => e.stopPropagation()}
           >

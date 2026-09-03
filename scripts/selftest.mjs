@@ -40,7 +40,8 @@ await build({
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
-      export { categoryActivity, categoryStats, categoryByPeriod, categoryBudget } from "./src/lib/select.ts";
+      export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
+      export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime } from "./src/lib/select.ts";
       export * as B from "./src/lib/buckets.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
@@ -3530,7 +3531,7 @@ await test("the summary describes exactly the transactions listed", () => {
   const db = M.buildDemoDB();
   const groceries = db.categories.find((c) => c.name === "Groceries");
   const { entries } = M.categoryActivity(db, groceries.id, "2026-08-01", "2026-08-31");
-  const s = M.categoryStats(entries);
+  const s = M.entryStats(entries);
   assert.equal(s.count, entries.length);
   assert.equal(s.total, entries.reduce((n, e) => n + e.amount, 0));
   assert.equal(s.average, Math.round(s.total / s.count));
@@ -3540,7 +3541,7 @@ await test("the summary describes exactly the transactions listed", () => {
 });
 
 await test("an empty period reports zeroes rather than dividing by none", () => {
-  const s = M.categoryStats([]);
+  const s = M.entryStats([]);
   assert.deepEqual(s, { count: 0, total: 0, average: 0, largest: 0 });
 });
 
@@ -3549,11 +3550,11 @@ await test("the bars add up to the total, and empty periods are zero not missing
   const groceries = db.categories.find((c) => c.name === "Groceries");
   const { entries } = M.categoryActivity(db, groceries.id, "2026-01-01", "2026-08-31");
   const keys = M.B.bucketsBetween("2026-01-01", "2026-08-31", "month");
-  const byMonth = M.categoryByPeriod(entries, keys, (d) => M.B.bucketOf(d, "month"));
+  const byMonth = M.entriesByPeriod(entries, keys, (d) => M.B.bucketOf(d, "month"));
   assert.equal(byMonth.size, keys.length, "a period the chart asked for went missing");
   for (const k of keys) assert.equal(typeof byMonth.get(k), "number", `${k} has no bar`);
   const summed = [...byMonth.values()].reduce((a, b) => a + b, 0);
-  assert.equal(summed, M.categoryStats(entries).total, "the bars and the total disagree");
+  assert.equal(summed, M.entryStats(entries).total, "the bars and the total disagree");
 });
 
 await test("a period of cancelling transfers is busy, not empty", () => {
@@ -3566,7 +3567,7 @@ await test("a period of cancelling transfers is busy, not empty", () => {
   const { entries } = M.categoryActivity(db, pay.id, "2026-01-01", "2026-08-31");
   assert.ok(entries.length > 0, "the demo data has no card payments to check");
   const keys = M.B.bucketsBetween("2026-01-01", "2026-08-31", "month");
-  const totals = M.categoryByPeriod(entries, keys, (d) => M.B.bucketOf(d, "month"));
+  const totals = M.entriesByPeriod(entries, keys, (d) => M.B.bucketOf(d, "month"));
   const populated = new Set(entries.map((e) => M.B.bucketOf(e.txn.date, "month")));
   const cancelling = [...populated].filter((k) => totals.get(k) === 0);
   assert.ok(cancelling.length > 0, "no month cancels out, so this proves nothing");
@@ -3628,6 +3629,159 @@ await test("the drill-down and the Budget screen report the same actual", () => 
     assert.equal(mine.actual, r.actual, `${r.category.name} disagrees on actual`);
     assert.equal(mine.planned, r.planned, `${r.category.name} disagrees on planned`);
     assert.equal(mine.remaining, r.remaining, `${r.category.name} disagrees on remaining`);
+  }
+});
+
+
+// --- one merchant, up close ----------------------------------------------
+
+await test("two spellings of a shop are one merchant", () => {
+  const db = M.buildDemoDB();
+  const name = db.transactions[0].merchant;
+  assert.equal(M.merchantKey(name), M.merchantKey(`  ${name.toUpperCase()} `));
+  // But not two genuinely different shops.
+  assert.notEqual(M.merchantKey("Whole Foods"), M.merchantKey("Whole Foods Market"));
+});
+
+await test("a merchant is titled by its commonest spelling, not its first", () => {
+  const db = M.buildDemoDB();
+  const base = db.transactions.filter((t) => M.merchantKey(t.merchant) === M.merchantKey("Starbucks"));
+  assert.ok(base.length >= 2, "the demo data has too few Starbucks to test with");
+  // One shouty import at the front should not rename the other forty.
+  const shouty = {
+    ...db,
+    transactions: [{ ...base[0], id: "zz", merchant: "STARBUCKS" }, ...db.transactions],
+  };
+  const entry = M.merchantIndex(shouty).get(M.merchantKey("starbucks"));
+  assert.equal(entry.name, "Starbucks");
+  assert.equal(entry.count, base.length + 1, "the shouty one was not counted as the same shop");
+
+  // And when two spellings are exactly as common, the answer must not depend on
+  // the order the transactions happen to be stored in.
+  const one = { ...db.transactions[0], merchant: "aa shop" };
+  const two = { ...db.transactions[0], merchant: "AA Shop" };
+  const forwards = M.merchantIndex({ ...db, transactions: [{ ...one, id: "x1" }, { ...two, id: "x2" }] });
+  const backwards = M.merchantIndex({ ...db, transactions: [{ ...two, id: "x2" }, { ...one, id: "x1" }] });
+  const key = M.merchantKey("aa shop");
+  assert.equal(forwards.get(key).name, backwards.get(key).name, "a tie resolves differently depending on order");
+});
+
+await test("a merchant's activity gathers every spelling and nothing else", () => {
+  const db = M.buildDemoDB();
+  const target = db.transactions.find((t) => t.amount < 0).merchant;
+  const mixed = {
+    ...db,
+    transactions: db.transactions.map((t, i) =>
+      (M.merchantKey(t.merchant) === M.merchantKey(target) && i % 2 === 0
+        ? { ...t, merchant: t.merchant.toUpperCase() }
+        : t)),
+  };
+  const plain = M.merchantActivity(db, target, "2020-01-01", "2030-01-01");
+  const scrambled = M.merchantActivity(mixed, target, "2020-01-01", "2030-01-01");
+  assert.equal(scrambled.entries.length, plain.entries.length, "a re-spelling split the merchant in two");
+  for (const e of scrambled.entries) {
+    assert.equal(M.merchantKey(e.txn.merchant), M.merchantKey(target));
+    assert.equal(e.partial, false, "a merchant owns the whole transaction, never part of one");
+    assert.equal(e.amount, e.txn.amount);
+  }
+});
+
+await test("a split transaction counts once for its merchant and twice for its categories", () => {
+  // The asymmetry worth stating: a $300 shop divided between groceries and
+  // dining is one visit to that shop, and two lines of spending.
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const dining = db.categories.find((c) => c.name === "Restaurants & Bars");
+  const t = {
+    id: "zz", accountId: db.accounts[0].id, date: "2026-08-15", merchant: "Costco",
+    amount: -30_000, categoryId: groceries.id, tags: [],
+    splits: [
+      { id: "s1", categoryId: groceries.id, amount: -22_000 },
+      { id: "s2", categoryId: dining.id, amount: -8_000 },
+    ],
+  };
+  const one = { ...db, transactions: [t] };
+  const { entries } = M.merchantActivity(one, "Costco", "2026-08-15", "2026-08-15");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, -30_000, "the merchant should see the whole visit");
+
+  const slices = M.merchantCategories(entries);
+  assert.equal(slices.length, 2);
+  assert.equal(slices.reduce((s, x) => s + x.total, 0), -30_000, "the split does not add back up");
+  // Biggest first, so the card leads with where the money actually went — and
+  // the small one is met first here, so insertion order is the wrong answer.
+  const backwards = {
+    ...t,
+    id: "yy",
+    splits: [
+      { id: "s1", categoryId: dining.id, amount: -8_000 },
+      { id: "s2", categoryId: groceries.id, amount: -22_000 },
+    ],
+  };
+  const sorted = M.merchantCategories(
+    M.merchantActivity({ ...db, transactions: [backwards] }, "Costco", "2026-08-15", "2026-08-15").entries,
+  );
+  assert.equal(sorted[0].categoryId, groceries.id, "the smaller category was listed first");
+  assert.equal(sorted[0].total, -22_000);
+  assert.equal(sorted[1].categoryId, dining.id);
+});
+
+await test("a merchant's hidden transactions are counted out loud, not silently", () => {
+  const db = M.buildDemoDB();
+  const name = db.transactions[0].merchant;
+  const before = M.merchantActivity(db, name, "2020-01-01", "2030-01-01");
+  const hidden = {
+    ...db,
+    transactions: db.transactions.map((t) =>
+      (t.id === before.entries[0].txn.id ? { ...t, hideFromReports: true } : t)),
+  };
+  const after = M.merchantActivity(hidden, name, "2020-01-01", "2030-01-01");
+  assert.equal(after.entries.length, before.entries.length - 1);
+  assert.equal(after.skipped, before.skipped + 1);
+});
+
+await test("the lifetime line agrees with the transactions behind it", () => {
+  const db = M.buildDemoDB();
+  const name = db.transactions.find((t) => t.amount < 0).merchant;
+  const life = M.merchantLifetime(db, name);
+  const all = M.merchantActivity(db, name, "1900-01-01", "2999-12-31");
+  assert.equal(life.count, all.entries.length);
+  assert.equal(life.total, all.entries.reduce((s, e) => s + e.amount, 0));
+  assert.equal(life.first, all.entries.at(-1).txn.date, "entries are newest first, so the oldest is last");
+  assert.equal(life.last, all.entries[0].txn.date);
+  assert.ok(life.first <= life.last);
+
+  // Hiding one has to move both, or the line under the title claims a history
+  // the list below it will not show.
+  const hidden = {
+    ...db,
+    transactions: db.transactions.map((t) =>
+      (t.id === all.entries[0].txn.id ? { ...t, hideFromReports: true } : t)),
+  };
+  const after = M.merchantLifetime(hidden, name);
+  assert.equal(after.count, life.count - 1, "a hidden transaction is still in the lifetime count");
+  assert.equal(after.total, life.total - all.entries[0].amount, "…and still in the lifetime total");
+});
+
+await test("an unknown merchant reports nothing rather than throwing", () => {
+  const db = M.buildDemoDB();
+  assert.equal(M.merchantIndex(db).has(M.merchantKey("Nowhere At All")), false);
+  const life = M.merchantLifetime(db, "Nowhere At All");
+  assert.deepEqual(life, { first: null, last: null, count: 0, total: 0 });
+  const { entries, skipped } = M.merchantActivity(db, "Nowhere At All", "2020-01-01", "2030-01-01");
+  assert.deepEqual(entries, []);
+  assert.equal(skipped, 0);
+  assert.deepEqual(M.entryStats([]), { count: 0, total: 0, average: 0, largest: 0 });
+});
+
+await test("the merchant index covers every transaction exactly once", () => {
+  const db = M.buildDemoDB();
+  const index = M.merchantIndex(db);
+  const counted = [...index.values()].reduce((s, v) => s + v.count, 0);
+  const named = db.transactions.filter((t) => M.merchantKey(t.merchant)).length;
+  assert.equal(counted, named, "a transaction is in two merchants or in none");
+  for (const [key, v] of index) {
+    assert.equal(M.merchantKey(v.name), key, `${v.name} is filed under ${key}`);
   }
 });
 

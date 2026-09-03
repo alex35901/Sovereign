@@ -333,22 +333,29 @@ a.cat-open { cursor: pointer; }
 /* The period the detail below is describing, between the chart and the cards. */
 .period-title { letter-spacing: -0.01em; }
 a.cat-open:hover { color: var(--accent); text-decoration: underline; }
-/* "View category". Pinned to the cell's right edge rather than sitting beside
-   the chip, so the chip keeps the column's centre line and nothing moves when
-   the pointer crosses a row. */
-.tx-cat-open {
-  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+/* The little arrows that open a row's category or its merchant. Same look,
+   two placements, and two class names — the checks in scripts/breakpoints.mjs
+   have to be able to ask about one without finding the other. */
+.tx-open {
   width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
   color: var(--muted); background: var(--surface-3);
   opacity: 0; pointer-events: none; transition: opacity 90ms;
 }
-.list-row:hover .tx-cat-open { opacity: 1; pointer-events: auto; }
-.tx-cat-open:focus-visible { opacity: 1; pointer-events: auto; }
-.tx-cat-open:hover { color: var(--accent); }
+.list-row:hover .tx-open { opacity: 1; pointer-events: auto; }
+.tx-open:focus-visible { opacity: 1; pointer-events: auto; }
+.tx-open:hover { color: var(--accent); }
+/* Pinned to the cell's right edge rather than sitting beside the chip, so the
+   chip keeps the column's centre line and nothing moves when the pointer
+   crosses a row. */
+.tx-cat-open { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
+/* The merchant's arrow sits in the flow beside the name: that column is
+   left-aligned, so nothing has to hold a centre line. It still takes up its
+   space while invisible, so the name does not jump when the pointer arrives. */
+.tx-merchant-open { flex: none; }
 /* Not a width breakpoint, so it belongs here rather than in the section at the
    end of the file: on a touch screen there is no hover to reveal it with. */
 @media (hover: none) {
-  .tx-cat-open { opacity: 1; pointer-events: auto; }
+  .tx-open { opacity: 1; pointer-events: auto; }
 }
 .tx-category .chip { width: 150px; justify-content: center; }
 .tx-category .chip .truncate { min-width: 0; }

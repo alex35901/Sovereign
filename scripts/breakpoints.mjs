@@ -52,6 +52,7 @@ const PAGES = [
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
+  "/merchants/Amazon", "/merchants/Amazon?by=year",
 ];
 
 /**
@@ -176,13 +177,23 @@ try {
     const m = await page.evaluate(() => {
       const row = document.querySelector(".list-row.tx-grid:not(.head)");
       const chip = row?.querySelector(".tx-category .chip");
-      const arrow = row?.querySelector(".tx-cat-open");
+      // Scoped to the category cell: the merchant's arrow shares the look and
+      // would otherwise be the first thing found, at a wildly negative "gap".
+      const arrow = row?.querySelector(".tx-category .tx-cat-open");
       if (!chip || !arrow) return null;
       const c = chip.getBoundingClientRect();
       const a = arrow.getBoundingClientRect();
       const cell = row.querySelector(".tx-category").getBoundingClientRect();
-      return { gap: Math.round(a.left - c.right), inside: a.right <= Math.round(cell.right) + 1 };
+      const mo = row.querySelector(".tx-merchant-open");
+      return {
+        gap: Math.round(a.left - c.right),
+        inside: a.right <= Math.round(cell.right) + 1,
+        merchantPos: mo ? getComputedStyle(mo).position : "missing",
+        merchantInline: !!mo && getComputedStyle(mo).position === "static",
+      };
     });
+    check(`${w}px — the view-merchant arrow is beside the name, in the flow`,
+      m !== null && m.merchantInline, m === null ? "no arrow found" : `merchant arrow position ${m.merchantPos}`);
     check(`${w}px — the view-category arrow clears the pill`,
       m !== null && m.gap >= 0 && m.inside,
       m === null ? "no arrow found" : `gap ${m.gap}px, inside cell ${m.inside}`);
