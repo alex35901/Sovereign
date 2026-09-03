@@ -9,7 +9,6 @@ import { AccountPicker, CategoryPicker } from "../components/pickers";
 import { groupColor, GROUP_TONES, TONE_NAMES } from "../lib/category-colors";
 import { EmojiPicker } from "../components/EmojiPicker";
 
-const PALETTE = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
 
 export function CategoriesPanel() {
   const db = useDB();
@@ -59,13 +58,6 @@ export function CategoriesPanel() {
           onClose={() => { setEditing(null); setAddingTo(null); }}
         />
       ) : null}
-      <div style={{ padding: 14 }}>
-        <Popover
-          trigger={(open) => <Btn size="sm" onClick={open}><Plus size={13} /> New group</Btn>}
-        >
-          {(close) => <NewGroupForm onDone={close} />}
-        </Popover>
-      </div>
     </Card>
   );
 }
@@ -233,11 +225,82 @@ export function CategoryModal({ category, groupId, onClose }: { category?: Categ
   );
 }
 
-export function TagsPanel() {
-  const db = useDB();
+/**
+ * Picking a colour by looking at it.
+ *
+ * It was a dropdown of "Color 1" through "Color 12", which is a list of names
+ * for things that have no names — you had to pick one, save it, and look at
+ * the result to find out what you had chosen. A swatch is the colour.
+ */
+export function ColorSwatches({ value, onChange }: { value: string; onChange: (tone: string) => void }) {
+  return (
+    <div className="row wrap" style={{ gap: 6 }}>
+      {GROUP_TONES.map((tone) => (
+        <button
+          key={tone}
+          type="button"
+          onClick={() => onChange(tone)}
+          title={TONE_NAMES[tone] ?? tone}
+          aria-label={TONE_NAMES[tone] ?? tone}
+          aria-pressed={value === tone}
+          style={{
+            width: 26, height: 26, borderRadius: "50%", cursor: "pointer",
+            background: `var(${tone})`,
+            border: value === tone ? "2px solid var(--text)" : "2px solid transparent",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Name, colour, add — shared by the page and the button in its action bar. */
+export function NewTagForm({ onDone }: { onDone?: () => void }) {
   const { actions } = useStore();
   const [name, setName] = useState("");
   const [color, setColor] = useState("--c5");
+
+  const add = () => {
+    if (!name.trim()) return;
+    actions.addTag(name.trim(), color);
+    setName("");
+    onDone?.();
+  };
+
+  return (
+    <div className="col" style={{ gap: 10, minWidth: 240, maxWidth: 320 }}>
+      <TextInput value={name} onChange={setName} placeholder="New tag name" />
+      <div className="col" style={{ gap: 6 }}>
+        <span className="tiny faint">Colour — {TONE_NAMES[color] ?? color}</span>
+        <ColorSwatches value={color} onChange={setColor} />
+      </div>
+      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        <Btn variant="primary" onClick={add} disabled={!name.trim()}>Add tag</Btn>
+        <TagPill name={name.trim() || "preview"} tone={color} />
+      </div>
+    </div>
+  );
+}
+
+/** The "+ Tag" button, for the screen's action bar. */
+export function NewTagButton() {
+  return (
+    <Popover
+      align="right" width={280}
+      trigger={(open) => (
+        <Btn variant="primary" onClick={open}>
+          <Plus size={15} /> <span className="btn-label">Tag</span>
+        </Btn>
+      )}
+    >
+      {(close) => <div style={{ padding: 12 }}><NewTagForm onDone={close} /></div>}
+    </Popover>
+  );
+}
+
+export function TagsPanel() {
+  const db = useDB();
+  const { actions } = useStore();
   return (
     <Card>
       <CardHead title="Tags" sub="Cross-cutting labels — reimbursable, tax deductible, shared" />
@@ -250,12 +313,25 @@ export function TagsPanel() {
         ))}
         {!db.tags.length ? <span className="small faint">No tags yet.</span> : null}
       </div>
-      <div className="row" style={{ gap: 8 }}>
-        <TextInput value={name} onChange={setName} placeholder="New tag name" />
-        <SelectInput value={color} onChange={setColor} options={PALETTE.map((c) => ({ value: c, label: c.replace("--c", "Color ") }))} />
-        <Btn onClick={() => { if (name.trim()) { actions.addTag(name.trim(), color); setName(""); } }}>Add</Btn>
-      </div>
+      <div className="divider" />
+      <NewTagForm />
     </Card>
+  );
+}
+
+/** The "+ Category group" button, for the screen's action bar. */
+export function NewGroupButton() {
+  return (
+    <Popover
+      align="right"
+      trigger={(open) => (
+        <Btn variant="primary" onClick={open}>
+          <Plus size={15} /> <span className="btn-label">Category group</span>
+        </Btn>
+      )}
+    >
+      {(close) => <NewGroupForm onDone={close} />}
+    </Popover>
   );
 }
 
@@ -264,31 +340,24 @@ const MATCH_WORD: Record<string, string> = {
   contains: "contains", exact: "is exactly", starts: "starts with", ends: "ends with",
 };
 
-export function RulesPanel() {
+/**
+ * The rules, as a list.
+ *
+ * Adding one and running them all live in the screen's action bar now, where
+ * every other screen keeps its actions, rather than in this card's own header
+ * where they were a second set of controls six inches below the first.
+ */
+export function RulesPanel({ adding, onAddingDone }: { adding: boolean; onAddingDone: () => void }) {
   const db = useDB();
   const { actions } = useStore();
   const [editing, setEditing] = useState<Rule | null>(null);
-  const [adding, setAdding] = useState(false);
   const enabled = db.rules.filter((r) => r.enabled);
 
   return (
     <Card pad={false}>
       <CardHead
-        flush title="Rules" sub="Applied to every imported or synced transaction, in order"
-        right={
-          <div className="row wrap" style={{ gap: 8 }}>
-            {/* Sweeping enough to be worth asking twice: it can recategorise
-                and mark reviewed across the whole history in one press. One
-                undo takes it all back, which is why asking once is enough. */}
-            <ConfirmButton
-              label={`Run ${enabled.length || ""} now`.replace("  ", " ")}
-              confirmLabel={`Click again — ${db.transactions.length.toLocaleString()} transactions`}
-              variant="default"
-              onConfirm={actions.applyAllRules}
-            />
-            <Btn size="sm" onClick={() => setAdding(true)}><Plus size={13} /> New rule</Btn>
-          </div>
-        }
+        flush title="Rules"
+        sub={`${enabled.length} of ${db.rules.length} on — applied to every imported or synced transaction, in order`}
       />
       {db.rules.map((r) => (
         <div key={r.id} className="list-row">
@@ -313,7 +382,9 @@ export function RulesPanel() {
         </div>
       ))}
       {!db.rules.length ? <div style={{ padding: 16 }}><span className="small faint">No rules yet.</span></div> : null}
-      {editing || adding ? <RuleModal rule={editing ?? undefined} onClose={() => { setEditing(null); setAdding(false); }} /> : null}
+      {editing || adding ? (
+        <RuleModal rule={editing ?? undefined} onClose={() => { setEditing(null); onAddingDone(); }} />
+      ) : null}
     </Card>
   );
 }

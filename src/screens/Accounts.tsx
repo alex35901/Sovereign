@@ -71,7 +71,10 @@ export default function Accounts() {
 
   return (
     <>
-      <TopBar title="Accounts" actions={<Btn onClick={() => setAdding(true)}><Plus size={15} /> Account</Btn>} />
+      <TopBar
+        title="Accounts"
+        primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Account</span></Btn>}
+      />
       <div className="page stack">
         <div className="grid g3">
           <Tile label="Net worth" value={<Money value={nw.net} cents={false} />}

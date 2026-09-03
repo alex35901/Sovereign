@@ -45,7 +45,7 @@ export default function Investments() {
     <>
       <TopBar
         title="Investments"
-        actions={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> Holding</Btn>}
+        primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Holding</span></Btn>}
       />
       <div className="page stack">
         <div className="grid g4">

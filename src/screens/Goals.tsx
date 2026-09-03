@@ -20,7 +20,10 @@ export default function Goals() {
 
   return (
     <>
-      <TopBar title="Goals" actions={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> Goal</Btn>} />
+      <TopBar
+        title="Goals"
+        primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Goal</span></Btn>}
+      />
       <div className="page stack">
         <div className="grid g3">
           <Tile label="Saved toward goals" value={<Money value={totalSaved} cents={false} />}

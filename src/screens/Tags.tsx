@@ -1,10 +1,10 @@
 import { TopBar } from "../shell/TopBar";
-import { TagsPanel } from "./SettingsPanels";
+import { NewTagButton, TagsPanel } from "./SettingsPanels";
 
 export default function Tags() {
   return (
     <>
-      <TopBar title="Tags" />
+      <TopBar title="Tags" primary={<NewTagButton />} />
       <div className="page stack">
         <TagsPanel />
       </div>

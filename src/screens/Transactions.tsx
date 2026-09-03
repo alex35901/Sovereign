@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
+import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, Plus, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { DB, Transaction } from "../types";
 import { useDB, useStore } from "../store";
-import { TopBar } from "../shell/TopBar";
+import { IconAction, TopBar } from "../shell/TopBar";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
@@ -84,6 +84,7 @@ export default function Transactions() {
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [importing, setImporting] = useState(false);
   const [deduping, setDeduping] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [limit, setLimit] = useState(120);
 
   // Worked out once rather than per transaction: a between-dates filter over
@@ -174,14 +175,24 @@ export default function Transactions() {
         title="Transactions"
         actions={
           <>
-            <Btn onClick={() => setImporting(true)}><Upload size={15} /> Import</Btn>
-            <Btn onClick={() => setDeduping(true)} title="Find transactions imported more than once">
-              <CopyCheck size={15} /> <span className="btn-label">Duplicates</span>
-            </Btn>
-            <Btn onClick={() => download("transactions.csv", toCSV(db, filtered), "text/csv")}>
-              <Download size={15} /> Export
-            </Btn>
+            <IconAction title="Find transactions imported more than once" onClick={() => setDeduping(true)}>
+              <CopyCheck size={16} />
+            </IconAction>
+            <IconAction title="Import a CSV" onClick={() => setImporting(true)}>
+              <Upload size={16} />
+            </IconAction>
+            <IconAction
+              title="Export what is showing as CSV"
+              onClick={() => download("transactions.csv", toCSV(db, filtered), "text/csv")}
+            >
+              <Download size={16} />
+            </IconAction>
           </>
+        }
+        primary={
+          <Btn variant="primary" onClick={() => setAdding(true)}>
+            <Plus size={15} /> <span className="btn-label">Transaction</span>
+          </Btn>
         }
       />
       <div className="page stack">
@@ -343,6 +354,7 @@ export default function Transactions() {
       </div>
 
       {editing ? <TransactionModal txn={editing} onClose={() => setEditing(null)} /> : null}
+      {adding ? <TransactionModal onClose={() => setAdding(false)} /> : null}
       {importing ? <ImportModal onClose={() => setImporting(false)} /> : null}
       {deduping ? <DuplicatesModal onClose={() => setDeduping(false)} /> : null}
     </>

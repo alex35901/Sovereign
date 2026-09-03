@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, ChevronDown, ChevronRight, Copy, RotateCcw, Sparkles } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
 import { useDB, useStore } from "../store";
-import { TopBar } from "../shell/TopBar";
+import { IconAction, TopBar } from "../shell/TopBar";
 import { monthLabel, thisMonth, addMonths } from "../lib/date";
 import { budgetSummary, remainingTone, spentShare } from "../lib/select";
 import { fmt0 } from "../lib/money";
@@ -32,13 +32,15 @@ export default function Budget() {
         title="Budget"
         actions={
           <>
-            <Btn onClick={() => actions.copyPreviousMonth(month)} title={`Copy ${monthLabel(addMonths(month, -1))}`}>
-              <Copy size={14} /> Copy last month
-            </Btn>
-            <Btn onClick={() => actions.autofillBudget(month)} title="Fill from the last three months' average">
-              <Sparkles size={14} /> Auto-fill
-            </Btn>
-            <Btn variant="ghost" onClick={() => actions.clearBudget(month)}><RotateCcw size={14} /></Btn>
+            <IconAction
+              title="Auto-fill from the last three months' average"
+              onClick={() => actions.autofillBudget(month)}
+            >
+              <Sparkles size={16} />
+            </IconAction>
+            <IconAction title="Clear this month's plan" onClick={() => actions.clearBudget(month)}>
+              <RotateCcw size={16} />
+            </IconAction>
           </>
         }
       />
