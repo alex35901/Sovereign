@@ -156,7 +156,11 @@ function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; inc
   return (
           <div className="list-row">
             <span style={{ fontSize: 15, width: 22 }}>{r.category.icon}</span>
-            <div className="grow truncate" style={{ fontWeight: 500 }}>{r.category.name}</div>
+            {/* The name opens the category's own page; Actual, further along,
+                still goes to the transactions behind this month's figure. */}
+            <Link to={`/categories/${r.category.id}`} className="grow truncate cat-open" style={{ fontWeight: 500 }}>
+              {r.category.name}
+            </Link>
 
             <div className="bcol bcol-plan">
               <BudgetAmountPopover category={r.category} month={month} kind={income ? "income" : "expense"} />

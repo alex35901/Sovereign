@@ -40,6 +40,8 @@ await build({
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
+      export { categoryActivity, categoryStats, categoryByPeriod, categoryBudget } from "./src/lib/select.ts";
+      export * as B from "./src/lib/buckets.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
@@ -61,7 +63,7 @@ await build({
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
-      export { thisMonth, addMonths } from "./src/lib/date.ts";
+      export { thisMonth, addMonths, addDays } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel } from "./src/lib/sync/schedule.ts";
@@ -3372,6 +3374,263 @@ await test("a day of nothing but transfers reports no total, not zero", () => {
   assert.equal(sum.total, 0);
   assert.equal(sum.excludedCount, 1);
 });
+
+// --- periods -------------------------------------------------------------
+
+await test("a date lands in the right period at every grain", () => {
+  const d = "2026-08-19"; // a Wednesday
+  assert.equal(M.B.bucketOf(d, "day"), "2026-08-19");
+  assert.equal(M.B.bucketOf(d, "week"), "2026-08-17", "weeks start on Monday");
+  assert.equal(M.B.bucketOf(d, "month"), "2026-08");
+  assert.equal(M.B.bucketOf(d, "quarter"), "2026-Q3");
+  assert.equal(M.B.bucketOf(d, "year"), "2026");
+});
+
+await test("a Sunday closes its week rather than opening the next", () => {
+  // The off-by-one that would put every Sunday's spending in the wrong week.
+  assert.equal(M.B.bucketOf("2026-08-23", "week"), "2026-08-17");
+  assert.equal(M.B.bucketOf("2026-08-24", "week"), "2026-08-24");
+  assert.equal(M.B.bucketOf("2026-08-17", "week"), "2026-08-17");
+});
+
+await test("every quarter covers its own three months and no others", () => {
+  const seen = new Map();
+  for (const q of ["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4"]) {
+    const months = M.B.monthsIn(q, "quarter");
+    assert.equal(months.length, 3, `${q} covers ${months.length} months`);
+    for (const m of months) {
+      assert.equal(seen.has(m), false, `${m} is in ${q} and ${seen.get(m)}`);
+      seen.set(m, q);
+    }
+  }
+  assert.equal(seen.size, 12, "the four quarters do not cover the year");
+  assert.deepEqual(M.B.bucketSpan("2026-Q1", "quarter"), { from: "2026-01-01", to: "2026-03-31" });
+  assert.deepEqual(M.B.bucketSpan("2026-Q4", "quarter"), { from: "2026-10-01", to: "2026-12-31" });
+});
+
+await test("a span ends where the next one starts, with no day in both or neither", () => {
+  for (const grain of ["day", "week", "month", "quarter", "year"]) {
+    let key = M.B.bucketOf("2026-01-01", grain);
+    for (let i = 0; i < 8; i++) {
+      const { from, to } = M.B.bucketSpan(key, grain);
+      assert.ok(from <= to, `${grain} ${key} runs backwards`);
+      // Every day inside maps back to this period, and the day after `to`
+      // starts the next one — no gap, no overlap.
+      assert.equal(M.B.bucketOf(from, grain), key, `${grain} ${key} does not contain its own first day`);
+      assert.equal(M.B.bucketOf(to, grain), key, `${grain} ${key} does not contain its own last day`);
+      const next = M.B.nextBucket(key, grain);
+      assert.equal(M.B.prevBucket(next, grain), key, `${grain}: stepping back from ${next} does not return ${key}`);
+      // The next period starts the very next day: no day belongs to both, and
+      // no day belongs to neither.
+      const dayAfter = M.addDays(to, 1);
+      assert.equal(M.B.bucketSpan(next, grain).from, dayAfter,
+        `${grain}: ${key} ends ${to} but ${next} starts ${M.B.bucketSpan(next, grain).from}`);
+      assert.equal(M.B.bucketOf(dayAfter, grain), next, `${grain}: the day after ${key} is not in ${next}`);
+      assert.ok(next > key, `${grain} keys do not sort chronologically: ${key} then ${next}`);
+      key = next;
+    }
+  }
+});
+
+await test("empty periods are still drawn", () => {
+  // A month with no spending is a bar of no height. Dropping it would put
+  // July next to September and quietly redraw the trend.
+  const months = M.B.bucketsBetween("2026-01-15", "2026-06-02", "month");
+  assert.deepEqual(months, ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"]);
+  assert.deepEqual(M.B.bucketsBetween("2026-03-04", "2026-03-04", "day"), ["2026-03-04"]);
+  assert.deepEqual(M.B.bucketsBetween("2026-06-01", "2026-01-01", "month"), [], "backwards ranges are empty");
+});
+
+await test("a chart window keeps the recent end, not the distant one", () => {
+  // The bug this exists for: building every day of four years and taking the
+  // tail worked until a guard truncated the list, at which point the chart
+  // showed sixty days of 2025 while the page claimed to be showing now.
+  const days = M.B.lastBuckets("2022-01-01", "2026-09-03", "day", 60);
+  assert.equal(days.length, 60);
+  assert.equal(days.at(-1), "2026-09-03", "the window does not end at the date asked for");
+  assert.equal(days[0], "2026-07-06");
+  for (let i = 1; i < days.length; i++) {
+    assert.equal(M.B.nextBucket(days[i - 1], "day"), days[i], "the window has a hole in it");
+  }
+
+  // A short history is not padded backwards past its own beginning.
+  const few = M.B.lastBuckets("2026-08-30", "2026-09-03", "day", 60);
+  assert.deepEqual(few, ["2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02", "2026-09-03"]);
+
+  // And it agrees with the long way round whenever the long way fits.
+  for (const grain of ["day", "week", "month", "quarter", "year"]) {
+    const all = M.B.bucketsBetween("2024-02-29", "2026-09-03", grain);
+    assert.deepEqual(M.B.lastBuckets("2024-02-29", "2026-09-03", grain, 5), all.slice(-5), grain);
+    assert.deepEqual(M.B.lastBuckets("2024-02-29", "2026-09-03", grain, 999), all, grain);
+  }
+});
+
+await test("a week straddling a month end reports against both months", () => {
+  // Budgets are monthly, so a week that crosses the turn has to name two.
+  const week = M.B.bucketOf("2026-09-01", "week"); // Mon Aug 31
+  assert.equal(week, "2026-08-31");
+  assert.deepEqual(M.B.monthsIn(week, "week"), ["2026-08", "2026-09"]);
+  assert.equal(M.B.alignsToMonths("week"), false);
+  assert.equal(M.B.alignsToMonths("month"), true);
+});
+
+// --- one category, up close ----------------------------------------------
+
+await test("a category's activity is its own transactions and nothing else", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const { entries } = M.categoryActivity(db, groceries.id, "2026-08-01", "2026-08-31");
+  assert.ok(entries.length > 0, "the demo data has no August groceries");
+  for (const e of entries) {
+    assert.equal(e.txn.date >= "2026-08-01" && e.txn.date <= "2026-08-31", true, "outside the span");
+    const inCategory = e.txn.categoryId === groceries.id
+      || e.txn.splits?.some((s) => s.categoryId === groceries.id);
+    assert.ok(inCategory, `${e.txn.merchant} is not in this category`);
+  }
+  // Newest first, the order a transaction list is read in.
+  for (let i = 1; i < entries.length; i++) {
+    assert.ok(entries[i - 1].txn.date >= entries[i].txn.date, "not in date order");
+  }
+});
+
+await test("a split contributes only its own share to the category", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const dining = db.categories.find((c) => c.name === "Restaurants & Bars");
+  const t = {
+    id: "zz", accountId: db.accounts[0].id, date: "2026-08-15", merchant: "Costco", amount: -30_000,
+    categoryId: groceries.id, tags: [],
+    splits: [
+      { id: "s1", categoryId: groceries.id, amount: -22_000 },
+      { id: "s2", categoryId: dining.id, amount: -8_000 },
+    ],
+  };
+  const withSplit = { ...db, transactions: [t, ...db.transactions] };
+  const mine = M.categoryActivity(withSplit, groceries.id, "2026-08-15", "2026-08-15").entries
+    .find((e) => e.txn.id === "zz");
+  assert.equal(mine.amount, -22_000, "the whole purchase leaked into one half of the split");
+  assert.equal(mine.partial, true, "a partial entry has to say so, or the row prints the wrong figure");
+});
+
+await test("hidden transactions are counted out loud, not silently", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const before = M.categoryActivity(db, groceries.id, "2026-08-01", "2026-08-31");
+  const first = before.entries[0].txn.id;
+  const hidden = {
+    ...db,
+    transactions: db.transactions.map((t) => (t.id === first ? { ...t, hideFromReports: true } : t)),
+  };
+  const after = M.categoryActivity(hidden, groceries.id, "2026-08-01", "2026-08-31");
+  assert.equal(after.entries.length, before.entries.length - 1);
+  assert.equal(after.skipped, before.skipped + 1, "a skipped transaction has to be reported");
+});
+
+await test("the summary describes exactly the transactions listed", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const { entries } = M.categoryActivity(db, groceries.id, "2026-08-01", "2026-08-31");
+  const s = M.categoryStats(entries);
+  assert.equal(s.count, entries.length);
+  assert.equal(s.total, entries.reduce((n, e) => n + e.amount, 0));
+  assert.equal(s.average, Math.round(s.total / s.count));
+  const biggest = entries.reduce((a, e) => (Math.abs(e.amount) > Math.abs(a) ? e.amount : a), 0);
+  assert.equal(s.largest, biggest);
+  assert.ok(Math.abs(s.largest) >= Math.abs(s.average), "the largest is smaller than the average");
+});
+
+await test("an empty period reports zeroes rather than dividing by none", () => {
+  const s = M.categoryStats([]);
+  assert.deepEqual(s, { count: 0, total: 0, average: 0, largest: 0 });
+});
+
+await test("the bars add up to the total, and empty periods are zero not missing", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const { entries } = M.categoryActivity(db, groceries.id, "2026-01-01", "2026-08-31");
+  const keys = M.B.bucketsBetween("2026-01-01", "2026-08-31", "month");
+  const byMonth = M.categoryByPeriod(entries, keys, (d) => M.B.bucketOf(d, "month"));
+  assert.equal(byMonth.size, keys.length, "a period the chart asked for went missing");
+  for (const k of keys) assert.equal(typeof byMonth.get(k), "number", `${k} has no bar`);
+  const summed = [...byMonth.values()].reduce((a, b) => a + b, 0);
+  assert.equal(summed, M.categoryStats(entries).total, "the bars and the total disagree");
+});
+
+await test("a period of cancelling transfers is busy, not empty", () => {
+  // The page opens on the newest period with anything in it. Both halves of a
+  // credit card payment land in one month and net to zero, so "has a total"
+  // and "has transactions" are different questions — asking the first one
+  // opened the page on an empty September.
+  const db = M.buildDemoDB();
+  const pay = db.categories.find((c) => c.name === "Credit Card Payment");
+  const { entries } = M.categoryActivity(db, pay.id, "2026-01-01", "2026-08-31");
+  assert.ok(entries.length > 0, "the demo data has no card payments to check");
+  const keys = M.B.bucketsBetween("2026-01-01", "2026-08-31", "month");
+  const totals = M.categoryByPeriod(entries, keys, (d) => M.B.bucketOf(d, "month"));
+  const populated = new Set(entries.map((e) => M.B.bucketOf(e.txn.date, "month")));
+  const cancelling = [...populated].filter((k) => totals.get(k) === 0);
+  assert.ok(cancelling.length > 0, "no month cancels out, so this proves nothing");
+  for (const k of cancelling) {
+    assert.equal(populated.has(k), true, `${k} totals zero but is not empty`);
+  }
+});
+
+await test("the budget for a period is its whole months, not a slice of one", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const august = M.categoryBudget(db, groceries.id, ["2026-08"]);
+  assert.deepEqual(august.months, ["2026-08"]);
+  assert.equal(august.remaining, august.planned + august.rollover - august.actual);
+
+  // A day inside August reports August's budget, unchanged — a plan of $600 was
+  // never divided into daily portions.
+  const oneDay = M.categoryBudget(db, groceries.id, M.B.monthsIn("2026-08-19", "day"));
+  assert.deepEqual(oneDay, august);
+
+  // A quarter is the sum of its three months.
+  const q3 = M.categoryBudget(db, groceries.id, M.B.monthsIn("2026-Q3", "quarter"));
+  const parts = ["2026-07", "2026-08", "2026-09"].map((m) => M.categoryBudget(db, groceries.id, [m]));
+  assert.equal(q3.planned, parts.reduce((s, p) => s + p.planned, 0));
+  assert.equal(q3.actual, parts.reduce((s, p) => s + p.actual, 0));
+  // Rollover is carried in once, at the front, not once per month. Nothing in
+  // the demo data rolls over, so the case has to be built or the assertion is
+  // 0 === 0 and proves nothing.
+  assert.equal(q3.rollover, parts[0].rollover);
+});
+
+await test("a rolled-over balance is carried in once, not once per month", () => {
+  const db = M.buildDemoDB();
+  const cat = db.categories.find((c) => c.name === "Groceries");
+  const rolling = {
+    ...db,
+    categories: db.categories.map((c) => (c.id === cat.id ? { ...c, rollover: true } : c)),
+    // A generous plan in three quiet months, so there is a real carry to find.
+    budgets: {
+      ...db.budgets,
+      "2026-04": { ...db.budgets["2026-04"], [cat.id]: 900_000 },
+      "2026-05": { ...db.budgets["2026-05"], [cat.id]: 900_000 },
+      "2026-06": { ...db.budgets["2026-06"], [cat.id]: 900_000 },
+    },
+  };
+  const q3 = M.categoryBudget(rolling, cat.id, M.B.monthsIn("2026-Q3", "quarter"));
+  const july = M.categoryBudget(rolling, cat.id, ["2026-07"]);
+  assert.ok(july.rollover > 0, "no carry was set up, so this test proves nothing");
+  assert.equal(q3.rollover, july.rollover, "the carry was counted once per month instead of once");
+  assert.equal(q3.remaining, q3.planned + q3.rollover - q3.actual);
+});
+
+await test("the drill-down and the Budget screen report the same actual", () => {
+  const db = M.buildDemoDB();
+  const rows = M.budgetTable(db, "2026-08").flatMap((g) => g.rows);
+  assert.ok(rows.length > 3, "no budget rows to compare against");
+  for (const r of rows) {
+    const mine = M.categoryBudget(db, r.category.id, ["2026-08"]);
+    assert.equal(mine.actual, r.actual, `${r.category.name} disagrees on actual`);
+    assert.equal(mine.planned, r.planned, `${r.category.name} disagrees on planned`);
+    assert.equal(mine.remaining, r.remaining, `${r.category.name} disagrees on remaining`);
+  }
+});
+
 
 // --- the palette -----------------------------------------------------------
 

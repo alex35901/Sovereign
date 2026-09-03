@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { CheckCheck, CopyCheck, Download, EyeOff, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
+import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -311,8 +311,19 @@ export default function Transactions() {
   );
 }
 
-function Row({ txn, selected, onToggle, onEdit }: {
-  txn: Transaction; selected: boolean; onToggle: () => void; onEdit: () => void;
+/**
+ * One transaction, as it appears in a list.
+ *
+ * Shared with the category drill-down, which wants the same row without the
+ * multi-select: omit `onToggle` and the checkbox column stays empty rather than
+ * the grid shifting under it, so the two lists line up column for column.
+ *
+ * `amount` overrides what is shown, for a list built from splits — a $300
+ * purchase split three ways contributes $40 to the category being read, and
+ * printing $300 there would make the total underneath look wrong.
+ */
+export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
+  txn: Transaction; selected?: boolean; onToggle?: () => void; onEdit: () => void; amount?: number;
 }) {
   const db = useDB();
   const { actions, suggestRule } = useStore();
@@ -322,7 +333,7 @@ function Row({ txn, selected, onToggle, onEdit }: {
 
   return (
     <div className={cx("list-row tx-grid", selected && "sel")} style={selected ? { background: "var(--accent-soft)" } : undefined}>
-      <input type="checkbox" className="cb" checked={selected} onChange={onToggle} />
+      {onToggle ? <input type="checkbox" className="cb" checked={selected} onChange={onToggle} /> : <span />}
       <span className="tx-mark">
         <MerchantAvatar name={txn.merchant} />
         <span
@@ -373,7 +384,7 @@ function Row({ txn, selected, onToggle, onEdit }: {
       <div className="row tx-category" style={{ gap: 4, minWidth: 0 }}>
         {split ? (
           <span className="chip" onClick={onEdit} style={{ cursor: "pointer" }}>Split</span>
-        ) : (
+        ) : (<>
           <CategoryPicker
             value={txn.categoryId}
             onChange={(id) => {
@@ -393,10 +404,19 @@ function Row({ txn, selected, onToggle, onEdit }: {
               </span>
             )}
           />
-        )}
+          {/* Kept out of the flow so the chip stays on the column's centre
+              line whether or not the pointer is over the row. */}
+          <Link
+            to={`/categories/${txn.categoryId}`} className="tx-cat-open"
+            title={`View ${category?.name ?? "category"}`} aria-label={`View ${category?.name ?? "category"}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ArrowRight size={13} />
+          </Link>
+        </>)}
       </div>
       <div className="num bold tx-amount" style={{ cursor: "pointer" }} onClick={onEdit}>
-        <Money value={txn.amount} colored={txn.amount > 0} />
+        <Money value={amount ?? txn.amount} colored={(amount ?? txn.amount) > 0} />
       </div>
     </div>
   );

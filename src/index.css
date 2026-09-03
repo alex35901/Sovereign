@@ -258,7 +258,10 @@ h3 { font-size: 14px; }
 .btn-danger:hover { background: var(--neg-soft); filter: brightness(1.15); }
 .btn-sm { padding: 4px 9px; font-size: 12px; border-radius: 7px; }
 .btn-icon { padding: 6px; border-radius: 7px; }
-.seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; gap: 2px; }
+/* Wraps rather than overflowing: five options — Daily through Yearly — come
+   to 326px of pills, wider than a 320px phone. Anything that already fits
+   on one line is unaffected. */
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; gap: 2px; }
 .seg button { border: 0; background: none; padding: 5px 11px; border-radius: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 500; }
 .seg button.on { background: var(--surface-3); color: var(--text); font-weight: 600; }
 
@@ -301,7 +304,11 @@ table.tbl { width: 100%; border-collapse: collapse; }
    than across a canyon of empty space on a wide screen */
 .tx-grid {
   display: grid;
-  grid-template-columns: 16px 32px minmax(0, 34rem) 64px minmax(158px, 1fr) 118px;
+  /* The category column's minimum clears the 150px chip on both sides — the
+     chip is centred, so the "view category" arrow pinned at the right edge
+     needs its 22px free on the left of the chip as well, or it sits on top of
+     the chip at exactly the widths where the column stops growing. */
+  grid-template-columns: 16px 32px minmax(0, 34rem) 64px minmax(200px, 1fr) 118px;
   gap: 12px;
   align-items: center;
 }
@@ -319,7 +326,30 @@ table.tbl { width: 100%; border-collapse: collapse; }
    number sideways on exactly the days worth a second look. */
 .tx-day-total { position: relative; }
 .tx-day-total .excluded-note { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
-.tx-category { justify-content: center; text-align: center; }
+.tx-category { justify-content: center; text-align: center; position: relative; }
+/* A category name that opens its own page. Underlined only on hover, so a
+   list of them does not read as a page of links. */
+a.cat-open { cursor: pointer; }
+/* The period the detail below is describing, between the chart and the cards. */
+.period-title { letter-spacing: -0.01em; }
+a.cat-open:hover { color: var(--accent); text-decoration: underline; }
+/* "View category". Pinned to the cell's right edge rather than sitting beside
+   the chip, so the chip keeps the column's centre line and nothing moves when
+   the pointer crosses a row. */
+.tx-cat-open {
+  position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+  color: var(--muted); background: var(--surface-3);
+  opacity: 0; pointer-events: none; transition: opacity 90ms;
+}
+.list-row:hover .tx-cat-open { opacity: 1; pointer-events: auto; }
+.tx-cat-open:focus-visible { opacity: 1; pointer-events: auto; }
+.tx-cat-open:hover { color: var(--accent); }
+/* Not a width breakpoint, so it belongs here rather than in the section at the
+   end of the file: on a touch screen there is no hover to reveal it with. */
+@media (hover: none) {
+  .tx-cat-open { opacity: 1; pointer-events: auto; }
+}
 .tx-category .chip { width: 150px; justify-content: center; }
 .tx-category .chip .truncate { min-width: 0; }
 /* The institution's mark, standing in for the account's name. Dimmed until

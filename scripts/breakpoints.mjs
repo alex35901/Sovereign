@@ -49,6 +49,9 @@ const check = (name, ok, detail = "") => {
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/cashflow", "/reports",
   "/recurring", "/goals", "/investments", "/rules", "/categories", "/tags", "/settings",
+  // The category drill-down carries a chart, a transaction list and two cards
+  // side by side, which is the layout most likely to run off a phone.
+  "/categories/c_groceries", "/categories/c_groceries?by=year",
 ];
 
 /**
@@ -161,6 +164,30 @@ try {
   check("1440px — every category pill is the same width",
     aligned.pillWidths.length === 1, `saw widths ${aligned.pillWidths.join(", ")}`);
   await wide.close();
+
+  // ── the "view category" arrow does not sit on top of the chip ──
+  // It is pinned to the right edge of a cell whose chip is centred, so the
+  // column has to leave 22px clear on *both* sides. It did not, at exactly the
+  // widths between 900px and about 1200px where the column stops growing.
+  for (const w of [1440, 1100, 950, 901]) {
+    const page = await browser.newPage({ viewport: { width: w, height: 900 } });
+    await page.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(400);
+    const m = await page.evaluate(() => {
+      const row = document.querySelector(".list-row.tx-grid:not(.head)");
+      const chip = row?.querySelector(".tx-category .chip");
+      const arrow = row?.querySelector(".tx-cat-open");
+      if (!chip || !arrow) return null;
+      const c = chip.getBoundingClientRect();
+      const a = arrow.getBoundingClientRect();
+      const cell = row.querySelector(".tx-category").getBoundingClientRect();
+      return { gap: Math.round(a.left - c.right), inside: a.right <= Math.round(cell.right) + 1 };
+    });
+    check(`${w}px — the view-category arrow clears the pill`,
+      m !== null && m.gap >= 0 && m.inside,
+      m === null ? "no arrow found" : `gap ${m.gap}px, inside cell ${m.inside}`);
+    await page.close();
+  }
 
   // ── nothing runs off the edge, anywhere ──
   for (const w of [320, 360, 390, 430, 768, 1024, 1440]) {

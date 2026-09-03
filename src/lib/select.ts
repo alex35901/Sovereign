@@ -651,3 +651,121 @@ export function monthOptions(db: DB): MonthKey[] {
   for (let m = min; m <= max; m = addMonths(m, 1)) out.push(m);
   return out.reverse();
 }
+
+/* ── one category, up close ───────────────────────────────────────────── */
+
+/**
+ * A transaction's contribution to one category.
+ *
+ * `amount` is not always the transaction's amount: a transaction split three
+ * ways contributes only the split that belongs here. `partial` says so, because
+ * a row reading $40 inside a $300 purchase needs to explain itself.
+ */
+export interface CategoryEntry {
+  txn: Transaction;
+  amount: number;
+  partial: boolean;
+}
+
+export interface CategoryActivity {
+  /** Newest first, the order a transaction list is read in. */
+  entries: CategoryEntry[];
+  /**
+   * Transactions in this category over the same span that were left out, being
+   * hidden from reports or in a muted account. Counted so the page can say so:
+   * a total that silently disagrees with what you remember spending is worse
+   * than one that names what it skipped.
+   */
+  skipped: number;
+}
+
+/** Everything in one category between two dates, both ends inclusive. */
+export function categoryActivity(db: DB, categoryId: string, from: ISODate, to: ISODate): CategoryActivity {
+  const muted = mutedAccountIds(db);
+  const entries: CategoryEntry[] = [];
+  let skipped = 0;
+  for (const t of db.transactions) {
+    if (t.date < from || t.date > to) continue;
+    const all = lines(t);
+    const mine = all.filter((l) => l.categoryId === categoryId);
+    if (!mine.length) continue;
+    if (!counts(t, muted)) { skipped++; continue; }
+    entries.push({
+      txn: t,
+      amount: mine.reduce((s, l) => s + l.amount, 0),
+      partial: mine.length !== all.length,
+    });
+  }
+  entries.sort((a, b) => b.txn.date.localeCompare(a.txn.date));
+  return { entries, skipped };
+}
+
+export interface CategoryStats {
+  count: number;
+  /** Signed and summed, so income reads positive and spending negative. */
+  total: number;
+  average: number;
+  /** The single biggest by size, sign kept — the one worth looking at. */
+  largest: number;
+}
+
+export function categoryStats(entries: CategoryEntry[]): CategoryStats {
+  const total = entries.reduce((s, e) => s + e.amount, 0);
+  let largest = 0;
+  for (const e of entries) if (Math.abs(e.amount) > Math.abs(largest)) largest = e.amount;
+  return {
+    count: entries.length,
+    total,
+    // Rounded to the cent: an average of a third of a penny is not money.
+    average: entries.length ? Math.round(total / entries.length) : 0,
+    largest,
+  };
+}
+
+/**
+ * What a category came to in each period, for the chart.
+ *
+ * Every period asked for comes back, including the empty ones — a month with
+ * no spending is a bar of no height, and leaving it out would put July beside
+ * September and redraw the trend.
+ */
+export function categoryByPeriod(
+  entries: CategoryEntry[],
+  keys: string[],
+  keyOf: (date: ISODate) => string,
+): Map<string, number> {
+  const out = new Map(keys.map((k) => [k, 0]));
+  for (const e of entries) {
+    const k = keyOf(e.txn.date);
+    // Only periods the caller asked for; anything outside is a filter's job.
+    if (out.has(k)) out.set(k, out.get(k)! + e.amount);
+  }
+  return out;
+}
+
+export interface CategoryBudget {
+  /** The months this covers, since budgets are set by month and nothing finer. */
+  months: MonthKey[];
+  planned: number;
+  /** Positive magnitude, the way the Budget screen counts it. */
+  actual: number;
+  /** Under/overspend carried into the first month, 0 unless the category rolls over. */
+  rollover: number;
+  remaining: number;
+}
+
+/**
+ * The budget for a category over some whole months.
+ *
+ * Deliberately whole months even when the period on screen is a day or a week:
+ * a plan of $1,300 for August was never divided into daily portions, and
+ * inventing one would put a number on the page that means nothing.
+ */
+export function categoryBudget(db: DB, categoryId: string, months: MonthKey[]): CategoryBudget {
+  const planned = months.reduce((s, m) => s + plannedFor(db, m, categoryId), 0);
+  const actual = months.reduce((s, m) => s + (actualsFor(db, m).get(categoryId) ?? 0), 0);
+  // Carried in at the front of the span, not once per month — the months after
+  // the first are inside this total already.
+  const rollover = months.length ? rolloverFor(db, months[0]!, categoryId) : 0;
+  return { months, planned, actual, rollover, remaining: planned + rollover - actual };
+}

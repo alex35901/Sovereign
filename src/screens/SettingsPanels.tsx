@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Plus, Trash2 } from "lucide-react";
 import type { Category, CategoryGroup, ID, Rule } from "../types";
 import { useDB, useStore } from "../store";
@@ -41,7 +42,7 @@ export function CategoriesPanel() {
           {db.categories.filter((c) => c.groupId === g.id).sort((a, b) => a.order - b.order).map((c) => (
             <div key={c.id} className="list-row">
               <span style={{ fontSize: 15, width: 22 }}>{c.icon}</span>
-              <span className="grow truncate">{c.name}</span>
+              <Link to={`/categories/${c.id}`} className="grow truncate cat-open">{c.name}</Link>
               {c.rollover ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>rollover</span> : null}
               {c.excludeFromBudget ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>off-budget</span> : null}
               <span className="tiny faint">{db.transactions.filter((t) => t.categoryId === c.id).length} txns</span>
@@ -170,7 +171,8 @@ function NewGroupForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-function CategoryModal({ category, groupId, onClose }: { category?: Category; groupId: string; onClose: () => void }) {
+/** Shared with the category drill-down, which edits the one it is showing. */
+export function CategoryModal({ category, groupId, onClose }: { category?: Category; groupId: string; onClose: () => void }) {
   const db = useDB();
   const { actions } = useStore();
   const [name, setName] = useState(category?.name ?? "");
