@@ -8,6 +8,7 @@ import {
 import { useDB } from "../store";
 import { needsReviewCount, netWorthNow } from "../lib/select";
 import { Money, cx } from "../components/ui";
+import { Mark } from "../components/Mark";
 
 export const NAV = [
   { to: "/dashboard", label: "Dashboard", Icon: LayoutDashboard },
@@ -47,7 +48,7 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <NavLink to="/dashboard" className="brand">
-        <span className="brand-mark">◈</span>
+        <span className="brand-mark"><Mark size={19} /></span>
         <span>Sovereign</span>
       </NavLink>
       <nav className="nav">

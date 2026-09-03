@@ -1,11 +1,39 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Sovereign">
   <!-- Full bleed on purpose: iOS rounds the corners of a home screen icon itself,
        and any transparency it finds is composited onto black. The mark sits well
-       inside the 80% circle Android's maskable icons crop to, so one drawing
-       serves the home screen, the tab and the install prompt. -->
+       inside the 80% circle Android maskable icons crop to, so one drawing serves
+       the home screen, the tab and the install prompt.
+
+       A leaping rabbit, drawn as overlapping filled shapes rather than one
+       outline: the union of a body, a head, two ears and a loose dot is far
+       easier to steer than a single path tracing all of it, and the renderer
+       unions them for free. The eye is cut back out in the background colour,
+       so the whole mark is two colours and nothing else.
+
+       Five shapes and one hole, because this has to survive being 32px in the
+       sidebar. Anything finer was left out of the drawing rather than drawn
+       and hoped for.
+
+       The transform is measured rather than guessed: it centres the drawing's
+       real bounding box with a 44-unit margin all round. -->
   <rect width="512" height="512" fill="#e8894a"/>
-  <g fill="none" stroke="#1a1105" stroke-width="36" stroke-linejoin="round">
-    <path d="M256 124 388 256 256 388 124 256Z"/>
+  <g transform="translate(-104.2,-15.1) scale(1.3608)">
+    <g fill="#ffffff">
+    <path d="M140 300
+             C176 352 250 366 306 326
+             C340 302 360 272 348 250
+             C336 228 310 230 298 246
+             C262 278 200 304 140 300 Z"/>
+    <ellipse cx="326" cy="196" rx="50" ry="44"/>
+    <path d="M352 184 C384 188 396 208 386 224 C376 238 350 238 340 226 Z"/>
+    <path d="M304 160 C282 128 264 92 258 70 C254 56 272 50 280 64
+             C300 96 320 130 328 156 Z"/>
+    <path d="M336 154 C342 116 352 80 360 58 C364 44 382 48 380 62
+             C376 96 366 132 354 160 Z"/>
+    <ellipse cx="176" cy="246" rx="23" ry="17" transform="rotate(-16 176 246)"/>
+    </g>
+    <g fill="#e8894a" stroke="#e8894a">
+    <circle cx="344" cy="186" r="10"/>
+    </g>
   </g>
-  <path d="M256 200 312 256 256 312 200 256Z" fill="#1a1105"/>
 </svg>

@@ -165,7 +165,9 @@ h3 { font-size: 14px; }
   color: inherit; text-decoration: none;
 }
 .brand:hover .brand-mark { filter: brightness(1.15); }
-.brand-mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+/* Solid accent with a white mark, so the rail shows the same thing the phone's
+   home screen does rather than a tinted cousin of it. */
+.brand-mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--accent); color: #fff; }
 .nav { padding: 4px 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
 .nav-label { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); padding: 14px 10px 5px; font-weight: 600; }
 .nav-item {
