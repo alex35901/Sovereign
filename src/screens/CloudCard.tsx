@@ -297,7 +297,9 @@ export function CloudCard() {
           <div className="tiny faint" style={{ maxWidth: 560 }}>
             The passphrase is whatever you set as <b>SYNC_PASSPHRASE</b> in Vercel. The first browser to
             connect uploads what it has; every browser after that downloads it. Nothing is uploaded until
-            you connect.
+            you connect.{" "}
+            <b>This is not the encryption passphrase</b> under Encryption below — that one is set in the
+            browser, is never sent here, and changing this one has no effect on it.
           </div>
         </div>
       )}

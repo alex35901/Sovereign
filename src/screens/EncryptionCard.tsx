@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Lock, LockOpen, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff, Check, X, Stethoscope } from "lucide-react";
+import { Lock, LockOpen, RefreshCw, ShieldCheck, ShieldAlert, Download, Copy, Eye, EyeOff, Check, X, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
   cloudState, diagnose, passphrase, peek, pull, push, setCloudState, subscribeSync, syncEpoch,
@@ -9,6 +9,7 @@ import type { Envelope } from "../lib/crypto";
 import { WrongPassphrase } from "../lib/crypto";
 import { isUnlocked, lock, restore, unlock } from "../lib/vault";
 import { drainQueue } from "../lib/sync/drain";
+import { WORD_COUNT, generate, generatedBits, matches, strength } from "../lib/passphrase";
 import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/ui";
 
 /**
@@ -20,17 +21,6 @@ import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/u
  * barriers: breaking either still leaves the other.
  */
 
-/** A short passphrase behind AES is weaker than a short one behind a rate limiter. */
-const MIN = 12;
-
-const strength = (p: string): { ok: boolean; note: string } => {
-  if (p.length < MIN) return { ok: false, note: `At least ${MIN} characters — this one is ${p.length}.` };
-  const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^a-zA-Z0-9]/].filter((r) => r.test(p)).length;
-  if (p.length < 20 && classes < 3) {
-    return { ok: true, note: "Workable, but a longer phrase of several words would be much stronger." };
-  }
-  return { ok: true, note: "Good length. Write it down somewhere safe — it cannot be reset." };
-};
 
 /**
  * The SimpleFIN access URL, shown so it can be put into Vercel.
@@ -198,7 +188,6 @@ export function EncryptionCard(){
   const [sealed, setSealed] = useState<{ at: string | null; by: string | null }>({ at: null, by: null });
   const [unlocked, setUnlocked] = useState(isUnlocked());
   const [entry, setEntry] = useState("");
-  const [again, setAgain] = useState("");
   const [fresh, setFresh] = useState("");
   const [freshAgain, setFreshAgain] = useState("");
   const [busy, setBusy] = useState(false);
@@ -245,9 +234,8 @@ export function EncryptionCard(){
     notify("Backup downloaded. Keep it somewhere only you can reach.");
   };
 
-  const turnOn = async () => {
-    const phrase = entry.trim();
-    if (phrase !== again.trim()) return setError("The two passphrases don't match.");
+  const turnOn = async (chosen: string) => {
+    const phrase = chosen.trim();
     if (!strength(phrase).ok) return setError(strength(phrase).note);
     setBusy(true);
     setError(null);
@@ -259,7 +247,6 @@ export function EncryptionCard(){
       setCloudState({ version: res.version, dirty: false });
       setUnlocked(true);
       setEncrypted(true);
-      setEntry(""); setAgain("");
       notify("Encrypted. The server now holds a document it cannot read.");
     } catch (err) {
       await lock();
@@ -360,8 +347,6 @@ export function EncryptionCard(){
       setError(err instanceof Error ? err.message : "Could not seal it again.");
     } finally { setBusy(false); }
   };
-
-  const note = entry ? strength(entry) : null;
 
   return (
     <Card>
@@ -489,51 +474,199 @@ export function EncryptionCard(){
           </details>
         </div>
       ) : (
-        <div className="col" style={{ gap: 10 }}>
-          <div className="small muted" style={{ maxWidth: 620 }}>
-            Right now the stored copy is readable by anyone who can reach the database — which includes
-            anyone with your Neon or Vercel login. Setting a passphrase here seals it before it leaves this
-            browser, so what is stored gives up nothing on inspection.
-          </div>
-          <div className="setting-row" style={{ borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
-            <span className="small">
-              <b>There is no way to reset this.</b> The passphrase is never sent anywhere, so nobody —
-              including this app — can recover the document without it. Take the backup first, and keep it
-              somewhere safe. Your other devices will each ask for the passphrase once.
-            </span>
-          </div>
-          <div className="row wrap" style={{ gap: 8 }}>
-            <SecretInput
-              name="sovereign-encryption-new" placeholder="Encryption passphrase"
-              value={entry} onChange={setEntry} maxWidth={260}
-            />
-            <SecretInput
-              name="sovereign-encryption-again" placeholder="Type it again"
-              value={again} onChange={setAgain} onEnter={() => void turnOn()} maxWidth={260}
-            />
-          </div>
-          {note ? <div className={`tiny ${note.ok ? "faint" : "neg"}`}>{note.note}</div> : null}
-          <div className="setting-row">
-            <span className="small">
-              <b>Set this up first.</b> Once the document is sealed, the scheduled 9am sync can no longer
-              read the SimpleFIN access URL out of it. Add the value below to Vercel as
-              <b> SIMPLEFIN_ACCESS_URL</b> and redeploy, or the overnight pull will stop until you do.
-            </span>
-          </div>
-          <AccessUrl />
-          <div className="row wrap" style={{ gap: 8 }}>
-            <Btn onClick={backup}><Download size={14} /> Download a plain backup first</Btn>
-            <Btn
-              variant="primary" onClick={() => void turnOn()}
-              disabled={busy || !entry.trim() || !again.trim()}
-            >
-              <Lock size={14} /> {busy ? "Encrypting…" : "Encrypt everything"}
-            </Btn>
-          </div>
-        </div>
+        <SetupFlow busy={busy} onBackup={backup} onSeal={(phrase) => void turnOn(phrase)} />
       )}
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
     </Card>
+  );
+}
+
+/**
+ * Setting up encryption, one decision at a time.
+ *
+ * It used to be two boxes and a button on a page that already had another
+ * password box on it, and the results were exactly what that deserves: the two
+ * passphrases were taken for the same thing, the one that cannot be reset was
+ * never written down, and the backup beside the button was never pressed.
+ *
+ * So: say what the difference is before anything else, make the backup a step
+ * rather than a suggestion, offer a phrase so nobody has to reuse one, and ask
+ * for it back from a cleared field before sealing anything. None of it is
+ * clever. All of it is the part that went wrong.
+ */
+type Step = "learn" | "backup" | "choose" | "confirm";
+
+function SetupFlow({ busy, onBackup, onSeal }: {
+  busy: boolean; onBackup: () => void; onSeal: (phrase: string) => void;
+}) {
+  const db = useDB();
+  const [step, setStep] = useState<Step>("learn");
+  const [backedUp, setBackedUp] = useState(false);
+  const [own, setOwn] = useState(false);
+  const [phrase, setPhrase] = useState(() => generate());
+  const [echo, setEcho] = useState("");
+  const [wrong, setWrong] = useState(false);
+
+  const note = own && phrase ? strength(phrase) : null;
+  const ready = strength(phrase).ok;
+
+  const steps: { key: Step; label: string }[] = [
+    { key: "learn", label: "Which passphrase" },
+    { key: "backup", label: "Back up" },
+    { key: "choose", label: "Choose" },
+    { key: "confirm", label: "Confirm" },
+  ];
+  const at = steps.findIndex((x) => x.key === step);
+
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="row wrap" style={{ gap: 6 }}>
+        {steps.map((x, i) => (
+          <span
+            key={x.key}
+            className={`chip ${i === at ? "on" : ""}`}
+            style={{ cursor: "default", opacity: i > at ? 0.45 : 1 }}
+          >
+            {i < at ? "✓" : `${i + 1}`} {x.label}
+          </span>
+        ))}
+      </div>
+
+      {step === "learn" ? (
+        <>
+          <div className="small muted" style={{ maxWidth: 640 }}>
+            Right now the stored copy is readable by anyone who can reach the database — which includes
+            anyone with your Neon or Vercel login. A passphrase set here seals it before it leaves this
+            browser, so what is stored gives up nothing on inspection.
+          </div>
+          <div className="setting-row" style={{ alignItems: "stretch" }}>
+            <div className="col" style={{ gap: 5, flex: 1, minWidth: 0 }}>
+              <div className="tiny faint">The sync passphrase — you already have one</div>
+              <div className="small">Set in Vercel as <b>SYNC_PASSPHRASE</b>.</div>
+              <div className="tiny muted">The server checks it. Change it whenever you like.</div>
+              <div className="tiny muted">It decides who may <i>reach</i> the database.</div>
+            </div>
+            <div className="col" style={{ gap: 5, flex: 1, minWidth: 0 }}>
+              <div className="tiny" style={{ color: "var(--accent)" }}>The encryption passphrase — new, and different</div>
+              <div className="small">Set here. Never sent anywhere.</div>
+              <div className="tiny muted">Nothing can check it and nothing can reset it.</div>
+              <div className="tiny muted">It decides who may <i>read</i> what the database holds.</div>
+            </div>
+          </div>
+          <div className="setting-row" style={{ borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
+            <span className="small">
+              <b>Do not reuse your SYNC_PASSPHRASE here.</b> They are different secrets with different
+              lifetimes: changing the one in Vercel is routine and has no effect on this one, and people
+              who have used the same value for both have later changed Vercel&rsquo;s and concluded this
+              one had changed too. It had not. It cannot.
+            </span>
+          </div>
+          <div className="row">
+            <Btn variant="primary" onClick={() => setStep("backup")}>Understood — next</Btn>
+          </div>
+        </>
+      ) : null}
+
+      {step === "backup" ? (
+        <>
+          <div className="small muted" style={{ maxWidth: 640 }}>
+            A plain copy of everything, downloaded before anything is sealed. If the passphrase is ever
+            lost this file is the budget — {db.transactions.length.toLocaleString()} transactions across{" "}
+            {db.accounts.length} accounts — and without it there is nothing anyone can do.
+          </div>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <Btn variant={backedUp ? "default" : "primary"} onClick={() => { onBackup(); setBackedUp(true); }}>
+              <Download size={14} /> {backedUp ? "Download it again" : "Download the backup"}
+            </Btn>
+            <Btn variant={backedUp ? "primary" : "default"} disabled={!backedUp} onClick={() => setStep("choose")}>
+              Next
+            </Btn>
+          </div>
+          {!backedUp ? (
+            <div className="tiny faint">This one is not optional — the button above unlocks the next step.</div>
+          ) : (
+            <div className="tiny pos">Saved. Keep it somewhere only you can reach.</div>
+          )}
+        </>
+      ) : null}
+
+      {step === "choose" ? (
+        <>
+          <div className="small muted" style={{ maxWidth: 640 }}>
+            {own
+              ? "Your own phrase. Several unrelated words beat one clever word, and length beats punctuation."
+              : `${WORD_COUNT} words picked at random by this browser — about ${generatedBits()} bits, which is far past anything guessable, and unmistakably not your SYNC_PASSPHRASE.`}
+          </div>
+          {own ? (
+            <SecretInput
+              name="sovereign-encryption-new" placeholder="Encryption passphrase"
+              value={phrase} onChange={(v) => { setPhrase(v); setEcho(""); setWrong(false); }} maxWidth={340}
+            />
+          ) : (
+            <div className="row wrap" style={{ gap: 8 }}>
+              <code className="statement" style={{ fontSize: 15, letterSpacing: ".01em" }}>{phrase}</code>
+              <Btn onClick={() => { setPhrase(generate()); setEcho(""); setWrong(false); }}>
+                <RefreshCw size={14} /> Another
+              </Btn>
+            </div>
+          )}
+          {note && !note.ok ? <div className="tiny neg">{note.note}</div> : null}
+          <div className="setting-row">
+            <span className="small">
+              <b>Write it down now, before the next step.</b> A password manager, or paper somewhere only
+              you can reach. The next step asks for it back from an empty box, which is the only way to
+              find out whether you really have it — and the moment to find out is now, not in six months
+              on a phone.
+            </span>
+          </div>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <Btn variant="primary" disabled={!ready} onClick={() => { setEcho(""); setWrong(false); setStep("confirm"); }}>
+              I have written it down
+            </Btn>
+            <Btn variant="ghost" onClick={() => { setOwn(!own); setPhrase(own ? generate() : ""); setEcho(""); }}>
+              {own ? "Use a generated phrase" : "Use my own"}
+            </Btn>
+          </div>
+        </>
+      ) : null}
+
+      {step === "confirm" ? (
+        <>
+          <div className="small muted" style={{ maxWidth: 640 }}>
+            Type it in from wherever you wrote it. Not from the last screen — that would only prove the
+            screen still exists.
+          </div>
+          <SecretInput
+            name="sovereign-encryption-confirm" placeholder="The passphrase again"
+            value={echo} onChange={(v) => { setEcho(v); setWrong(false); }} maxWidth={340}
+          />
+          {wrong ? (
+            <div className="small neg">
+              That is not the same phrase. Nothing has been sealed — go back and look at it again.
+            </div>
+          ) : null}
+          <div className="row wrap" style={{ gap: 8 }}>
+            <Btn
+              variant="primary" disabled={busy || !echo.trim()}
+              onClick={() => (matches(phrase, echo) ? onSeal(phrase) : setWrong(true))}
+            >
+              <Lock size={14} /> {busy ? "Encrypting…" : "Encrypt everything"}
+            </Btn>
+            <Btn variant="ghost" onClick={() => setStep("choose")}>Show it to me again</Btn>
+          </div>
+        </>
+      ) : null}
+
+      <div className="divider" />
+      <div className="setting-row">
+        <span className="small">
+          <b>One thing to do afterwards.</b> Once the document is sealed the scheduled 9am sync can no
+          longer read the SimpleFIN access URL out of it. Put the value below into Vercel as
+          <b> SIMPLEFIN_ACCESS_URL</b> and redeploy, or the overnight pull stops until you do.
+        </span>
+      </div>
+      <AccessUrl />
+    </div>
   );
 }

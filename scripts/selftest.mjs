@@ -44,6 +44,7 @@ await build({
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime } from "./src/lib/select.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
+      export * as PP from "./src/lib/passphrase.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
@@ -3631,6 +3632,70 @@ await test("the drill-down and the Budget screen report the same actual", () => 
     assert.equal(mine.planned, r.planned, `${r.category.name} disagrees on planned`);
     assert.equal(mine.remaining, r.remaining, `${r.category.name} disagrees on remaining`);
   }
+});
+
+
+// --- choosing the passphrase -------------------------------------------
+
+await test("the word list is exactly a power of two, with no repeats", () => {
+  // The comment claims each word is one byte of choice. If the list drifts off
+  // 256 that claim quietly becomes false and the entropy figure on screen is a
+  // lie, which is a bad thing to be wrong about in a security setting.
+  assert.equal(M.PP.BITS_PER_WORD, 8);
+  const seen = new Set();
+  for (let i = 0; i < 4000; i++) for (const w of M.PP.generate(1).split("-")) seen.add(w);
+  assert.equal(seen.size, 256, `saw ${seen.size} distinct words`);
+  for (const w of seen) assert.match(w, /^[a-z]{4,}$/, `${w} is not a plain lowercase word`);
+});
+
+await test("a generated phrase is the shape it claims", () => {
+  const p = M.PP.generate();
+  assert.equal(p.split("-").length, M.PP.WORD_COUNT);
+  assert.equal(M.PP.generatedBits(), 48);
+  assert.equal(M.PP.strength(p).ok, true, "the generator produces something it would then reject");
+  assert.equal(M.PP.generate(3).split("-").length, 3);
+});
+
+await test("two generated phrases are not the same phrase", () => {
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) seen.add(M.PP.generate());
+  assert.equal(seen.size, 200, "the generator repeated itself");
+});
+
+await test("the words come up evenly rather than favouring the front of the list", () => {
+  // Taking a random byte modulo the list length is the usual way to get this
+  // subtly wrong. With 4096 draws over 256 words the expected count is 16, and
+  // a modulo bias on a shorter list would show up as a lopsided tail.
+  const counts = new Map();
+  for (let i = 0; i < 4096; i++) {
+    const w = M.PP.generate(1);
+    counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  const values = [...counts.values()];
+  assert.ok(Math.min(...values) > 2, `some word came up only ${Math.min(...values)} times`);
+  assert.ok(Math.max(...values) < 45, `some word came up ${Math.max(...values)} times`);
+});
+
+await test("the confirmation matches on what will actually be sealed", () => {
+  // What gets sealed is trimmed, so a trailing space must not be the
+  // difference between matching and not.
+  assert.equal(M.PP.matches("apple-berry-castle", "apple-berry-castle"), true);
+  assert.equal(M.PP.matches("apple-berry-castle", " apple-berry-castle "), true);
+  assert.equal(M.PP.matches("apple-berry-castle", "apple-berry-Castle"), false);
+  assert.equal(M.PP.matches("apple-berry-castle", "apple berry castle"), false);
+  // Empty never matches empty, or the confirm step would be a formality.
+  assert.equal(M.PP.matches("", ""), false);
+  assert.equal(M.PP.matches("   ", ""), false);
+});
+
+await test("the strength rule refuses what it should and explains itself", () => {
+  assert.equal(M.PP.strength("short").ok, false);
+  assert.match(M.PP.strength("short").note, /At least 12/);
+  assert.equal(M.PP.strength("x".repeat(12)).ok, true);
+  assert.equal(M.PP.strength("x".repeat(11)).ok, false);
+  // A workable-but-thin one still says so rather than going quiet.
+  assert.match(M.PP.strength("abcdefghijklm").note, /longer phrase/);
+  assert.match(M.PP.strength(M.PP.generate()).note, /written down/);
 });
 
 

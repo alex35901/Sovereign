@@ -93,13 +93,67 @@ try {
   await card(a, "Sync across devices").locator('button:text-is("Connect")').click();
   await a.waitForTimeout(1800);
 
-  const boxes = await card(a, "Encryption").locator('input[type="password"]').all();
-  check("the first device is offered encryption once it is connected", boxes.length === 2,
-    `saw ${boxes.length} passphrase boxes`);
-  for (const f of boxes) await f.fill(CRYPT);
-  await tryStep("the first device can start encrypting", () =>
-    card(a, "Encryption").locator("button").filter({ hasText: /Encrypt everything/i }).first()
-      .click({ timeout: 5000 }));
+  // ── the setup flow: four steps, and the gates between them ──
+  check("setting up encryption starts by saying which passphrase this is not",
+    (await textOf(a, "Encryption")).includes("Do not reuse your SYNC_PASSPHRASE"),
+    (await textOf(a, "Encryption")).slice(0, 120));
+
+  await tryStep("the first step can be got past", () =>
+    card(a, "Encryption").locator('button:has-text("Understood")').click({ timeout: 5000 }));
+  await a.waitForTimeout(400);
+
+  // The backup was a suggestion beside the confirm button, and went unpressed.
+  check("the backup is a gate, not a suggestion",
+    await card(a, "Encryption").locator('button:text-is("Next")').isDisabled(),
+    "Next was available without taking a backup");
+  const downloaded = a.waitForEvent("download", { timeout: 8000 }).catch(() => null);
+  await tryStep("the backup can be taken", () =>
+    card(a, "Encryption").locator('button:has-text("Download the backup")').click({ timeout: 5000 }));
+  const file = await downloaded;
+  check("pressing it really downloads a file", !!file, "no download happened");
+  await a.waitForTimeout(400);
+  check("and that opens the way on",
+    !(await card(a, "Encryption").locator('button:text-is("Next")').isDisabled()),
+    "Next stayed disabled after a backup");
+
+  await tryStep("the choose step is reachable", () =>
+    card(a, "Encryption").locator('button:text-is("Next")').click({ timeout: 5000 }));
+  await a.waitForTimeout(400);
+  await tryStep("a phrase is offered", () =>
+    card(a, "Encryption").locator("code.statement").waitFor({ timeout: 5000 }));
+  const offered = await card(a, "Encryption").locator("code.statement").textContent().catch(() => "");
+  check("the offered phrase is six words nobody had to invent",
+    (offered ?? "").split("-").length === 6, `saw "${offered}"`);
+
+  await tryStep("the confirm step is reachable", () =>
+    card(a, "Encryption").locator('button:has-text("I have written it down")').click({ timeout: 5000 }));
+  await a.waitForTimeout(400);
+  check("the confirmation box starts empty rather than pre-filled",
+    (await card(a, "Encryption").locator('input[name="sovereign-encryption-confirm"]')
+      .inputValue().catch(() => "x")) === "",
+    "the box was pre-filled, which would confirm nothing");
+
+  // The exact mistake that started all of this.
+  await tryStep("the sync passphrase can be typed by mistake", async () => {
+    await card(a, "Encryption").locator('input[name="sovereign-encryption-confirm"]').fill(SYNC, { timeout: 5000 });
+    await card(a, "Encryption").locator('button:has-text("Encrypt everything")').click({ timeout: 5000 });
+  });
+  await a.waitForTimeout(1200);
+  check("typing the sync passphrase at the confirm step is refused",
+    (await textOf(a, "Encryption")).includes("not the same phrase")
+      && !(await textOf(a, "Encryption")).includes("End-to-end encrypted"),
+    (await textOf(a, "Encryption")).slice(0, 140));
+
+  // Its own phrase is the one that seals it. CRYPT stands in so the rest of
+  // the suite has a passphrase it knows.
+  await tryStep("the first device can start encrypting", async () => {
+    await card(a, "Encryption").locator('button:has-text("Show it to me again")').click({ timeout: 5000 });
+    await card(a, "Encryption").locator('button:has-text("Use my own")').click({ timeout: 5000 });
+    await card(a, "Encryption").locator('input[name="sovereign-encryption-new"]').fill(CRYPT, { timeout: 5000 });
+    await card(a, "Encryption").locator('button:has-text("I have written it down")').click({ timeout: 5000 });
+    await card(a, "Encryption").locator('input[name="sovereign-encryption-confirm"]').fill(CRYPT, { timeout: 5000 });
+    await card(a, "Encryption").locator('button:has-text("Encrypt everything")').click({ timeout: 5000 });
+  });
   await a.waitForTimeout(2500);
   check("the first device reports end-to-end encryption",
     (await textOf(a, "Encryption")).includes("End-to-end encrypted"),
