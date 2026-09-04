@@ -9,9 +9,11 @@
   --text: #e6edf5;
   --muted: #8fa0b4;
   --faint: #62748a;
-  --accent: #e8894a;
+  /* Straight off the logo. The ink stays dark because white on this orange is
+     only 3.0:1, where near-black is 6.2:1. */
+  --accent: #ec7132;
   --accent-ink: #1a1105;
-  --accent-soft: rgba(232, 137, 74, 0.14);
+  --accent-soft: rgba(236, 113, 50, 0.14);
   --pos: #35c48c;
   --pos-soft: rgba(53, 196, 140, 0.14);
   --neg: #f2685e;
@@ -23,7 +25,7 @@
   /* What the sidebar keeps when it isn't being used. */
   --rail-w: 58px;
 
-  --c1: #e8894a; --c2: #4a9fe8; --c3: #35c48c; --c4: #b47ae8;
+  --c1: #ec7132; --c2: #4a9fe8; --c3: #35c48c; --c4: #b47ae8;
   --c5: #e8c34a; --c6: #e85a8a; --c7: #4ad0e8; --c8: #8ae84a;
   --c9: #e8724a; --c10: #7a8ae8; --c11: #c9a227; --c12: #6fb3a0;
   /* The one neutral. Shared by both themes like the rest of the palette,
@@ -43,9 +45,13 @@
   --text: #131c26;
   --muted: #5c6b7d;
   --faint: #8595a8;
-  --accent: #d1712f;
+  /* The same hue taken down until it can carry small text on white: 4.4:1,
+     where the orange it replaces managed 3.4:1. An accent this bright cannot
+     be used unchanged here — orange is a high-luminance hue, and every brand
+     with one runs into the same wall. */
+  --accent: #cd5213;
   --accent-ink: #ffffff;
-  --accent-soft: rgba(209, 113, 47, 0.12);
+  --accent-soft: rgba(205, 82, 19, 0.12);
   --pos: #148f63;
   --pos-soft: rgba(20, 143, 99, 0.12);
   --neg: #ce3f37;
@@ -165,9 +171,9 @@ h3 { font-size: 14px; }
   color: inherit; text-decoration: none;
 }
 .brand:hover .brand-mark { filter: brightness(1.15); }
-/* Solid accent with a white mark, so the rail shows the same thing the phone's
-   home screen does rather than a tinted cousin of it. */
-.brand-mark { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--accent); color: #fff; }
+/* The home screen icon itself, at 26px, so the rail and the phone show one
+   thing rather than two drawings of it. */
+.brand-mark { width: 26px; height: 26px; border-radius: 7px; display: block; }
 .nav { padding: 4px 8px; display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; }
 .nav-label { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--faint); padding: 14px 10px 5px; font-weight: 600; }
 .nav-item {

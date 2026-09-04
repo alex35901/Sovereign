@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
-    <!-- The same drawing three ways, because nothing agrees on how to ask for an
-         icon. The SVG is for tabs; iOS refuses SVG for a home screen icon and
-         wants an opaque PNG; the manifest is for everyone else. All of them come
-         out of public/icon.svg via `npm run icons`, so they cannot drift. -->
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!-- The same drawing several ways, because nothing agrees on how to ask for
+         an icon. iOS wants an opaque PNG for the home screen; the tab wants a
+         small one; the manifest is for everyone else. All of them come out of
+         design/logo-source.png via `npm run icons`, so they cannot drift. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
 
