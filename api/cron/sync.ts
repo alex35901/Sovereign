@@ -4,6 +4,8 @@ import { mergeSync, syncWindowStart } from "../../src/lib/sync/merge.js";
 import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
 import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
 import { fetchAccountsText } from "../_simplefin.js";
+import { fetchQuotes } from "../_prices.js";
+import { applyQuotes, pricesDue, tickersOf, toQuoteMap } from "../../src/lib/prices.js";
 import { connectionString, queuePull, readDoc, trimQueue, writeDoc } from "../_store.js";
 import { isEnvelope, sealTo } from "../../src/lib/crypto.js";
 import { bearer, passphraseOk, secretOk } from "../_auth.js";
@@ -104,28 +106,100 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     const db = stored.doc as DB;
     const accessUrl = db.settings?.simplefinAccessUrl;
-    if (!accessUrl) return send(200, { ran: false, reason: "SimpleFIN isn't connected." });
 
-    // Straight to the bridge: the browser proxy exists only for CORS, and a
-    // relative URL would not resolve from here anyway.
-    const raw = await fetchAccountsText(accessUrl, startOfDayUnix(syncWindowStart(db)));
-    const payload = toPayload(JSON.parse(raw) as BridgeResponse);
-    const merged = mergeSync(db, payload, "simplefin");
+    let next = db;
+    let banks: { added: number; updated: number; transactions: number; errors: string[] } | null = null;
+    let bankError: string | null = null;
+
+    if (accessUrl) {
+      try {
+        // Straight to the bridge: the browser proxy exists only for CORS, and a
+        // relative URL would not resolve from here anyway.
+        const raw = await fetchAccountsText(accessUrl, startOfDayUnix(syncWindowStart(next)));
+        const payload = toPayload(JSON.parse(raw) as BridgeResponse);
+        const merged = mergeSync(next, payload, "simplefin");
+        next = merged.db;
+        banks = {
+          added: merged.accountsAdded,
+          updated: merged.accountsUpdated,
+          transactions: merged.transactionsAdded,
+          errors: payload.errors,
+        };
+      } catch (err) {
+        // Held rather than thrown: a bridge that is down should not also cost
+        // the day's prices. The run still answers 502 so the failure shows up
+        // in the deployment's log rather than passing for a quiet success.
+        bankError = err instanceof Error ? err.message : "The SimpleFIN pull failed.";
+      }
+    }
+
+    // Prices ride along with the balances, so a morning glance at the app has
+    // both moved together rather than one of them a day behind the other.
+    const priced = await refreshPrices(next);
+    next = priced.db;
+
+    if (!banks && !bankError && !priced.ran) {
+      return send(200, {
+        ran: false,
+        reason: priced.error
+          ? `SimpleFIN isn't connected, and prices failed: ${priced.error}`
+          : "SimpleFIN isn't connected and there was nothing to price.",
+      });
+    }
 
     // Read-then-write with no version guard: this job is the only writer on its
     // schedule, and a browser that saves mid-run will simply win with its own
     // newer copy, which already contains everything this pull would have added.
-    const write = await writeDoc(merged.db, null, "scheduled sync");
+    const write = banks || priced.ran ? await writeDoc(next, null, "scheduled sync") : null;
 
-    return send(200, {
-      ran: true,
-      version: write.stored?.version,
-      transactionsAdded: merged.transactionsAdded,
-      accountsUpdated: merged.accountsUpdated,
-      accountsAdded: merged.accountsAdded,
-      errors: payload.errors,
+    return send(bankError ? 502 : 200, {
+      ran: Boolean(banks) || priced.ran,
+      version: write?.stored?.version,
+      transactionsAdded: banks?.transactions ?? 0,
+      accountsUpdated: banks?.updated ?? 0,
+      accountsAdded: banks?.added ?? 0,
+      pricesUpdated: priced.updated,
+      pricesMissed: priced.misses,
+      priceError: priced.error,
+      error: bankError ?? undefined,
+      errors: banks?.errors ?? [],
     });
   } catch (err) {
     return send(502, { ran: false, error: err instanceof Error ? err.message : "The scheduled sync failed." });
   }
+}
+
+/**
+ * The price half of the scheduled run.
+ *
+ * Kept separate from the SimpleFIN pull so a provider that is down, or a key
+ * that has been revoked, costs the other half nothing: whichever side answers
+ * still gets written. The key comes from the document, falling back to the
+ * environment for a deployment that keeps it there.
+ */
+async function refreshPrices(db: DB): Promise<{
+  db: DB;
+  ran: boolean;
+  updated: number;
+  misses: string[];
+  error?: string;
+}> {
+  const idle = { db, ran: false, updated: 0, misses: [] };
+
+  const key = (db.settings?.tiingoApiKey ?? process.env.TIINGO_API_KEY ?? "").trim();
+  if (!key) return idle;
+  if (db.settings?.priceAutoRefresh === false) return idle;
+  if (!pricesDue(db.settings?.lastPricesAt)) return idle;
+
+  const tickers = tickersOf(db.holdings ?? []);
+  if (!tickers.length) return idle;
+
+  const raw = await fetchQuotes(key, tickers);
+  // A bad key or a spent allowance must not stamp lastPricesAt: doing so would
+  // put the next run a day away from noticing the problem had cleared.
+  if (raw.fatal) return { ...idle, error: raw.fatal };
+
+  const { quotes, misses } = toQuoteMap(raw.quotes, raw.misses);
+  const applied = applyQuotes(db, quotes, new Date().toISOString());
+  return { db: applied.db, ran: true, updated: applied.updated, misses };
 }

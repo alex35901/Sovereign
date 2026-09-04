@@ -39,6 +39,7 @@ await build({
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { mergeSync } from "./src/lib/sync/merge.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
+      export { tickersOf } from "./src/lib/prices.ts";
     `,
     resolveDir: process.cwd(),
     loader: "ts",
@@ -749,6 +750,131 @@ await test("an installation that never encrypted still syncs the old way", async
   assert.equal(body.encrypted, undefined, "the plaintext path is unchanged");
   assert.equal(body.transactionsAdded, 1, "and it still merges straight into the document");
   assert.deepEqual(await M.readQueue(), [], "with nothing queued");
+});
+
+await test("the scheduled job prices the holdings as well as the balances", async () => {
+  // The point of doing it here: it works with every browser shut, at the same
+  // hour the balances move, so a morning glance has both current.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  const plain = M.emptyDB();
+  plain.settings = {
+    ...plain.settings,
+    simplefinAccessUrl: "https://u:p@bridge.example/accounts",
+    tiingoApiKey: "tok",
+  };
+  plain.holdings = [
+    { id: "h1", accountId: "a1", ticker: "VTI", name: "Total Market", quantity: 10, costBasis: 20000, price: 30000, assetClass: "us_equity" },
+    { id: "h2", accountId: "a1", ticker: "ACME401K", name: "Company stock", quantity: 5, costBasis: 1000, price: 12345, assetClass: "us_equity" },
+  ];
+  await asServer({ doc: plain, baseVersion: 0 }, "PUT");
+
+  const asked = [];
+  const r = await withFetch(async (url) => {
+    const href = String(url);
+    if (href.includes("bridge.example")) return new Response(BRIDGE, { status: 200 });
+    asked.push(href);
+    return href.includes("/vti/")
+      ? new Response(JSON.stringify([{ date: "2026-09-03T00:00:00.000Z", close: 312.44, adjClose: 156.22 }]), { status: 200 })
+      : new Response("Not found", { status: 404 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.7" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(r.status, 200);
+  assert.equal(body.transactionsAdded, 1, "the balances still land");
+  assert.equal(body.pricesUpdated, 1);
+  assert.deepEqual(body.pricesMissed, ["ACME401K"]);
+  assert.equal(asked.length, 2, "one request per symbol, no more");
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
+  assert.equal(after.holdings.find((h) => h.id === "h1").price, 31244, "the quoted holding moved");
+  assert.equal(after.holdings.find((h) => h.id === "h2").price, 12345, "the unquoted one kept what was typed in");
+  assert.ok(after.settings.lastPricesAt, "and the clock was stamped");
+});
+
+await test("a bridge that is down still gets the day's prices written", async () => {
+  // The two halves fail independently: one provider being unreachable must not
+  // silently cost the other. The run still answers 502 so it shows in the log.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  await wipe(); await clearAttempts();
+
+  const plain = M.emptyDB();
+  plain.settings = {
+    ...plain.settings,
+    simplefinAccessUrl: "https://u:p@bridge.example/accounts",
+    tiingoApiKey: "tok",
+  };
+  plain.holdings = [{ id: "h1", accountId: "a1", ticker: "VTI", name: "Total Market", quantity: 10, costBasis: 20000, price: 30000, assetClass: "us_equity" }];
+  await asServer({ doc: plain, baseVersion: 0 }, "PUT");
+
+  const r = await withFetch(async (url) => {
+    if (String(url).includes("bridge.example")) throw new Error("bridge unreachable");
+    return new Response(JSON.stringify([{ date: "2026-09-03T00:00:00.000Z", close: 312.44 }]), { status: 200 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.8" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(r.status, 502, "the bridge failure must still be visible");
+  assert.match(body.error, /bridge unreachable/);
+  assert.equal(body.pricesUpdated, 1, "and the prices must have landed anyway");
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
+  assert.equal(after.holdings[0].price, 31244);
+});
+
+await test("a rejected price token does not stamp the clock", async () => {
+  // Stamping it would put the next attempt a day away from noticing the token
+  // had been fixed.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  await wipe(); await clearAttempts();
+
+  const plain = M.emptyDB();
+  plain.settings = { ...plain.settings, tiingoApiKey: "revoked" };
+  plain.holdings = [{ id: "h1", accountId: "a1", ticker: "VTI", name: "Total Market", quantity: 10, costBasis: 20000, price: 30000, assetClass: "us_equity" }];
+  await asServer({ doc: plain, baseVersion: 0 }, "PUT");
+  const versionBefore = JSON.parse((await asServer(undefined, "GET")).text).version;
+
+  const r = await withFetch(
+    async () => new Response("Unauthorized", { status: 401 }),
+    () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.9" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(body.ran, false);
+  assert.match(body.reason, /rejected the API key/);
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(after.version, versionBefore, "a run that did nothing must not write");
+  assert.equal(after.doc.settings.lastPricesAt, undefined);
+  assert.equal(after.doc.holdings[0].price, 30000);
+});
+
+await test("the job leaves an encrypted document's prices to the browser", async () => {
+  // Same reason the pull is queued rather than merged: the ticker list is
+  // inside the envelope, and this job cannot open it.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  process.env.TIINGO_API_KEY = "tok";
+  await wipe(); await clearAttempts();
+
+  const at = await unlockCheap(null);
+  const env = await C.encryptDocument(M.buildDemoDB(), at);
+  await asServer({ doc: env, baseVersion: 0 }, "PUT");
+
+  let pricesAsked = 0;
+  const r = await withFetch(async (url) => {
+    if (String(url).includes("bridge.example")) return new Response(BRIDGE, { status: 200 });
+    pricesAsked += 1;
+    return new Response("[]", { status: 200 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.10" } }));
+
+  assert.equal(JSON.parse(r.text).encrypted, true);
+  assert.equal(pricesAsked, 0, "it cannot know the tickers, so it must not guess");
+  delete process.env.TIINGO_API_KEY;
 });
 
 await test("a browser without the key cannot overwrite the encrypted document", async () => {

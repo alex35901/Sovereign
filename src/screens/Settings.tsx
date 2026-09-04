@@ -11,6 +11,7 @@ import {
   MONTHLY_LOOKUPS, cadenceLabel, canValue, estimateHomeValue,
   lookupsPerMonth, refreshEveryHours,
 } from "../lib/property";
+import { MAX_TICKERS, MIN_GAP_HOURS, priceSummary, pricesDue, refreshPrices, tickersOf } from "../lib/prices";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { Link } from "react-router-dom";
 import { PlaidCard } from "./PlaidCard";
@@ -136,6 +137,105 @@ function PropertyValuesCard() {
   );
 }
 
+/**
+ * Holding prices.
+ *
+ * The provider is Tiingo, chosen for one reason: a retirement account is
+ * mostly mutual funds, and it is the free tier that quotes them alongside
+ * stocks and ETFs. api/_prices.ts has the rest of the reasoning.
+ */
+function HoldingPricesCard() {
+  const db = useDB();
+  const { actions, apply, notify } = useStore();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [misses, setMisses] = useState<string[] | null>(null);
+
+  const key = db.settings.tiingoApiKey ?? "";
+  const auto = db.settings.priceAutoRefresh !== false;
+  const tickers = tickersOf(db.holdings);
+  const last = db.settings.lastPricesAt;
+
+  const refresh = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await refreshPrices(db, apply, "refresh prices");
+      setMisses(outcome.misses);
+      notify(priceSummary(outcome));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The price refresh failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHead
+        title="Holding prices"
+        sub="Bank sync carries balances, not share prices — these come from Tiingo instead"
+        right={
+          <Btn variant="primary" onClick={() => void refresh()} disabled={busy || !key.trim() || !tickers.length}>
+            <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
+            {busy ? "Refreshing…" : "Refresh now"}
+          </Btn>
+        }
+      />
+      <div className="row wrap" style={{ gap: 10, marginBottom: 12 }}>
+        <span className="chip on">Tiingo</span>
+        <span className="small muted">Free tier — stocks, ETFs and mutual funds, no card required</span>
+      </div>
+
+      <ol className="small muted" style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
+        <li>Sign up at <b>tiingo.com</b> and copy the API token from your account page.</li>
+        <li>Paste it below. Every holding with a ticker gets the previous session&rsquo;s close.</li>
+        <li>Leave the switch on and prices refresh with the daily account sync.</li>
+      </ol>
+
+      <div className="setting-row" style={{ marginBottom: 12 }}>
+        <Toggle
+          on={auto}
+          onChange={(v) => actions.patchSettings({ priceAutoRefresh: v })}
+          label={<span className="small">Refresh prices along with the accounts</span>}
+        />
+      </div>
+
+      <div className="tiny faint" style={{ maxWidth: 620, marginBottom: 14 }}>
+        {tickers.length ? (
+          <>
+            {tickers.length} symbol{tickers.length === 1 ? "" : "s"} to price
+            {last ? <>, last checked {dateLabel(last.slice(0, 10), { year: true })}</> : ", never checked"}.{" "}
+            {auto
+              ? <>Asked for at most once every {MIN_GAP_HOURS} hours, which is as often as a closing price
+                changes; the free tier allows 50 requests an hour and one symbol is one request. Anything past{" "}
+                {MAX_TICKERS} holdings is left for the next run.</>
+              : <>Prices only change when you press Refresh now, or edit a holding.</>}
+          </>
+        ) : (
+          <>No holdings carry a ticker yet. Add one from the Investments page and it gets priced from then on.</>
+        )}
+      </div>
+
+      <Field label="Tiingo API token">
+        <TextInput
+          value={key}
+          onChange={(v) => actions.patchSettings({ tiingoApiKey: v.trim() || undefined })}
+          placeholder="Paste your API token"
+        />
+      </Field>
+
+      {misses?.length ? (
+        <div className="small muted" style={{ marginTop: 10 }}>
+          No quote for <b>{misses.join(", ")}</b> — a private ticker or a fund Tiingo doesn&rsquo;t carry.
+          Those keep the price entered on the holding.
+        </div>
+      ) : null}
+      {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+    </Card>
+  );
+}
+
 export default function Settings() {
   const db = useDB();
   const { actions, apply, notify } = useStore();
@@ -171,6 +271,13 @@ export default function Settings() {
       const { summary, errors } = await syncSimplefin(db, apply);
       notify(summary);
       if (errors.length) setError(errors.join(" · "));
+      // Prices ride along, but only if one is owed: this button gets pressed
+      // repeatedly while someone waits for a transaction to show up, and a
+      // closing price does not change in between. The Refresh now button on
+      // the prices card is the one that always asks.
+      if (db.settings.priceAutoRefresh !== false && pricesDue(db.settings.lastPricesAt)) {
+        await refreshPrices(db, apply).catch(() => {});
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sync failed.");
     } finally {
@@ -345,6 +452,7 @@ export default function Settings() {
         <PlaidCard />
 
         <PropertyValuesCard />
+        <HoldingPricesCard />
 
         <Card>
           <CardHead

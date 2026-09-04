@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { DEFAULT_CADENCE, syncDue, syncSimplefin } from "../lib/sync";
+import { pricesDue, refreshPrices } from "../lib/prices";
 
 /** How often to look at the clock. The cadence decides whether anything happens. */
 const CHECK_MS = 5 * 60_000;
@@ -8,7 +9,7 @@ const CHECK_MS = 5 * 60_000;
 const BACKOFF_MS = 30 * 60_000;
 
 /**
- * Runs the scheduled SimpleFIN pull.
+ * Runs the scheduled SimpleFIN pull, and the price refresh that rides with it.
  *
  * Renders nothing. Mounted once at the root so the schedule is kept wherever
  * you are in the app, not only on the Settings screen.
@@ -32,20 +33,41 @@ export function AutoSync() {
       const cur = latest.current;
       const now = Date.now();
       if (running.current || now < holdUntil.current) return;
-      if (!cur.settings.simplefinAccessUrl) return;
+
       const cadence = cur.settings.syncCadence ?? DEFAULT_CADENCE;
-      if (!syncDue(cadence, cur.settings.lastSyncAt, now, sessionStart.current)) return;
+      const bankDue = Boolean(cur.settings.simplefinAccessUrl)
+        && syncDue(cadence, cur.settings.lastSyncAt, now, sessionStart.current);
+      // Prices keep their own clock. Someone whose investment accounts come
+      // from Plaid has no SimpleFIN connection at all, and their holdings
+      // should still be priced.
+      const priceDue = cur.settings.priceAutoRefresh !== false
+        && Boolean(cur.settings.tiingoApiKey?.trim())
+        && pricesDue(cur.settings.lastPricesAt, now);
+      if (!bankDue && !priceDue) return;
 
       running.current = true;
       try {
-        const { summary, changed } = await syncSimplefin(cur, act.current.apply);
-        // Silence when nothing arrived: a toast on every app open, saying
-        // nothing happened, is worse than no toast at all.
-        if (changed) act.current.notify(summary);
+        if (bankDue) {
+          const { summary, changed } = await syncSimplefin(cur, act.current.apply);
+          // Silence when nothing arrived: a toast on every app open, saying
+          // nothing happened, is worse than no toast at all.
+          if (changed) act.current.notify(summary);
+        }
       } catch {
         // The Settings card is where a broken connection gets explained. Here,
         // just stop hammering a provider that isn't answering.
         holdUntil.current = Date.now() + BACKOFF_MS;
+      }
+
+      try {
+        // Its own try: a revoked price token must not put the bank sync into
+        // backoff, and a bridge that is down must not cost the day's prices.
+        // `cur` supplies the ticker list only — the write itself goes through
+        // apply(), so it composes with whatever the pull just added.
+        if (priceDue) await refreshPrices(cur, act.current.apply);
+      } catch {
+        // Prices are the quietest thing in the app; a failed one stays quiet.
+        // Settings and the Investments card both explain it on demand.
       } finally {
         running.current = false;
       }

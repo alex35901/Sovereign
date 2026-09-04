@@ -247,6 +247,12 @@ export interface Settings {
   simplefinAccessUrl?: string;
   /** RentCast API key for property valuations, stored locally. */
   rentcastApiKey?: string;
+  /** Tiingo API token for holding prices, stored locally. */
+  tiingoApiKey?: string;
+  /** Whether holding prices refresh on their own, alongside the account sync. */
+  priceAutoRefresh?: boolean;
+  /** When prices were last asked for, successfully or not. */
+  lastPricesAt?: string;
   /**
    * Whether property values refresh on their own. The cadence is not stored:
    * it is worked out from how many properties there are against RentCast's

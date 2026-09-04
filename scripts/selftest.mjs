@@ -64,6 +64,9 @@ await build({
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution } from "./src/lib/sync/plaid.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
+      export { default as pricesHandler } from "./api/prices.ts";
+      export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
+      export * as PR from "./src/lib/prices.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
@@ -153,6 +156,7 @@ const invokeOn = (handler, body, method = "POST") =>
 const invoke = (body, method = "POST") => invokeOn(M.simplefinHandler, body, method);
 const invokeProperty = (body, method = "POST") => invokeOn(M.propertyHandler, body, method);
 const invokePlaid = (body, method = "POST") => invokeOn(M.plaidHandler, body, method);
+const invokePrices = (body, method = "POST") => invokeOn(M.pricesHandler, body, method);
 
 /** Like invokeOn, but able to carry headers — the sync endpoints need auth. */
 const invokeWith = (handler, { method = "POST", body, headers: reqHeaders = {} } = {}) =>
@@ -349,6 +353,242 @@ await test("only property account types offer valuation", () => {
   assert.equal(M.canValue("other_asset"), true);
   assert.equal(M.canValue("checking"), false);
   assert.equal(M.canValue("mortgage"), false);
+});
+
+
+/* ── holding prices ───────────────────────────────────────────────────── */
+
+/** One Tiingo day, oldest first — the shape the real endpoint returns. */
+const bar = (date, close, adjClose = close) => ({ date: `${date}T00:00:00.000Z`, close, adjClose });
+const tiingo = (impl, tickers = ["VTI"]) =>
+  withFetch(impl, () => invokePrices({ apiKey: "tok", tickers }));
+
+await test("price proxy always writes a response", async () => {
+  const r = await invokePrices({});
+  assert.ok(r.status >= 400);
+  assert.equal(r.headers["content-type"], "application/json");
+});
+
+await test("price proxy rejects non-POST and missing fields", async () => {
+  assert.equal((await invokePrices({}, "GET")).status, 405);
+  assert.match(errorOf(await invokePrices({ tickers: ["VTI"] })), /API key/);
+  assert.match(errorOf(await invokePrices({ apiKey: "tok" })), /tickers/);
+  assert.match(errorOf(await invokePrices({ apiKey: "tok", tickers: [] })), /tickers/);
+});
+
+await test("price proxy sends the token as a header, never in the URL", async () => {
+  let seen;
+  const r = await tiingo(async (url, init) => {
+    seen = { url: String(url), headers: init.headers };
+    return new Response(JSON.stringify([bar("2026-09-03", 312.44)]), { status: 200 });
+  });
+  assert.equal(r.status, 200);
+  assert.equal(seen.headers.authorization, "Token tok");
+  assert.doesNotMatch(seen.url, /tok|token=|apiKey/i, "the token must not leak into the query string");
+  assert.equal(JSON.parse(r.text).quotes[0].price, 312.44);
+});
+
+await test("a ticker that isn't a ticker never reaches the provider", async () => {
+  // The symbol lands in a URL path, so it is checked rather than escaped.
+  const calls = [];
+  const r = await withFetch(
+    async (url) => { calls.push(String(url)); return new Response(JSON.stringify([bar("2026-09-03", 1)]), { status: 200 }); },
+    () => invokePrices({ apiKey: "tok", tickers: ["../../admin", "VTI/../x", "A B", "vti", "'; DROP", ""] }),
+  );
+  assert.equal(r.status, 200);
+  assert.deepEqual(calls, ["https://api.tiingo.com/tiingo/daily/vti/prices"], "only the real symbol goes out");
+});
+
+await test("the same symbol twice is asked about once", () => {
+  assert.deepEqual(M.cleanTickers(["VTI", "vti", " Vti ", "BND"]), ["VTI", "BND"]);
+  assert.deepEqual(M.cleanTickers("VTI"), [], "a bare string is not a list");
+  assert.deepEqual(M.cleanTickers([1, null, {}]), []);
+  assert.equal(M.cleanTickers(Array.from({ length: 90 }, (_, i) => `S${i}`)).length, M.MAX_TICKERS_API);
+});
+
+await test("a rejected token stops the run instead of spending the allowance", async () => {
+  let calls = 0;
+  const r = await withFetch(
+    async () => { calls += 1; return new Response("Unauthorized", { status: 401 }); },
+    () => invokePrices({ apiKey: "bad", tickers: ["VTI", "BND", "VXUS", "VNQ", "AAPL", "MSFT", "TSLA", "NVDA"] }),
+  );
+  assert.equal(r.status, 401);
+  assert.match(errorOf(r), /rejected the API key/);
+  assert.ok(calls <= 4, `the run must stop after the first wave, not ask ${calls} times`);
+});
+
+await test("the hourly limit explains itself", async () => {
+  const r = await tiingo(async () => new Response("Too Many Requests", { status: 429 }));
+  assert.equal(r.status, 429);
+  assert.match(errorOf(r), /50 requests an hour/);
+});
+
+await test("a symbol the provider doesn't know is a miss, not a failure", async () => {
+  const r = await withFetch(
+    async (url) => String(url).includes("/vti/")
+      ? new Response(JSON.stringify([bar("2026-09-03", 312.44)]), { status: 200 })
+      : new Response("Not found", { status: 404 }),
+    () => invokePrices({ apiKey: "tok", tickers: ["VTI", "ACME401K"] }),
+  );
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.deepEqual(body.quotes.map((q) => q.ticker), ["VTI"]);
+  assert.deepEqual(body.misses, ["ACME401K"]);
+});
+
+await test("one symbol timing out does not sink the others", async () => {
+  const r = await withFetch(
+    async (url) => {
+      if (String(url).includes("/bnd/")) {
+        const err = new Error("timed out");
+        err.name = "TimeoutError";
+        throw err;
+      }
+      return new Response(JSON.stringify([bar("2026-09-03", 312.44)]), { status: 200 });
+    },
+    () => invokePrices({ apiKey: "tok", tickers: ["VTI", "BND"] }),
+  );
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.deepEqual(body.quotes.map((q) => q.ticker), ["VTI"]);
+  assert.deepEqual(body.misses, ["BND"]);
+});
+
+await test("the latest session wins, and it is the close and not the adjusted close", async () => {
+  // Rows come back oldest first, and adjClose is restated backwards for splits
+  // and dividends — right for a chart, wrong for valuing the shares held today.
+  const r = await tiingo(async () => new Response(JSON.stringify([
+    bar("2026-09-01", 300.10, 150.05),
+    bar("2026-09-02", 305.00, 152.50),
+    bar("2026-09-03", 312.44, 156.22),
+  ]), { status: 200 }));
+  const q = JSON.parse(r.text).quotes[0];
+  assert.equal(q.price, 312.44);
+  assert.equal(q.asOf, "2026-09-03");
+});
+
+await test("an empty or nonsense body from the provider is a miss, never a zero", async () => {
+  for (const payload of ["[]", "{}", "not json", JSON.stringify([bar("2026-09-03", 0)]), JSON.stringify([{ date: "2026-09-03" }])]) {
+    const r = await tiingo(async () => new Response(payload, { status: 200 }));
+    assert.equal(r.status, 200, payload);
+    const body = JSON.parse(r.text);
+    assert.deepEqual(body.quotes, [], `${payload} must not become a quote`);
+    assert.deepEqual(body.misses, ["VTI"], `${payload} must be reported as a miss`);
+  }
+});
+
+/* the client half */
+
+const holding = (over) => ({
+  id: "h1", accountId: "a1", ticker: "VTI", name: "Vanguard Total Stock Market",
+  quantity: 10, costBasis: 20000, price: 30000, assetClass: "us_equity", ...over,
+});
+
+const dbWith = (holdings, settings = {}) => {
+  const base = M.emptyDB();
+  return { ...base, holdings, settings: { ...base.settings, ...settings } };
+};
+
+await test("only holdings with a real symbol are asked about", () => {
+  assert.deepEqual(M.PR.tickersOf([
+    holding({ ticker: "VTI" }),
+    holding({ ticker: "vti" }),
+    holding({ ticker: "" }),
+    holding({ ticker: "  bnd " }),
+    holding({ ticker: "MY 401K" }),
+  ]), ["VTI", "BND"]);
+});
+
+await test("dollars become cents, and an unpriceable quote becomes a miss", () => {
+  const r = M.PR.toQuoteMap([
+    { ticker: "vti", price: 312.44, asOf: "2026-09-03" },
+    { ticker: "BND", price: 0, asOf: "2026-09-03" },
+    { ticker: "VXUS", price: Number.NaN, asOf: "2026-09-03" },
+  ], ["ACME"]);
+  assert.deepEqual(r.quotes, { VTI: { price: 31244, asOf: "2026-09-03" } });
+  assert.deepEqual(r.misses, ["ACME", "BND", "VXUS"]);
+});
+
+await test("a symbol with no quote keeps the price that was typed in", () => {
+  const db = dbWith([holding({ id: "h1", ticker: "VTI" }), holding({ id: "h2", ticker: "ACME401K", price: 12345 })]);
+  const out = M.PR.applyQuotes(db, { VTI: { price: 31244, asOf: "2026-09-03" } }, "2026-09-04T09:00:00.000Z");
+  assert.equal(out.updated, 1);
+  assert.equal(out.db.holdings.find((h) => h.id === "h1").price, 31244);
+  assert.equal(out.db.holdings.find((h) => h.id === "h2").price, 12345, "the unquoted holding must be untouched");
+});
+
+await test("a zero or negative quote is never written over a real price", () => {
+  const db = dbWith([holding({ price: 30000 })]);
+  for (const price of [0, -1]) {
+    const out = M.PR.applyQuotes(db, { VTI: { price, asOf: "2026-09-03" } }, "2026-09-04T09:00:00.000Z");
+    assert.equal(out.updated, 0, `${price} must not count as an update`);
+    assert.equal(out.db.holdings[0].price, 30000, `${price} must not reach the holding`);
+  }
+});
+
+await test("a day where nothing moved still stamps the clock", () => {
+  // Otherwise a market holiday puts the schedule into a retry loop.
+  const db = dbWith([holding({ price: 31244 })]);
+  const out = M.PR.applyQuotes(db, { VTI: { price: 31244, asOf: "2026-09-03" } }, "2026-09-04T09:00:00.000Z");
+  assert.equal(out.updated, 0, "an unchanged price is not an update");
+  assert.equal(out.db.holdings, db.holdings, "and the array is not rebuilt for nothing");
+  assert.equal(out.db.settings.lastPricesAt, "2026-09-04T09:00:00.000Z");
+});
+
+await test("prices are asked for once a session-close, not once a sync", () => {
+  const now = Date.parse("2026-09-04T18:00:00.000Z");
+  const hoursAgo = (h) => new Date(now - h * 3600_000).toISOString();
+  assert.equal(M.PR.pricesDue(undefined, now), true, "never checked");
+  assert.equal(M.PR.pricesDue(hoursAgo(1), now), false);
+  assert.equal(M.PR.pricesDue(hoursAgo(M.PR.MIN_GAP_HOURS - 0.1), now), false);
+  assert.equal(M.PR.pricesDue(hoursAgo(M.PR.MIN_GAP_HOURS), now), true);
+  assert.equal(M.PR.pricesDue("not a date", now), true);
+  assert.equal(M.PR.pricesDue(new Date(now + 3600_000).toISOString(), now), false, "a clock that jumped must not stampede");
+});
+
+await test("the refresh refuses without a token and reports what it did", async () => {
+  const db = dbWith([holding({ ticker: "VTI", price: 30000 })], { tiingoApiKey: "tok" });
+  assert.match(await caught(() => M.PR.refreshPrices(dbWith([holding({})]), () => {})), /Tiingo API key/);
+
+  let current = db;
+  const apply = (fn) => { current = fn(current); };
+  const outcome = await withFetch(
+    async () => new Response(JSON.stringify({
+      quotes: [{ ticker: "VTI", price: 312.44, asOf: "2026-09-03" }], misses: [],
+    }), { status: 200 }),
+    () => M.PR.refreshPrices(db, apply),
+  );
+  assert.deepEqual(outcome, { updated: 1, misses: [], asked: 1 });
+  assert.equal(current.holdings[0].price, 31244);
+  assert.ok(current.settings.lastPricesAt, "the schedule needs its timestamp");
+  assert.match(M.PR.priceSummary(outcome), /1 price updated/);
+  assert.match(M.PR.priceSummary({ updated: 0, misses: [], asked: 3 }), /already current/);
+});
+
+await test("a refresh that changes nothing does not spend an undo slot", async () => {
+  const db = dbWith([holding({ ticker: "VTI", price: 31244 })], { tiingoApiKey: "tok" });
+  const labels = [];
+  const apply = (fn, label) => { labels.push(label); fn(db); };
+  const quiet = async () => new Response(JSON.stringify({
+    quotes: [{ ticker: "VTI", price: 312.44, asOf: "2026-09-03" }], misses: [],
+  }), { status: 200 });
+
+  await withFetch(quiet, () => M.PR.refreshPrices(db, apply, "refresh prices"));
+  assert.deepEqual(labels, [undefined], "an unchanged price is not worth undoing");
+
+  const moved = dbWith([holding({ ticker: "VTI", price: 30000 })], { tiingoApiKey: "tok" });
+  labels.length = 0;
+  await withFetch(quiet, () => M.PR.refreshPrices(moved, apply, "refresh prices"));
+  assert.deepEqual(labels, ["refresh prices"], "a price that moved is");
+});
+
+await test("a portfolio with no tickers never calls out at all", async () => {
+  const db = dbWith([holding({ ticker: "" })], { tiingoApiKey: "tok" });
+  const outcome = await withFetch(
+    async () => { throw new Error("must not be called"); },
+    () => M.PR.refreshPrices(db, () => {}),
+  );
+  assert.deepEqual(outcome, { updated: 0, misses: [], asked: 0 });
 });
 
 /* ── emoji picker data ────────────────────────────────────────────────── */

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { AssetClass, Holding } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -9,6 +10,7 @@ import { ASSET_CLASS_LABEL, balanceAt, earliestHistoryDate, holdingCost, holding
 import { AreaChart, Donut } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
 import { RangePicker } from "../components/pickers";
+import { MIN_GAP_HOURS, priceSummary, refreshPrices, tickersOf } from "../lib/prices";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
@@ -157,12 +159,7 @@ export default function Investments() {
           </Card>
         ) : null}
 
-        <Card>
-          <span className="small muted">
-            Prices are entered by hand — no market data feed is wired up, so nothing here phones home. Update a price and the
-            value, gain and allocation recalculate.
-          </span>
-        </Card>
+        <PricesCard />
       </div>
 
       {editing || adding ? (
@@ -173,6 +170,79 @@ export default function Investments() {
         />
       ) : null}
     </>
+  );
+}
+
+/**
+ * Where prices come from, and how to get fresh ones.
+ *
+ * Holdings that Tiingo has no quote for keep whatever price was typed in, so
+ * this names them rather than leaving someone to work out why one row is stale.
+ */
+function PricesCard() {
+  const db = useDB();
+  const { apply, notify } = useStore();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [misses, setMisses] = useState<string[] | null>(null);
+
+  const key = db.settings.tiingoApiKey ?? "";
+  const tickers = tickersOf(db.holdings);
+  const last = db.settings.lastPricesAt;
+
+  const refresh = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const outcome = await refreshPrices(db, apply, "refresh prices");
+      setMisses(outcome.misses);
+      notify(priceSummary(outcome));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "The price refresh failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!key.trim()) {
+    return (
+      <Card>
+        <CardHead title="Prices" sub="Typed in by hand" />
+        <span className="small muted">
+          Every price above is whatever was last entered on the holding. Add a free Tiingo token under{" "}
+          <Link to="/settings" className="link">Settings &rarr; Holding prices</Link> and they refresh
+          themselves each morning, alongside the account sync.
+        </span>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHead
+        title="Prices"
+        sub="Previous close, from Tiingo"
+        right={
+          <Btn onClick={() => void refresh()} disabled={busy || !tickers.length}>
+            <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
+            {busy ? "Refreshing…" : "Refresh prices"}
+          </Btn>
+        }
+      />
+      <span className="small muted">
+        {tickers.length
+          ? <>{tickers.length} symbol{tickers.length === 1 ? "" : "s"} priced{" "}
+            {last ? <>&mdash; last checked {dateLabel(last.slice(0, 10), { year: true })}</> : "— not checked yet"}.
+            Refreshed with the account sync, at most once every {MIN_GAP_HOURS} hours.</>
+          : <>No holdings carry a ticker yet, so there is nothing to price.</>}
+      </span>
+      {misses?.length ? (
+        <div className="tiny faint" style={{ marginTop: 8 }}>
+          No quote for {misses.join(", ")} — those keep the price entered on the holding.
+        </div>
+      ) : null}
+      {error ? <div className="small neg" style={{ marginTop: 8 }}>{error}</div> : null}
+    </Card>
   );
 }
 

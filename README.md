@@ -94,6 +94,7 @@ Getting transactions in, cheapest first:
 | **SimpleFIN Bridge** | **$15/yr** | Implemented. MX-backed, ~16k institutions, 25 max, refreshes daily. |
 | **RentCast** | **$0** | Implemented, for property values — see below. 50 lookups/month on the free tier. |
 | **Plaid** | **$0** | Implemented. Trial plan: 10 institutions, and the only route here returning holdings. |
+| **Tiingo** | **$0** | Implemented, for share prices — see below. Stocks, ETFs and mutual funds. |
 | Teller | $0 | Not wired up. 100 connections, US only, thin on retirement accounts. |
 
 ### Plaid
@@ -139,6 +140,32 @@ Sign up at [rentcast.io](https://www.rentcast.io/api), create a key on the free 
 plan, and paste it into Settings → Property values. That plan allows 50 lookups a month; two
 properties refreshed monthly uses two. Settings also has an **Update now** button that walks
 every property with an address.
+
+### Holding prices
+
+Balances are what a bank reports; a share price is not, so it comes from somewhere else.
+Tiingo quotes the previous session's close for every holding that carries a ticker, and the
+refresh rides along with the daily account sync — the same 9am job, so a morning glance has
+both moved together rather than one of them a day behind the other.
+
+Tiingo rather than the alternatives for one reason: a retirement account is mostly mutual
+funds, and among the free tiers it is the one that quotes them alongside stocks and ETFs.
+Sign up at [tiingo.com](https://www.tiingo.com), copy the API token from your account page,
+and paste it into Settings → *Holding prices*. The free tier allows 500 distinct symbols a
+month, 50 requests an hour and 1,000 a day; there is no batch endpoint, so one holding is one
+request and the hourly limit is the binding one. Prices are asked for at most once every six
+hours, which is as often as a closing price changes.
+
+Two things are deliberately left alone. A symbol Tiingo has nothing for — a private ticker, a
+stable-value fund, a 401(k) recordkeeper's own share class — keeps whatever price was typed in
+on the holding, and the Investments screen names it rather than leaving you to work out why
+one row is stale. And **an encrypted document is not priced by the scheduled job**: the ticker
+list is inside the envelope and the server cannot open it, so those prices refresh when the
+app is next opened instead. Everything else about encryption is unchanged.
+
+The key is held in the document and passed per call to `/api/prices`, exactly like RentCast's.
+A deployment that would rather keep it out of the document can set `TIINGO_API_KEY` in Vercel;
+the scheduled job falls back to it.
 
 ### Connecting SimpleFIN
 
@@ -245,5 +272,5 @@ Notable behaviour worth knowing:
 
 ## What's deliberately missing
 
-No bank sync beyond SimpleFIN, no market data feed (investment prices are entered by hand),
-no multi-user households, no mobile apps, no bill pay. Those are where the $100 goes.
+No intraday quotes (prices are the previous session's close), no multi-user households, no
+mobile apps, no bill pay. Those are where the $100 goes.
