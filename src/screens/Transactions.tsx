@@ -9,7 +9,7 @@ import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
 import { logoFor } from "../lib/merchant-domain";
 import { toCSV } from "../lib/csv";
-import { budgetedCategoryIds, budgetedSum } from "../lib/select";
+import { accountOptions, budgetedCategoryIds, budgetedSum } from "../lib/select";
 import type { BudgetedSum } from "../lib/select";
 import { fmt } from "../lib/money";
 import { download } from "../lib/storage";
@@ -271,7 +271,7 @@ export default function Transactions() {
             />
             <SelectInput
               value={accountId} onChange={pickAccount} placeholder="All accounts"
-              options={db.accounts.map((a) => ({ value: a.id, label: a.name }))}
+              options={accountOptions(db.accounts.filter((a) => !a.hidden))}
             />
             <CategoryPicker
               value={categoryId} onChange={pickCategory} clearLabel="Any category"

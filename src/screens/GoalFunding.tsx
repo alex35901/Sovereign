@@ -6,7 +6,8 @@ import { useDB, useStore } from "../store";
 import { canValue } from "../lib/property";
 import { ceilingFor, claimOn, funding } from "../lib/goal-funding";
 import { InstitutionLogo } from "../components/InstitutionLogo";
-import { Btn, Card, Modal, Money, MoneyInput, Toggle } from "../components/ui";
+import { Btn, Card, Modal, Money, MoneyInput, SelectInput, Toggle } from "../components/ui";
+import { accountOptions } from "../lib/select";
 
 /**
  * The money behind the goals, and what has not been given a job yet.
@@ -269,16 +270,23 @@ function AllocateModal({ account, onClose }: { account: Account; onClose: () => 
       <div className="col" style={{ gap: 14 }}>
         <div className="row wrap" style={{ gap: 10, alignItems: "center" }}>
           <span className="small muted">From</span>
-          <select
-            className="select" style={{ width: "auto", maxWidth: 300 }}
-            value={which} onChange={(e) => setWhich(e.target.value)}
-          >
-            {funding(db).accounts.map((a) => (
-              <option key={a.account.id} value={a.account.id}>
-                {a.account.name} — {fmtish(a.available)} unassigned
-              </option>
-            ))}
-          </select>
+          {(() => {
+            // Grouped like every other account dropdown, with each one's
+            // unassigned balance still on the line — that figure is the reason
+            // you are picking one.
+            const rows = funding(db).accounts;
+            const spare = new Map(rows.map((r) => [r.account.id, r.available]));
+            return (
+              <SelectInput
+                style={{ width: "auto", maxWidth: 300 }}
+                value={which} onChange={setWhich}
+                options={accountOptions(
+                  rows.map((r) => r.account),
+                  (a) => `${a.name} — ${fmtish(spare.get(a.id) ?? 0)} unassigned`,
+                )}
+              />
+            );
+          })()}
         </div>
 
         {active.autoGoalId ? (

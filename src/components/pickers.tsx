@@ -3,7 +3,8 @@ import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import type { Category } from "../types";
 import { useDB } from "../store";
 import { addMonths, monthLabel } from "../lib/date";
-import { Popover } from "./ui";
+import { Popover, SelectInput } from "./ui";
+import { accountOptions } from "../lib/select";
 import type { RangeKey } from "../lib/range";
 import { RANGES } from "../lib/range";
 
@@ -140,11 +141,10 @@ export function AccountPicker({ value, onChange, allowAll }: {
 }) {
   const db = useDB();
   return (
-    <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
-      {allowAll ? <option value="">All accounts</option> : null}
-      {db.accounts.filter((a) => !a.hidden).map((a) => (
-        <option key={a.id} value={a.id}>{a.name}</option>
-      ))}
-    </select>
+    <SelectInput
+      value={value} onChange={onChange}
+      placeholder={allowAll ? "All accounts" : undefined}
+      options={accountOptions(db.accounts.filter((a) => !a.hidden))}
+    />
   );
 }

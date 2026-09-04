@@ -77,7 +77,7 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
-      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
 
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
@@ -4809,6 +4809,65 @@ await test("the drill-down and the Budget screen report the same actual", () => 
   }
 });
 
+
+await test("accounts come out of a dropdown under the headings the app uses", () => {
+  // A flat list of fifteen accounts is a list to read; the same fifteen under
+  // Cash, Credit Cards and the rest is a list to skim.
+  const at = (id, type) => ({
+    id, name: id, institution: "X", type, balance: 0, includeInNetWorth: true, hidden: false, history: [],
+  });
+  const rows = M.accountOptions([
+    at("visa", "credit"), at("cheque", "checking"), at("roth", "retirement"),
+    at("brokerage", "investment"), at("house", "real_estate"), at("savings", "savings"),
+    at("btc", "crypto"), at("car", "vehicle"), at("mortgage", "mortgage"),
+  ]);
+
+  // ordered by the groups rather than by the accounts, so every dropdown in
+  // the app agrees with every other one
+  assert.deepEqual(rows.map((r) => r.group), [
+    "Cash", "Cash", "Credit Cards", "Investments", "Investments",
+    "Retirement", "Property", "Vehicles", "Loans",
+  ]);
+  assert.deepEqual(rows.map((r) => r.value), [
+    "cheque", "savings", "visa", "brokerage", "btc", "roth", "house", "car", "mortgage",
+  ]);
+  assert.equal(rows.length, 9, "and nothing is dropped or listed twice");
+});
+
+await test("no account type belongs to two groups", () => {
+  // What keeps an account from being offered twice. accountOptions guards
+  // against it as well, but the guard is unreachable while this holds — and if
+  // someone adds an overlapping group later, this is where they find out.
+  const seen = new Map();
+  for (const g of M.ACCOUNT_GROUPS) {
+    for (const t of g.types) {
+      assert.equal(seen.has(t), false, `${t} is in both ${seen.get(t)} and ${g.label}`);
+      seen.set(t, g.label);
+    }
+  }
+  // and every type the app knows about has a home
+  for (const t of Object.keys(M.ACCOUNT_TYPE_LABEL)) {
+    assert.equal(seen.has(t), true, `${t} is not in any group, so it would fall to "Other"`);
+  }
+});
+
+await test("a type nobody thought to group is still pickable", () => {
+  const odd = { id: "x", name: "Odd", institution: "", type: "moon_rocks", balance: 0, includeInNetWorth: true, hidden: false, history: [] };
+  const rows = M.accountOptions([odd]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].group, "Other");
+});
+
+await test("the label is the caller's, and every group heading is a real one", () => {
+  const at = (id, type) => ({ id, name: id, institution: "Bank", type, balance: 0, includeInNetWorth: true, hidden: false, history: [] });
+  const rows = M.accountOptions([at("a", "checking")], (a) => `${a.name} · ${a.institution}`);
+  assert.equal(rows[0].label, "a · Bank");
+
+  const headings = new Set(M.ACCOUNT_GROUPS.map((g) => g.label));
+  const all = M.accountOptions(M.buildDemoDB().accounts);
+  assert.equal(all.length, M.buildDemoDB().accounts.length, "every account is offered");
+  for (const r of all) assert.ok(headings.has(r.group), `${r.group} is not one of the app's groups`);
+});
 
 // --- money set aside for goals -------------------------------------------
 

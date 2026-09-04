@@ -31,6 +31,36 @@ export const ACCOUNT_GROUPS: { key: string; label: string; types: Account["type"
   { key: "loans", label: "Loans", types: ["loan", "mortgage", "other_liability"] },
 ];
 
+/**
+ * Accounts as dropdown options, under the headings the Accounts screen uses.
+ *
+ * A flat list of fifteen accounts is a list to read; the same fifteen under
+ * Cash, Credit Cards, Investments and the rest is a list to skim. Ordered by
+ * the groups rather than by the accounts, so every dropdown in the app puts
+ * them in the same order as every other one — which is the point of it being
+ * one function rather than a map() at each call site.
+ */
+export function accountOptions(
+  accounts: Account[],
+  label: (a: Account) => string = (a) => a.name,
+): { value: string; label: string; group: string }[] {
+  const out: { value: string; label: string; group: string }[] = [];
+  const placed = new Set<string>();
+
+  for (const g of ACCOUNT_GROUPS) {
+    for (const a of accounts) {
+      if (!g.types.includes(a.type) || placed.has(a.id)) continue;
+      placed.add(a.id);
+      out.push({ value: a.id, label: label(a), group: g.label });
+    }
+  }
+  // A type nobody thought to group still has to be pickable.
+  for (const a of accounts) {
+    if (!placed.has(a.id)) out.push({ value: a.id, label: label(a), group: "Other" });
+  }
+  return out;
+}
+
 export const ACCOUNT_TYPE_LABEL: Record<Account["type"], string> = {
   checking: "Checking", savings: "Savings", credit: "Credit Card", investment: "Brokerage",
   retirement: "Retirement", loan: "Loan", mortgage: "Mortgage", real_estate: "Real Estate",

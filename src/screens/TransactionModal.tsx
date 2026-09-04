@@ -8,6 +8,7 @@ import { UNCATEGORIZED } from "../lib/categories";
 import { Btn, Field, Modal, Money, MoneyInput, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { CategoryPicker } from "../components/pickers";
 import { ActivityLog } from "../components/ActivityLog";
+import { accountOptions } from "../lib/select";
 
 /** Add or edit a transaction, including splits and tags. */
 export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose: () => void }) {
@@ -93,7 +94,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         <Field label="Account">
           <SelectInput
             value={accountId} onChange={setAccountId}
-            options={db.accounts.filter((a) => !a.hidden).map((a) => ({ value: a.id, label: `${a.name} · ${a.institution}` }))}
+            options={accountOptions(db.accounts.filter((a) => !a.hidden), (a) => `${a.name} · ${a.institution}`)}
           />
         </Field>
         <Field label="Category">

@@ -6,7 +6,7 @@ import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, today } from "../lib/date";
 import { fmtPct } from "../lib/money";
-import { ASSET_CLASS_LABEL, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary, trendTone } from "../lib/select";
+import { ASSET_CLASS_LABEL, accountOptions, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary, trendTone } from "../lib/select";
 import { AreaChart, Donut } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
 import { RangePicker } from "../components/pickers";
@@ -283,7 +283,7 @@ function HoldingModal({ holding, onClose, onDelete }: { holding?: Holding; onClo
       }
     >
       <Field label="Account">
-        <SelectInput value={accountId} onChange={setAccountId} options={invAccounts.map((a) => ({ value: a.id, label: a.name }))} />
+        <SelectInput value={accountId} onChange={setAccountId} options={accountOptions(invAccounts)} />
       </Field>
       <div className="row" style={{ gap: 12 }}>
         <Field label="Ticker"><TextInput value={ticker} onChange={setTicker} placeholder="VTI" autoFocus /></Field>

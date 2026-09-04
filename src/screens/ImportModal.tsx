@@ -5,6 +5,7 @@ import type { ColumnRole } from "../lib/csv";
 import { buildPlan, guessColumns, newTagNames, parseCSV, rowsToTransactions } from "../lib/csv";
 import { Btn, Card, Field, Modal, Money, SelectInput, Toggle } from "../components/ui";
 import { dateLabel } from "../lib/date";
+import { accountOptions } from "../lib/select";
 
 const ROLES: { value: ColumnRole; label: string }[] = [
   { value: "ignore", label: "— ignore —" },
@@ -111,7 +112,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
             <Field label="Import into account">
               <SelectInput
                 value={accountId} onChange={setAccountId}
-                options={db.accounts.map((a) => ({ value: a.id, label: `${a.name} · ${a.institution}` }))}
+                options={accountOptions(db.accounts, (a) => `${a.name} · ${a.institution}`)}
               />
             </Field>
             <div className="col" style={{ gap: 9, paddingTop: 18 }}>

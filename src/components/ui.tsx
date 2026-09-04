@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Eye, EyeOff, X } from "lucide-react";
@@ -210,13 +210,37 @@ export function PercentInput({ value, onChange, placeholder }: {
   );
 }
 
-export function SelectInput<T extends string>({ value, onChange, options, placeholder }: {
-  value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; placeholder?: string;
+/**
+ * A dropdown, with headings when the options carry one.
+ *
+ * `group` is optional and consecutive: options are rendered in the order
+ * given, and a run sharing a group becomes an optgroup. A list where nothing
+ * carries one renders exactly as it always did, which is what makes this safe
+ * to add to a component every screen uses.
+ */
+export function SelectInput<T extends string>({ value, onChange, options, placeholder, style }: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string; group?: string }[];
+  placeholder?: string;
+  style?: CSSProperties;
 }) {
+  const runs: { group?: string; items: typeof options }[] = [];
+  for (const o of options) {
+    const last = runs[runs.length - 1];
+    if (last && last.group === o.group) last.items.push(o);
+    else runs.push({ group: o.group, items: [o] });
+  }
+
   return (
-    <select className="select" value={value} onChange={(e) => onChange(e.target.value as T)}>
+    <select className="select" style={style} value={value} onChange={(e) => onChange(e.target.value as T)}>
       {placeholder ? <option value="">{placeholder}</option> : null}
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      {runs.map((run, i) => {
+        const items = run.items.map((o) => <option key={o.value} value={o.value}>{o.label}</option>);
+        return run.group
+          ? <optgroup key={`${run.group}-${i}`} label={run.group}>{items}</optgroup>
+          : <Fragment key={`plain-${i}`}>{items}</Fragment>;
+      })}
     </select>
   );
 }
