@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Download, Link2, RefreshCw, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -9,6 +9,7 @@ import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWin
 import type { SyncCadence } from "../lib/sync";
 import { pricesDue, refreshPrices } from "../lib/prices";
 import { BRAND_COUNT } from "../lib/merchant-domain";
+import { breakdown } from "../lib/transfer";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
@@ -18,6 +19,7 @@ import { ImportModal } from "./ImportModal";
 
 export default function Settings() {
   const db = useDB();
+  const size = useMemo(() => breakdown(db), [db]);
   const { actions, apply, notify } = useStore();
   const fileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
@@ -102,12 +104,32 @@ export default function Settings() {
           </Card>
 
           <Card>
-            <CardHead title="What's stored where" />
+            <CardHead title="What's stored where" sub={`${(size.bytes / 1024 / 1024).toFixed(2)} MB, sent whole on every save`} />
             <div className="col small muted" style={{ gap: 8 }}>
-              <span>
-                Everything lives in this browser's local storage — {db.transactions.length.toLocaleString()} transactions,{" "}
-                {db.accounts.length} accounts. Nothing is sent anywhere unless you connect a sync provider below.
-              </span>
+              {/* The size is the interesting part now that two providers meter
+                  it. Broken down, because the answer to "what do I do about
+                  it" depends entirely on which line is the big one. */}
+              <div className="col" style={{ gap: 3 }}>
+                {size.parts.map((part) => (
+                  <div key={part.label} className="spread tiny">
+                    <span className="muted">
+                      {part.label}
+                      {part.count !== undefined ? <span className="faint"> · {part.count.toLocaleString()}</span> : null}
+                    </span>
+                    <span className="num faint">
+                      {(part.bytes / 1024).toFixed(0)} KB
+                      <span className="muted"> · {Math.round((part.bytes / Math.max(1, size.bytes)) * 100)}%</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <Btn onClick={() => actions.compressHistory()}>Compress balance history</Btn>
+                <span className="tiny faint" style={{ maxWidth: 320 }}>
+                  Drops balance points that repeat the one before them. Charts read the same, because
+                  they fill forward from the last change.
+                </span>
+              </div>
               <span>
                 Because it's per-browser, take a JSON backup before clearing site data or switching machines.
               </span>

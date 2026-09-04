@@ -70,6 +70,8 @@ await build({
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
       export * as TR from "./src/lib/transfer.ts";
+      export { compressPoints, squashHistory } from "./src/lib/history.ts";
+      export { clearForwardFrom } from "./src/lib/select.ts";
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
       export { default as iconHandler, forgetPlaceholders } from "./api/icon.ts";
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
@@ -944,6 +946,75 @@ await test("every brand maps to something that looks like a domain", () => {
   assert.equal(M.normalize("  H&M  "), "h and m");
 });
 
+/* ── what the document is made of ─────────────────────────────────────── */
+
+const pointsOf = (...balances) =>
+  balances.map((b, i) => ({ date: `2026-01-${String(i + 1).padStart(2, "0")}`, balance: b }));
+
+await test("a repeated balance carries nothing, and is dropped", () => {
+  // Every sync writes a point a day. For an account that has not moved, that
+  // is the same figure again every morning, in a document uploaded whole.
+  assert.deepEqual(
+    M.compressPoints(pointsOf(100, 100, 100, 100, 250, 250, 250)).map((p) => p.balance),
+    [100, 250, 250],
+    "first, the change, and the last time it was seen",
+  );
+  assert.deepEqual(M.compressPoints(pointsOf(100, 100)).map((p) => p.balance), [100, 100], "two points are already minimal");
+  assert.deepEqual(M.compressPoints([]), []);
+  assert.deepEqual(M.compressPoints(pointsOf(1, 2, 3, 4)).map((p) => p.balance), [1, 2, 3, 4], "a balance that moves keeps every point");
+});
+
+await test("dropping them cannot change what any chart reads", () => {
+  // The whole licence for doing this: balanceAt fills forward from the last
+  // point at or before a date, so a repeat is invisible to every reader.
+  const history = pointsOf(100, 100, 100, 250, 250, 900, 900, 900);
+  const account = { id: "a", name: "A", institution: "", type: "savings", balance: 900, includeInNetWorth: true, hidden: false, history };
+  const squashed = { ...account, history: M.compressPoints(history) };
+  assert.ok(squashed.history.length < history.length, "it did drop something");
+  for (let d = 1; d <= 12; d++) {
+    const on = `2026-01-${String(d).padStart(2, "0")}`;
+    assert.equal(M.balanceAt(squashed, on), M.balanceAt(account, on), `they disagree on ${on}`);
+  }
+  assert.equal(M.balanceAt(squashed, "2025-12-31"), M.balanceAt(account, "2025-12-31"), "and before the record starts");
+});
+
+await test("squashing a whole document says what it actually saved", () => {
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [
+      { id: "a1", name: "Car", institution: "", type: "other_asset", balance: 100, includeInNetWorth: true, hidden: false, history: pointsOf(...Array(20).fill(100)) },
+      { id: "a2", name: "Current", institution: "", type: "checking", balance: 5, includeInNetWorth: true, hidden: false, history: pointsOf(1, 2, 3, 4, 5) },
+    ],
+  };
+  const out = M.squashHistory(db);
+  assert.equal(out.removed, 18, "eighteen mornings of the same figure");
+  assert.ok(out.saved > 100, `${out.saved} bytes is not a saving worth reporting`);
+  assert.equal(out.db.accounts[1].history.length, 5, "the account that moves is left alone");
+  assert.equal(out.db.accounts[1], db.accounts[1], "and not even rebuilt");
+
+  // and running it twice finds nothing the second time
+  const again = M.squashHistory(out.db);
+  assert.equal(again.removed, 0);
+  assert.equal(again.saved, 0);
+  assert.equal(again.db, out.db, "an untouched document is handed straight back");
+});
+
+await test("the breakdown says which part of the document is the problem", () => {
+  const db = M.buildDemoDB();
+  const b = M.TR.breakdown(db);
+  assert.ok(b.bytes > 100_000, `${b.bytes} bytes is not a real budget`);
+  const by = Object.fromEntries(b.parts.map((p) => [p.label, p]));
+  assert.equal(by.Transactions.count, db.transactions.length);
+  assert.ok(by.Transactions.bytes / b.bytes > 0.5, "transactions are the bulk of it, and the table should say so");
+  assert.equal(by["Balance history"].count, db.accounts.reduce((s, a) => s + a.history.length, 0));
+  assert.ok(b.parts.every((p) => p.bytes > 0));
+  // never throws on something that cannot be measured
+  const loop = { transactions: [] };
+  loop.self = loop;
+  assert.equal(M.TR.breakdown(loop).bytes, 0);
+});
+
 /* ── fetching a brand's mark ──────────────────────────────────────────── */
 
 /** Calls the icon function, keeping the body as bytes rather than as text. */
@@ -1223,6 +1294,38 @@ await test("merge applies rules to incoming transactions", () => {
   assert.equal(paycheck.reviewed, true);
 });
 
+await test("a daily pull of an unchanged balance does not grow the document", () => {
+  // Without this the squash button is a treadmill: every morning the scheduled
+  // job writes the same figure again for every account that has not moved, and
+  // the whole document is uploaded on every save afterwards.
+  let db = M.emptyDB();
+  const on = (date) => ({
+    fetchedAt: `${date}T09:00:00.000Z`,
+    accounts: [{ syncId: "s1", name: "Car", institution: "Nobody", type: "other_asset", balance: 1_800_000, balanceDate: date }],
+    transactions: [],
+    errors: [],
+  });
+
+  db = M.mergeSync(db, on("2026-08-01"), "simplefin").db;
+  for (const d of ["02", "03", "04", "05", "06", "07"]) {
+    db = M.mergeSync(db, on(`2026-08-${d}`), "simplefin").db;
+  }
+  const car = db.accounts.find((a) => a.syncId === "s1");
+  assert.equal(car.history.length, 2, `a week of the same figure left ${car.history.length} points`);
+  assert.equal(car.history[0].date, "2026-08-01", "the day the record starts");
+  assert.equal(car.history[1].date, "2026-08-07", "and the day it was last seen");
+  assert.equal(M.balanceAt(car, "2026-08-04"), 1_800_000, "and the middle of the week still reads right");
+
+  // and a real move is still recorded, on the day it happened
+  db = M.mergeSync(db, { ...on("2026-08-08"), accounts: [{ syncId: "s1", name: "Car", institution: "Nobody", type: "other_asset", balance: 1_750_000, balanceDate: "2026-08-08" }] }, "simplefin").db;
+  const moved = db.accounts.find((a) => a.syncId === "s1");
+  // Two, not three: the middle point repeated the first, so it carried nothing
+  // once a later one existed. What every date reads is what matters.
+  assert.equal(moved.history.length, 2);
+  assert.equal(M.balanceAt(moved, "2026-08-08"), 1_750_000);
+  assert.equal(M.balanceAt(moved, "2026-08-07"), 1_800_000, "the day before is unchanged");
+});
+
 await test("merchant names are cleaned of bank noise", () => {
   assert.equal(M.cleanMerchant("POS DEBIT WHOLEFDS MKT 10412 08/18"), "Wholefds Mkt");
   assert.equal(M.cleanMerchant("SQ *BLUE BOTTLE COFFEE XXXX1234"), "SQ *Blue Bottle Coffee");
@@ -1362,6 +1465,35 @@ await test("a default set far too long ago cannot spin the loop", () => {
   const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
   const months = Object.keys(next.budgets);
   assert.ok(months.length > 0 && months.length <= 240, `${months.length} months written`);
+});
+
+await test("unticking 'apply to future months' leaves the standing amount alone", () => {
+  // The bug: correcting a past month with the box unticked emptied every month
+  // after it, because unticking deleted the standing amount outright. The box
+  // says what this month does, not what happens to every other one.
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
+
+  // what the panel does on an untick: this month gets a figure of its own
+  const corrected = M.setPlannedOn(db, "2026-03", "c_groceries", 42000);
+  assert.equal(M.plannedFor(corrected, "2026-03", "c_groceries"), 42000, "the month being corrected");
+  assert.equal(M.plannedFor(corrected, "2026-09", "c_groceries"), 50000, "and next September is untouched");
+  assert.equal(M.plannedFor(corrected, "2026-02", "c_groceries"), 50000, "as is the month before it");
+  assert.deepEqual(corrected.budgetDefaults, db.budgetDefaults, "the standing amount is not the thing being edited");
+});
+
+await test("ending a standing amount keeps the months it already gave", () => {
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
+  db.budgets = { "2026-03": { c_groceries: 90000 } };
+
+  const stopped = M.clearForwardFrom(db, "2026-09", "c_groceries");
+  assert.equal(stopped.budgetDefaults.c_groceries, undefined, "it really is gone");
+  assert.equal(M.plannedFor(stopped, "2026-02", "c_groceries"), 50000, "February keeps what it had");
+  assert.equal(M.plannedFor(stopped, "2026-03", "c_groceries"), 90000, "and a month set by hand keeps that");
+  assert.equal(M.plannedFor(stopped, "2026-08", "c_groceries"), 50000, "right up to the month it stops");
+  assert.equal(M.plannedFor(stopped, "2026-09", "c_groceries"), 0, "from which there is nothing standing");
+  assert.equal(M.plannedFor(stopped, "2027-06", "c_groceries"), 0);
 });
 
 await test("history counts empty months, and the average with them", () => {

@@ -5,6 +5,7 @@ import { UNCATEGORIZED } from "../categories.js";
 import { uid } from "../id.js";
 import { applyRules } from "../rules.js";
 import { added, record } from "../activity.js";
+import { compressPoints } from "../history.js";
 
 
 export interface MergeResult {
@@ -48,9 +49,13 @@ export function mergeSync(
       const history = existing.history.filter((h) => h.date !== r.balanceDate);
       history.push({ date: r.balanceDate, balance: r.balance });
       history.sort((a, b) => (a.date < b.date ? -1 : 1));
+      // Squashed on the way in, or a daily pull writes the same figure again
+      // every morning for every account that has not moved — and the document
+      // is uploaded whole on every save. See lib/history.ts.
+      const kept = compressPoints(history);
       const idx = accounts.indexOf(existing);
       accounts[idx] = {
-        ...existing, balance: r.balance, history,
+        ...existing, balance: r.balance, history: kept,
         syncId: r.syncId, syncSource: source, lastSyncedAt: payload.fetchedAt,
         // Refreshed on every pull, but never blanked: a provider that stops
         // sending one shouldn't lose the logo already held.

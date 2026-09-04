@@ -1,5 +1,6 @@
 import type { Account, ISODate } from "../types";
 import { parseCSV, parseDate } from "./csv";
+import { compressPoints } from "./history";
 
 export interface BalancePoint { date: ISODate; balance: number }
 
@@ -48,15 +49,7 @@ const cents = (raw: string): number | null => {
  * balances are forward-filled when charting, so only the changes carry
  * information. The first and last points are always kept to pin the range.
  */
-export function compress(points: BalancePoint[]): BalancePoint[] {
-  if (points.length < 3) return points;
-  const out: BalancePoint[] = [points[0]];
-  for (let i = 1; i < points.length - 1; i++) {
-    if (points[i].balance !== out[out.length - 1].balance) out.push(points[i]);
-  }
-  out.push(points[points.length - 1]);
-  return out;
-}
+export const compress = compressPoints;
 
 export function buildBalancePlan(
   rows: string[][],

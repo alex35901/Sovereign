@@ -386,6 +386,37 @@ const PIN_LIMIT = 240;
  * explicit entry was already the truth for that month.
  */
 export function applyForward(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
+  const budgets = releaseFrom(db, month, categoryId);
+  return {
+    ...db,
+    budgets,
+    budgetDefaults: { ...(db.budgetDefaults ?? {}), [categoryId]: { amount, from: month } },
+  };
+}
+
+/**
+ * Ends a standing amount from `month` onwards, keeping the months it covered.
+ *
+ * The destructive half of the pair, and the only thing that actually removes
+ * one. Deleting the entry on its own would rewrite every month back to the
+ * start of the default as though nothing had ever been budgeted, so those are
+ * written down first — exactly as applyForward does when it replaces one.
+ */
+export function clearForwardFrom(db: DB, month: MonthKey, categoryId: string): DB {
+  const budgets = releaseFrom(db, month, categoryId);
+  const { [categoryId]: _removed, ...defaults } = db.budgetDefaults ?? {};
+  return { ...db, budgets, budgetDefaults: defaults };
+}
+
+/**
+ * Pins what the outgoing default covered, and clears the overrides after it.
+ *
+ * Shared by both, because both are the same move up to the last line: the past
+ * keeps whatever it was showing, and later months stop holding a figure of
+ * their own so that whatever replaces the default — another one, or nothing —
+ * is what shows through.
+ */
+function releaseFrom(db: DB, month: MonthKey, categoryId: string): DB["budgets"] {
   const budgets: DB["budgets"] = { ...db.budgets };
 
   const prior = db.budgetDefaults?.[categoryId];
@@ -401,12 +432,7 @@ export function applyForward(db: DB, month: MonthKey, categoryId: string, amount
     const { [categoryId]: _dropped, ...rest } = row;
     budgets[m] = rest;
   }
-
-  return {
-    ...db,
-    budgets,
-    budgetDefaults: { ...(db.budgetDefaults ?? {}), [categoryId]: { amount, from: month } },
-  };
+  return budgets;
 }
 
 /** Actual totals for one category over the given months, oldest first. */

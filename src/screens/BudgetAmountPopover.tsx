@@ -61,8 +61,9 @@ function Panel({ category, month, kind, onDone }: {
   const average = categoryAverage(history);
   const lastMonth = history[history.length - 1]?.actual ?? 0;
 
+  const standing = db.budgetDefaults?.[category.id];
   const [amount, setAmount] = useState(() => plannedFor(db, month, category.id));
-  const [forward, setForward] = useState(Boolean(db.budgetDefaults?.[category.id]));
+  const [forward, setForward] = useState(Boolean(standing));
 
   const commit = (next: number) => {
     setAmount(next);
@@ -70,13 +71,25 @@ function Panel({ category, month, kind, onDone }: {
     else actions.setPlanned(month, category.id, next);
   };
 
+  /**
+   * Whether this figure carries into later months, or is just this month's.
+   *
+   * Unchecking used to delete the standing amount outright, which is a very
+   * different thing from what the label says: correcting one past month with
+   * the box unticked emptied every month after it. It now does what it reads
+   * as — this month gets a figure of its own and every other month carries on
+   * as it was. Ending a standing amount is its own button, below.
+   */
   const toggleForward = (on: boolean) => {
     setForward(on);
     if (on) actions.applyPlannedForward(month, category.id, amount);
-    else {
-      actions.clearPlannedForward(category.id);
-      actions.setPlanned(month, category.id, amount);
-    }
+    else actions.setPlanned(month, category.id, amount);
+  };
+
+  const stopStanding = () => {
+    setForward(false);
+    actions.clearPlannedForward(month, category.id);
+    actions.setPlanned(month, category.id, amount);
   };
 
   const verb = kind === "income" ? "Earned" : "Spent";
@@ -127,11 +140,19 @@ function Panel({ category, month, kind, onDone }: {
         <span className="small">Apply {fmt0(amount)} to all future months</span>
         <span
           className="faint"
-          title="Later months stop keeping their own figure and follow this one. Months already past are untouched, and changing a single future month overrides it again."
+          title="Later months stop keeping their own figure and follow this one. Months already past are untouched, and changing a single future month overrides it again. Unticking this leaves the standing amount alone and gives this month a figure of its own."
         >
           <Info size={13} />
         </span>
       </label>
+
+      {standing ? (
+        <div className="tiny faint" style={{ marginTop: 6 }}>
+          {fmt0(standing.amount)} a month has applied since {monthLabel(standing.from, true)}.{" "}
+          <button className="link" onClick={stopStanding}>Stop it from {monthLabel(month, true)}</button>
+          {" "}— earlier months keep what it gave them.
+        </div>
+      ) : null}
 
       <div className="row" style={{ justifyContent: "flex-end", marginTop: 10 }}>
         <button className="btn btn-sm btn-primary" onClick={onDone}>Done</button>

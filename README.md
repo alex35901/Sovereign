@@ -86,6 +86,14 @@ between visits.
 
 ## Bank sync
 
+Settings → *What's stored where* breaks the document down by what it is made of, because the
+answer to "what do I do about its size" depends entirely on which line is the big one — and it
+is almost always transactions, at around 250 bytes each. Balance history is the one part that
+grows for no reason: every sync writes a point per account per day, and an account that has
+not moved writes the same figure again. Those are squashed on the way in now, and the button
+there clears out whatever accumulated before that — losslessly, because charts fill forward
+from the last change, so a point that repeats the one before it is invisible to every reader.
+
 The document is one JSON blob, pushed whole on every save, and **two companies meter that
 traffic**: Neon allows 5 GB of network transfer a month and Vercel 10 GB of Fast Origin
 Transfer, which counts the request going up as well as the answer coming back. Exceeding

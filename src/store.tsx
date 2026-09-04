@@ -10,7 +10,8 @@ import { toRules } from "./lib/rules-import";
 import type { ParsedRule } from "./lib/rules-import";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
-import { applyForward, setPlannedOn } from "./lib/select";
+import { applyForward, clearForwardFrom, setPlannedOn } from "./lib/select";
+import { squashHistory } from "./lib/history";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
@@ -246,10 +247,13 @@ export interface Actions {
   setPlanned: (month: MonthKey, categoryId: ID, amount: number) => void;
   applyPlannedForward: (month: MonthKey, categoryId: ID, amount: number) => void;
   moveBudget: (month: MonthKey, fromId: ID, toId: ID, amount: number) => void;
-  clearPlannedForward: (categoryId: ID) => void;
+  /** Ends a standing amount from `month` on. Earlier months keep what it gave them. */
+  clearPlannedForward: (month: MonthKey, categoryId: ID) => void;
   copyPreviousMonth: (month: MonthKey) => void;
   autofillBudget: (month: MonthKey) => void;
   clearBudget: (month: MonthKey) => void;
+  /** Drops balance points that repeat the one before them. Says what it saved. */
+  compressHistory: () => void;
 
   addGoal: (g: Omit<Goal, "id" | "priority" | "archived">) => void;
   /** Whether an account's balance is money set aside for goals. */
@@ -512,17 +516,22 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
       apply((db) => applyForward(db, month, categoryId, amount), "apply to all future months"),
     moveBudget: (month, fromId, toId, amount) =>
       apply((db) => moveBudget(db, month, fromId, toId, amount).db, "move money between categories"),
-    clearPlannedForward: (categoryId) =>
-      apply((db) => {
-        const { [categoryId]: _removed, ...rest } = db.budgetDefaults ?? {};
-        return { ...db, budgetDefaults: rest };
-      }),
+    clearPlannedForward: (month, categoryId) =>
+      apply((db) => clearForwardFrom(db, month, categoryId), "stop the standing amount"),
     copyPreviousMonth: (month) =>
       apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: { ...(db.budgets[addMonths(month, -1)] ?? {}) } } }), "copy last month's budget"),
     autofillBudget: (month) =>
       apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: plannedFromHistory(db, month) } }), "auto-fill budget"),
     clearBudget: (month) =>
       apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: {} } }), "clear budget"),
+    compressHistory: () =>
+      apply((db) => {
+        const out = squashHistory(db);
+        notify(out.removed
+          ? `Dropped ${out.removed.toLocaleString()} repeated balance point${out.removed === 1 ? "" : "s"} — ${Math.round(out.saved / 1024)} KB off every save.`
+          : "Nothing to drop — no balance point repeats the one before it.");
+        return out.db;
+      }, "compress balance history"),
 
     addGoal: (g) =>
       apply((db) => ({ ...db, goals: [...db.goals, { ...g, id: uid("gl"), priority: db.goals.length, archived: false }] })),

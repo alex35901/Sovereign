@@ -109,3 +109,48 @@ export function documentMB(db: unknown): number {
 }
 
 export const asMB = (bytes: number): number => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+
+/** One line of what the document is made of. */
+export interface Part {
+  label: string;
+  bytes: number;
+  /** How many of whatever it is, for the lines where a count means something. */
+  count?: number;
+}
+
+/**
+ * What the document is actually made of.
+ *
+ * Worth knowing before deciding what to do about its size: the answer is
+ * almost always transactions, and an hour spent squeezing anything else is an
+ * hour spent on the other six per cent.
+ */
+export function breakdown(db: {
+  transactions?: { activity?: unknown[] }[];
+  accounts?: { history?: unknown[] }[];
+  goals?: unknown[];
+  hopper?: unknown[];
+}): { bytes: number; parts: Part[] } {
+  const size = (x: unknown): number => {
+    try { return JSON.stringify(x ?? null)?.length ?? 0; } catch { return 0; }
+  };
+
+  const transactions = db.transactions ?? [];
+  const accounts = db.accounts ?? [];
+  const history = accounts.flatMap((a) => a.history ?? []);
+
+  const txBytes = size(transactions);
+  const acctBytes = size(accounts);
+  const bytes = size(db);
+
+  return {
+    bytes,
+    parts: [
+      { label: "Transactions", bytes: txBytes, count: transactions.length },
+      { label: "Balance history", bytes: size(history), count: history.length },
+      { label: "Accounts, without their history", bytes: Math.max(0, acctBytes - size(history)), count: accounts.length },
+      { label: "Goals and Hopper", bytes: size(db.goals) + size(db.hopper) },
+      { label: "Everything else", bytes: Math.max(0, bytes - txBytes - acctBytes) },
+    ].filter((p) => p.bytes > 2),
+  };
+}
