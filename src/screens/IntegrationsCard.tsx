@@ -8,7 +8,7 @@ import type { Health, Integration } from "../lib/integrations";
 import { hopperMeter } from "../lib/hopper/loop";
 import type { HopperMeter } from "../lib/hopper/loop";
 import { refreshPrices } from "../lib/prices";
-import { syncSimplefin } from "../lib/sync";
+import { syncPlaid, syncSimplefin } from "../lib/sync";
 import { estimateHomeValue, canValue } from "../lib/property";
 import { reason, recordRun } from "../lib/usage";
 import { Btn, Card, CardHead, TextInput, Toggle } from "../components/ui";
@@ -61,6 +61,11 @@ export function IntegrationsCard() {
     setError(null);
     try {
       if (id === "simplefin") notify((await syncSimplefin(db, apply)).summary);
+      if (id === "plaid") {
+        const out = await syncPlaid(db, apply);
+        notify(out.summary);
+        if (out.errors.length) setError(out.errors.join(" · "));
+      }
       if (id === "tiingo") { await refreshPrices(db, apply, "refresh prices"); notify("Prices refreshed."); }
       if (id === "rentcast") await valueProperties();
     } catch (err) {
@@ -147,6 +152,7 @@ export function IntegrationsCard() {
 /** Which rows have something to press, and what it says. */
 const ACTION: Record<string, string> = {
   simplefin: "Sync now",
+  plaid: "Sync now",
   tiingo: "Refresh prices",
   rentcast: "Value properties",
 };

@@ -85,7 +85,7 @@ await build({
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS } from "./src/lib/sync/schedule.ts";
-      export { syncSimplefin } from "./src/lib/sync/run.ts";
+      export { syncSimplefin, syncPlaid, syncPlaidItem } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
       export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
@@ -4020,6 +4020,61 @@ await test("a logo-less item is asked again later, one that has a mark never is"
   assert.equal(M.needsInstitution({ institutionCheckedAt: at(1) }, now), false);
   assert.equal(M.needsInstitution({ institutionCheckedAt: at(31) }, now), true);
   assert.equal(M.needsInstitution({ institutionCheckedAt: "not a date" }, now), true);
+});
+
+const plaidDb = (items) => {
+  const base = M.emptyDB();
+  return { ...base, settings: { ...base.settings, plaidItems: items } };
+};
+const plaidItem = (over = {}) => ({
+  accessToken: "tok", itemId: "i1", institution: "Wells Fargo", kind: "bank",
+  // a logo already held, so the institution lookup is skipped and the only
+  // calls a test sees are the syncs themselves
+  addedAt: "2026-08-01T00:00:00.000Z", logo: "data:image/png;base64,x", ...over,
+});
+
+await test("every Plaid item can be synced from one call", async () => {
+  // The table offers this now as well as the Plaid card, which is why it moved
+  // out of the card: two copies of a sync loop drift.
+  let db = plaidDb([plaidItem(), plaidItem({ itemId: "i2", institution: "Fidelity" })]);
+  const apply = (fn) => { db = fn(db); };
+
+  const out = await withFetch(async () => new Response(JSON.stringify({
+    accounts: [{ account_id: "a1", name: "LLC Savings", type: "depository", subtype: "savings", balances: { current: 100 } }],
+    transactions: [{ transaction_id: "t1", account_id: "a1", date: "2026-08-01", amount: -1600, name: "ZELLE FROM RENTER" }],
+    holdings: [], securities: [], total: 1, truncated: false,
+  }), { status: 200 }), () => M.syncPlaid(db, apply));
+
+  assert.match(out.summary, /Wells Fargo/);
+  assert.match(out.summary, /Fidelity/);
+  assert.equal(out.changed, true);
+  assert.deepEqual(out.errors, []);
+  assert.equal(db.settings.plaidItems.every((i) => i.lastSyncAt), true, "each item is stamped with when it ran");
+});
+
+await test("one bank's expired login does not cost the others their sync", async () => {
+  let db = plaidDb([plaidItem(), plaidItem({ itemId: "i2", institution: "Fidelity" })]);
+  const apply = (fn) => { db = fn(db); };
+
+  let call = 0;
+  const out = await withFetch(async () => {
+    call += 1;
+    if (call === 1) return new Response(JSON.stringify({ error: "ITEM_LOGIN_REQUIRED" }), { status: 400 });
+    return new Response(JSON.stringify({
+      accounts: [{ account_id: "a1", name: "Brokerage", type: "investment", balances: { current: 10 } }],
+      transactions: [], holdings: [], securities: [], total: 0, truncated: false,
+    }), { status: 200 });
+  }, () => M.syncPlaid(db, apply));
+
+  assert.equal(out.errors.length, 1, "the one that failed is named");
+  assert.match(out.errors[0], /Wells Fargo/);
+  assert.match(out.summary, /Fidelity/, "and the other one still ran");
+  // and the failure is on the record for the integrations table to show
+  assert.match(M.U.meterOf(db.settings.usage, "plaid", "ever").error, /Wells Fargo/);
+});
+
+await test("syncing with nothing connected says so rather than doing nothing", async () => {
+  assert.match(await caught(() => M.syncPlaid(M.emptyDB(), () => {})), /No Plaid accounts/);
 });
 
 await test("a truncated window is carried back as something to say out loud", async () => {

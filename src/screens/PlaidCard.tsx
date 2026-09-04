@@ -3,11 +3,11 @@ import { Building2, LineChart, RefreshCw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
-import { mergeSync, syncWindowStart } from "../lib/sync";
-import { createLinkToken, diagnosePlaid, exchangePublicToken, fetchInstitution, fetchItem, needsInstitution } from "../lib/sync/plaid";
+import { syncPlaid, syncPlaidItem } from "../lib/sync";
+import { recordRun } from "../lib/usage";
+import { createLinkToken, diagnosePlaid, exchangePublicToken } from "../lib/sync/plaid";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
-import { reason, recordRun } from "../lib/usage";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
 
 /** What the function sees, in words rather than raw values. */
@@ -112,67 +112,28 @@ export function PlaidCard() {
     }
   };
 
-  /**
-   * Fills in the institution's mark for an item connected before the app kept
-   * one. Not worth failing a sync over — the initials still stand — and the
-   * attempt is stamped either way so a logo-less bank isn't asked every time.
-   */
-  const withInstitution = async (item: PlaidItemRef): Promise<PlaidItemRef> => {
-    if (!needsInstitution(item)) return item;
-    const asked = { ...item, institutionCheckedAt: new Date().toISOString() };
-    try {
-      const mark = await fetchInstitution(item.accessToken);
-      return { ...asked, logo: mark.logo ?? item.logo, domain: mark.domain ?? item.domain };
-    } catch {
-      return asked;
-    }
-  };
-
-  const syncItem = async (rawItem: PlaidItemRef) => {
-    const item = await withInstitution(rawItem);
-    let payload;
-    try {
-      payload = await fetchItem(item, syncWindowStart(db));
-    } catch (err) {
-      // Named, because a Plaid item whose login has expired fails silently on
-      // every later sync and the table is where that becomes visible.
-      recordRun(apply, "plaid", "ever", { error: `${item.institution}: ${reason(err, "the sync failed")}` });
-      throw err;
-    }
-    let summary = "";
-    apply((cur) => {
-      const res = mergeSync(cur, payload, "plaid");
-      summary =
-        `${item.institution}: ${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}` +
-        `, ${res.accountsAdded + res.accountsUpdated} account${res.accountsAdded + res.accountsUpdated === 1 ? "" : "s"}` +
-        (res.holdingsUpdated ? `, ${res.holdingsUpdated} holdings` : "");
-      const stamped = (cur.settings.plaidItems ?? []).map((i) =>
-        i.itemId === item.itemId
-          ? { ...i, ...item, lastSyncAt: payload.fetchedAt }
-          : i);
-      return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
-    }, `sync ${item.institution}`);
-    recordRun(apply, "plaid", "ever", { error: payload.errors[0] });
-    notify(summary);
+  /** Both of these now live in lib/sync/run beside the SimpleFIN pull, so the
+   *  integrations table can offer the same thing without a second copy. */
+  const syncItem = async (item: PlaidItemRef) => {
+    const out = await syncPlaidItem(db, apply, item);
+    recordRun(apply, "plaid", "ever", { error: out.errors[0] });
+    notify(out.summary);
     // A window Plaid could not be read to the end of has transactions missing
-    // from it. The count lands in the payload; showing it is the only thing
-    // that turns silent data loss into something anyone can act on.
-    if (payload.errors.length) setError(payload.errors.join(" · "));
+    // from it. Showing the count is the only thing that turns silent data loss
+    // into something anyone can act on.
+    if (out.errors.length) setError(out.errors.join(" · "));
   };
 
   const syncAll = async () => {
     setBusy("sync");
     setError(null);
-    const failures: string[] = [];
-    for (const item of items) {
-      try {
-        await syncItem(item);
-      } catch (err) {
-        failures.push(`${item.institution}: ${err instanceof Error ? err.message : "failed"}`);
-      }
+    try {
+      const out = await syncPlaid(db, apply);
+      notify(out.summary);
+      if (out.errors.length) setError(out.errors.join(" · "));
+    } finally {
+      setBusy(null);
     }
-    if (failures.length) setError(failures.join(" · "));
-    setBusy(null);
   };
 
   const disconnect = (item: PlaidItemRef) => {
