@@ -300,13 +300,16 @@ Notable behaviour worth knowing:
 - **Clicking a budget figure** opens what's behind it: the last six months as bars, what was
   spent last month, and the monthly average — each one click away from becoming the budget.
   The average counts empty months as zero, so a category used twice a year averages low, which
-  is the useful answer when setting a monthly number. *Apply to all future months* stores a
-  standing amount rather than writing to every month individually, so it covers months that
-  don't exist yet; a single month edited later overrides it again.
+  is the useful answer when setting a monthly number. *Apply to all future months* writes that
+  figure into this month and the five years after it, once, and then forgets it did — every
+  month holds a plain number, and changing one later changes only that one. It used to store a
+  standing amount that applied wherever no explicit figure existed, which is a smaller-looking
+  idea with three separate ways of quietly rewriting months nobody had touched; all three
+  turned up as bugs against real money.
 - **Clicking what's left** in a category opens a transfer between categories. A surplus is
   offered to the deepest overspend, a shortfall is filled from the largest surplus, and the
-  amount defaults to whatever squares both sides. Only the selected month changes — a standing
-  amount keeps applying from the next one, which makes this a correction rather than a re-plan.
+  amount defaults to whatever squares both sides. Only the selected month changes, which makes
+  this a correction rather than a re-plan.
 - **Sparklines on the Accounts screen** cover the period chosen in the range picker, with a
   dashed line at where each account started so the shape reads as up or down at a glance.
   Group headers carry the aggregate of their accounts. Colour follows the *direction* of the

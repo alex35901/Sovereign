@@ -71,14 +71,13 @@ await build({
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
       export * as TR from "./src/lib/transfer.ts";
       export { compressPoints, squashHistory } from "./src/lib/history.ts";
-      export { clearForwardFrom } from "./src/lib/select.ts";
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
       export { default as iconHandler, forgetPlaceholders } from "./api/icon.ts";
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
-      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, setPlannedOn, remainingTone, spentShare } from "./src/lib/select.ts";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
 
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
@@ -1382,118 +1381,81 @@ const budgetDb = () => {
   return db;
 };
 
-await test("an explicit month beats the standing amount", () => {
-  const db = budgetDb();
-  db.budgetDefaults = { c_groceries: { amount: 80000, from: "2026-06" } };
-  assert.equal(M.plannedFor(db, "2026-06", "c_groceries"), 60000);
-  assert.equal(M.plannedFor(db, "2026-07", "c_groceries"), 65000);
-  // no entry for August, so the standing amount shows through
-  assert.equal(M.plannedFor(db, "2026-08", "c_groceries"), 80000);
-});
-
-await test("a standing amount never reaches backwards", () => {
+await test("applying to future months writes plain figures, and nothing else", () => {
+  // There is no standing amount any more. The button does a thing once and
+  // leaves ordinary per-month numbers behind, which is the whole point: a
+  // figure nobody can see cannot rewrite a month nobody touched.
   const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 80000, from: "2026-08" } };
-  assert.equal(M.plannedFor(db, "2026-07", "c_groceries"), 0, "July predates it");
-  assert.equal(M.plannedFor(db, "2026-08", "c_groceries"), 80000);
-  assert.equal(M.plannedFor(db, "2030-01", "c_groceries"), 80000, "and it has no end");
+  const out = M.applyToFuture(db, "2026-09", "c_groceries", 50000);
+
+  assert.equal(out.budgetDefaults, undefined, "nothing is remembered");
+  assert.equal(M.plannedFor(out, "2026-09", "c_groceries"), 50000);
+  assert.equal(M.plannedFor(out, "2026-10", "c_groceries"), 50000);
+  assert.equal(M.plannedFor(out, "2031-09", "c_groceries"), 50000, "five years out");
+  assert.equal(M.plannedFor(out, "2031-10", "c_groceries"), 0, "and no further");
+  assert.equal(M.plannedFor(out, "2026-08", "c_groceries"), 0, "the past is not touched");
+  assert.equal(Object.keys(out.budgets).length, M.FUTURE_MONTHS + 1);
 });
 
-await test("applying forward clears later months but keeps earlier ones", () => {
-  const db = budgetDb();
-  db.budgets["2026-08"] = { c_groceries: 70000, c_gas: 12000 };
-  const next = M.applyForward(db, "2026-07", "c_groceries", 75000);
-  assert.equal(next.budgets["2026-06"].c_groceries, 60000, "June is in the past and untouched");
-  assert.equal(next.budgets["2026-07"].c_groceries, undefined, "July now follows the standing amount");
-  assert.equal(next.budgets["2026-08"].c_groceries, undefined, "August too");
-  assert.equal(next.budgets["2026-08"].c_gas, 12000, "other categories are left alone");
-  assert.equal(M.plannedFor(next, "2026-07", "c_groceries"), 75000);
-  assert.equal(M.plannedFor(next, "2027-03", "c_groceries"), 75000);
+await test("what it writes can be changed one month at a time afterwards", () => {
+  let db = M.applyToFuture(M.emptyDB(), "2026-09", "c_groceries", 50000);
+  db = M.setPlannedOn(db, "2026-11", "c_groceries", 62000);
+  assert.equal(M.plannedFor(db, "2026-11", "c_groceries"), 62000, "the month changed");
+  assert.equal(M.plannedFor(db, "2026-10", "c_groceries"), 50000, "and only that month");
+  assert.equal(M.plannedFor(db, "2026-12", "c_groceries"), 50000);
 });
 
-await test("replacing a standing amount does not empty the months it covered", () => {
-  // The bug: a category budgeted at $500 since January, then set to $600 in
-  // September. January through August held no explicit entry — they were all
-  // showing the January default — so replacing it read them all as $0.
-  const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
-  for (const m of ["2026-01", "2026-05", "2026-08"]) {
-    assert.equal(M.plannedFor(db, m, "c_groceries"), 50000, `${m} before`);
+await test("running it again overwrites what it wrote, by hand or not", () => {
+  let db = M.applyToFuture(M.emptyDB(), "2026-09", "c_groceries", 50000);
+  db = M.setPlannedOn(db, "2026-11", "c_groceries", 62000);
+  db = M.applyToFuture(db, "2026-09", "c_groceries", 40000);
+  for (const m of ["2026-09", "2026-11", "2027-05"]) {
+    assert.equal(M.plannedFor(db, m, "c_groceries"), 40000, `${m} should follow the new figure`);
   }
-
-  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
-  for (const m of ["2026-01", "2026-04", "2026-08"]) {
-    assert.equal(M.plannedFor(next, m, "c_groceries"), 50000, `${m} must keep what it had`);
-  }
-  assert.equal(M.plannedFor(next, "2026-09", "c_groceries"), 60000);
-  assert.equal(M.plannedFor(next, "2030-01", "c_groceries"), 60000, "and onwards");
-  assert.equal(M.plannedFor(next, "2025-12", "c_groceries"), 0, "nothing is invented before the old default began");
 });
 
-await test("pinning a replaced default does not overwrite what was set by hand", () => {
+await test("applying nothing forward clears those months rather than writing zeroes", () => {
+  let db = M.applyToFuture(M.emptyDB(), "2026-09", "c_groceries", 50000);
+  db = M.applyToFuture(db, "2026-09", "c_groceries", 0);
+  assert.equal(M.plannedFor(db, "2027-01", "c_groceries"), 0);
+  assert.ok(Object.values(db.budgets).every((row) => row.c_groceries === undefined),
+    "a row of zeroes is worth not keeping in a document uploaded whole");
+});
+
+await test("it touches only the category it was asked about", () => {
+  const db = { ...M.emptyDB(), budgets: { "2026-10": { c_gas: 12000 } } };
+  const out = M.applyToFuture(db, "2026-09", "c_groceries", 50000);
+  assert.equal(M.plannedFor(out, "2026-10", "c_gas"), 12000);
+});
+
+await test("a standing amount from an older document becomes the months it stood for", () => {
+  // Nobody's budget may change under them because the model did.
+  const legacy = {
+    ...M.emptyDB(),
+    budgets: { "2026-03": { c_groceries: 90000 } },
+    budgetDefaults: { c_groceries: { amount: 50000, from: "2026-01" } },
+  };
+  const out = M.migrate(legacy);
+
+  assert.equal(out.budgetDefaults, undefined, "the field is gone");
+  assert.equal(M.plannedFor(out, "2026-01", "c_groceries"), 50000, "from the month it started");
+  assert.equal(M.plannedFor(out, "2026-02", "c_groceries"), 50000);
+  assert.equal(M.plannedFor(out, "2026-03", "c_groceries"), 90000, "a month set by hand keeps what it said");
+  assert.equal(M.plannedFor(out, "2025-12", "c_groceries"), 0, "and nothing is invented before it");
+  // and it reaches far enough forward that the sheet does not fall off a cliff
+  const far = M.addMonths(M.thisMonth(), M.FUTURE_MONTHS);
+  assert.equal(M.plannedFor(out, far, "c_groceries"), 50000, `nothing at ${far}`);
+  assert.equal(M.plannedFor(out, M.addMonths(far, 1), "c_groceries"), 0);
+
+  // running it twice is a no-op, not a doubling
+  assert.deepEqual(M.migrate(out).budgets, out.budgets);
+});
+
+await test("a document that never had one is handed straight back", () => {
   const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
-  db.budgets = { "2026-03": { c_groceries: 90000, c_gas: 11000 } };
-
-  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
-  assert.equal(next.budgets["2026-03"].c_groceries, 90000, "March was deliberate and stays");
-  assert.equal(next.budgets["2026-03"].c_gas, 11000, "and its neighbours are untouched");
-  assert.equal(next.budgets["2026-02"].c_groceries, 50000, "February was the default and is written down");
-  assert.equal(next.budgets["2026-02"].c_gas, undefined, "only the category being changed");
-});
-
-await test("a default replaced twice keeps both of the amounts it had", () => {
-  let db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
-  db = M.applyForward(db, "2026-05", "c_groceries", 60000);
-  db = M.applyForward(db, "2026-09", "c_groceries", 70000);
-  assert.equal(M.plannedFor(db, "2026-02", "c_groceries"), 50000);
-  assert.equal(M.plannedFor(db, "2026-06", "c_groceries"), 60000);
-  assert.equal(M.plannedFor(db, "2026-10", "c_groceries"), 70000);
-});
-
-await test("a first standing amount pins nothing, having replaced nothing", () => {
-  const db = M.emptyDB();
-  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
-  assert.deepEqual(next.budgets, {}, "there was no earlier default to write down");
-  assert.equal(M.plannedFor(next, "2026-08", "c_groceries"), 0);
-});
-
-await test("a default set far too long ago cannot spin the loop", () => {
-  const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "1900-01" } };
-  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
-  const months = Object.keys(next.budgets);
-  assert.ok(months.length > 0 && months.length <= 240, `${months.length} months written`);
-});
-
-await test("unticking 'apply to future months' leaves the standing amount alone", () => {
-  // The bug: correcting a past month with the box unticked emptied every month
-  // after it, because unticking deleted the standing amount outright. The box
-  // says what this month does, not what happens to every other one.
-  const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
-
-  // what the panel does on an untick: this month gets a figure of its own
-  const corrected = M.setPlannedOn(db, "2026-03", "c_groceries", 42000);
-  assert.equal(M.plannedFor(corrected, "2026-03", "c_groceries"), 42000, "the month being corrected");
-  assert.equal(M.plannedFor(corrected, "2026-09", "c_groceries"), 50000, "and next September is untouched");
-  assert.equal(M.plannedFor(corrected, "2026-02", "c_groceries"), 50000, "as is the month before it");
-  assert.deepEqual(corrected.budgetDefaults, db.budgetDefaults, "the standing amount is not the thing being edited");
-});
-
-await test("ending a standing amount keeps the months it already gave", () => {
-  const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
-  db.budgets = { "2026-03": { c_groceries: 90000 } };
-
-  const stopped = M.clearForwardFrom(db, "2026-09", "c_groceries");
-  assert.equal(stopped.budgetDefaults.c_groceries, undefined, "it really is gone");
-  assert.equal(M.plannedFor(stopped, "2026-02", "c_groceries"), 50000, "February keeps what it had");
-  assert.equal(M.plannedFor(stopped, "2026-03", "c_groceries"), 90000, "and a month set by hand keeps that");
-  assert.equal(M.plannedFor(stopped, "2026-08", "c_groceries"), 50000, "right up to the month it stops");
-  assert.equal(M.plannedFor(stopped, "2026-09", "c_groceries"), 0, "from which there is nothing standing");
-  assert.equal(M.plannedFor(stopped, "2027-06", "c_groceries"), 0);
+  assert.equal(M.migrate(db).budgets, db.budgets);
+  const empty = { ...db, budgetDefaults: {} };
+  assert.equal(M.migrate(empty).budgets, empty.budgets);
 });
 
 await test("history counts empty months, and the average with them", () => {
@@ -1514,15 +1476,6 @@ await test("history counts empty months, and the average with them", () => {
   // 3,600 x 5 over six months is 3,000 — the empty month has to count
   assert.equal(M.categoryAverage(history), 300000);
   assert.equal(history[history.length - 1].actual, 360000, "last month reads straight off the end");
-});
-
-await test("a budget row driven by a standing amount reports it", () => {
-  const db = M.emptyDB();
-  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
-  const rows = M.budgetTable(db, "2026-09").flatMap((g) => g.rows);
-  const groceries = rows.find((r) => r.category.id === "c_groceries");
-  assert.ok(groceries, "the category should appear even with no explicit entry");
-  assert.equal(groceries.planned, 50000);
 });
 
 /* ── moving money between categories ─────────────────────────────────── */
@@ -1665,13 +1618,13 @@ await test("nonsense moves are refused", () => {
   }
 });
 
-await test("a move survives a standing amount rather than being undone by it", () => {
+await test("a move changes the month it is made in, and no other", () => {
   const db = moveDb();
-  // gas is set to $200 every month from August on
-  const withDefault = M.applyForward(db, "2026-08", "c_gas", 20000);
-  const { db: after } = M.moveBudget(withDefault, "2026-08", "c_gas", "c_groceries", 20000);
+  // gas is set to $200 a month from August on, then August's is given away
+  const spread = M.applyToFuture(db, "2026-08", "c_gas", 20000);
+  const { db: after } = M.moveBudget(spread, "2026-08", "c_gas", "c_groceries", 20000);
   assert.equal(M.plannedFor(after, "2026-08", "c_gas"), 0, "August was emptied by the move");
-  assert.equal(M.plannedFor(after, "2026-09", "c_gas"), 20000, "September still follows the standing amount");
+  assert.equal(M.plannedFor(after, "2026-09", "c_gas"), 20000, "September keeps the figure it was given");
 });
 
 await test("a category emptied by a move stays on the sheet", () => {
@@ -1697,7 +1650,7 @@ await test("a category emptied with no spending at all still stays", () => {
   assert.equal(rows.find((r) => r.category.id === "c_mortgage").planned, 0);
 });
 
-await test("a plan can be set below zero, and a zero still clears the entry", () => {
+await test("a plan can be set below zero, and a zero clears the entry", () => {
   // Subtracting from a category to fund another is a real thing to want, and
   // the figure it leaves behind is a real figure: this month's plan after
   // giving away money that carried in. Clamping it at zero lost that.
@@ -1708,15 +1661,10 @@ await test("a plan can be set below zero, and a zero still clears the entry", ()
   assert.equal(M.plannedFor(negative, "2026-08", "c_miscellaneous"), -8200);
   assert.equal(negative.budgets["2026-08"].c_miscellaneous, -8200, "and it is written down, not dropped");
 
-  // zero is still the signal to stop overriding, where nothing standing covers it
+  // a zero is a month with nothing planned, which is a month with no entry
   const zeroed = M.setPlannedOn(db, "2026-08", "c_groceries", 0);
   assert.equal(zeroed.budgets["2026-08"].c_groceries, undefined);
-
-  // but a standing amount still has to be masked by an explicit zero
-  const standing = { ...db, budgetDefaults: { c_groceries: { amount: 70000, from: "2026-01" } } };
-  const masked = M.setPlannedOn(standing, "2026-08", "c_groceries", 0);
-  assert.equal(masked.budgets["2026-08"].c_groceries, 0);
-  assert.equal(M.plannedFor(masked, "2026-08", "c_groceries"), 0, "the standing amount must not show through");
+  assert.equal(M.plannedFor(zeroed, "2026-08", "c_groceries"), 0);
 });
 
 await test("giving away money that carried in drives the month's plan negative", () => {

@@ -10,7 +10,7 @@ import { toRules } from "./lib/rules-import";
 import type { ParsedRule } from "./lib/rules-import";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
-import { applyForward, clearForwardFrom, setPlannedOn } from "./lib/select";
+import { applyToFuture, setPlannedOn } from "./lib/select";
 import { squashHistory } from "./lib/history";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
@@ -245,10 +245,9 @@ export interface Actions {
   deleteTag: (id: ID) => void;
 
   setPlanned: (month: MonthKey, categoryId: ID, amount: number) => void;
+  /** Writes this figure into `month` and the years after it. A one-off. */
   applyPlannedForward: (month: MonthKey, categoryId: ID, amount: number) => void;
   moveBudget: (month: MonthKey, fromId: ID, toId: ID, amount: number) => void;
-  /** Ends a standing amount from `month` on. Earlier months keep what it gave them. */
-  clearPlannedForward: (month: MonthKey, categoryId: ID) => void;
   copyPreviousMonth: (month: MonthKey) => void;
   autofillBudget: (month: MonthKey) => void;
   clearBudget: (month: MonthKey) => void;
@@ -513,11 +512,9 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     setPlanned: (month, categoryId, amount) =>
       apply((db) => setPlannedOn(db, month, categoryId, amount)),
     applyPlannedForward: (month, categoryId, amount) =>
-      apply((db) => applyForward(db, month, categoryId, amount), "apply to all future months"),
+      apply((db) => applyToFuture(db, month, categoryId, amount), "apply to all future months"),
     moveBudget: (month, fromId, toId, amount) =>
       apply((db) => moveBudget(db, month, fromId, toId, amount).db, "move money between categories"),
-    clearPlannedForward: (month, categoryId) =>
-      apply((db) => clearForwardFrom(db, month, categoryId), "stop the standing amount"),
     copyPreviousMonth: (month) =>
       apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: { ...(db.budgets[addMonths(month, -1)] ?? {}) } } }), "copy last month's budget"),
     autofillBudget: (month) =>

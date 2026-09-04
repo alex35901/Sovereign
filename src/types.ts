@@ -138,14 +138,6 @@ export interface Tag { id: ID; name: string; color: string }
 /** budgets[month][categoryId] = planned amount, always positive cents. */
 export type Budgets = Record<MonthKey, Record<ID, number>>;
 
-/**
- * A standing amount for a category, applying from `from` onwards unless that
- * month has an explicit entry in `budgets`. This is what "apply to all future
- * months" sets — writing to every month individually would only ever cover the
- * months that happen to exist yet.
- */
-export type BudgetDefaults = Record<ID, { amount: number; from: MonthKey }>;
-
 export interface Goal {
   id: ID;
   name: string;
@@ -318,7 +310,6 @@ export interface DB {
   transactions: Transaction[];
   tags: Tag[];
   budgets: Budgets;
-  budgetDefaults?: BudgetDefaults;
   goals: Goal[];
   recurring: Recurring[];
   rules: Rule[];

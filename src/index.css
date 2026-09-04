@@ -518,7 +518,6 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 .menu.budget-menu { padding: 0; max-height: none; overflow: visible; }
 .budget-panel { padding: 12px; }
 .budget-amount { width: 100%; justify-content: center; font-variant-numeric: tabular-nums; }
-.budget-amount.pinned { border-style: dashed; }
 /* what's left reads as a figure, not a field — but it is still a button */
 /* Remaining reads as a pill: green in hand, red overspent, quiet at zero. */
 .budget-amount.remaining {

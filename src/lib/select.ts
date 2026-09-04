@@ -323,116 +323,59 @@ export interface BudgetGroupRow {
   remaining: number;
 }
 
-/**
- * What a category is budgeted for in a month: an explicit entry if there is
- * one, otherwise the standing default once its start month is reached.
- */
+/** What a category is budgeted for in a month. Nothing set is nothing planned. */
 export function plannedFor(db: DB, month: MonthKey, categoryId: string): number {
-  const explicit = db.budgets[month]?.[categoryId];
-  if (explicit !== undefined) return explicit;
-  const fallback = db.budgetDefaults?.[categoryId];
-  if (fallback && month >= fallback.from) return fallback.amount;
-  return 0;
+  return db.budgets[month]?.[categoryId] ?? 0;
 }
 
 /**
  * Sets one month's figure for one category.
  *
- * Two rules that are easy to get wrong, which is why they live here next to
- * the function that reads them back rather than in the store.
+ * Zero drops the entry rather than storing it: a month with nothing planned
+ * and a month planned at nothing are the same thing, and the document is
+ * uploaded whole on every save, so a row of zeroes is worth not keeping.
  *
- * Zero drops the entry, so the month goes back to following any standing
- * amount — unless one actually covers it, in which case the zero has to stay
- * written down or the standing amount shows straight through it.
- *
- * A negative is always written down. It is a real figure, not a mistake:
- * this month's plan after giving away money that carried in from last month,
- * so that planned plus rollover comes to what is genuinely left. Clamping it
- * at zero used to make that impossible to express, by hand or by moving money.
+ * A negative is written down. It is a real figure, not a mistake — this
+ * month's plan after giving away money that carried in — so that planned plus
+ * rollover comes to what is genuinely left.
  */
 export function setPlannedOn(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
   const row = { ...(db.budgets[month] ?? {}) };
-  const standing = db.budgetDefaults?.[categoryId];
-  const covered = Boolean(standing && month >= standing.from);
-
-  if (amount === 0 && !covered) delete row[categoryId];
+  if (amount === 0) delete row[categoryId];
   else row[categoryId] = amount;
-
   return { ...db, budgets: { ...db.budgets, [month]: row } };
 }
 
 /**
- * How far back a replaced default is worth pinning down.
+ * How far ahead "all future months" reaches.
  *
- * Twenty years of months, so a default set at the start of a long history is
- * preserved in full, while a nonsense `from` cannot spin the loop below.
+ * Five years. The sheet itself runs forever, so "all" has to stop somewhere,
+ * and the alternative — a standing amount that keeps applying until something
+ * cancels it — is what this replaced. That was one rule with three separate
+ * ways of quietly rewriting months nobody had touched, and every one of them
+ * turned up as a bug.
  */
-const PIN_LIMIT = 240;
+export const FUTURE_MONTHS = 60;
 
 /**
- * Sets a standing amount from `month` onwards, dropping later explicit entries
- * that would otherwise mask it. Earlier months keep what they had.
+ * Writes an amount into this month and the five years after it. Once.
  *
- * The subtle half is that second sentence. A default is one amount from one
- * month onwards, so replacing it does not just change the future — it changes
- * every month the old one covered, all the way back, and those are months
- * already lived through. Setting a new amount in September used to empty
- * January through August of a category budgeted since the new year, because
- * none of them held an explicit entry: they were all showing the old default,
- * and the old default was gone.
- *
- * So the months the outgoing default covered are written down as they stood
- * before the new one takes over. Only where nothing explicit was set, since an
- * explicit entry was already the truth for that month.
+ * Nothing is remembered: what comes out is ordinary per-month figures, the
+ * same as if each had been typed. Change one of them later and only that one
+ * changes; run this again and it overwrites them all, which is exactly what
+ * "apply to all future months" says on the tin.
  */
-export function applyForward(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
-  const budgets = releaseFrom(db, month, categoryId);
-  return {
-    ...db,
-    budgets,
-    budgetDefaults: { ...(db.budgetDefaults ?? {}), [categoryId]: { amount, from: month } },
-  };
-}
-
-/**
- * Ends a standing amount from `month` onwards, keeping the months it covered.
- *
- * The destructive half of the pair, and the only thing that actually removes
- * one. Deleting the entry on its own would rewrite every month back to the
- * start of the default as though nothing had ever been budgeted, so those are
- * written down first — exactly as applyForward does when it replaces one.
- */
-export function clearForwardFrom(db: DB, month: MonthKey, categoryId: string): DB {
-  const budgets = releaseFrom(db, month, categoryId);
-  const { [categoryId]: _removed, ...defaults } = db.budgetDefaults ?? {};
-  return { ...db, budgets, budgetDefaults: defaults };
-}
-
-/**
- * Pins what the outgoing default covered, and clears the overrides after it.
- *
- * Shared by both, because both are the same move up to the last line: the past
- * keeps whatever it was showing, and later months stop holding a figure of
- * their own so that whatever replaces the default — another one, or nothing —
- * is what shows through.
- */
-function releaseFrom(db: DB, month: MonthKey, categoryId: string): DB["budgets"] {
+export function applyToFuture(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
   const budgets: DB["budgets"] = { ...db.budgets };
-
-  const prior = db.budgetDefaults?.[categoryId];
-  if (prior && prior.from < month) {
-    for (let m = prior.from, n = 0; m < month && n < PIN_LIMIT; m = addMonths(m, 1), n++) {
-      if (budgets[m]?.[categoryId] !== undefined) continue;
-      budgets[m] = { ...(budgets[m] ?? {}), [categoryId]: prior.amount };
-    }
+  let m = month;
+  for (let n = 0; n <= FUTURE_MONTHS; n++) {
+    const row = { ...(budgets[m] ?? {}) };
+    if (amount === 0) delete row[categoryId];
+    else row[categoryId] = amount;
+    budgets[m] = row;
+    m = addMonths(m, 1);
   }
-
-  for (const [m, row] of Object.entries(budgets)) {
-    if (m < month) continue;
-    const { [categoryId]: _dropped, ...rest } = row;
-    budgets[m] = rest;
-  }
-  return budgets;
+  return { ...db, budgets };
 }
 
 /** Actual totals for one category over the given months, oldest first. */
@@ -478,10 +421,7 @@ export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
 export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number {
   const cat = db.categories.find((c) => c.id === categoryId);
   if (!cat?.rollover) return 0;
-  const withDefault = db.budgetDefaults?.[categoryId]?.from;
-  const budgeted = [...new Set([...Object.keys(db.budgets), ...(withDefault ? [withDefault] : [])])]
-    .filter((m) => m < month)
-    .sort();
+  const budgeted = Object.keys(db.budgets).filter((m) => m < month).sort();
   if (!budgeted.length) return 0;
   let carry = 0;
   for (const m of budgeted.slice(-24)) {

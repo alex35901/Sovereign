@@ -1,6 +1,8 @@
 import type { DB } from "../types";
 import { buildDemoDB, emptyDB } from "./seed";
 import { migrateGoalAccounts } from "./goal-funding.js";
+import { addMonths, thisMonth } from "./date.js";
+import { FUTURE_MONTHS } from "./select.js";
 
 const KEY = "sovereign.db.v1";
 
@@ -68,9 +70,48 @@ export function migrate(db: DB): DB {
   const accounts = out.accounts.map((a) => (a.history ? a : { ...a, history: [] }));
   if (accounts.some((a, i) => a !== out.accounts[i])) out = { ...out, accounts };
 
+  out = migrateBudgetDefaults(out);
+
   // Goals used to name whole accounts; they hold amounts now. Runs once — it
   // leaves a document that already has allocations alone.
   return migrateGoalAccounts(out);
+}
+
+/**
+ * Turning a standing amount into the months it stood for.
+ *
+ * A category used to be able to hold one figure that applied from a month
+ * onwards, and the budget sheet showed it wherever no explicit entry existed.
+ * It was one rule with three separate ways of quietly rewriting months nobody
+ * had touched — replacing one emptied the months it had covered, ending one
+ * emptied them too, and unticking the box that set it emptied the future — and
+ * every one of them turned up as a bug against real money.
+ *
+ * So there is no standing amount any more, only ordinary per-month figures.
+ * This writes out what the old one was showing, from the month it started to
+ * five years past today, and drops it. Months set by hand are left alone,
+ * because those already said what they meant.
+ */
+function migrateBudgetDefaults(db: DB): DB {
+  const legacy = (db as DB & { budgetDefaults?: Record<string, { amount: number; from: string }> }).budgetDefaults;
+  if (!legacy || !Object.keys(legacy).length) return db;
+
+  const budgets: DB["budgets"] = { ...db.budgets };
+  const last = addMonths(thisMonth(), FUTURE_MONTHS);
+
+  for (const [categoryId, standing] of Object.entries(legacy)) {
+    if (!standing || typeof standing.amount !== "number" || !standing.from) continue;
+    let m = standing.from;
+    // Bounded, so a `from` far enough back to be nonsense cannot spin here.
+    for (let n = 0; m <= last && n < 600; n++, m = addMonths(m, 1)) {
+      if (budgets[m]?.[categoryId] !== undefined) continue;
+      if (standing.amount === 0) continue;
+      budgets[m] = { ...(budgets[m] ?? {}), [categoryId]: standing.amount };
+    }
+  }
+
+  const { budgetDefaults: _gone, ...rest } = db as DB & { budgetDefaults?: unknown };
+  return { ...(rest as DB), budgets };
 }
 
 export { buildDemoDB, emptyDB };
