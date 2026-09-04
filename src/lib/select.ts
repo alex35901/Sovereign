@@ -597,16 +597,23 @@ export function portfolioSummary(db: DB) {
 
 /* ── goals ────────────────────────────────────────────────────────────── */
 
-export function goalProgress(db: DB, goalId: string): { saved: number; pct: number; monthsLeft: number | null; onTrack: boolean } {
+/**
+ * How far along a goal is. How it is *going* is goalOutlook's question.
+ *
+ * This used to answer that too, by dividing what was left by the months to go
+ * — which ignores the growth a goal assumes and so called a retirement pot
+ * "behind pace" when it arrives six years early. There is one projection now,
+ * in lib/goal-funding, and this deliberately no longer offers a second.
+ */
+export function goalProgress(db: DB, goalId: string): { saved: number; pct: number; monthsLeft: number | null } {
   const g = db.goals.find((x) => x.id === goalId);
-  if (!g) return { saved: 0, pct: 0, monthsLeft: null, onTrack: false };
+  if (!g) return { saved: 0, pct: 0, monthsLeft: null };
   // What is actually allocated to it, rather than the whole balance of every
   // account it happens to name — see lib/goal-funding.
   const saved = goalSaved(db, goalId);
   const pct = g.targetAmount ? Math.min(100, (saved / g.targetAmount) * 100) : 0;
   const monthsLeft = g.targetDate ? Math.max(0, diffMonths(thisMonth(), monthOf(g.targetDate))) : null;
-  const needed = monthsLeft && monthsLeft > 0 ? (g.targetAmount - saved) / monthsLeft : 0;
-  return { saved, pct, monthsLeft, onTrack: monthsLeft === null ? true : g.monthlyContribution >= needed };
+  return { saved, pct, monthsLeft };
 }
 
 /* ── sankey ───────────────────────────────────────────────────────────── */

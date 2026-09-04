@@ -4330,15 +4330,50 @@ await test("new money in a shared account is flagged rather than absorbed", () =
   assert.equal(M.GF.funding(paid).available, 900_00, "the new money is there to be assigned");
 });
 
-await test("a balance falling below what was allocated is reported, not hidden", () => {
-  let db = funded();
-  db = M.GF.allocate(db, "emg", "sav", 900_00);
+await test("an account that is one goal's in full just follows its balance down", () => {
+  // A savings account assigned entirely to one goal drifts down with a
+  // monthly transfer. There is nothing to decide and nothing to fix: the goal
+  // already shows exactly what the account holds, so telling someone they are
+  // $500 over is asking them to go and correct arithmetic.
+  let db = M.GF.allocate(funded(), "emg", "sav", 900_00);
   const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
-  const f = M.GF.funding(dropped);
-  const sav = f.accounts.find((a) => a.account.id === "sav");
-  assert.equal(sav.over, 500_00, "the shortfall has to be visible");
+  const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.over, 0, "one claim over one balance is not an error");
+  assert.equal(sav.allocated, 400_00);
   assert.equal(sav.available, 0);
   assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00, "and the goal reports what is really there");
+  assert.equal(M.GF.funding(dropped).over, 0, "so nothing is flagged at the top either");
+});
+
+await test("two goals over one balance is reported, because it double-counts", () => {
+  // This is the case worth raising. Each goal is clamped to the balance on its
+  // own, so $900 and $900 against $400 has both goals showing $400 — the same
+  // money, counted twice — and only a person can say which one gives it up.
+  let db = M.GF.allocate(funded(), "emg", "sav", 900_00);
+  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 100_00 } } : g)) };
+  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
+  const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.over, 600_00, "the shortfall across both claims has to be visible");
+  assert.equal(sav.available, 0);
+  assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00);
+  assert.equal(M.GF.goalSaved(dropped, "kit"), 100_00);
+});
+
+await test("an archived claim does not turn a lone one into a crowd", () => {
+  let db = M.GF.allocate(funded(), "emg", "sav", 900_00);
+  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 100_00 }, archived: true } : g)) };
+  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
+  const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.over, 0, "the archived goal holds nothing, so one claim is left");
+});
+
+await test("claims are counted per goal, and zeroes are not claims", () => {
+  let db = M.GF.allocate(funded(), "emg", "sav", 600_00);
+  db = M.GF.allocate(db, "kit", "sav", 250_00);
+  assert.deepEqual(M.GF.claimsOn(db, "sav"), [600_00, 250_00]);
+  assert.deepEqual(M.GF.claimsOn(db, "ira"), []);
+  const zeroed = M.GF.allocate(db, "kit", "sav", 0);
+  assert.deepEqual(M.GF.claimsOn(zeroed, "sav"), [600_00]);
 });
 
 await test("an archived goal stops holding money", () => {
@@ -4512,6 +4547,59 @@ await test("growth gets a long goal there sooner, by an amount that is checkable
   let v = 100_000_00, n = 0;
   while (v < 500_000_00) { v = v * (1 + r) + 1_000_00; n++; }
   assert.equal(grown, n, "the closed answer and the long way round must agree");
+});
+
+await test("what a goal needs each month accounts for what it earns", () => {
+  // No growth: $10,000 to go over 10 months is $1,000 a month, and nothing on
+  // either side of it will do.
+  assert.equal(M.GF.neededMonthly(10_000_00, 20_000_00, 10, 0), 1_000_00);
+  assert.equal(M.GF.monthsToReach(10_000_00, 20_000_00, 1_000_00 - 1, 0), 11, "a cent less misses");
+
+  // With growth the same goal needs less, because the balance is working too.
+  const grown = M.GF.neededMonthly(10_000_00, 20_000_00, 10, 7);
+  assert.ok(grown < 1_000_00, `${grown} is not less than the flat answer`);
+  // and the answer is exact: it arrives in time, and a cent less does not
+  assert.ok(M.GF.monthsToReach(10_000_00, 20_000_00, grown, 7) <= 10);
+  assert.ok(M.GF.monthsToReach(10_000_00, 20_000_00, grown - 1, 7) > 10, "the answer must be the smallest that works");
+});
+
+await test("a goal that growth alone will reach needs nothing put in", () => {
+  // The whole reason the growth rate went in: a pot that doubles on its own
+  // inside the deadline should not be asking for a monthly contribution.
+  assert.equal(M.GF.neededMonthly(100_000_00, 200_000_00, 180, 7), 0);
+  assert.equal(M.GF.neededMonthly(20_000_00, 20_000_00, 12, 0), 0, "already there needs nothing");
+  // No months left to do it in: it would take the shortfall, today.
+  assert.equal(M.GF.neededMonthly(10_000_00, 20_000_00, 0, 7), 10_000_00);
+});
+
+await test("a retirement pot is not behind pace just because the sum was linear", () => {
+  // The figures off the goals page: $414,968 toward $2,000,000 by Dec 2055 at
+  // $2,500 a month. Dividing what is left by the months to go says "$4,516 a
+  // month, funded by August 2079" — thirty-odd years of growth thrown away.
+  const db = {
+    ...M.emptyDB(),
+    accounts: [{ id: "sav", name: "IRA", type: "retirement", balance: 414_968_00, history: [], includeInNetWorth: true, hidden: false, goalAccount: true }],
+    goals: [{
+      id: "r", name: "Retirement", emoji: "*", targetAmount: 2_000_000_00, targetDate: "2055-12-31",
+      accountIds: [], allocations: { sav: 414_968_00 }, startingAmount: 0,
+      monthlyContribution: 2_500_00, priority: 0, archived: false, growthRate: 7,
+    }],
+  };
+
+  const flat = M.GF.goalOutlook({ ...db, goals: [{ ...db.goals[0], growthRate: 0 }] }, "r", "2026-09");
+  assert.equal(flat.projected, "2079-08", "without growth it really is 2079");
+  assert.equal(flat.status, "behind");
+  // $1,585,032 over 351 months is $4,516 a month, which is the figure the card
+  // used to show; the walk lands a cent above the division because it rounds
+  // every month to whole cents.
+  assert.ok(Math.abs(flat.needed - 4_515_76) <= 100, `${flat.needed} is not about $4,516`);
+  assert.equal(M.GF.monthsToReach(414_968_00, 2_000_000_00, flat.needed, 0), 351);
+  assert.ok(M.GF.monthsToReach(414_968_00, 2_000_000_00, flat.needed - 1, 0) > 351, "and it is the smallest that works");
+
+  const o = M.GF.goalOutlook(db, "r", "2026-09");
+  assert.notEqual(o.status, "behind", `growth included, it is ${o.status}`);
+  assert.ok(o.projected < "2055-12", `${o.projected} should beat the target date`);
+  assert.ok(o.needed < 2_500_00, `${o.needed} — it is already contributing enough`);
 });
 
 await test("money that is only growing still gets there; money doing neither does not", () => {

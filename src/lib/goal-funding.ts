@@ -30,12 +30,18 @@ export interface AccountFunding {
   /** Arrived and not yet given a job. Never negative. */
   available: number;
   /**
-   * Allocated beyond what is in the account.
+   * Allocated beyond what is in the account, and worth saying so.
    *
-   * Happens when a balance falls after the money was assigned — a market drop,
-   * or a withdrawal. Surfaced rather than quietly clamped, because a goal
-   * showing money the account no longer holds is the sort of wrong that only
-   * turns up when it is spent.
+   * Only ever set when more than one goal claims the account. With two claims
+   * over one balance the excess is a real error: each goal is clamped to the
+   * balance separately, so the same money is counted twice and one of the two
+   * has to give it up — a decision only a person can make.
+   *
+   * With a single claim there is nothing to decide and nothing to double
+   * count. The account is that goal's in full, the goal already shows exactly
+   * what the account holds, and a balance that drifts down with the market or
+   * a monthly transfer is not a mistake anyone made. So it is absorbed: the
+   * claim simply tracks the balance.
    */
   over: number;
 }
@@ -59,6 +65,22 @@ export function goalAccounts(db: DB): Account[] {
 /** What each goal has claimed from one account. */
 export const claimOn = (goal: Goal, accountId: ID): number => goal.allocations?.[accountId] ?? 0;
 
+/**
+ * What each goal claims from one account, largest first, zeroes dropped.
+ *
+ * How many claims there are decides whether an over-assignment is worth
+ * raising, so the claims are kept apart rather than added up on the way past.
+ */
+export function claimsOn(db: DB, accountId: ID): number[] {
+  const out: number[] = [];
+  for (const g of db.goals) {
+    if (g.archived) continue;
+    const claim = claimOn(g, accountId);
+    if (claim > 0) out.push(claim);
+  }
+  return out.sort((a, b) => b - a);
+}
+
 /** Everything claimed from one account, across every goal. */
 export function claimedFrom(db: DB, accountId: ID): number {
   let total = 0;
@@ -73,9 +95,13 @@ export function funding(db: DB): Funding {
   const accounts = goalAccounts(db).map((account): AccountFunding => {
     // A goal account holding a negative balance is not money to allocate.
     const balance = Math.max(0, account.balance);
-    const claimed = claimedFrom(db, account.id);
+    const claims = claimsOn(db, account.id);
+    const claimed = claims.reduce((s, c) => s + c, 0);
     const allocated = Math.min(claimed, balance);
-    const over = Math.max(0, claimed - balance);
+    // See AccountFunding.over: an account assigned in full to one goal cannot
+    // be over-assigned in any way that matters, so the excess is absorbed
+    // rather than raised as something to go and fix.
+    const over = claims.length > 1 ? Math.max(0, claimed - balance) : 0;
     const spare = balance - allocated;
     // An account with a goal of its own has no spare: whatever is not spoken
     // for is already this goal's, which is the entire point of setting one.
@@ -224,6 +250,11 @@ export interface GoalOutlook {
   targetMonth: string | null;
   /** Months of slack against the target date. Negative means late. */
   slack: number | null;
+  /**
+   * What would have to go in each month to hit the target date, growth
+   * included. Null when there is no target date to hit.
+   */
+  needed: number | null;
   status: GoalStatus;
 }
 
@@ -282,6 +313,40 @@ export function monthsToReach(saved: number, target: number, monthly: number, an
 }
 
 /**
+ * The monthly contribution that would reach the target by then.
+ *
+ * Found by bisection over the same month-by-month walk `monthsToReach` uses,
+ * rather than by the closed-form annuity formula. The formula would be close
+ * and not equal: this app rounds every balance to whole cents each month, and
+ * a "needed" figure that disagrees with the date drawn beside it is worse than
+ * one that takes forty iterations to find.
+ *
+ * Zero when growth alone gets there in time — which is the whole point of
+ * asking, for a retirement pot thirty years out.
+ */
+export function neededMonthly(saved: number, target: number, months: number, annualPercent: number): number {
+  const remaining = Math.max(0, target - saved);
+  if (remaining === 0) return 0;
+  // No months left to contribute over: it would take all of it, today.
+  if (months <= 0) return remaining;
+  const reaches = (monthly: number): boolean => {
+    const n = monthsToReach(saved, target, monthly, annualPercent);
+    return n !== null && n <= months;
+  };
+  if (reaches(0)) return 0;
+  // Paying in the whole shortfall on the first month always arrives, so the
+  // answer is somewhere below it.
+  let low = 0;
+  let high = remaining;
+  while (high - low > 1) {
+    const mid = Math.floor((low + high) / 2);
+    if (reaches(mid)) high = mid;
+    else low = mid;
+  }
+  return high;
+}
+
+/**
  * When this goal gets there, at the rate money is going in.
  *
  * Contributions plus whatever growth the goal assumes, which is nothing until
@@ -293,7 +358,7 @@ export function monthsToReach(saved: number, target: number, monthly: number, an
 export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): GoalOutlook {
   const goal = db.goals.find((g) => g.id === goalId);
   if (!goal) {
-    return { saved: 0, target: 0, remaining: 0, monthly: 0, growth: 0, monthsNeeded: null, projected: null, targetMonth: null, slack: null, status: "no plan" };
+    return { saved: 0, target: 0, remaining: 0, monthly: 0, growth: 0, monthsNeeded: null, projected: null, targetMonth: null, slack: null, needed: null, status: "no plan" };
   }
   const saved = goalSaved(db, goalId);
   const target = goal.targetAmount;
@@ -307,6 +372,9 @@ export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): G
   // Target minus projected, so reaching it early is positive. The other way
   // round reads as "two months ahead" for a goal that lands two months late.
   const slack = projected && targetMonth ? monthsBetween(targetMonth, projected) : null;
+  // targetMonth minus now: monthsBetween subtracts its second argument from
+  // its first, and the other way round makes every deadline look already past.
+  const needed = targetMonth === null ? null : neededMonthly(saved, target, monthsBetween(targetMonth, now), growth);
 
   const status: GoalStatus =
     remaining === 0 ? "reached"
@@ -320,7 +388,7 @@ export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): G
     : slack < 0 ? "behind"
     : "on track";
 
-  return { saved, target, remaining, monthly, growth, monthsNeeded, projected, targetMonth, slack, status };
+  return { saved, target, remaining, monthly, growth, monthsNeeded, projected, targetMonth, slack, needed, status };
 }
 
 export interface ProjectedMonth {

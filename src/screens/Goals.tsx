@@ -4,9 +4,9 @@ import { Plus, Target } from "lucide-react";
 import type { Goal } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { addMonths, dateLabel, monthLabel, thisMonth } from "../lib/date";
+import { dateLabel, monthLabel } from "../lib/date";
 import { goalProgress } from "../lib/select";
-import { goalSources } from "../lib/goal-funding";
+import { goalOutlook, goalSources } from "../lib/goal-funding";
 import { fmt0 } from "../lib/money";
 import {
   Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, PercentInput, Progress, TextInput,
@@ -44,7 +44,12 @@ export default function Goals() {
         <div className="grid g2">
           {goals.map((g) => {
             const p = goalProgress(db, g.id);
-            const needed = p.monthsLeft && p.monthsLeft > 0 ? Math.max(0, Math.round((g.targetAmount - p.saved) / p.monthsLeft)) : 0;
+            // The same projection the goal's own page runs, rather than a
+            // second one beside it: dividing what is left by the months to go
+            // ignores the growth the goal assumes, which for a retirement pot
+            // thirty years out is most of the answer — it read "funded by
+            // 2079" for a goal that arrives in the forties.
+            const o = goalOutlook(db, g.id);
             return (
               <Card key={g.id}>
                 <CardHead
@@ -78,22 +83,26 @@ export default function Goals() {
                     <span className="tile-label">Contributing</span>
                     <span className="num bold"><Money value={g.monthlyContribution} cents={false} />/mo</span>
                   </div>
-                  {p.monthsLeft !== null ? (
+                  {o.needed !== null ? (
                     <div className="col">
                       <span className="tile-label">Needed</span>
-                      <span className={cx("num bold", p.onTrack ? "pos" : "neg")}>
-                        <Money value={needed} cents={false} />/mo
+                      <span className={cx("num bold", o.status === "behind" || o.status === "stalled" ? "neg" : "pos")}>
+                        <Money value={o.needed} cents={false} />/mo
                       </span>
                     </div>
                   ) : null}
                   <div className="col">
                     <span className="tile-label">Funded by</span>
                     <span className="num bold">
-                      {g.monthlyContribution > 0
-                        ? monthLabel(addMonths(thisMonth(), Math.ceil(Math.max(0, g.targetAmount - p.saved) / g.monthlyContribution)))
-                        : "—"}
+                      {o.status === "reached" ? "Now" : o.projected ? monthLabel(o.projected) : "—"}
                     </span>
                   </div>
+                  {o.growth > 0 ? (
+                    <div className="col">
+                      <span className="tile-label">Growth</span>
+                      <span className="num bold">{o.growth}%/yr</span>
+                    </div>
+                  ) : null}
                 </div>
                 {(() => {
                   // Where the money actually is, rather than which accounts the
@@ -107,9 +116,14 @@ export default function Goals() {
                     </div>
                   );
                 })()}
-                {p.monthsLeft !== null && !p.onTrack ? (
+                {o.status === "behind" && o.projected ? (
                   <div className="tiny neg" style={{ marginTop: 8 }}>
-                    Behind pace — raise the monthly amount or push the target date past {dateLabel(g.targetDate!)}.
+                    Behind pace — arrives {monthLabel(o.projected)}, past the {dateLabel(g.targetDate!)} target.
+                    Raise the monthly amount to {fmt0(o.needed ?? 0)}, or move the date.
+                  </div>
+                ) : o.status === "stalled" ? (
+                  <div className="tiny neg" style={{ marginTop: 8 }}>
+                    At this rate it never gets there — the amount going in, or the growth assumed, has to change.
                   </div>
                 ) : null}
               </Card>
