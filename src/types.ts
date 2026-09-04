@@ -273,6 +273,11 @@ export interface Settings {
    */
   institutionLogos?: boolean;
   /**
+   * Show a merchant's logo in place of its initial. Only merchants on the
+   * built-in brand list are ever looked up — see lib/merchant-domain.ts.
+   */
+  merchantLogos?: boolean;
+  /**
    * Accounts deleted on purpose. Without this a provider hands the same account
    * back on the next pull and it reappears, which reads as the delete failing.
    */

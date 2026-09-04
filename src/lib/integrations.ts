@@ -4,6 +4,7 @@ import { MONTHLY_LOOKUPS } from "./property.js";
 import { MONTHLY_SYMBOLS, tickersOf } from "./prices.js";
 import type { Period } from "./usage.js";
 import { meterOf } from "./usage.js";
+import { MONTHLY_TRANSFER, asMB, transferThisMonth } from "./transfer.js";
 
 /**
  * One row of the integrations table.
@@ -35,6 +36,8 @@ export interface Integration {
   ceiling: number;
   /** What `used` counts: "lookups", "symbols", "institutions". */
   unit: string;
+  /** Shown under the ceiling when the figure needs qualifying. */
+  caveat?: string;
   period: Period;
   /** When the provider was last called. */
   lastAt?: string;
@@ -62,7 +65,8 @@ export function healthOf(i: Integration): { state: Health; text: string } {
 export const PERIOD_LABEL: Record<Period, string> = {
   day: "today",
   month: "this month",
-  ever: "connected",
+  // A ceiling on how many things may exist at once has no period to name.
+  ever: "",
 };
 
 /** Hopper's usage lives on the server; the browser is told it rather than counting. */
@@ -87,6 +91,12 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   const properties = db.accounts.filter((a) => canValue(a.type) && !a.hidden && !a.closedAt);
   const addressless = properties.filter((a) => !a.address?.trim()).length;
 
+  const moved = transferThisMonth(now);
+  const vercel = meterOf(usage, "vercel", "month", now);
+  // Both of these are the deployment rather than a key someone pastes, so
+  // "set up" means the app has actually talked to it: bytes over the API this
+  // month, or a scheduled run recorded at some point.
+  const cloud = moved.calls > 0 || Boolean(vercel.at);
   const simplefin = meterOf(usage, "simplefin", "ever", now);
   const plaid = meterOf(usage, "plaid", "ever", now);
   const tiingo = meterOf(usage, "tiingo", "month", now);
@@ -156,6 +166,39 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       error: rentcast.error,
     },
     {
+      id: "neon",
+      process: "Cloud database",
+      provider: "Neon",
+      credential: { kind: "server", vars: "DATABASE_URL" },
+      set: cloud,
+      // Bytes over this app's own API, which is the traffic that drives Neon's
+      // bill rather than the figure Neon itself meters. Close, and not the
+      // same, so the table says where it came from.
+      used: asMB(moved.bytes),
+      ceiling: asMB(MONTHLY_TRANSFER),
+      unit: "MB transferred",
+      caveat: "measured in this browser",
+      period: "month",
+      lastAt: s.lastSyncAt,
+      note: moved.calls > 20_000 ? `${moved.calls.toLocaleString()} requests this month — more than a sync should need` : undefined,
+    },
+    {
+      id: "vercel",
+      process: "Scheduled job",
+      provider: "Vercel",
+      credential: { kind: "server", vars: "CRON_SECRET" },
+      set: cloud,
+      // The Hobby plan allows two jobs at once a day, and this app runs one.
+      // The number is static; what is worth reading is the column beside it,
+      // because a cron that quietly stops looks exactly like a quiet week.
+      used: 1,
+      ceiling: 2,
+      unit: "daily jobs",
+      period: "ever",
+      lastAt: vercel.at,
+      note: staleJob(vercel.at, now),
+    },
+    {
       id: "anthropic",
       process: "Hopper",
       provider: "Anthropic",
@@ -172,3 +215,20 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
 
 /** The tickers a price run would ask about — what the Tiingo meter will record. */
 export const pricedSymbols = (db: DB): string[] => tickersOf(db.holdings);
+
+/** A day and a half. Long enough that a job at 9am has clearly missed one. */
+const STALE_MS = 36 * 3_600_000;
+
+/**
+ * Whether the scheduled job looks like it has stopped.
+ *
+ * This is the whole reason the Vercel row is worth a line: a cron that quietly
+ * stops running is indistinguishable from a quiet week, and the balances just
+ * go on being yesterday's.
+ */
+export function staleJob(at: string | undefined, now: number): string | undefined {
+  if (!at) return "Hasn't run yet";
+  const ran = Date.parse(at);
+  if (!Number.isFinite(ran)) return "Hasn't run yet";
+  return now - ran > STALE_MS ? "Hasn't run since " + at.slice(0, 10) : undefined;
+}

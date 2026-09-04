@@ -108,7 +108,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const db = stored.doc as DB;
     const accessUrl = db.settings?.simplefinAccessUrl;
 
-    let next = db;
+    // Proof of life. A scheduled job that quietly stops running looks exactly
+    // like a quiet week, and nothing else in the document would show the
+    // difference — so the run stamps itself whether or not it finds anything.
+    let next = meter(db, "vercel", "month", {});
     let banks: { added: number; updated: number; transactions: number; errors: string[] } | null = null;
     let bankError: string | null = null;
 
@@ -144,19 +147,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // a run that only recorded a failed provider still has something to save,
     // and is still a run that did nothing worth reporting as success.
     const ran = Boolean(banks) || priced.ran;
-    const dirty = Boolean(banks) || priced.dirty;
-    if (!dirty && !bankError) {
-      return send(200, { ran: false, reason: "SimpleFIN isn't connected and there was nothing to price." });
-    }
 
     // Read-then-write with no version guard: this job is the only writer on its
     // schedule, and a browser that saves mid-run will simply win with its own
     // newer copy, which already contains everything this pull would have added.
-    const write = dirty ? await writeDoc(next, null, "scheduled sync") : null;
+    // Always a write now, because the proof-of-life stamp above is one.
+    const write = await writeDoc(next, null, "scheduled sync");
 
     return send(bankError ? 502 : 200, {
       ran,
-      reason: ran ? undefined : (priced.error ?? bankError ?? "Nothing to do."),
+      reason: ran
+        ? undefined
+        : (priced.error ?? bankError ?? "SimpleFIN isn't connected and there was nothing to price."),
       version: write?.stored?.version,
       transactionsAdded: banks?.transactions ?? 0,
       accountsUpdated: banks?.updated ?? 0,
@@ -184,13 +186,11 @@ async function refreshPrices(db: DB): Promise<{
   db: DB;
   /** Prices actually landed. */
   ran: boolean;
-  /** The document changed and is worth writing — a recorded failure counts. */
-  dirty: boolean;
   updated: number;
   misses: string[];
   error?: string;
 }> {
-  const idle = { db, ran: false, dirty: false, updated: 0, misses: [] };
+  const idle = { db, ran: false, updated: 0, misses: [] };
 
   const key = (db.settings?.tiingoApiKey ?? process.env.TIINGO_API_KEY ?? "").trim();
   if (!key) return idle;
@@ -207,7 +207,7 @@ async function refreshPrices(db: DB): Promise<{
   if (raw.fatal) {
     return {
       db: meter(db, "tiingo", "month", { error: raw.fatal }),
-      ran: false, dirty: true, updated: 0, misses: [], error: raw.fatal,
+      ran: false, updated: 0, misses: [], error: raw.fatal,
     };
   }
 
@@ -215,7 +215,7 @@ async function refreshPrices(db: DB): Promise<{
   const applied = applyQuotes(db, quotes, new Date().toISOString());
   return {
     db: meter(applied.db, "tiingo", "month", { distinct: tickers }),
-    ran: true, dirty: true, updated: applied.updated, misses,
+    ran: true, updated: applied.updated, misses,
   };
 }
 

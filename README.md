@@ -86,9 +86,15 @@ between visits.
 
 ## Bank sync
 
-Settings → *Integrations* is one table over all of them: what each provider does, where its
-key lives, how much of its free tier this period has spent, when it last ran and whether it
-is working. Every allowance here is measured in a different thing over a different period —
+Settings → *Integrations* is one table over all of them — the five data providers below plus
+the two pieces of infrastructure they run on: what each does, where its key lives, how much of
+its free tier this period has spent, when it last ran and whether it is working. **Neon** shows
+the bytes this browser has moved over the sync API against the five gigabytes a month the free
+plan allows; that is measured here rather than taken from Neon, because the traffic this app
+causes is the thing worth watching and the one that ran the allowance out once already. It also
+counts requests, since a runaway sync loop shows up there first. **Vercel** is the 9am job: the
+number of cron slots is static and uninteresting, but the column beside it says when the job
+last ran, because a cron that quietly stops looks exactly like a quiet week. Every allowance here is measured in a different thing over a different period —
 institutions that never reset, lookups that reset monthly, questions that reset at midnight —
 so each row carries its own unit rather than pretending they are all "calls". The counting is
 deliberate rather than inferred, and it lives in the document, so it follows the budget
@@ -174,6 +180,19 @@ app is next opened instead. Everything else about encryption is unchanged.
 The key is held in the document and passed per call to `/api/prices`, exactly like RentCast's.
 A deployment that would rather keep it out of the document can set `TIINGO_API_KEY` in Vercel;
 the scheduled job falls back to it.
+
+### Logos
+
+Bank and merchant marks both come from DuckDuckGo's icon service, and both are settings rather
+than assumptions — that service sees which banks you hold and which chains you shop at. Plaid's
+own logos never leave the app.
+
+Merchant logos resolve through a built-in list of a few hundred brands, deliberately not a
+guess. Turning "Starbucks" into starbucks.com is easy; turning "Dr Ellen Yao Dds" into a domain
+is not, and a guess would send every string a bank ever printed — names of people and small
+businesses among them — off to be looked up. A merchant that isn't on the list keeps the
+lettered avatar it has always had. Card processors are stripped first, so `SQ *BLUE BOTTLE`
+resolves to the coffee shop rather than to Square.
 
 ### Connecting SimpleFIN
 

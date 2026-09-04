@@ -18,7 +18,6 @@ export const NAV = [
 ];
 export const NAV_PLAN = [
   { to: "/budget", label: "Budget", Icon: Wallet },
-  { to: "/hopper", label: "Hopper", Icon: MessagesSquare },
   { to: "/recurring", label: "Recurring", Icon: Repeat },
   { to: "/goals", label: "Goals", Icon: Target },
   { to: "/investments", label: "Investments", Icon: LineChart },
@@ -28,6 +27,18 @@ export const NAV_CONFIG = [
   { to: "/rules", label: "Rules", Icon: Filter },
   { to: "/categories", label: "Categories", Icon: Shapes },
   { to: "/tags", label: "Tags", Icon: Tag },
+];
+
+/**
+ * The two that sit apart at the bottom of the rail.
+ *
+ * Hopper is not one of the Plan screens — it answers questions about all of
+ * them — and buried between Budget and Recurring it read as one more report.
+ * Down here, next to Settings, it is plainly something else.
+ */
+export const NAV_FOOT = [
+  { to: "/hopper", label: "Hopper", Icon: MessagesSquare },
+  { to: "/settings", label: "Settings", Icon: SettingsIcon },
 ];
 
 export function Sidebar() {
@@ -66,12 +77,10 @@ export function Sidebar() {
           </div>
         </div>
       </nav>
-      <div className="nav-foot">{item({ to: "/settings", label: "Settings", Icon: SettingsIcon })}</div>
+      <div className="nav-foot">{NAV_FOOT.map(item)}</div>
     </aside>
   );
 }
-
-const SETTINGS = { to: "/settings", label: "Settings", Icon: SettingsIcon };
 
 /** The four that fit along the bottom of a phone. */
 const TABS = [NAV[0]!, NAV[1]!, NAV[2]!, NAV_PLAN[0]!];
@@ -90,7 +99,7 @@ const MORE: { label: string | null; items: typeof NAV }[] =
     { label: null, items: NAV },
     { label: "Plan", items: NAV_PLAN },
     { label: "Configuration", items: NAV_CONFIG },
-    { label: null, items: [SETTINGS] },
+    { label: null, items: NAV_FOOT },
   ]
     .map((s) => ({ ...s, items: s.items.filter((i) => !TABS.some((t) => t.to === i.to)) }))
     .filter((s) => s.items.length > 0);

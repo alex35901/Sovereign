@@ -3,6 +3,7 @@ import type { Envelope } from "./crypto.js";
 import { decryptDocument, encryptDocument, isEnvelope } from "./crypto.js";
 import { restore, vault } from "./vault.js";
 import { haltSync, notifySync, resumeSync, syncHalt } from "./sync-halt.js";
+import { measure, noteTransfer } from "./transfer.js";
 
 /**
  * Talking to the stored budget document.
@@ -114,6 +115,10 @@ async function call(init: RequestInit, override?: string, query = ""): Promise<R
   if (res.status === 404) {
     throw new CloudError("The /api/db function isn't running. This needs the deployed app, not `npm run dev`.", 404);
   }
+  // Every byte this app moves passes through here, which makes it the one
+  // place worth counting: Neon's free allowance is five gigabytes a month and
+  // a sync loop can spend it in a week. See lib/transfer.ts.
+  void measure(res, init.body ?? null).then(noteTransfer, () => {});
   return res;
 }
 

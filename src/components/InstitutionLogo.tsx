@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Account } from "../types";
 import { useDB } from "../store";
+import { iconFor } from "../lib/icon";
 import { cx } from "./ui";
 
 /**
@@ -12,9 +13,6 @@ import { cx } from "./ui";
  * institutions these are, so it is a setting rather than an assumption. Failing
  * both, or if the image doesn't load, the initials stand.
  */
-
-/** Chosen for being a company that sells no advertising. */
-const iconFor = (domain: string) => `https://icons.duckduckgo.com/ip3/${encodeURIComponent(domain)}.ico`;
 
 /** A stable colour per institution, so the initials still tell them apart. */
 export function toneOf(name: string): string {

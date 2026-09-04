@@ -7,6 +7,7 @@ import { IconAction, TopBar } from "../shell/TopBar";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
+import { logoFor } from "../lib/merchant-domain";
 import { toCSV } from "../lib/csv";
 import { budgetedCategoryIds, budgetedSum } from "../lib/select";
 import type { BudgetedSum } from "../lib/select";
@@ -52,7 +53,29 @@ function ExcludedNote({ sum }: { sum: BudgetedSum }) {
 const TONES = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7", "--c8", "--c9", "--c10", "--c11", "--c12"];
 export const merchantTone = (name: string): string => TONES[Number.parseInt(hash(name.toLowerCase()), 36) % TONES.length];
 
+/**
+ * The merchant's mark, with its initial as the floor.
+ *
+ * A logo only for merchants on the list in lib/merchant-domain.ts, which is
+ * why it is a list and not a guess: everything else keeps the letter, and no
+ * string off a bank statement is sent anywhere to find out.
+ */
 export function MerchantAvatar({ name, size = 32 }: { name: string; size?: number }) {
+  const db = useDB();
+  const src = db.settings.merchantLogos === false ? null : logoFor(name);
+  const [failed, setFailed] = useState(false);
+
+  // A different merchant, or the setting turned back on, deserves another go.
+  useEffect(() => setFailed(false), [src]);
+
+  if (src && !failed) {
+    return (
+      <span className="avatar institution-logo" style={{ width: size, height: size, borderRadius: size * 0.28 }}>
+        <img src={src} alt="" width={size} height={size} loading="lazy" onError={() => setFailed(true)} />
+      </span>
+    );
+  }
+
   const tone = merchantTone(name);
   return (
     <span

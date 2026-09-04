@@ -5,6 +5,7 @@ import { vault } from "../vault.js";
 import type { SyncPayload } from "./types.js";
 import { openFrom } from "../crypto.js";
 import { mergeSync } from "./merge.js";
+import { noteRun } from "../usage.js";
 
 /**
  * Merging in what the scheduled job pulled while nobody was looking.
@@ -38,6 +39,11 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
   const out: Drained = {
     db, ids: [], transactionsAdded: 0, accountsUpdated: 0, accountsAdded: 0, unreadable: 0,
   };
+
+  // A queued pull is the scheduled job's signature: on an encrypted document
+  // the job cannot write settings, so this is the only place its run can be
+  // recorded. Stamped once, from the pull that arrived rather than from now.
+  if (rows.length) out.db = { ...out.db, settings: { ...out.db.settings, usage: noteRun(out.db.settings.usage, "vercel", "month", {}) } };
 
   for (const row of [...rows].sort((a, b) => a.id - b.id)) {
     let payload: SyncPayload;

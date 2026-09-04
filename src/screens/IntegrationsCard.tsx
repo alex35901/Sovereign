@@ -181,6 +181,7 @@ function Row({ row, busy, onRun }: { row: Integration; busy: boolean; onRun: () 
       <td className="right num">
         <div>{row.ceiling > 0 ? row.ceiling.toLocaleString() : "—"}</div>
         <div className="tiny faint" style={{ whiteSpace: "nowrap" }}>{row.unit} {PERIOD_LABEL[row.period]}</div>
+        {row.caveat ? <div className="tiny faint" style={{ whiteSpace: "nowrap" }}>{row.caveat}</div> : null}
       </td>
       <td className="muted" style={{ whiteSpace: "nowrap" }}>{when(row.lastAt)}</td>
       <td>
@@ -291,7 +292,7 @@ function Stacked({ row, busy, onRun }: { row: Integration; busy: boolean; onRun:
           <span className="small">
             {row.set ? <><b>{row.used.toLocaleString()}</b> of {row.ceiling.toLocaleString()}</> : "—"}
           </span>
-          <span className="tiny faint">{row.unit} {PERIOD_LABEL[row.period]}</span>
+          <span className="tiny faint">{row.unit} {PERIOD_LABEL[row.period]}{row.caveat ? ` · ${row.caveat}` : ""}</span>
           <Bar row={row} state={health.state} />
         </span>
         <span className="col" style={{ gap: 0 }}>

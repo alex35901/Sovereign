@@ -8,6 +8,7 @@ import { download, exportJSON, importJSON } from "../lib/storage";
 import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
 import type { SyncCadence } from "../lib/sync";
 import { pricesDue, refreshPrices } from "../lib/prices";
+import { BRAND_COUNT } from "../lib/merchant-domain";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
@@ -206,15 +207,24 @@ export default function Settings() {
 
           <div className="divider" />
           <div className="col" style={{ gap: 6 }}>
-            <Toggle
-              on={db.settings.institutionLogos !== false}
-              onChange={(v) => actions.patchSettings({ institutionLogos: v })}
-              label={<span className="small">Show bank logos</span>}
-            />
-            <span className="tiny faint" style={{ maxWidth: 560 }}>
-              Plaid sends its own logos, which never leave this app. SimpleFIN sends only the bank's
-              web address, so its logos are fetched from DuckDuckGo's icon service — which means that
-              service sees which banks you hold. Turn this off to use initials instead and ask nobody.
+            <div className="row wrap" style={{ gap: 20 }}>
+              <Toggle
+                on={db.settings.institutionLogos !== false}
+                onChange={(v) => actions.patchSettings({ institutionLogos: v })}
+                label={<span className="small">Bank logos</span>}
+              />
+              <Toggle
+                on={db.settings.merchantLogos !== false}
+                onChange={(v) => actions.patchSettings({ merchantLogos: v })}
+                label={<span className="small">Merchant logos</span>}
+              />
+            </div>
+            <span className="tiny faint" style={{ maxWidth: 620 }}>
+              Both are fetched from DuckDuckGo's icon service, so that service sees which banks you
+              hold and which chains you shop at. Plaid's own logos never leave this app. Merchant
+              logos are looked up only for the {BRAND_COUNT} brands on a built-in list — nothing off
+              a statement is sent anywhere to find out what it is, so a name it doesn't recognise
+              keeps its letter. Turn either off to use initials and ask nobody.
             </span>
           </div>
 

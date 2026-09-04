@@ -876,6 +876,27 @@ await test("a rejected price token does not stamp the clock", async () => {
   assert.ok(after.version > versionBefore, "recording the failure is a write");
 });
 
+await test("the job stamps its own run, so a cron that stops is visible", async () => {
+  // A scheduled job that quietly stops running looks exactly like a quiet
+  // week. Nothing else in the document tells the two apart.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  await asServer({ doc: M.emptyDB(), baseVersion: 0 }, "PUT");
+  const r = await invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.11" } });
+
+  const body = JSON.parse(r.text);
+  assert.equal(r.status, 200);
+  assert.equal(body.ran, false, "nothing was connected, so nothing was pulled");
+  assert.match(body.reason, /isn't connected/);
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
+  assert.ok(after.settings.usage.vercel.at, "but the run itself must be on the record");
+  assert.equal(after.settings.usage.vercel.at.slice(0, 10), new Date().toISOString().slice(0, 10));
+});
+
 await test("the job leaves an encrypted document's prices to the browser", async () => {
   // Same reason the pull is queued rather than merged: the ticker list is
   // inside the envelope, and this job cannot open it.

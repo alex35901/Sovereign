@@ -68,7 +68,10 @@ await build({
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
-      export { integrations, healthOf, PERIOD_LABEL, NEAR } from "./src/lib/integrations.ts";
+      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
+      export * as TR from "./src/lib/transfer.ts";
+      export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
+      export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
@@ -652,8 +655,9 @@ const rowsOf = (db, hopper = null, now = SEP) =>
   Object.fromEntries(M.integrations(db, hopper, now).map((r) => [r.id, r]));
 
 await test("every provider is a row, and an unconfigured one reads as off", () => {
+  localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel", "anthropic"]);
   for (const r of Object.values(rows)) {
     assert.equal(r.set, false, `${r.id} should not look configured`);
     assert.equal(M.healthOf(r).state, "off", r.id);
@@ -763,6 +767,158 @@ await test("a price run that failed says why, in the table rather than nowhere",
   assert.match(failed, /rejected the API key/);
   assert.match(M.U.meterOf(current.settings.usage, "tiingo", "month").error, /rejected the API key/);
   assert.equal(current.settings.lastPricesAt, undefined, "and a failure must not stamp the clock");
+});
+
+
+/* ── the two infrastructure rows ──────────────────────────────────────── */
+
+await test("bytes over the sync API are counted, and reset with the month", () => {
+  localStorage.clear();
+  assert.deepEqual(M.TR.transferThisMonth(SEP), { period: "2026-09", bytes: 0, calls: 0 });
+  M.TR.noteTransfer(1_000_000, SEP);
+  M.TR.noteTransfer(500_000, SEP);
+  assert.deepEqual(M.TR.transferThisMonth(SEP), { period: "2026-09", bytes: 1_500_000, calls: 2 });
+  assert.equal(M.TR.asMB(1_500_000), 1.4);
+  assert.deepEqual(M.TR.transferThisMonth(OCT), { period: "2026-10", bytes: 0, calls: 0 });
+  // nonsense never reaches the total
+  M.TR.noteTransfer(Number.NaN, SEP);
+  M.TR.noteTransfer(-5, SEP);
+  assert.equal(M.TR.transferThisMonth(SEP).bytes, 1_500_000);
+  localStorage.clear();
+});
+
+await test("a response is measured from its header, and from a clone when there isn't one", async () => {
+  const withHeader = new Response("x".repeat(40), { headers: { "content-length": "40" } });
+  assert.equal(await M.TR.measure(withHeader, null), 40);
+  // what was sent counts too: a document PUT is the largest thing this app moves
+  assert.equal(await M.TR.measure(withHeader, "y".repeat(10)), 50);
+
+  const chunked = new Response("z".repeat(25));
+  chunked.headers.delete("content-length");
+  assert.equal(await M.TR.measure(chunked, null), 25);
+});
+
+await test("Neon and Vercel are rows too, and read as off before anything has run", () => {
+  localStorage.clear();
+  const rows = rowsOf(M.emptyDB());
+  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel", "anthropic"]);
+  assert.equal(rows.neon.set, false, "no traffic yet means nothing to report");
+  assert.equal(rows.vercel.set, false);
+});
+
+await test("the Neon row measures this month against the five gigabytes that ran out", () => {
+  localStorage.clear();
+  M.TR.noteTransfer(4.6 * 1024 * 1024 * 1024, SEP);
+  const row = rowsOf(M.emptyDB(), null, SEP).neon;
+  assert.equal(row.set, true, "traffic through the API is what makes it configured");
+  assert.equal(row.ceiling, 5120, "five gigabytes, in megabytes");
+  assert.ok(row.used > 4700 && row.used < 4720, `${row.used} MB`);
+  assert.match(row.caveat, /measured in this browser/, "it must not claim to be Neon's own figure");
+  assert.equal(M.healthOf(row).state, "warn", "and warn before the allowance is gone");
+  localStorage.clear();
+});
+
+await test("a runaway sync loop is called out by its request count, not just its bytes", () => {
+  localStorage.clear();
+  // The failure that actually happened: a loop pulling the whole document
+  // every few seconds. Early in a month the bytes still look fine.
+  for (let i = 0; i < 20_001; i += 1) M.TR.noteTransfer(1, SEP);
+  const health = M.healthOf(rowsOf(M.emptyDB(), null, SEP).neon);
+  assert.equal(health.state, "warn");
+  assert.match(health.text, /more than a sync should need/);
+  localStorage.clear();
+});
+
+await test("a scheduled job that has stopped is the point of the Vercel row", () => {
+  const now = Date.parse("2026-09-04T12:00:00.000Z");
+  assert.equal(M.staleJob(undefined, now), "Hasn't run yet");
+  assert.equal(M.staleJob("not a date", now), "Hasn't run yet");
+  assert.equal(M.staleJob("2026-09-04T09:00:00.000Z", now), undefined, "ran this morning");
+  assert.equal(M.staleJob("2026-09-03T09:00:00.000Z", now), undefined, "a day is not yet a problem");
+  assert.match(M.staleJob("2026-09-02T09:00:00.000Z", now), /Hasn't run since 2026-09-02/);
+
+  const base = M.emptyDB();
+  const db = { ...base, settings: { ...base.settings, usage: { vercel: { period: "2026-09", count: 1, at: "2026-09-01T09:00:00.000Z" } } } };
+  const row = rowsOf(db, null, now).vercel;
+  assert.equal(row.set, true, "a recorded run is what says it is set up");
+  assert.equal(row.ceiling, 2, "the Hobby plan allows two daily jobs");
+  assert.equal(M.healthOf(row).state, "warn");
+  assert.match(M.healthOf(row).text, /Hasn't run since/);
+});
+
+/* ── merchant logos ───────────────────────────────────────────────────── */
+
+await test("a merchant on the list resolves to its own domain", () => {
+  assert.equal(M.domainFor("Starbucks"), "starbucks.com");
+  assert.equal(M.domainFor("STARBUCKS"), "starbucks.com");
+  assert.equal(M.domainFor("Trader Joe's"), "traderjoes.com");
+  assert.equal(M.domainFor("Chick-fil-A"), "chick-fil-a.com");
+  assert.equal(M.domainFor("Bath & Body Works"), "bathandbodyworks.com");
+  assert.match(M.logoFor("Starbucks"), /^https:\/\/icons\.duckduckgo\.com\/ip3\/starbucks\.com\.ico$/);
+});
+
+await test("a store number or a branch still finds the brand", () => {
+  assert.equal(M.domainFor("Starbucks Store 08321"), "starbucks.com");
+  assert.equal(M.domainFor("Costco Gas"), "costco.com");
+  assert.equal(M.domainFor("Target Optical"), "target.com");
+  assert.equal(M.domainFor("Whole Foods Mkt"), "wholefoodsmarket.com");
+});
+
+await test("a longer brand wins over a shorter one that also matched", () => {
+  // These are the cases that decide it: "uber" also matches "Uber Eats", and
+  // taking the shorter would put a taxi logo on every takeaway.
+  assert.equal(M.domainFor("Uber Eats"), "ubereats.com");
+  assert.equal(M.domainFor("Uber Trip"), "uber.com");
+  assert.equal(M.domainFor("Google Fi"), "fi.google.com");
+  assert.equal(M.domainFor("Google Storage"), "google.com");
+  assert.equal(M.domainFor("Disney Plus"), "disneyplus.com");
+  assert.equal(M.domainFor("Disney Store"), "disney.com");
+  assert.equal(M.domainFor("American Airlines"), "aa.com");
+  assert.equal(M.domainFor("American Express"), "americanexpress.com");
+});
+
+await test("the card processor is stripped, so the coffee shop is what shows", () => {
+  // "SQ *BLUE BOTTLE" is Blue Bottle's transaction, not Square's, and Square's
+  // logo on forty different shops would be worse than none at all.
+  assert.equal(M.domainFor("SQ Blue Bottle Coffee"), "bluebottlecoffee.com");
+  assert.equal(M.domainFor("TST Sweetgreen"), "sweetgreen.com");
+  assert.equal(M.domainFor("PP Etsy"), "etsy.com");
+});
+
+await test("anything not on the list is left alone, rather than guessed at", () => {
+  // The whole reason it is a list: a guess would send every string a bank ever
+  // printed — names of people among them — to an icon service.
+  for (const name of ["Dr Ellen Yao Dds", "Zelle To Sam", "Payroll Deposit", "ATM Withdrawal", "Joe's Corner Store", ""]) {
+    assert.equal(M.domainFor(name), null, name);
+    assert.equal(M.logoFor(name), null, name);
+  }
+});
+
+await test("a word that merely begins with a brand is not that brand", () => {
+  assert.equal(M.domainFor("Targeted Therapy Clinic"), null);
+  assert.equal(M.domainFor("Gaps In Coverage Llc"), null);
+  assert.equal(M.domainFor("Subwaystation Deli"), null);
+  // and the same rule holds inside a brand of more than one word
+  assert.equal(M.domainFor("J Crewcuts Salon"), null);
+  assert.equal(M.domainFor("J Crew"), "jcrew.com");
+});
+
+await test("every brand maps to something that looks like a domain", () => {
+  assert.ok(M.BRAND_COUNT > 200, `only ${M.BRAND_COUNT} brands`);
+  assert.equal(M.normalize("Bath & Body Works"), "bath and body works");
+  assert.equal(M.normalize("  H&M  "), "h and m");
+});
+
+/* ── the icon rail ────────────────────────────────────────────────────── */
+
+await test("Hopper sits with Settings at the foot, not among the Plan screens", () => {
+  assert.equal(M.NAV_PLAN.some((i) => i.to === "/hopper"), false, "it is no longer one more report");
+  assert.deepEqual(M.NAV_FOOT.map((i) => i.to), ["/hopper", "/settings"]);
+});
+
+await test("no screen is offered in two places at once", () => {
+  const all = [...M.NAV, ...M.NAV_PLAN, ...M.NAV_CONFIG, ...M.NAV_FOOT].map((i) => i.to);
+  assert.equal(new Set(all).size, all.length, "a screen listed twice would be lit twice");
 });
 
 /* ── emoji picker data ────────────────────────────────────────────────── */
