@@ -183,9 +183,16 @@ the scheduled job falls back to it.
 
 ### Logos
 
-Bank and merchant marks both come from DuckDuckGo's icon service, and both are settings rather
-than assumptions — that service sees which banks you hold and which chains you shop at. Plaid's
-own logos never leave the app.
+Bank and merchant marks are fetched by `/api/icon` on the browser's behalf, from DuckDuckGo's
+icon service and then Google's, whichever has one. Going through the function rather than
+straight out fixes two things: the icon services see the deployment instead of the reader, and
+the bytes can be looked at before they are passed on. That second one matters more than it
+sounds — when those services have no icon for a domain they answer with a placeholder rather
+than a 404, so the page's fallback never fired and a couple of well-known brands showed a grey
+circle belonging to nobody. The function learns what each service's "nothing" looks like by
+asking it for a domain that cannot exist, and turns that into the 404 it should have been.
+Both marks are still settings rather than assumptions, and Plaid's own logos never leave the
+app at all.
 
 Merchant logos resolve through a built-in list of a few hundred brands, deliberately not a
 guess. Turning "Starbucks" into starbucks.com is easy; turning "Dr Ellen Yao Dds" into a domain

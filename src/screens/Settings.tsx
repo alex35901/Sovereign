@@ -220,11 +220,11 @@ export default function Settings() {
               />
             </div>
             <span className="tiny faint" style={{ maxWidth: 620 }}>
-              Both are fetched from DuckDuckGo's icon service, so that service sees which banks you
-              hold and which chains you shop at. Plaid's own logos never leave this app. Merchant
-              logos are looked up only for the {BRAND_COUNT} brands on a built-in list — nothing off
-              a statement is sent anywhere to find out what it is, so a name it doesn't recognise
-              keeps its letter. Turn either off to use initials and ask nobody.
+              Both are fetched by <code>/api/icon</code> on your behalf, so the icon services see
+              your deployment rather than your browser. Merchant logos are looked up only for the
+              {" "}{BRAND_COUNT} brands on a built-in list — nothing off a statement is sent anywhere
+              to find out what it is, so a name it doesn&rsquo;t recognise keeps its letter. Plaid&rsquo;s
+              own logos never leave this app at all. Turn either off to use initials and ask nobody.
             </span>
           </div>
 

@@ -1,10 +1,15 @@
 /**
  * Where a logo comes from.
  *
- * DuckDuckGo's icon service, chosen for being run by a company that sells no
- * advertising. Every lookup tells it something — which banks, which shops — so
- * both callers are behind a setting rather than an assumption, and both fall
- * back to initials when the image doesn't load.
+ * Through this app's own function rather than straight to an icon service, for
+ * two reasons. The service would otherwise see the reader's address alongside
+ * the name of every bank and shop they use; and when it has no icon it answers
+ * with a placeholder rather than a 404, so the page's fallback never fired and
+ * some brands showed a grey circle belonging to nobody. api/icon.ts has the
+ * rest of it.
+ *
+ * Still behind a setting on both sides, and still falling back to initials
+ * when nothing loads.
  */
 export const iconFor = (domain: string): string =>
-  `https://icons.duckduckgo.com/ip3/${encodeURIComponent(domain)}.ico`;
+  `/api/icon?domain=${encodeURIComponent(domain)}`;

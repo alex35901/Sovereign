@@ -336,16 +336,46 @@ export function plannedFor(db: DB, month: MonthKey, categoryId: string): number 
 }
 
 /**
+ * How far back a replaced default is worth pinning down.
+ *
+ * Twenty years of months, so a default set at the start of a long history is
+ * preserved in full, while a nonsense `from` cannot spin the loop below.
+ */
+const PIN_LIMIT = 240;
+
+/**
  * Sets a standing amount from `month` onwards, dropping later explicit entries
- * that would otherwise mask it. Earlier months are untouched.
+ * that would otherwise mask it. Earlier months keep what they had.
+ *
+ * The subtle half is that second sentence. A default is one amount from one
+ * month onwards, so replacing it does not just change the future — it changes
+ * every month the old one covered, all the way back, and those are months
+ * already lived through. Setting a new amount in September used to empty
+ * January through August of a category budgeted since the new year, because
+ * none of them held an explicit entry: they were all showing the old default,
+ * and the old default was gone.
+ *
+ * So the months the outgoing default covered are written down as they stood
+ * before the new one takes over. Only where nothing explicit was set, since an
+ * explicit entry was already the truth for that month.
  */
 export function applyForward(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
-  const budgets: DB["budgets"] = {};
-  for (const [m, row] of Object.entries(db.budgets)) {
-    if (m < month) { budgets[m] = row; continue; }
+  const budgets: DB["budgets"] = { ...db.budgets };
+
+  const prior = db.budgetDefaults?.[categoryId];
+  if (prior && prior.from < month) {
+    for (let m = prior.from, n = 0; m < month && n < PIN_LIMIT; m = addMonths(m, 1), n++) {
+      if (budgets[m]?.[categoryId] !== undefined) continue;
+      budgets[m] = { ...(budgets[m] ?? {}), [categoryId]: prior.amount };
+    }
+  }
+
+  for (const [m, row] of Object.entries(budgets)) {
+    if (m < month) continue;
     const { [categoryId]: _dropped, ...rest } = row;
     budgets[m] = rest;
   }
+
   return {
     ...db,
     budgets,

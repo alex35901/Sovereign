@@ -71,6 +71,7 @@ await build({
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
       export * as TR from "./src/lib/transfer.ts";
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
+      export { default as iconHandler, forgetPlaceholders } from "./api/icon.ts";
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
@@ -854,7 +855,9 @@ await test("a merchant on the list resolves to its own domain", () => {
   assert.equal(M.domainFor("Trader Joe's"), "traderjoes.com");
   assert.equal(M.domainFor("Chick-fil-A"), "chick-fil-a.com");
   assert.equal(M.domainFor("Bath & Body Works"), "bathandbodyworks.com");
-  assert.match(M.logoFor("Starbucks"), /^https:\/\/icons\.duckduckgo\.com\/ip3\/starbucks\.com\.ico$/);
+  // Through this app's own function, so the icon service never sees the reader
+  // and a placeholder can be turned into the 404 it should have been.
+  assert.equal(M.logoFor("Starbucks"), "/api/icon?domain=starbucks.com");
 });
 
 await test("a store number or a branch still finds the brand", () => {
@@ -907,6 +910,142 @@ await test("every brand maps to something that looks like a domain", () => {
   assert.ok(M.BRAND_COUNT > 200, `only ${M.BRAND_COUNT} brands`);
   assert.equal(M.normalize("Bath & Body Works"), "bath and body works");
   assert.equal(M.normalize("  H&M  "), "h and m");
+});
+
+/* ── fetching a brand's mark ──────────────────────────────────────────── */
+
+/** Calls the icon function, keeping the body as bytes rather than as text. */
+const invokeIcon = (url) =>
+  new Promise((resolve, reject) => {
+    const headers = {};
+    const timer = setTimeout(() => reject(new Error("handler never wrote a response")), 5000);
+    const res = {
+      statusCode: 200,
+      setHeader: (k, v) => { headers[k.toLowerCase()] = v; },
+      end: (body) => { clearTimeout(timer); resolve({ status: res.statusCode, headers, body: body ?? "" }); },
+    };
+    Promise.resolve(M.iconHandler({ method: "GET", url, headers: {} }, res))
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
+
+/** An "image" big enough to pass the floor, distinct per label. */
+const png = (label) => Buffer.from(label.padEnd(200, "."), "utf8");
+const imageRes = (label) => new Response(png(label), { status: 200, headers: { "content-type": "image/png" } });
+
+/** Serves each source in turn from a table keyed by what it is asked for. */
+const iconSource = (ddg, google) => async (url) => {
+  const href = String(url);
+  const invalid = href.includes(".invalid");
+  if (href.includes("duckduckgo")) return ddg(invalid);
+  if (href.includes("google")) return google(invalid);
+  throw new Error(`unexpected fetch: ${href}`);
+};
+
+await test("the icon function rejects anything that is not a domain", async () => {
+  M.forgetPlaceholders();
+  assert.equal((await invokeIcon("/api/icon?domain=starbucks.com")).status !== 400, true);
+  for (const bad of ["", "starbucks", "../../etc/passwd", "sta rbucks.com", "http://starbucks.com", "a".repeat(300) + ".com", "starbucks.com/x"]) {
+    const r = await invokeIcon(`/api/icon?domain=${encodeURIComponent(bad)}`);
+    assert.equal(r.status, 400, bad);
+  }
+});
+
+await test("a real mark is passed through, cached, and asked of nobody twice", async () => {
+  M.forgetPlaceholders();
+  const asked = [];
+  const r = await withFetch(async (url) => {
+    asked.push(String(url));
+    return iconSource((invalid) => imageRes(invalid ? "PLACEHOLDER" : "STARBUCKS"), () => imageRes("GOOGLE"))(url);
+  }, () => invokeIcon("/api/icon?domain=starbucks.com"));
+
+  assert.equal(r.status, 200);
+  assert.equal(r.headers["content-type"], "image/png");
+  assert.match(r.headers["cache-control"], /max-age=604800/);
+  assert.equal(r.body.toString("utf8").startsWith("STARBUCKS"), true);
+  assert.equal(asked.some((u) => u.includes("google")), false, "the second source is not troubled");
+
+  // the probe for "what does nothing look like" is learned once
+  const before = asked.filter((u) => u.includes(".invalid")).length;
+  await withFetch(async (url) => {
+    asked.push(String(url));
+    return iconSource((invalid) => imageRes(invalid ? "PLACEHOLDER" : "STARBUCKS"), () => imageRes("GOOGLE"))(url);
+  }, () => invokeIcon("/api/icon?domain=costco.com"));
+  assert.equal(asked.filter((u) => u.includes(".invalid")).length, before, "and not asked again");
+});
+
+await test("a placeholder is treated as the 404 it should have been", async () => {
+  // What Starbucks and Costco were actually getting: the service answers with
+  // a grey circle rather than a 404, so the page's fallback never fired.
+  M.forgetPlaceholders();
+  const r = await withFetch(
+    iconSource(() => imageRes("PLACEHOLDER"), () => imageRes("PLACEHOLDER-G")),
+    () => invokeIcon("/api/icon?domain=starbucks.com"),
+  );
+  assert.equal(r.status, 404, "so the lettered avatar takes over");
+  assert.match(r.headers["cache-control"], /max-age/, "and it is not asked again on every page");
+});
+
+await test("the second source gets a turn when the first has nothing", async () => {
+  M.forgetPlaceholders();
+  const r = await withFetch(
+    iconSource(() => imageRes("PLACEHOLDER"), (invalid) => imageRes(invalid ? "GLOBE" : "REAL-COSTCO")),
+    () => invokeIcon("/api/icon?domain=costco.com"),
+  );
+  assert.equal(r.status, 200);
+  assert.equal(r.body.toString("utf8").startsWith("REAL-COSTCO"), true);
+});
+
+await test("a blank, a page of HTML and a dead source are all nothing", async () => {
+  // Each source has a perfectly good placeholder here, so these are rejected
+  // on their own merits rather than by matching it — otherwise the checks that
+  // catch them could be deleted and nothing would notice.
+  const cases = {
+    // Each is rejected by exactly one rule, and by nothing else, so deleting
+    // that rule shows up here rather than being covered by its neighbour.
+    "a two-pixel blank": () => new Response(Buffer.from("ico"), { status: 200, headers: { "content-type": "image/png" } }),
+    "a long HTML error page": () => new Response("<html>".padEnd(400, "x"), { status: 200, headers: { "content-type": "text/html" } }),
+    "a 500 that still looks like a picture": () => new Response(png("SERVER-ERROR"), { status: 500, headers: { "content-type": "image/png" } }),
+    "a refusal to connect": () => { throw new Error("ECONNREFUSED"); },
+  };
+  for (const [what, impl] of Object.entries(cases)) {
+    M.forgetPlaceholders();
+    const source = (invalid) => (invalid ? imageRes(`NOTHING-${what}`) : impl());
+    const r = await withFetch(iconSource(source, source), () => invokeIcon("/api/icon?domain=costco.com"));
+    assert.equal(r.status, 404, what);
+  }
+});
+
+await test("a probe that blows up mid-read still leaves an answer", async () => {
+  // Learning what "nothing" looks like must never be able to fail the request
+  // it was learned during.
+  M.forgetPlaceholders();
+  const exploding = () => ({
+    ok: true,
+    headers: new Headers({ "content-type": "image/png" }),
+    arrayBuffer: () => Promise.reject(new Error("socket closed")),
+  });
+  const r = await withFetch(
+    iconSource((invalid) => (invalid ? exploding() : imageRes("STARBUCKS")), () => imageRes("G")),
+    () => invokeIcon("/api/icon?domain=starbucks.com"),
+  );
+  assert.equal(r.status, 200);
+  assert.equal(r.body.toString("utf8").startsWith("STARBUCKS"), true);
+});
+
+await test("a source that cannot even be probed does not take the answer with it", async () => {
+  // Learning the placeholder must never be able to fail the request.
+  M.forgetPlaceholders();
+  const r = await withFetch(
+    iconSource((invalid) => { if (invalid) throw new Error("down"); return imageRes("STARBUCKS"); }, () => imageRes("G")),
+    () => invokeIcon("/api/icon?domain=starbucks.com"),
+  );
+  assert.equal(r.status, 200);
+  assert.equal(r.body.toString("utf8").startsWith("STARBUCKS"), true);
+});
+
+await test("the icon function answers nothing but GET", async () => {
+  const r = await invokeWith(M.iconHandler, { method: "POST", headers: {} });
+  assert.equal(r.status, 405);
 });
 
 /* ── the icon rail ────────────────────────────────────────────────────── */
@@ -1110,6 +1249,62 @@ await test("applying forward clears later months but keeps earlier ones", () => 
   assert.equal(next.budgets["2026-08"].c_gas, 12000, "other categories are left alone");
   assert.equal(M.plannedFor(next, "2026-07", "c_groceries"), 75000);
   assert.equal(M.plannedFor(next, "2027-03", "c_groceries"), 75000);
+});
+
+await test("replacing a standing amount does not empty the months it covered", () => {
+  // The bug: a category budgeted at $500 since January, then set to $600 in
+  // September. January through August held no explicit entry — they were all
+  // showing the January default — so replacing it read them all as $0.
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
+  for (const m of ["2026-01", "2026-05", "2026-08"]) {
+    assert.equal(M.plannedFor(db, m, "c_groceries"), 50000, `${m} before`);
+  }
+
+  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
+  for (const m of ["2026-01", "2026-04", "2026-08"]) {
+    assert.equal(M.plannedFor(next, m, "c_groceries"), 50000, `${m} must keep what it had`);
+  }
+  assert.equal(M.plannedFor(next, "2026-09", "c_groceries"), 60000);
+  assert.equal(M.plannedFor(next, "2030-01", "c_groceries"), 60000, "and onwards");
+  assert.equal(M.plannedFor(next, "2025-12", "c_groceries"), 0, "nothing is invented before the old default began");
+});
+
+await test("pinning a replaced default does not overwrite what was set by hand", () => {
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
+  db.budgets = { "2026-03": { c_groceries: 90000, c_gas: 11000 } };
+
+  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
+  assert.equal(next.budgets["2026-03"].c_groceries, 90000, "March was deliberate and stays");
+  assert.equal(next.budgets["2026-03"].c_gas, 11000, "and its neighbours are untouched");
+  assert.equal(next.budgets["2026-02"].c_groceries, 50000, "February was the default and is written down");
+  assert.equal(next.budgets["2026-02"].c_gas, undefined, "only the category being changed");
+});
+
+await test("a default replaced twice keeps both of the amounts it had", () => {
+  let db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "2026-01" } };
+  db = M.applyForward(db, "2026-05", "c_groceries", 60000);
+  db = M.applyForward(db, "2026-09", "c_groceries", 70000);
+  assert.equal(M.plannedFor(db, "2026-02", "c_groceries"), 50000);
+  assert.equal(M.plannedFor(db, "2026-06", "c_groceries"), 60000);
+  assert.equal(M.plannedFor(db, "2026-10", "c_groceries"), 70000);
+});
+
+await test("a first standing amount pins nothing, having replaced nothing", () => {
+  const db = M.emptyDB();
+  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
+  assert.deepEqual(next.budgets, {}, "there was no earlier default to write down");
+  assert.equal(M.plannedFor(next, "2026-08", "c_groceries"), 0);
+});
+
+await test("a default set far too long ago cannot spin the loop", () => {
+  const db = M.emptyDB();
+  db.budgetDefaults = { c_groceries: { amount: 50000, from: "1900-01" } };
+  const next = M.applyForward(db, "2026-09", "c_groceries", 60000);
+  const months = Object.keys(next.budgets);
+  assert.ok(months.length > 0 && months.length <= 240, `${months.length} months written`);
 });
 
 await test("history counts empty months, and the average with them", () => {

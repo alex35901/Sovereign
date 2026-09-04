@@ -538,8 +538,6 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .bcol-plan { width: 116px; }
 .bcol-actual { width: 100px; }
 .bcol-left { width: 100px; }
-.bcol-menu { width: 29px; flex: none; }
-.btn.bcol-menu { padding-left: 0; padding-right: 0; }
 .budget-head { align-items: flex-end; gap: 12px; }
 
 
@@ -690,8 +688,6 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .bcol-actual { display: none; }
   .bcol-plan { width: 88px; }
   .bcol-left { width: 84px; }
-  .bcol-menu { width: 22px; }
-  .btn.bcol-menu { min-width: 0; }
   .budget-head { gap: 8px; }
   .list-row { gap: 8px; padding: 10px 12px; }
 

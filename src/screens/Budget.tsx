@@ -3,11 +3,11 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronDown, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { IconAction, TopBar } from "../shell/TopBar";
-import { monthLabel, thisMonth, addMonths } from "../lib/date";
+import { monthLabel, thisMonth } from "../lib/date";
 import { budgetSummary, remainingTone, spentShare } from "../lib/select";
 import { fmt0 } from "../lib/money";
 import type { BudgetGroupRow, BudgetRow } from "../lib/select";
-import { Btn, Card, HoverCard, Money, Popover, Progress, Toggle, cx } from "../components/ui";
+import { Btn, Card, HoverCard, Money, Progress, cx } from "../components/ui";
 import { BudgetAmountPopover } from "./BudgetAmountPopover";
 import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
@@ -48,7 +48,10 @@ export default function Budget() {
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
             <div className="row wrap" style={{ gap: 8 }}>
-              <MonthNav month={month} onChange={setMonth} max={addMonths(thisMonth(), 6)} />
+              {/* No forward limit: planning two or ten years out is the point
+                  of a standing amount, and a cap at six months made the sheet
+                  stop dead in the middle of next year. */}
+              <MonthNav month={month} onChange={setMonth} />
               <Btn
                 onClick={() => setMonth(thisMonth())}
                 disabled={month === thisMonth()}
@@ -137,7 +140,6 @@ function GroupCard({ data, month, collapsed, onToggle }: {
               <Money value={data.remaining} cents={false} />
             </div>
           </div>
-          <span className="bcol-menu" />
         </div>
       </div>
 
@@ -153,7 +155,6 @@ function GroupCard({ data, month, collapsed, onToggle }: {
  * suppressed while that panel covers the same spot.
  */
 function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; income: boolean }) {
-  const { actions } = useStore();
   const [moving, setMoving] = useState(false);
   return (
           <div className="list-row">
@@ -188,23 +189,6 @@ function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; inc
                 )}
               </HoverCard>
             </div>
-            <Popover
-              align="right"
-              trigger={(open) => <button className="btn btn-ghost btn-icon bcol-menu" onClick={open}>⋯</button>}
-            >
-              {() => (
-                <div style={{ padding: "6px 8px" }}>
-                  <Toggle
-                    on={r.category.rollover}
-                    onChange={(v) => actions.updateCategory(r.category.id, { rollover: v })}
-                    label={<span className="small">Roll over leftovers</span>}
-                  />
-                  <div className="tiny faint" style={{ marginTop: 6, maxWidth: 190 }}>
-                    Unspent money in this category carries into next month.
-                  </div>
-                </div>
-              )}
-            </Popover>
           </div>
   );
 }
