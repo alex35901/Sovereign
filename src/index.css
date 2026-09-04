@@ -718,3 +718,20 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .bcol-left { width: 72px; }
   .list-row { gap: 6px; padding: 10px 10px; }
 }
+
+/* ── Hopper ──
+   A chat, so the question is right-aligned and the answer is a card like
+   every other panel in the app. The composer sticks to the bottom of the
+   page rather than the viewport: on a phone the tab bar is already there,
+   and two things pinned to the same edge fight. */
+.hopper { padding-bottom: 8px; }
+.hopper-you {
+  align-self: flex-end; max-width: 82%; padding: 9px 13px;
+  background: var(--accent-soft); color: var(--text);
+  border-radius: 14px 14px 3px 14px; font-size: 13.5px;
+}
+.hopper-answer p { margin: 0; font-size: 13.5px; line-height: 1.55; }
+.hopper-list { margin: 0; padding-left: 18px; font-size: 13.5px; line-height: 1.55; }
+.hopper-list li { margin: 3px 0; }
+.hopper-ask { display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; padding: 10px 0 2px; background: var(--bg); }
+.hopper-ask .input { flex: 1; }

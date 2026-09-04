@@ -16,6 +16,7 @@
     "test:e2e": "node scripts/e2etest.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
     "lucide-react": "^1.24.0",
     "pg": "^8.23.0",
     "react": "^19.2.7",
@@ -29,6 +30,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "esbuild": "^0.28.2",
+    "playwright": "^1.62.1",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
   }

@@ -309,5 +309,22 @@ export interface DB {
   recurring: Recurring[];
   rules: Rule[];
   holdings: Holding[];
+  /**
+   * What Hopper has been asked, kept so a thread carries across devices.
+   *
+   * Questions and answers only — never the tool traffic behind them. Replaying
+   * old tool results would spend tokens re-reading figures that have since
+   * moved, and the document is pushed whole on every change, so what is stored
+   * here is paid for on every sync.
+   */
+  hopper?: HopperExchange[];
   settings: Settings;
+}
+
+export interface HopperExchange {
+  id: ID;
+  question: string;
+  answer: string;
+  used: string[];
+  at: string;
 }

@@ -29,6 +29,8 @@ await build({
     contents: `
       export { readDoc, readMeta, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
       export { default as dbHandler } from "./api/db.ts";
+      export { default as hopperHandler } from "./api/hopper.ts";
+      export { claimMessage, spentToday, noteTokens, forgetTable, DAILY_MESSAGES } from "./api/_budget.ts";
       export { default as cronHandler } from "./api/cron/sync.ts";
       export { readAttempt, noteFailure, clearFailures, lockedOutNow, callerKey, MAX_FAILURES } from "./api/_ratelimit.ts";
       export { queuePull, readQueue, clearQueue, trimQueue } from "./api/_store.ts";
@@ -60,10 +62,18 @@ const invokeWith = (handler, { method = "POST", body, headers = {}, url = "/api/
   new Promise((resolve, reject) => {
     const out = {};
     const timer = setTimeout(() => reject(new Error("handler never wrote a response")), 10000);
+    // Streaming handlers write in pieces and end with nothing, so the chunks
+    // are collected — a test that only reads the final argument would see an
+    // empty body and pass whatever was streamed.
+    let streamed = "";
     const res = {
       statusCode: 200,
       setHeader: (k, v) => { out[k.toLowerCase()] = v; },
-      end: (text) => { clearTimeout(timer); resolve({ status: res.statusCode, text: text ?? "" }); },
+      write: (chunk) => { streamed += chunk; return true; },
+      end: (text) => {
+        clearTimeout(timer);
+        resolve({ status: res.statusCode, text: (text ?? "") + streamed, headers: out });
+      },
     };
     Promise.resolve(handler({ method, url, body, headers }, res)).catch((e) => { clearTimeout(timer); reject(e); });
   });
@@ -234,6 +244,150 @@ await test("GET ?meta=1 serves the metadata and nothing else", async () => {
   });
   assert.equal(wrong.status, 401, "?meta=1 is behind the same passphrase as everything else");
 });
+
+/* ── what Hopper costs, and who may ask ───────────────────────────────── */
+
+const wipeUsage = async () => {
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  await c.connect();
+  await c.query("DROP TABLE IF EXISTS hopper_usage");
+  await c.end();
+  M.forgetTable();
+};
+
+await test("the day's allowance is claimed atomically, so a burst cannot overspend it", async () => {
+  await wipeUsage();
+  const day = "2026-09-04";
+  // Every question asked at the same moment. If the check and the increment
+  // were two statements they would all read the same count and all be let
+  // through, which is exactly how a nightly loop runs up a bill.
+  const claims = await Promise.all(
+    Array.from({ length: M.DAILY_MESSAGES + 25 }, () => M.claimMessage(day)),
+  );
+  const allowed = claims.filter((c) => c.ok).length;
+  assert.equal(allowed, M.DAILY_MESSAGES, `${allowed} got through a limit of ${M.DAILY_MESSAGES}`);
+  assert.equal((await M.spentToday(day)).messages, M.DAILY_MESSAGES);
+
+  const after = await M.claimMessage(day);
+  assert.equal(after.ok, false, "the limit must hold once it is reached");
+});
+
+await test("each day gets its own allowance", async () => {
+  await wipeUsage();
+  await M.claimMessage("2026-09-04");
+  assert.equal((await M.spentToday("2026-09-05")).messages, 0);
+  assert.equal((await M.spentToday("2026-09-04")).messages, 1);
+});
+
+await test("what a turn actually used is recorded, and a missing day is not an error", async () => {
+  await wipeUsage();
+  const day = "2026-09-04";
+  await M.claimMessage(day);
+  await M.noteTokens(4200, 900, day);
+  await M.noteTokens(3100, 400, day);
+  const spend = await M.spentToday(day);
+  assert.equal(spend.inputTokens, 7300);
+  assert.equal(spend.outputTokens, 1300);
+  assert.deepEqual(await M.spentToday("2026-01-01"), { day: "2026-01-01", messages: 0, inputTokens: 0, outputTokens: 0 });
+});
+
+await test("Hopper is behind the same passphrase as the document", async () => {
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  process.env.ANTHROPIC_API_KEY = "sk-ant-not-a-real-key";
+  await clearAttempts();
+
+  const nobody = await invokeWith(M.hopperHandler, {
+    method: "POST", body: { messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(nobody.status, 401, "no passphrase must not reach the model");
+
+  const wrong = await invokeWith(M.hopperHandler, {
+    method: "POST", headers: { authorization: "Bearer nope" },
+    body: { messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(wrong.status, 401);
+
+  const get = await invokeWith(M.hopperHandler, {
+    method: "GET", headers: { authorization: "Bearer open sesame" },
+  });
+  assert.equal(get.status, 405, "only POST carries a question");
+});
+
+await test("no API key is a plain answer, not a broken chat", async () => {
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  delete process.env.ANTHROPIC_API_KEY;
+  const r = await invokeWith(M.hopperHandler, {
+    method: "POST", headers: { authorization: "Bearer open sesame" },
+    body: { messages: [{ role: "user", content: "hi" }] },
+  });
+  assert.equal(r.status, 503);
+  const body = JSON.parse(r.text);
+  assert.match(body.error, /API key/i);
+  assert.match(body.hint, /ANTHROPIC_API_KEY/, "it has to say which variable to set");
+});
+
+await test("the API key never leaves the server", async () => {
+  // Every refusal path, checked for the secret. The SDK's own errors carry the
+  // request that caused them, and the request carries the key in a header —
+  // so an error passed through unread is how a key escapes.
+  const secret = "sk-ant-SUPERSECRET-do-not-leak";
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  process.env.ANTHROPIC_API_KEY = secret;
+  await clearAttempts();
+
+  const calls = [
+    { method: "GET", headers: { authorization: "Bearer open sesame" } },
+    { method: "POST", headers: { authorization: "Bearer wrong" }, body: { messages: [] } },
+    { method: "POST", headers: { authorization: "Bearer open sesame" }, body: { messages: [] } },
+    { method: "POST", headers: { authorization: "Bearer open sesame" }, body: { nonsense: true } },
+  ];
+  for (const call of calls) {
+    const r = await invokeWith(M.hopperHandler, call);
+    assert.ok(!r.text.includes(secret), `the key came back from ${call.method} ${r.status}`);
+    assert.ok(!r.text.includes("SUPERSECRET"), "part of the key came back");
+  }
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
+await test("an upstream failure comes back as words, and never as the key", async () => {
+  // The path that matters most: the SDK's own errors carry the request that
+  // caused them, and the request carries the key in a header. Pointed at a
+  // closed port so the model call fails for certain.
+  const secret = "sk-ant-SUPERSECRET-do-not-leak";
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  process.env.ANTHROPIC_API_KEY = secret;
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1";
+  await wipeUsage();
+  await clearAttempts();
+
+  const r = await invokeWith(M.hopperHandler, {
+    method: "POST", headers: { authorization: "Bearer open sesame" },
+    body: { messages: [{ role: "user", content: "hello" }] },
+  });
+
+  assert.equal(r.status, 200, "the stream had already started, so the status is 200");
+  assert.match(r.headers["content-type"], /event-stream/);
+  assert.ok(r.text.includes('"type":"error"'), `no error event came back: ${r.text.slice(0, 200)}`);
+  assert.ok(!r.text.includes(secret), "the key came back in the error event");
+  assert.ok(!r.text.includes("SUPERSECRET"), "part of the key came back");
+  assert.match(r.text, /could not be reached/, "it should say what happened in words");
+
+  delete process.env.ANTHROPIC_BASE_URL;
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
+await test("a question with nothing in it is refused before it costs anything", async () => {
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  process.env.ANTHROPIC_API_KEY = "sk-ant-not-a-real-key";
+  await wipeUsage();
+  const r = await invokeWith(M.hopperHandler, {
+    method: "POST", headers: { authorization: "Bearer open sesame" }, body: { messages: [] },
+  });
+  assert.equal(r.status, 400);
+  assert.equal((await M.spentToday()).messages, 0, "a malformed request must not spend the allowance");
+  delete process.env.ANTHROPIC_API_KEY;
+});
+
 
 /* ── the guessing limit, against real SQL ─────────────────────────────── */
 

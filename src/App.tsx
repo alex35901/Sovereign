@@ -13,6 +13,7 @@ import CashFlow from "./screens/CashFlow";
 import Reports from "./screens/Reports";
 import Budget from "./screens/Budget";
 import Recurring from "./screens/Recurring";
+import Hopper from "./screens/Hopper";
 import Goals from "./screens/Goals";
 import GoalDetail from "./screens/GoalDetail";
 import Investments from "./screens/Investments";
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/budget" element={<Budget />} />
           <Route path="/recurring" element={<Recurring />} />
+          <Route path="/hopper" element={<Hopper />} />
           <Route path="/goals" element={<Goals />} />
           <Route path="/goals/:id" element={<GoalDetail />} />
           <Route path="/investments" element={<Investments />} />

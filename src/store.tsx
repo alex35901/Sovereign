@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, Category, DB, Goal, Holding, ID, MonthKey, Recurring, Rule, Tag, Transaction } from "./types";
+import type { Account, Category, DB, Goal, Holding, HopperExchange, ID, MonthKey, Recurring, Rule, Tag, Transaction } from "./types";
 import { buildDemoDB, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
 import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
@@ -54,6 +54,16 @@ export interface RulePrompt {
   /** Changes on every offer, so the countdown restarts rather than carrying on. */
   key: number;
 }
+
+/**
+ * How much of the conversation is kept.
+ *
+ * The whole document is pushed on every change, so each stored exchange is
+ * paid for on every subsequent sync, not just once. Sixty is about 40 KB —
+ * under a tenth of the document — and further back than anyone scrolls in a
+ * question-and-answer thread.
+ */
+export const HOPPER_KEPT = 60;
 
 const Ctx = createContext<Store | null>(null);
 
@@ -250,6 +260,10 @@ export interface Actions {
   allocateToGoal: (goalId: ID, accountId: ID, amount: number) => void;
   updateGoal: (id: ID, patch: Partial<Goal>) => void;
   deleteGoal: (id: ID) => void;
+
+  /** Keeps one exchange with Hopper, trimming the thread to its cap. */
+  rememberHopper: (e: Omit<HopperExchange, "id">) => void;
+  forgetHopper: () => void;
 
   upsertRecurring: (r: Recurring) => void;
   dismissRecurring: (r: Recurring) => void;
@@ -549,6 +563,15 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     allocateToGoal: (goalId, accountId, amount) =>
       apply((db) => allocate(db, goalId, accountId, amount), "allocate"),
     deleteGoal: (id) => apply((db) => ({ ...db, goals: db.goals.filter((g) => g.id !== id) }), "delete goal"),
+
+    // No undo label: a chat is not an edit, and offering to undo a question
+    // would put it in the same stack as deleting an account.
+    rememberHopper: (e) =>
+      apply((db) => ({
+        ...db,
+        hopper: [...(db.hopper ?? []), { ...e, id: uid("hx") }].slice(-HOPPER_KEPT),
+      })),
+    forgetHopper: () => apply((db) => ({ ...db, hopper: [] })),
 
     upsertRecurring: (r) =>
       apply((db) => ({
