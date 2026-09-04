@@ -15,6 +15,16 @@ export const config = { runtime: "nodejs", maxDuration: 60 };
 
 const UPSTREAM_TIMEOUT_MS = 25_000;
 
+/** Plaid's own maximum for one page of /transactions/get. */
+const PAGE_SIZE = 500;
+
+/**
+ * Ten thousand transactions in one window, which is years of a busy account.
+ * A ceiling rather than a limit: it exists so a provider that keeps saying
+ * "there are more" cannot hold this function open until it is killed.
+ */
+const MAX_PAGES = 20;
+
 type ApiRequest = IncomingMessage & { body?: unknown };
 type ApiResponse = ServerResponse;
 
@@ -165,16 +175,39 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       if (!body.accessToken) return send(400, { error: "No access token supplied." });
       const accounts = await call("/accounts/get", { access_token: body.accessToken });
 
-      const transactions = await call("/transactions/get", {
+      // Paged, because /transactions/get is paginated and one page is not the
+      // answer. It returns at most 500 at a time, newest first, and says in
+      // total_transactions how many there really are — so asking once for 500
+      // and stopping silently discarded everything older than the newest 500 in
+      // the window. A busy account loses whole weeks that way and says nothing.
+      const page = (offset: number) => call("/transactions/get", {
         access_token: body.accessToken,
         start_date: body.startDate,
         end_date: body.endDate,
-        options: { count: 500, offset: 0 },
-      }).catch((err: unknown) => {
-        // an investment-only item has no transactions product; that isn't fatal
-        if (err instanceof PlaidError && err.status === 400) return { transactions: [] };
-        throw err;
+        options: { count: PAGE_SIZE, offset },
       });
+
+      let rows: unknown[] = [];
+      let total = 0;
+      let pages = 0;
+      try {
+        for (;;) {
+          const got = await page(rows.length) as { transactions?: unknown[]; total_transactions?: number };
+          const batch = got.transactions ?? [];
+          total = typeof got.total_transactions === "number" ? got.total_transactions : rows.length + batch.length;
+          rows = rows.concat(batch);
+          pages += 1;
+          // A page that comes back short or empty is the end of it, whatever
+          // the total claims — without that this loops on a provider that
+          // disagrees with itself.
+          if (batch.length < PAGE_SIZE || rows.length >= total || pages >= MAX_PAGES) break;
+        }
+      } catch (err: unknown) {
+        // an investment-only item has no transactions product; that isn't fatal
+        if (!(err instanceof PlaidError && err.status === 400)) throw err;
+        rows = [];
+        total = 0;
+      }
 
       let holdings: Record<string, unknown> = { holdings: [], securities: [] };
       if (body.withHoldings) {
@@ -184,7 +217,11 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
       return send(200, {
         accounts: accounts.accounts,
-        transactions: (transactions as { transactions?: unknown[] }).transactions ?? [],
+        transactions: rows,
+        // Said out loud rather than left to be noticed: a window this app
+        // could not read to the end of is a window with transactions missing.
+        total,
+        truncated: rows.length < total,
         holdings: holdings.holdings ?? [],
         securities: holdings.securities ?? [],
       });

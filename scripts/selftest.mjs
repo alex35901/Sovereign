@@ -37,7 +37,7 @@ await build({
     contents: `
       export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
-      export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags } from "./src/lib/csv.ts";
+      export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
@@ -1352,18 +1352,45 @@ await test("dates parse in the usual bank formats", () => {
   assert.equal(M.parseDate("garbage"), null);
 });
 
-await test("import plan skips duplicates and unparseable rows", () => {
+await test("import plan skips unparseable rows and empty amounts", () => {
   const rows = [
-    ["2026-08-01", "Cafe", "-4.50"],
     ["2026-08-01", "Cafe", "-4.50"],
     ["not a date", "Cafe", "-4.50"],
     ["2026-08-02", "Rent", "0"],
   ];
   const plan = M.buildPlan(rows, ["date", "merchant", "amount"], { flipSign: false, accountId: "a1", existing: [] });
   assert.equal(plan.rows.length, 1);
-  assert.equal(plan.duplicates, 1);
   assert.equal(plan.skipped, 2);
   assert.equal(plan.rows[0].amount, -450);
+});
+
+await test("two of the same thing on one day are two transactions, not a mistake", () => {
+  // Two tenants paying the same rent on the same day share an account, a date,
+  // an amount and a merchant. They are one key and two real payments, and a
+  // set threw the second away every time.
+  const twice = [["2026-08-01", "Zelle From Renter", "1600.00"], ["2026-08-01", "Zelle From Renter", "1600.00"]];
+  const plan = M.buildPlan(twice, ["date", "merchant", "amount"], { flipSign: false, accountId: "a1", existing: [] });
+  assert.equal(plan.rows.length, 2, "both are real");
+  assert.equal(plan.duplicates, 0);
+});
+
+await test("re-importing the same file still adds nothing", () => {
+  const twice = [["2026-08-01", "Zelle From Renter", "1600.00"], ["2026-08-01", "Zelle From Renter", "1600.00"]];
+  const key = M.importKeyFor("a1", "2026-08-01", 160000, "Zelle From Renter");
+  const stored = (n) => Array.from({ length: n }, (_, i) => ({
+    id: `t${i}`, accountId: "a1", date: "2026-08-01", merchant: "Zelle From Renter", amount: 160000,
+    categoryId: "c_uncategorized", tags: [], pending: false, reviewed: false, hideFromReports: false,
+    createdAt: "", importKey: key,
+  }));
+
+  const both = M.buildPlan(twice, ["date", "merchant", "amount"], { flipSign: false, accountId: "a1", existing: stored(2) });
+  assert.equal(both.rows.length, 0, "both are already held");
+  assert.equal(both.duplicates, 2);
+
+  // and the half-imported case, which is the one a set could never get right
+  const one = M.buildPlan(twice, ["date", "merchant", "amount"], { flipSign: false, accountId: "a1", existing: stored(1) });
+  assert.equal(one.rows.length, 1, "one is held, so one is new");
+  assert.equal(one.duplicates, 1);
 });
 
 await test("debit/credit columns combine into one signed amount", () => {
@@ -3848,6 +3875,100 @@ await test("a sync never touches Plaid's metered endpoints", async () => {
   }
 });
 
+/** A stub Plaid holding `total` transactions, served 500 at a time, newest first. */
+const plaidWith = (total) => {
+  const asked = [];
+  const impl = async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path !== "/transactions/get") {
+      return new Response(JSON.stringify({ accounts: [], holdings: [], securities: [] }), { status: 200 });
+    }
+    const { options } = JSON.parse(init.body);
+    asked.push(options.offset);
+    const batch = Array.from({ length: Math.max(0, Math.min(options.count, total - options.offset)) }, (_, i) => ({
+      transaction_id: `t${options.offset + i}`, account_id: "a", date: "2026-08-01", amount: 1, name: "X",
+    }));
+    return new Response(JSON.stringify({ transactions: batch, total_transactions: total }), { status: 200 });
+  };
+  return { asked, impl };
+};
+
+await test("a window bigger than one page is read to the end of it", async () => {
+  // /transactions/get returns at most 500 at a time, newest first, and says how
+  // many there really are. Asking once and stopping silently threw away
+  // everything older than the newest 500 — whole weeks of a busy account.
+  const { asked, impl } = plaidWith(1200);
+  const r = await withEnv(creds, () => withFetch(impl, () => invokePlaid({
+    action: "sync", accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-01",
+  })));
+
+  const body = JSON.parse(r.text);
+  assert.deepEqual(asked, [0, 500, 1000], "three pages, each starting where the last ended");
+  assert.equal(body.transactions.length, 1200);
+  assert.equal(body.total, 1200);
+  assert.equal(body.truncated, false);
+  assert.equal(new Set(body.transactions.map((t) => t.transaction_id)).size, 1200, "and no page is fetched twice");
+});
+
+await test("one page is one request, and no more", async () => {
+  const { asked } = plaidWith(12);
+  const { impl } = plaidWith(12);
+  const r = await withEnv(creds, () => withFetch(async (url, init) => {
+    if (new URL(String(url)).pathname === "/transactions/get") asked.push(JSON.parse(init.body).options.offset);
+    return impl(url, init);
+  }, () => invokePlaid({ action: "sync", accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-01" })));
+  assert.deepEqual(asked, [0], "a window that fits is not asked about twice");
+  assert.equal(JSON.parse(r.text).transactions.length, 12);
+});
+
+await test("a provider that keeps saying there is more cannot hold the door open", async () => {
+  // total_transactions that never runs out, or a page that repeats: either way
+  // this has to stop rather than loop until the function is killed.
+  let calls = 0;
+  const r = await withEnv(creds, () => withFetch(async (url) => {
+    if (new URL(String(url)).pathname !== "/transactions/get") {
+      return new Response(JSON.stringify({ accounts: [], holdings: [], securities: [] }), { status: 200 });
+    }
+    calls += 1;
+    // The stub refuses rather than obliging forever: without a ceiling this
+    // would hang the suite, and a test that hangs proves nothing legibly.
+    if (calls > 40) throw new Error("ran away: no ceiling on the paging");
+    const batch = Array.from({ length: 500 }, (_, i) => ({ transaction_id: `x${calls}-${i}` }));
+    return new Response(JSON.stringify({ transactions: batch, total_transactions: 10_000_000 }), { status: 200 });
+  }, () => invokePlaid({ action: "sync", accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-01" })));
+
+  assert.ok(calls <= 20, `${calls} pages is not a ceiling`);
+  const body = JSON.parse(r.text);
+  assert.equal(body.truncated, true, "and it says the window was not read to the end");
+  assert.ok(body.transactions.length > 0, "with whatever it did get");
+});
+
+await test("a short page ends it, whatever the total claims", async () => {
+  const r = await withEnv(creds, () => withFetch(async (url) => {
+    if (new URL(String(url)).pathname !== "/transactions/get") {
+      return new Response(JSON.stringify({ accounts: [], holdings: [], securities: [] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ transactions: [{ transaction_id: "a" }], total_transactions: 900 }), { status: 200 });
+  }, () => invokePlaid({ action: "sync", accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-01" })));
+  assert.equal(JSON.parse(r.text).transactions.length, 1, "a provider disagreeing with itself must not loop");
+});
+
+await test("an item with no transactions product is still a good sync", async () => {
+  const r = await withEnv(creds, () => withFetch(async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/transactions/get") {
+      return new Response(JSON.stringify({ error_code: "PRODUCTS_NOT_SUPPORTED", error_message: "no" }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
+  }, () => invokePlaid({ action: "sync", accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-01" })));
+
+  assert.equal(r.status, 200, "an investment-only item has no transactions, which is not a failure");
+  const body = JSON.parse(r.text);
+  assert.deepEqual(body.transactions, []);
+  assert.equal(body.truncated, false);
+  assert.equal(body.accounts.length, 1);
+});
+
 await test("the institution lookup asks only the two free endpoints", async () => {
   // The whole point of backfilling a logo is that it costs nothing. /item/get
   // and /institutions/get_by_id are unmetered; if this ever reaches for one of
@@ -3899,6 +4020,23 @@ await test("a logo-less item is asked again later, one that has a mark never is"
   assert.equal(M.needsInstitution({ institutionCheckedAt: at(1) }, now), false);
   assert.equal(M.needsInstitution({ institutionCheckedAt: at(31) }, now), true);
   assert.equal(M.needsInstitution({ institutionCheckedAt: "not a date" }, now), true);
+});
+
+await test("a truncated window is carried back as something to say out loud", async () => {
+  const payload = await withFetch(
+    async () => new Response(JSON.stringify({
+      accounts: [], transactions: [], holdings: [], securities: [], total: 1200, truncated: true,
+    }), { status: 200 }),
+    () => M.fetchItem({ accessToken: "t", itemId: "i", institution: "Wells Fargo", kind: "bank", addedAt: "" }, "2026-01-01"),
+  );
+  assert.equal(payload.errors.length, 1);
+  assert.match(payload.errors[0], /1200 transactions in this window and sent 0/);
+
+  const whole = await withFetch(
+    async () => new Response(JSON.stringify({ accounts: [], transactions: [], holdings: [], securities: [], total: 0, truncated: false }), { status: 200 }),
+    () => M.fetchItem({ accessToken: "t", itemId: "i", institution: "Wells Fargo", kind: "bank", addedAt: "" }, "2026-01-01"),
+  );
+  assert.deepEqual(whole.errors, [], "and a window read to the end says nothing");
 });
 
 await test("plaid account types map onto this app's types", () => {

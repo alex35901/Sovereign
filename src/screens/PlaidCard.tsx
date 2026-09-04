@@ -152,8 +152,12 @@ export function PlaidCard() {
           : i);
       return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
     }, `sync ${item.institution}`);
-    recordRun(apply, "plaid", "ever", {});
+    recordRun(apply, "plaid", "ever", { error: payload.errors[0] });
     notify(summary);
+    // A window Plaid could not be read to the end of has transactions missing
+    // from it. The count lands in the payload; showing it is the only thing
+    // that turns silent data loss into something anyone can act on.
+    if (payload.errors.length) setError(payload.errors.join(" · "));
   };
 
   const syncAll = async () => {

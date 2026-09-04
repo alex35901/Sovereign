@@ -121,7 +121,7 @@ Getting transactions in, cheapest first:
 
 | Route | Cost | Notes |
 | --- | --- | --- |
-| CSV / manual | $0 | Works today, no signup. Mint, Monarch, YNAB and raw bank exports all import. |
+| CSV / manual | $0 | Works today, no signup. Mint, Monarch, YNAB and raw bank exports all import. Two identical rows in one file are two transactions, not a duplicate — re-importing the same file still adds nothing. |
 | **SimpleFIN Bridge** | **$15/yr** | Implemented. MX-backed, ~16k institutions, 25 max, refreshes daily. |
 | **RentCast** | **$0** | Implemented, for property values — see below. 50 lookups/month on the free tier. |
 | **Plaid** | **$0** | Implemented. Trial plan: 10 institutions, and the only route here returning holdings. |
@@ -137,6 +137,12 @@ Unlike the other two providers, Plaid's credentials authorise every request for 
 connected bank, so they stay on the server: set `PLAID_CLIENT_ID` and `PLAID_SECRET` as Vercel
 environment variables (add `PLAID_ENV=sandbox` to test against fake banks first) and redeploy.
 Only the per-connection access token is held in the browser.
+
+Transactions are read a page at a time. Plaid returns at most 500 per request, newest first,
+and says in `total_transactions` how many are really in the window — so a single request is
+the answer only for a quiet account. This asks until it has them all, up to ten thousand, and
+if it ever stops short it says how many it was told about and how many it got rather than
+leaving a gap to be noticed months later.
 
 Connect investment accounts and banks separately — Plaid rejects a link whose institution
 doesn't support every product requested, so asking for holdings and transactions at once fails

@@ -52,6 +52,10 @@ interface SyncResponse {
   transactions: PlaidTransaction[];
   holdings: PlaidHolding[];
   securities: PlaidSecurity[];
+  /** How many Plaid says are in the window, whether or not they all came. */
+  total?: number;
+  /** Set when the window could not be read to the end of. */
+  truncated?: boolean;
 }
 
 /* ── mapping ──────────────────────────────────────────────────────────── */
@@ -219,7 +223,12 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
   return {
     accounts,
     transactions,
-    errors: [],
+    // A window that could not be read to the end of has transactions missing
+    // from it, and the one thing worse than that is not saying so.
+    errors: raw.truncated
+      ? [`Plaid has ${raw.total} transactions in this window and sent ${transactions.length}. `
+        + "Sync a shorter period, or sync again to pick up the rest."]
+      : [],
     fetchedAt: new Date().toISOString(),
     holdings,
   };

@@ -110,7 +110,22 @@ export function buildPlan(
   rows: string[][], roles: ColumnRole[], opts: { flipSign: boolean; accountId: string; existing: Transaction[] },
 ): ImportPlan {
   const col = (role: ColumnRole) => roles.indexOf(role);
-  const seen = new Set(opts.existing.map((t) => t.importKey ?? importKeyFor(t.accountId, t.date, t.amount, t.merchant)));
+
+  /**
+   * How many of each key are already held, counted rather than merely seen.
+   *
+   * A set was wrong twice over. Two rent payments of the same amount on the
+   * same day from two tenants share an account, a date, an amount and a
+   * merchant — they are one key and two real transactions — and a set threw
+   * the second away every time, in the file and against the database both.
+   * Counting means a file holding two of something imports the second when
+   * only one is already stored, and skips it when two are.
+   */
+  const held = new Map<string, number>();
+  for (const t of opts.existing) {
+    const k = t.importKey ?? importKeyFor(t.accountId, t.date, t.amount, t.merchant);
+    held.set(k, (held.get(k) ?? 0) + 1);
+  }
   const out: ImportRow[] = [];
   let skipped = 0;
   let duplicates = 0;
@@ -129,8 +144,8 @@ export function buildPlan(
     if (opts.flipSign) amount = -amount;
     if (amount === 0) { skipped++; continue; }
     const key = importKeyFor(opts.accountId, date, amount, merchant);
-    if (seen.has(key)) { duplicates++; continue; }
-    seen.add(key);
+    const already = held.get(key) ?? 0;
+    if (already > 0) { held.set(key, already - 1); duplicates++; continue; }
     out.push({
       date, merchant, amount,
       statement: col("statement") >= 0 ? r[col("statement")]?.trim() || undefined : undefined,
