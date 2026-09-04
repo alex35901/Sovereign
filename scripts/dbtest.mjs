@@ -308,10 +308,32 @@ await test("Hopper is behind the same passphrase as the document", async () => {
   });
   assert.equal(wrong.status, 401);
 
-  const get = await invokeWith(M.hopperHandler, {
+  const bad = await invokeWith(M.hopperHandler, { method: "DELETE", headers: { authorization: "Bearer open sesame" } });
+  assert.equal(bad.status, 405, "only GET and POST are answered at all");
+
+  // GET reads the day's count for the integrations table. It is behind the
+  // same lock, costs nothing, and must never hand back the key it holds.
+  const shut = await invokeWith(M.hopperHandler, { method: "GET" });
+  assert.equal(shut.status, 401, "the meter is behind the passphrase too");
+
+  const meter = await invokeWith(M.hopperHandler, {
     method: "GET", headers: { authorization: "Bearer open sesame" },
   });
-  assert.equal(get.status, 405, "only POST carries a question");
+  assert.equal(meter.status, 200);
+  const seen = JSON.parse(meter.text);
+  assert.equal(seen.configured, true, "it says whether a key is set");
+  assert.equal(seen.limit, M.DAILY_MESSAGES);
+  assert.equal(typeof seen.spend.messages, "number");
+  assert.equal(meter.text.includes("sk-ant"), false, "and never the key itself");
+
+  // and it answers even with no key at all, so the table can say "not set up"
+  delete process.env.ANTHROPIC_API_KEY;
+  const bare = await invokeWith(M.hopperHandler, {
+    method: "GET", headers: { authorization: "Bearer open sesame" },
+  });
+  assert.equal(bare.status, 200);
+  assert.equal(JSON.parse(bare.text).configured, false);
+  process.env.ANTHROPIC_API_KEY = "sk-ant-not-a-real-key";
 });
 
 await test("no API key is a plain answer, not a broken chat", async () => {
@@ -847,9 +869,11 @@ await test("a rejected price token does not stamp the clock", async () => {
   assert.match(body.reason, /rejected the API key/);
 
   const after = JSON.parse((await asServer(undefined, "GET")).text);
-  assert.equal(after.version, versionBefore, "a run that did nothing must not write");
-  assert.equal(after.doc.settings.lastPricesAt, undefined);
-  assert.equal(after.doc.holdings[0].price, 30000);
+  assert.equal(after.doc.settings.lastPricesAt, undefined, "the clock stays unstamped, so the next run retries");
+  assert.equal(after.doc.holdings[0].price, 30000, "and nothing was written over the price");
+  // The failure itself is worth saving: it is what the integrations table reads.
+  assert.match(after.doc.settings.usage.tiingo.error, /rejected the API key/);
+  assert.ok(after.version > versionBefore, "recording the failure is a write");
 });
 
 await test("the job leaves an encrypted document's prices to the browser", async () => {

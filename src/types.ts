@@ -1,4 +1,5 @@
 import type { SyncCadence } from "./lib/sync/schedule.js";
+import type { Usage } from "./lib/usage.js";
 /** All money is integer cents. Outflows are negative, inflows positive. */
 export type ID = string;
 export type ISODate = string; // YYYY-MM-DD
@@ -253,6 +254,8 @@ export interface Settings {
   priceAutoRefresh?: boolean;
   /** When prices were last asked for, successfully or not. */
   lastPricesAt?: string;
+  /** How much of each provider's free tier has been spent. See lib/usage.ts. */
+  usage?: Usage;
   /**
    * Whether property values refresh on their own. The cadence is not stored:
    * it is worked out from how many properties there are against RentCast's

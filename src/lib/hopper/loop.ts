@@ -173,3 +173,29 @@ export async function ask(
 
   throw new HopperError("Hopper went round in circles and gave up. Try asking more specifically.");
 }
+
+/** What Hopper has cost today, read from the server rather than counted here. */
+export interface HopperMeter {
+  configured: boolean;
+  limit: number;
+  spend: { day: string; messages: number; inputTokens: number; outputTokens: number } | null;
+}
+
+/**
+ * Asks the function what today has cost.
+ *
+ * A GET, which the function answers before any of the model plumbing, so
+ * opening Settings never costs a token. Returns null rather than throwing:
+ * this feeds one cell of a table, and a table is not worth an error screen.
+ */
+export async function hopperMeter(): Promise<HopperMeter | null> {
+  const pass = passphrase();
+  if (!pass) return null;
+  try {
+    const res = await fetch(ENDPOINT, { headers: { authorization: `Bearer ${pass}` } });
+    if (!res.ok) return null;
+    return (await res.json()) as HopperMeter;
+  } catch {
+    return null;
+  }
+}

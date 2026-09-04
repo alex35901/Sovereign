@@ -5,12 +5,13 @@ import type { Account } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { estimateHomeValue } from "../lib/property";
+import { reason, recordRun } from "../lib/usage";
 import { Btn, Card, CardHead, Field, Money, TextInput } from "../components/ui";
 
 /** Address + automated valuation for a property account. */
 export function PropertyValueCard({ account }: { account: Account }) {
   const db = useDB();
-  const { actions, notify } = useStore();
+  const { actions, apply, notify } = useStore();
   const [address, setAddress] = useState(account.address ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,8 +29,10 @@ export function PropertyValueCard({ account }: { account: Account }) {
         valuation: { source: "rentcast", low: estimate.low, high: estimate.high, at: estimate.asOf },
       });
       actions.setAccountBalance(account.id, estimate.value);
+      recordRun(apply, "rentcast", "month", {});
       notify(`${account.name} valued at ${(estimate.value / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}.`);
     } catch (err) {
+      recordRun(apply, "rentcast", "month", { error: reason(err, "The valuation failed.") });
       setError(err instanceof Error ? err.message : "Valuation failed.");
     } finally {
       setBusy(false);

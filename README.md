@@ -86,6 +86,14 @@ between visits.
 
 ## Bank sync
 
+Settings → *Integrations* is one table over all of them: what each provider does, where its
+key lives, how much of its free tier this period has spent, when it last ran and whether it
+is working. Every allowance here is measured in a different thing over a different period —
+institutions that never reset, lookups that reset monthly, questions that reset at midnight —
+so each row carries its own unit rather than pretending they are all "calls". The counting is
+deliberate rather than inferred, and it lives in the document, so it follows the budget
+between devices and includes what the 9am job spent overnight.
+
 Getting transactions in, cheapest first:
 
 | Route | Cost | Notes |
@@ -137,7 +145,7 @@ account, press **Refresh estimate**, and the returned figure is written as a bal
 so net worth updates and the history chart keeps what came before.
 
 Sign up at [rentcast.io](https://www.rentcast.io/api), create a key on the free Developer
-plan, and paste it into Settings → Property values. That plan allows 50 lookups a month; two
+plan, and paste it into Settings → *Integrations*. That plan allows 50 lookups a month; two
 properties refreshed monthly uses two. Settings also has an **Update now** button that walks
 every property with an address.
 
@@ -151,7 +159,7 @@ both moved together rather than one of them a day behind the other.
 Tiingo rather than the alternatives for one reason: a retirement account is mostly mutual
 funds, and among the free tiers it is the one that quotes them alongside stocks and ETFs.
 Sign up at [tiingo.com](https://www.tiingo.com), copy the API token from your account page,
-and paste it into Settings → *Holding prices*. The free tier allows 500 distinct symbols a
+and paste it into Settings → *Integrations*. The free tier allows 500 distinct symbols a
 month, 50 requests an hour and 1,000 a day; there is no batch endpoint, so one holding is one
 request and the hourly limit is the binding one. Prices are asked for at most once every six
 hours, which is as often as a closing price changes.

@@ -1,6 +1,7 @@
 import type { DB } from "../../types";
 import { simplefin } from "./simplefin";
 import { mergeSync, syncWindowStart } from "./merge";
+import { reason, recordRun } from "../usage";
 
 export interface SyncOutcome {
   summary: string;
@@ -20,7 +21,15 @@ export async function syncSimplefin(
   const accessUrl = db.settings.simplefinAccessUrl;
   if (!accessUrl) throw new Error("SimpleFIN isn't connected.");
 
-  const payload = await simplefin.fetch(accessUrl, syncWindowStart(db));
+  let payload;
+  try {
+    payload = await simplefin.fetch(accessUrl, syncWindowStart(db));
+  } catch (err) {
+    // The integrations table is the one place a failed background pull is
+    // visible; the schedule itself deliberately says nothing.
+    recordRun(apply, "simplefin", "ever", { error: reason(err, "The pull failed.") });
+    throw err;
+  }
   let summary = "";
   let changed = false;
   apply((cur) => {
@@ -39,6 +48,10 @@ export async function syncSimplefin(
       res.db.accounts.some((a) => before.has(a.id) && before.get(a.id) !== a.balance);
     return res.db;
   }, "sync from SimpleFIN");
+
+  // A pull that came back at all clears the last error, even when the bridge
+  // reported trouble with an individual bank: those are named separately.
+  recordRun(apply, "simplefin", "ever", { error: payload.errors[0] });
 
   return { summary, errors: payload.errors, changed };
 }

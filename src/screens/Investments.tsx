@@ -10,7 +10,7 @@ import { ASSET_CLASS_LABEL, balanceAt, earliestHistoryDate, holdingCost, holding
 import { AreaChart, Donut } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
 import { RangePicker } from "../components/pickers";
-import { MIN_GAP_HOURS, priceSummary, refreshPrices, tickersOf } from "../lib/prices";
+import { priceSummary, refreshPrices, tickersOf } from "../lib/prices";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
@@ -210,7 +210,7 @@ function PricesCard() {
         <CardHead title="Prices" sub="Typed in by hand" />
         <span className="small muted">
           Every price above is whatever was last entered on the holding. Add a free Tiingo token under{" "}
-          <Link to="/settings" className="link">Settings &rarr; Holding prices</Link> and they refresh
+          <Link to="/settings" className="link">Settings &rarr; Integrations</Link> and they refresh
           themselves each morning, alongside the account sync.
         </span>
       </Card>
@@ -232,8 +232,7 @@ function PricesCard() {
       <span className="small muted">
         {tickers.length
           ? <>{tickers.length} symbol{tickers.length === 1 ? "" : "s"} priced{" "}
-            {last ? <>&mdash; last checked {dateLabel(last.slice(0, 10), { year: true })}</> : "— not checked yet"}.
-            Refreshed with the account sync, at most once every {MIN_GAP_HOURS} hours.</>
+            {last ? <>&mdash; last checked {dateLabel(last.slice(0, 10), { year: true })}</> : "— not checked yet"}.</>
           : <>No holdings carry a ticker yet, so there is nothing to price.</>}
       </span>
       {misses?.length ? (

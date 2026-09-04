@@ -7,234 +7,13 @@ import { toCSV } from "../lib/csv";
 import { download, exportJSON, importJSON } from "../lib/storage";
 import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
 import type { SyncCadence } from "../lib/sync";
-import {
-  MONTHLY_LOOKUPS, cadenceLabel, canValue, estimateHomeValue,
-  lookupsPerMonth, refreshEveryHours,
-} from "../lib/property";
-import { MAX_TICKERS, MIN_GAP_HOURS, priceSummary, pricesDue, refreshPrices, tickersOf } from "../lib/prices";
+import { pricesDue, refreshPrices } from "../lib/prices";
 import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
-import { Link } from "react-router-dom";
+import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
 import { EncryptionCard } from "./EncryptionCard";
 import { ImportModal } from "./ImportModal";
-
-function PropertyValuesCard() {
-  const db = useDB();
-  const { actions, notify } = useStore();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const key = db.settings.rentcastApiKey ?? "";
-  const properties = db.accounts.filter((a) => canValue(a.type) && !a.hidden);
-  const withAddress = properties.filter((a) => a.address?.trim());
-
-  const auto = db.settings.propertyAutoRefresh !== false;
-  const every = refreshEveryHours(withAddress.length);
-  const spend = lookupsPerMonth(withAddress.length, every);
-
-  const refreshAll = async () => {
-    setBusy(true);
-    setError(null);
-    let done = 0;
-    const failures: string[] = [];
-    for (const account of withAddress) {
-      try {
-        const estimate = await estimateHomeValue(key, account.address ?? "");
-        actions.updateAccount(account.id, {
-          valuation: { source: "rentcast", low: estimate.low, high: estimate.high, at: estimate.asOf },
-        });
-        actions.setAccountBalance(account.id, estimate.value);
-        done++;
-      } catch (err) {
-        failures.push(`${account.name}: ${err instanceof Error ? err.message : "failed"}`);
-      }
-    }
-    setBusy(false);
-    if (failures.length) setError(failures.join(" · "));
-    notify(`Updated ${done} of ${withAddress.length} propert${withAddress.length === 1 ? "y" : "ies"}.`);
-  };
-
-  return (
-    <Card>
-      <CardHead
-        title="Property values"
-        sub="Bank sync carries no property values — these come from RentCast instead"
-        right={
-          <Btn variant="primary" onClick={() => void refreshAll()} disabled={busy || !key || !withAddress.length}>
-            <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
-            {busy ? "Updating…" : `Update ${withAddress.length || ""} now`}
-          </Btn>
-        }
-      />
-      <div className="row wrap" style={{ gap: 10, marginBottom: 12 }}>
-        <span className="chip on">RentCast</span>
-        <span className="small muted">Free tier — 50 lookups per month, no card required</span>
-      </div>
-
-      <ol className="small muted" style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
-        <li>Sign up at <b>rentcast.io</b> and create an API key on the Developer (free) plan.</li>
-        <li>Paste it below, then add each property's address on its account page.</li>
-        <li>Leave the switch below on and the values keep themselves current, within the free allowance.</li>
-      </ol>
-
-      <div className="setting-row" style={{ marginBottom: 12 }}>
-        <Toggle
-          on={auto}
-          onChange={(v) => actions.patchSettings({ propertyAutoRefresh: v })}
-          label={<span className="small">Keep property values up to date on their own</span>}
-        />
-      </div>
-      {withAddress.length ? (
-        <div className="tiny faint" style={{ maxWidth: 620, marginBottom: 14 }}>
-          {auto ? (
-            <>
-              {withAddress.length} propert{withAddress.length === 1 ? "y" : "ies"} refreshed{" "}
-              <b>{cadenceLabel(every)}</b> — about {spend} of RentCast&rsquo;s {MONTHLY_LOOKUPS} free lookups a
-              month, leaving {MONTHLY_LOOKUPS - spend} for pressing Update now. The cadence is worked out from
-              how many properties you have, so adding one slows them all down rather than running past the
-              allowance.
-            </>
-          ) : (
-            <>Values only change when you press Update now.</>
-          )}
-        </div>
-      ) : null}
-
-      <Field label="RentCast API key">
-        <TextInput
-          value={key}
-          onChange={(v) => actions.patchSettings({ rentcastApiKey: v.trim() || undefined })}
-          placeholder="Paste your API key"
-        />
-      </Field>
-
-      {properties.length ? (
-        <>
-          <div className="divider" />
-          <div className="col" style={{ gap: 8 }}>
-            {properties.map((a) => (
-              <div key={a.id} className="spread small">
-                <Link to={`/accounts/${a.id}`} className="link truncate">{a.name}</Link>
-                <span className="muted truncate" style={{ maxWidth: 320 }}>
-                  {a.address?.trim()
-                    ? `${a.address}${a.valuation ? ` · checked ${dateLabel(a.valuation.at.slice(0, 10))}` : " · never checked"}`
-                    : "no address set"}
-                </span>
-                <Money value={a.balance} cents={false} className="bold" />
-              </div>
-            ))}
-          </div>
-        </>
-      ) : (
-        <div className="small faint" style={{ marginTop: 10 }}>
-          No property accounts yet. Add one with type <b>Real Estate</b> from the Accounts page.
-        </div>
-      )}
-
-      {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
-    </Card>
-  );
-}
-
-/**
- * Holding prices.
- *
- * The provider is Tiingo, chosen for one reason: a retirement account is
- * mostly mutual funds, and it is the free tier that quotes them alongside
- * stocks and ETFs. api/_prices.ts has the rest of the reasoning.
- */
-function HoldingPricesCard() {
-  const db = useDB();
-  const { actions, apply, notify } = useStore();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [misses, setMisses] = useState<string[] | null>(null);
-
-  const key = db.settings.tiingoApiKey ?? "";
-  const auto = db.settings.priceAutoRefresh !== false;
-  const tickers = tickersOf(db.holdings);
-  const last = db.settings.lastPricesAt;
-
-  const refresh = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const outcome = await refreshPrices(db, apply, "refresh prices");
-      setMisses(outcome.misses);
-      notify(priceSummary(outcome));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "The price refresh failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Card>
-      <CardHead
-        title="Holding prices"
-        sub="Bank sync carries balances, not share prices — these come from Tiingo instead"
-        right={
-          <Btn variant="primary" onClick={() => void refresh()} disabled={busy || !key.trim() || !tickers.length}>
-            <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
-            {busy ? "Refreshing…" : "Refresh now"}
-          </Btn>
-        }
-      />
-      <div className="row wrap" style={{ gap: 10, marginBottom: 12 }}>
-        <span className="chip on">Tiingo</span>
-        <span className="small muted">Free tier — stocks, ETFs and mutual funds, no card required</span>
-      </div>
-
-      <ol className="small muted" style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
-        <li>Sign up at <b>tiingo.com</b> and copy the API token from your account page.</li>
-        <li>Paste it below. Every holding with a ticker gets the previous session&rsquo;s close.</li>
-        <li>Leave the switch on and prices refresh with the daily account sync.</li>
-      </ol>
-
-      <div className="setting-row" style={{ marginBottom: 12 }}>
-        <Toggle
-          on={auto}
-          onChange={(v) => actions.patchSettings({ priceAutoRefresh: v })}
-          label={<span className="small">Refresh prices along with the accounts</span>}
-        />
-      </div>
-
-      <div className="tiny faint" style={{ maxWidth: 620, marginBottom: 14 }}>
-        {tickers.length ? (
-          <>
-            {tickers.length} symbol{tickers.length === 1 ? "" : "s"} to price
-            {last ? <>, last checked {dateLabel(last.slice(0, 10), { year: true })}</> : ", never checked"}.{" "}
-            {auto
-              ? <>Asked for at most once every {MIN_GAP_HOURS} hours, which is as often as a closing price
-                changes; the free tier allows 50 requests an hour and one symbol is one request. Anything past{" "}
-                {MAX_TICKERS} holdings is left for the next run.</>
-              : <>Prices only change when you press Refresh now, or edit a holding.</>}
-          </>
-        ) : (
-          <>No holdings carry a ticker yet. Add one from the Investments page and it gets priced from then on.</>
-        )}
-      </div>
-
-      <Field label="Tiingo API token">
-        <TextInput
-          value={key}
-          onChange={(v) => actions.patchSettings({ tiingoApiKey: v.trim() || undefined })}
-          placeholder="Paste your API token"
-        />
-      </Field>
-
-      {misses?.length ? (
-        <div className="small muted" style={{ marginTop: 10 }}>
-          No quote for <b>{misses.join(", ")}</b> — a private ticker or a fund Tiingo doesn&rsquo;t carry.
-          Those keep the price entered on the holding.
-        </div>
-      ) : null}
-      {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
-    </Card>
-  );
-}
 
 export default function Settings() {
   const db = useDB();
@@ -348,6 +127,8 @@ export default function Settings() {
           </Card>
         </div>
 
+        <IntegrationsCard />
+
         <Card>
           <CardHead
             title="Bank sync"
@@ -437,22 +218,12 @@ export default function Settings() {
             </span>
           </div>
 
-          <div className="divider" />
-          <div className="small muted">
-            <b>Not everything is reachable this way.</b> SimpleFIN rides on MX, which carries no property values and
-            no holdings, and some institutions — employer 401(k) recordkeepers especially — refuse aggregator access
-            altogether. Plaid is set up below for investment accounts; property values have their own card; anything
-            left over can be kept current by hand from the Balance points card on the account.
-          </div>
         </Card>
 
         <CloudCard />
         <EncryptionCard />
 
         <PlaidCard />
-
-        <PropertyValuesCard />
-        <HoldingPricesCard />
 
         <Card>
           <CardHead
@@ -514,14 +285,13 @@ function SyncSchedule() {
 
       <span className="tiny faint" style={{ maxWidth: 520 }}>
         {cadence === "off"
-          ? "Nothing will pull on its own — use Sync now above."
+          ? "Nothing will pull on its own while the app is open — the 9am job still runs."
           : due
             ? `Next pull ${untilLabel(due, Date.now())}, the next time the app is open.`
             : "The next pull runs as soon as the app is open."}
-        {" "}Checks happen while this tab is open; there is no server here, so nothing
-        runs overnight with the browser shut — the first check after you open it catches up.
-        SimpleFIN itself refreshes about once a day, so anything tighter than daily rarely
-        finds new data.
+        {" "}This is the in-app schedule; a scheduled job also pulls at 9am with every browser
+        shut. SimpleFIN itself refreshes about once a day, so anything tighter rarely finds
+        new data.
       </span>
     </div>
   );

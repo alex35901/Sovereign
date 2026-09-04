@@ -67,6 +67,8 @@ await build({
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
       export * as PR from "./src/lib/prices.ts";
+      export * as U from "./src/lib/usage.ts";
+      export { integrations, healthOf, PERIOD_LABEL, NEAR } from "./src/lib/integrations.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
@@ -573,13 +575,17 @@ await test("a refresh that changes nothing does not spend an undo slot", async (
     quotes: [{ ticker: "VTI", price: 312.44, asOf: "2026-09-03" }], misses: [],
   }), { status: 200 });
 
+  // The meter is written through apply() too, deliberately unlabelled — only
+  // the labelled writes are what the undo stack keeps.
+  const undoable = () => labels.filter((l) => l !== undefined);
+
   await withFetch(quiet, () => M.PR.refreshPrices(db, apply, "refresh prices"));
-  assert.deepEqual(labels, [undefined], "an unchanged price is not worth undoing");
+  assert.deepEqual(undoable(), [], "an unchanged price is not worth undoing");
 
   const moved = dbWith([holding({ ticker: "VTI", price: 30000 })], { tiingoApiKey: "tok" });
   labels.length = 0;
   await withFetch(quiet, () => M.PR.refreshPrices(moved, apply, "refresh prices"));
-  assert.deepEqual(labels, ["refresh prices"], "a price that moved is");
+  assert.deepEqual(undoable(), ["refresh prices"], "a price that moved is");
 });
 
 await test("a portfolio with no tickers never calls out at all", async () => {
@@ -589,6 +595,174 @@ await test("a portfolio with no tickers never calls out at all", async () => {
     () => M.PR.refreshPrices(db, () => {}),
   );
   assert.deepEqual(outcome, { updated: 0, misses: [], asked: 0 });
+});
+
+
+/* ── provider allowances ──────────────────────────────────────────────── */
+
+const SEP = Date.parse("2026-09-04T12:00:00.000Z");
+const OCT = Date.parse("2026-10-01T00:30:00.000Z");
+
+await test("a meter belongs to its period and starts the next one at zero", () => {
+  let u = M.U.noteRun(undefined, "rentcast", "month", {}, SEP);
+  u = M.U.noteRun(u, "rentcast", "month", {}, SEP);
+  assert.equal(M.U.meterOf(u, "rentcast", "month", SEP).count, 2);
+  // Nothing runs at midnight; the reset happens when the meter is read.
+  assert.equal(M.U.meterOf(u, "rentcast", "month", OCT).count, 0);
+  assert.equal(M.U.meterOf(u, "rentcast", "month", OCT).at, M.U.meterOf(u, "rentcast", "month", SEP).at,
+    "when it last ran survives the rollover — only the count resets");
+  // and a call in the new period starts from zero rather than continuing
+  assert.equal(M.U.meterOf(M.U.noteRun(u, "rentcast", "month", {}, OCT), "rentcast", "month", OCT).count, 1);
+});
+
+await test("a provider billed per symbol counts symbols, not requests", () => {
+  // Tiingo charges for the distinct symbols seen in a month, so asking about
+  // the same twenty every morning must cost twenty and not six hundred.
+  let u;
+  for (let i = 0; i < 30; i += 1) u = M.U.noteRun(u, "tiingo", "month", { distinct: ["VTI", "BND"] }, SEP);
+  assert.equal(M.U.meterOf(u, "tiingo", "month", SEP).count, 2);
+  u = M.U.noteRun(u, "tiingo", "month", { distinct: ["VXUS"] }, SEP);
+  assert.equal(M.U.meterOf(u, "tiingo", "month", SEP).count, 3, "a symbol not seen before does cost one");
+  assert.deepEqual([...M.U.meterOf(u, "tiingo", "month", SEP).seen].sort(), ["BND", "VTI", "VXUS"]);
+});
+
+await test("a meter cannot grow without bound", () => {
+  let u;
+  for (let i = 0; i < 400; i += 1) {
+    u = M.U.noteRun(u, "tiingo", "month", { distinct: [`S${i}`, `T${i}`] }, SEP);
+  }
+  assert.equal(M.U.meterOf(u, "tiingo", "month", SEP).count, 600, "capped rather than left to fill the document");
+});
+
+await test("a failure is remembered until the next success clears it", () => {
+  let u = M.U.noteRun(undefined, "simplefin", "ever", { error: "the bridge is down" }, SEP);
+  assert.equal(M.U.meterOf(u, "simplefin", "ever", SEP).error, "the bridge is down");
+  u = M.U.noteRun(u, "simplefin", "ever", {}, SEP);
+  assert.equal(M.U.meterOf(u, "simplefin", "ever", SEP).error, undefined);
+});
+
+await test("an error is trimmed to something a table cell can hold", () => {
+  assert.equal(M.U.reason(new Error("x".repeat(400)), "fallback").length, 160);
+  assert.equal(M.U.reason(new Error("   "), "fallback"), "fallback");
+  assert.equal(M.U.reason(undefined, "fallback"), "fallback");
+  assert.equal(M.U.reason("plain string", "fallback"), "plain string");
+});
+
+const rowsOf = (db, hopper = null, now = SEP) =>
+  Object.fromEntries(M.integrations(db, hopper, now).map((r) => [r.id, r]));
+
+await test("every provider is a row, and an unconfigured one reads as off", () => {
+  const rows = rowsOf(M.emptyDB());
+  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "anthropic"]);
+  for (const r of Object.values(rows)) {
+    assert.equal(r.set, false, `${r.id} should not look configured`);
+    assert.equal(M.healthOf(r).state, "off", r.id);
+    assert.ok(r.unit, `${r.id} must say what its ceiling counts`);
+  }
+});
+
+await test("the bank meter counts institutions, which is what the subscription caps", () => {
+  const base = M.emptyDB();
+  let n = 0;
+  const account = (institution, over = {}) => ({
+    id: `a${(n += 1)}`, name: "Checking", institution, type: "checking",
+    balance: 100, includeInNetWorth: true, hidden: false, history: [], syncSource: "simplefin", ...over,
+  });
+  const db = {
+    ...base,
+    settings: { ...base.settings, simplefinAccessUrl: "https://u:p@bridge/accounts" },
+    accounts: [
+      // two accounts behind one login, which is what the subscription counts
+      account("Chase"), account("Chase"), account("CHASE  "),
+      account("Ally"),
+      account("Closed Bank", { closedAt: "2026-01-01" }),
+      { ...account("Manual"), syncSource: "manual" },
+    ],
+  };
+  const row = rowsOf(db).simplefin;
+  assert.equal(row.used, 2, "two logins, however many accounts hang off them");
+  assert.equal(row.ceiling, 25);
+  assert.equal(row.set, true);
+  assert.equal(M.healthOf(row).state, "ok");
+});
+
+await test("health warns before the ceiling and refuses at it", () => {
+  const at = (used, ceiling) => M.healthOf({ set: true, used, ceiling, unit: "lookups" });
+  assert.equal(at(0, 50).state, "ok");
+  assert.equal(at(39, 50).state, "ok");
+  assert.equal(at(Math.ceil(50 * M.NEAR), 50).state, "warn");
+  assert.equal(at(50, 50).state, "down");
+  assert.equal(at(51, 50).state, "down");
+  assert.match(at(50, 50).text, /At the 50 lookups limit/);
+  // an error outranks the ratio: a working-looking meter with a dead provider
+  // is exactly the thing this column exists to stop
+  assert.equal(M.healthOf({ set: true, used: 0, ceiling: 50, unit: "lookups", error: "key refused" }).state, "down");
+});
+
+await test("a property with no address is a health problem, not a silent one", () => {
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    settings: { ...base.settings, rentcastApiKey: "k" },
+    accounts: [
+      { id: "p1", name: "House", institution: "", type: "real_estate", balance: 1, includeInNetWorth: true, hidden: false, history: [], address: "1 Main St" },
+      { id: "p2", name: "Cabin", institution: "", type: "real_estate", balance: 1, includeInNetWorth: true, hidden: false, history: [] },
+    ],
+  };
+  const health = M.healthOf(rowsOf(db).rentcast);
+  assert.equal(health.state, "warn");
+  assert.match(health.text, /1 property has no address/);
+
+  // but an allowance about to run out is the more urgent of the two
+  const spent = M.healthOf({ ...rowsOf(db).rentcast, used: 44 });
+  assert.match(spent.text, /Near the lookups limit/);
+});
+
+await test("Hopper's row comes from the server, and is absent when it isn't set up", () => {
+  const base = M.emptyDB();
+  const db = { ...base, hopper: [{ id: "e1", question: "q", answer: "a", used: [], at: "2026-09-04T11:00:00.000Z" }] };
+  assert.equal(rowsOf(db, null).anthropic.set, false, "no key on the server means no row to read");
+
+  const row = rowsOf(db, { messages: 7, limit: 120 }).anthropic;
+  assert.equal(row.set, true);
+  assert.equal(row.used, 7);
+  assert.equal(row.ceiling, 120);
+  assert.equal(row.period, "day");
+  assert.equal(row.lastAt, "2026-09-04T11:00:00.000Z");
+});
+
+await test("a switched-off refresh is said out loud rather than looking healthy", () => {
+  const base = M.emptyDB();
+  const db = { ...base, settings: { ...base.settings, tiingoApiKey: "tok", priceAutoRefresh: false } };
+  const health = M.healthOf(rowsOf(db).tiingo);
+  assert.equal(health.state, "warn");
+  assert.match(health.text, /Automatic refresh is off/);
+});
+
+await test("a price run records the symbols it asked about", async () => {
+  const db = dbWith([holding({ ticker: "VTI" }), holding({ id: "h2", ticker: "BND", price: 1 })], { tiingoApiKey: "tok" });
+  let current = db;
+  const apply = (fn) => { current = fn(current); };
+  await withFetch(
+    async () => new Response(JSON.stringify({ quotes: [{ ticker: "VTI", price: 312.44, asOf: "2026-09-03" }], misses: ["BND"] }), { status: 200 }),
+    () => M.PR.refreshPrices(db, apply),
+  );
+  // A symbol the provider had nothing for was still asked about, so it counts.
+  assert.equal(M.U.meterOf(current.settings.usage, "tiingo", "month").count, 2);
+  assert.equal(M.U.meterOf(current.settings.usage, "tiingo", "month").error, undefined);
+});
+
+await test("a price run that failed says why, in the table rather than nowhere", async () => {
+  const db = dbWith([holding({ ticker: "VTI" })], { tiingoApiKey: "tok" });
+  let current = db;
+  const apply = (fn) => { current = fn(current); };
+  const failed = await caught(() => withFetch(
+    async () => new Response(JSON.stringify({ error: "Tiingo rejected the API key." }), { status: 401 }),
+    () => M.PR.refreshPrices(db, apply),
+  ));
+  assert.match(failed, /rejected the API key/);
+  assert.match(M.U.meterOf(current.settings.usage, "tiingo", "month").error, /rejected the API key/);
+  assert.equal(current.settings.lastPricesAt, undefined, "and a failure must not stamp the clock");
 });
 
 /* ── emoji picker data ────────────────────────────────────────────────── */

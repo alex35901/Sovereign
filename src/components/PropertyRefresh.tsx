@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { canValue, estimateHomeValue, propertyDue, refreshEveryHours } from "../lib/property";
+import { reason, recordRun } from "../lib/usage";
 
 /**
  * Keeps property values current, within RentCast's free allowance.
@@ -70,7 +71,9 @@ export function PropertyRefresh() {
               }
             : a)),
         }), `value ${next.name}`);
-      } catch {
+        recordRun(act.current.apply, "rentcast", "month", {});
+      } catch (err) {
+        recordRun(act.current.apply, "rentcast", "month", { error: reason(err, "The valuation failed.") });
         // The attempt is already stamped, so a bad address waits its full turn
         // rather than being retried immediately. Nothing is said out loud:
         // this runs unattended and a toast for it would only ever interrupt.

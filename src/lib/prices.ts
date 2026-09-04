@@ -1,6 +1,7 @@
 import type { DB, Holding } from "../types.js";
 import { postJSON } from "./api.js";
 import { isSymbol } from "./symbol.js";
+import { reason, recordRun } from "./usage.js";
 
 /**
  * Keeping holding prices current.
@@ -36,6 +37,15 @@ export interface PriceOutcome {
 
 /** Tiingo's free tier allows 50 requests an hour, and one symbol is one request. */
 export const MAX_TICKERS = 40;
+
+/**
+ * Distinct symbols the free tier allows in a month.
+ *
+ * Distinct, not requests: asking about the same twenty tickers every morning
+ * costs twenty for the month, not six hundred. Which is why the meter in
+ * lib/usage.ts counts a set rather than a tally for this one.
+ */
+export const MONTHLY_SYMBOLS = 500;
 
 /**
  * Prices are refreshed no more often than this, however many syncs run.
@@ -159,7 +169,16 @@ export async function refreshPrices(
   const tickers = tickersOf(db.holdings);
   if (!tickers.length) return { updated: 0, misses: [], asked: 0 };
 
-  const { quotes, misses } = await fetchQuotes(apiKey, tickers);
+  let quotes: Record<string, Quote>;
+  let misses: string[];
+  try {
+    ({ quotes, misses } = await fetchQuotes(apiKey, tickers));
+  } catch (err) {
+    // Recorded before rethrowing, so the integrations table can say what is
+    // wrong even though every caller here swallows the failure quietly.
+    recordRun(apply, "tiingo", "month", { error: reason(err, "The price refresh failed.") });
+    throw err;
+  }
   const at = new Date().toISOString();
 
   // Whether to spend an undo slot at all. A quiet day writes nothing but the
@@ -176,6 +195,11 @@ export async function refreshPrices(
     updated = res.updated;
     return res.db;
   }, moves ? label : undefined);
+
+  // Tiingo bills by the distinct symbol over a month, so that is what the
+  // meter holds: the same twenty tickers every morning cost twenty, not six
+  // hundred. A symbol it had nothing for was still asked about, so it counts.
+  recordRun(apply, "tiingo", "month", { distinct: tickers });
 
   return { updated, misses, asked: tickers.length };
 }

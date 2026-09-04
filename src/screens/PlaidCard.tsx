@@ -7,6 +7,7 @@ import { mergeSync, syncWindowStart } from "../lib/sync";
 import { createLinkToken, diagnosePlaid, exchangePublicToken, fetchInstitution, fetchItem, needsInstitution } from "../lib/sync/plaid";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
+import { reason, recordRun } from "../lib/usage";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
 
 /** What the function sees, in words rather than raw values. */
@@ -129,7 +130,15 @@ export function PlaidCard() {
 
   const syncItem = async (rawItem: PlaidItemRef) => {
     const item = await withInstitution(rawItem);
-    const payload = await fetchItem(item, syncWindowStart(db));
+    let payload;
+    try {
+      payload = await fetchItem(item, syncWindowStart(db));
+    } catch (err) {
+      // Named, because a Plaid item whose login has expired fails silently on
+      // every later sync and the table is where that becomes visible.
+      recordRun(apply, "plaid", "ever", { error: `${item.institution}: ${reason(err, "the sync failed")}` });
+      throw err;
+    }
     let summary = "";
     apply((cur) => {
       const res = mergeSync(cur, payload, "plaid");
@@ -143,6 +152,7 @@ export function PlaidCard() {
           : i);
       return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
     }, `sync ${item.institution}`);
+    recordRun(apply, "plaid", "ever", {});
     notify(summary);
   };
 
@@ -170,7 +180,7 @@ export function PlaidCard() {
     <Card>
       <CardHead
         title="Plaid"
-        sub="Billed per connected login per month — and the only route here that returns holdings"
+        sub="The only route here that returns holdings"
         right={items.length ? (
           <Btn variant="primary" onClick={() => void syncAll()} disabled={busy !== null}>
             <RefreshCw size={14} style={busy === "sync" ? { animation: "spin 1s linear infinite" } : undefined} />
@@ -189,19 +199,9 @@ export function PlaidCard() {
       </div>
 
       <div className="small muted" style={{ marginBottom: 12 }}>
-        Use <b>investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages — that pulls positions, cost basis
-        and prices into the Investments screen. Use <b>bank</b> for chequing, savings and credit cards, which
-        returns transactions instead. An institution offering both can be connected twice.
-      </div>
-
-      <div className="small muted" style={{ marginBottom: 12 }}>
-        <b>What each connection costs.</b> On Plaid's pay-as-you-go rates an investment login is
-        $0.18/month and a bank login is $0.30/month — charged per login per month, not per sync, so
-        syncing daily costs the same as syncing once. Three retirement accounts come to about
-        <b> $6.50 a year</b>. This app deliberately never calls Plaid's expensive endpoints: no Auth or
-        Identity ($1.50 each), no Balance ($0.10 a call), and no on-demand Refresh ($0.12 a call) — it
-        reads cached balances instead. Check Plaid's current rate card before connecting a lot of
-        institutions.
+        <b>Investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages — positions, cost basis and prices.
+        <b> Bank</b> for chequing, savings and cards — transactions. An institution offering both can be
+        connected twice. The item count against the plan's ceiling is in the integrations table above.
       </div>
 
       {items.length ? (

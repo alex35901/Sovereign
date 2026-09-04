@@ -6,6 +6,7 @@ import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
 import { fetchAccountsText } from "../_simplefin.js";
 import { fetchQuotes } from "../_prices.js";
 import { applyQuotes, pricesDue, tickersOf, toQuoteMap } from "../../src/lib/prices.js";
+import { noteRun } from "../../src/lib/usage.js";
 import { connectionString, queuePull, readDoc, trimQueue, writeDoc } from "../_store.js";
 import { isEnvelope, sealTo } from "../../src/lib/crypto.js";
 import { bearer, passphraseOk, secretOk } from "../_auth.js";
@@ -131,6 +132,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         // in the deployment's log rather than passing for a quiet success.
         bankError = err instanceof Error ? err.message : "The SimpleFIN pull failed.";
       }
+      next = meter(next, "simplefin", "ever", { error: bankError ?? banks?.errors[0] });
     }
 
     // Prices ride along with the balances, so a morning glance at the app has
@@ -138,22 +140,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const priced = await refreshPrices(next);
     next = priced.db;
 
-    if (!banks && !bankError && !priced.ran) {
-      return send(200, {
-        ran: false,
-        reason: priced.error
-          ? `SimpleFIN isn't connected, and prices failed: ${priced.error}`
-          : "SimpleFIN isn't connected and there was nothing to price.",
-      });
+    // What actually happened, and separately whether the document moved at all:
+    // a run that only recorded a failed provider still has something to save,
+    // and is still a run that did nothing worth reporting as success.
+    const ran = Boolean(banks) || priced.ran;
+    const dirty = Boolean(banks) || priced.dirty;
+    if (!dirty && !bankError) {
+      return send(200, { ran: false, reason: "SimpleFIN isn't connected and there was nothing to price." });
     }
 
     // Read-then-write with no version guard: this job is the only writer on its
     // schedule, and a browser that saves mid-run will simply win with its own
     // newer copy, which already contains everything this pull would have added.
-    const write = banks || priced.ran ? await writeDoc(next, null, "scheduled sync") : null;
+    const write = dirty ? await writeDoc(next, null, "scheduled sync") : null;
 
     return send(bankError ? 502 : 200, {
-      ran: Boolean(banks) || priced.ran,
+      ran,
+      reason: ran ? undefined : (priced.error ?? bankError ?? "Nothing to do."),
       version: write?.stored?.version,
       transactionsAdded: banks?.transactions ?? 0,
       accountsUpdated: banks?.updated ?? 0,
@@ -179,12 +182,15 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
  */
 async function refreshPrices(db: DB): Promise<{
   db: DB;
+  /** Prices actually landed. */
   ran: boolean;
+  /** The document changed and is worth writing — a recorded failure counts. */
+  dirty: boolean;
   updated: number;
   misses: string[];
   error?: string;
 }> {
-  const idle = { db, ran: false, updated: 0, misses: [] };
+  const idle = { db, ran: false, dirty: false, updated: 0, misses: [] };
 
   const key = (db.settings?.tiingoApiKey ?? process.env.TIINGO_API_KEY ?? "").trim();
   if (!key) return idle;
@@ -196,10 +202,29 @@ async function refreshPrices(db: DB): Promise<{
 
   const raw = await fetchQuotes(key, tickers);
   // A bad key or a spent allowance must not stamp lastPricesAt: doing so would
-  // put the next run a day away from noticing the problem had cleared.
-  if (raw.fatal) return { ...idle, error: raw.fatal };
+  // put the next run a day away from noticing the problem had cleared. The
+  // meter still records it, which is what puts it in the integrations table.
+  if (raw.fatal) {
+    return {
+      db: meter(db, "tiingo", "month", { error: raw.fatal }),
+      ran: false, dirty: true, updated: 0, misses: [], error: raw.fatal,
+    };
+  }
 
   const { quotes, misses } = toQuoteMap(raw.quotes, raw.misses);
   const applied = applyQuotes(db, quotes, new Date().toISOString());
-  return { db: applied.db, ran: true, updated: applied.updated, misses };
+  return {
+    db: meter(applied.db, "tiingo", "month", { distinct: tickers }),
+    ran: true, dirty: true, updated: applied.updated, misses,
+  };
+}
+
+/** The same meter the browser keeps, written by the job that runs without one. */
+function meter(
+  db: DB,
+  id: string,
+  period: "day" | "month" | "ever",
+  outcome: { calls?: number; distinct?: readonly string[]; error?: string },
+): DB {
+  return { ...db, settings: { ...db.settings, usage: noteRun(db.settings?.usage, id, period, outcome) } };
 }

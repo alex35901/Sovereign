@@ -40,13 +40,17 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     res.end(JSON.stringify(body));
   };
 
-  if (req.method !== "POST") return send(405, { error: "POST only." });
+  // GET asks only what today has cost. It runs through the same lock below and
+  // answers before any of the model plumbing, so the integrations table can
+  // read the count without a question being asked or a token being spent.
+  const meterOnly = req.method === "GET";
+  if (!meterOnly && req.method !== "POST") return send(405, { error: "GET or POST only." });
 
   if (!passphraseSet()) {
     return send(503, { error: "No SYNC_PASSPHRASE on the server.", hint: "Settings → Sync across devices → Check the database." });
   }
   const key = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!key) {
+  if (!key && !meterOnly) {
     return send(503, {
       error: "Hopper has no API key.",
       hint: "Add ANTHROPIC_API_KEY in Vercel → Settings → Environment Variables, then redeploy.",
@@ -82,6 +86,13 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     return send(401, { error: "Wrong passphrase." });
   }
   if (limited) await clearFailures(who).catch(() => { /* bookkeeping */ });
+
+  if (meterOnly) {
+    const spend = await spentToday().catch(() => null);
+    // `configured` and not the key itself, ever: the whole point of this
+    // function is that the key never leaves it.
+    return send(200, { configured: key.length > 0, limit: DAILY_MESSAGES, spend });
+  }
 
   const body = (typeof req.body === "string" ? safeParse(req.body) : req.body) as Turn | undefined;
   if (!body || !Array.isArray(body.messages) || body.messages.length === 0) {
