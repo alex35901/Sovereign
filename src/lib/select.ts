@@ -336,6 +336,32 @@ export function plannedFor(db: DB, month: MonthKey, categoryId: string): number 
 }
 
 /**
+ * Sets one month's figure for one category.
+ *
+ * Two rules that are easy to get wrong, which is why they live here next to
+ * the function that reads them back rather than in the store.
+ *
+ * Zero drops the entry, so the month goes back to following any standing
+ * amount — unless one actually covers it, in which case the zero has to stay
+ * written down or the standing amount shows straight through it.
+ *
+ * A negative is always written down. It is a real figure, not a mistake:
+ * this month's plan after giving away money that carried in from last month,
+ * so that planned plus rollover comes to what is genuinely left. Clamping it
+ * at zero used to make that impossible to express, by hand or by moving money.
+ */
+export function setPlannedOn(db: DB, month: MonthKey, categoryId: string, amount: number): DB {
+  const row = { ...(db.budgets[month] ?? {}) };
+  const standing = db.budgetDefaults?.[categoryId];
+  const covered = Boolean(standing && month >= standing.from);
+
+  if (amount === 0 && !covered) delete row[categoryId];
+  else row[categoryId] = amount;
+
+  return { ...db, budgets: { ...db.budgets, [month]: row } };
+}
+
+/**
  * How far back a replaced default is worth pinning down.
  *
  * Twenty years of months, so a default set at the start of a long history is

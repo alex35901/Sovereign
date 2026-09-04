@@ -76,8 +76,9 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
-      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, remainingTone, spentShare } from "./src/lib/select.ts";
+      export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, plannedFor, categoryHistory, categoryAverage, budgetTable, applyForward, setPlannedOn, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
+
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { thisMonth, addMonths, addDays } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
@@ -1506,6 +1507,65 @@ await test("a category emptied with no spending at all still stays", () => {
   const rows = M.budgetTable(after, "2026-08").flatMap((g) => g.rows);
   assert.ok(rows.find((r) => r.category.id === "c_mortgage"), "mortgage vanished");
   assert.equal(rows.find((r) => r.category.id === "c_mortgage").planned, 0);
+});
+
+await test("a plan can be set below zero, and a zero still clears the entry", () => {
+  // Subtracting from a category to fund another is a real thing to want, and
+  // the figure it leaves behind is a real figure: this month's plan after
+  // giving away money that carried in. Clamping it at zero lost that.
+  const db = M.emptyDB();
+  db.budgets = { "2026-08": { c_groceries: 60000 } };
+
+  const negative = M.setPlannedOn(db, "2026-08", "c_miscellaneous", -8200);
+  assert.equal(M.plannedFor(negative, "2026-08", "c_miscellaneous"), -8200);
+  assert.equal(negative.budgets["2026-08"].c_miscellaneous, -8200, "and it is written down, not dropped");
+
+  // zero is still the signal to stop overriding, where nothing standing covers it
+  const zeroed = M.setPlannedOn(db, "2026-08", "c_groceries", 0);
+  assert.equal(zeroed.budgets["2026-08"].c_groceries, undefined);
+
+  // but a standing amount still has to be masked by an explicit zero
+  const standing = { ...db, budgetDefaults: { c_groceries: { amount: 70000, from: "2026-01" } } };
+  const masked = M.setPlannedOn(standing, "2026-08", "c_groceries", 0);
+  assert.equal(masked.budgets["2026-08"].c_groceries, 0);
+  assert.equal(M.plannedFor(masked, "2026-08", "c_groceries"), 0, "the standing amount must not show through");
+});
+
+await test("giving away money that carried in drives the month's plan negative", () => {
+  // The case from the screenshot: Miscellaneous has $203 left — $121 planned
+  // this month plus $82 carried in — and all of it goes to Child Care. The
+  // month's own plan lands on -$82, which is what "gave away the rollover"
+  // looks like: planned plus rollover is then exactly zero.
+  const db = M.emptyDB();
+  db.categories = db.categories.map((c) => (c.id === "c_miscellaneous" ? { ...c, rollover: true } : c));
+  // July was budgeted 82 and nothing was spent, so 82 carries into August
+  db.budgets = { "2026-07": { c_miscellaneous: 8200 }, "2026-08": { c_miscellaneous: 12100, c_child_care: 0 } };
+
+  const misc = M.moveCandidates(db, "2026-08").find((c) => c.categoryId === "c_miscellaneous");
+  assert.equal(misc.rollover, 8200);
+  assert.equal(misc.planned, 12100);
+  assert.equal(misc.remaining, 20300, "$203 left");
+  assert.equal(M.surplusOf(misc), 20300, "all of it is on offer, rollover included");
+  assert.equal(M.moveCeiling(misc), 20300);
+
+  const target = db.categories.find((c) => c.id === "c_child_care") ? "c_child_care" : "c_groceries";
+  const { db: after, moved } = M.moveBudget(db, "2026-08", "c_miscellaneous", target, 20300);
+  assert.equal(moved, 20300);
+  assert.equal(M.plannedFor(after, "2026-08", "c_miscellaneous"), -8200, "the plan lands on -$82");
+
+  const row = M.budgetTable(after, "2026-08").flatMap((g) => g.rows).find((r) => r.category.id === "c_miscellaneous");
+  assert.equal(row.rollover + row.planned, 0, "planned plus what carried in is exactly nothing left");
+  assert.equal(row.remaining, 0, "and that is what the row says");
+});
+
+await test("a category with nothing carried in cannot give away more than it has", () => {
+  const db = M.emptyDB();
+  db.budgets = { "2026-08": { c_groceries: 12100, c_gas: 0 } };
+  const groceries = M.moveCandidates(db, "2026-08").find((c) => c.categoryId === "c_groceries");
+  assert.equal(M.moveCeiling(groceries), 12100, "no rollover means the month's plan is the floor");
+  const { db: after, moved } = M.moveBudget(db, "2026-08", "c_groceries", "c_gas", 20300);
+  assert.equal(moved, 12100);
+  assert.equal(M.plannedFor(after, "2026-08", "c_groceries"), 0, "and it stops at zero, not below");
 });
 
 await test("every category is listed in every month, budgeted or not", () => {

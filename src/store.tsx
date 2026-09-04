@@ -10,7 +10,7 @@ import { toRules } from "./lib/rules-import";
 import type { ParsedRule } from "./lib/rules-import";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
-import { applyForward } from "./lib/select";
+import { applyForward, setPlannedOn } from "./lib/select";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
@@ -507,16 +507,7 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
       })),
 
     setPlanned: (month, categoryId, amount) =>
-      apply((db) => {
-        const m = { ...(db.budgets[month] ?? {}) };
-        const standing = db.budgetDefaults?.[categoryId];
-        const covered = Boolean(standing && month >= standing.from);
-        // dropping the entry would hand the month back to a standing amount, so
-        // an explicit zero has to stay explicit where one exists
-        if (amount <= 0 && !covered) delete m[categoryId];
-        else m[categoryId] = Math.max(0, amount);
-        return { ...db, budgets: { ...db.budgets, [month]: m } };
-      }),
+      apply((db) => setPlannedOn(db, month, categoryId, amount)),
     applyPlannedForward: (month, categoryId, amount) =>
       apply((db) => applyForward(db, month, categoryId, amount), "apply to all future months"),
     moveBudget: (month, fromId, toId, amount) =>

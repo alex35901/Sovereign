@@ -310,6 +310,41 @@ try {
     await nav.locator(".more-sheet").count() === 0 && new URL(nav.url()).pathname === "/goals",
     `at ${new URL(nav.url()).pathname}`);
   await nav.close();
+
+  // ── a menu opened from inside a menu ──
+  //
+  // Every popover is portalled to document.body, so the category list opened
+  // from the Move money panel is not a DOM descendant of it. The panel read a
+  // click on that list as a click outside itself and shut, which left the
+  // pickers unusable and the panel workable only with whatever it had guessed.
+  const nest = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await nest.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+  await nest.waitForTimeout(600);
+
+  const opened = await tryStep("the move panel opens from a category's remaining", async () => {
+    await nest.locator(".bcol-left button.budget-amount").first().click({ timeout: 5000 });
+    await nest.locator(".move-panel").waitFor({ timeout: 5000 });
+  });
+
+  if (opened) {
+    check("every category in the move list carries what is left in it",
+      await tryStep("the From picker opens", async () => {
+        await nest.locator(".move-panel .move-row").first().locator("button.move-pick").click({ timeout: 5000 });
+        await nest.waitForTimeout(350);
+      }) && (await nest.evaluate(() =>
+        [...document.querySelectorAll("button")].filter((b) => / left/.test(b.innerText)).length)) > 3);
+
+    await tryStep("a category can be chosen from the list", async () => {
+      const option = nest.locator("button").filter({ hasText: / left/ }).nth(1);
+      await option.scrollIntoViewIfNeeded();
+      await option.click({ timeout: 5000 });
+      await nest.waitForTimeout(350);
+    });
+    check("choosing from a nested menu leaves the panel it belongs to open",
+      await nest.locator(".move-panel").count() === 1,
+      "the panel closed under the choice");
+  }
+  await nest.close();
 } finally {
   await browser.close();
 }

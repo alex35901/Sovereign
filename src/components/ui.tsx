@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Eye, EyeOff, X } from "lucide-react";
@@ -260,6 +260,21 @@ export function Modal({ title, children, onClose, footer, wide }: {
  * trigger's rect — anchoring it in place would let cards (which clip their
  * contents so rows keep the rounded corners) cut the menu off.
  */
+/**
+ * How a popover knows a click belongs to one of its own.
+ *
+ * Every menu is portalled to document.body so a card row cannot clip it, which
+ * means a menu opened from inside another menu is not a DOM descendant of it.
+ * The outer one saw a click on the inner one as a click outside itself and
+ * shut — so choosing a category in the Move money panel closed the panel
+ * along with the list, and the panel could only ever be used with whatever it
+ * had guessed.
+ *
+ * So a popover hands its subtree a way to say "this node is mine". Claims pass
+ * on up, which makes nesting work to any depth.
+ */
+const Nest = createContext<((node: Node) => void) | null>(null);
+
 export function Popover({ trigger, children, align = "left", width = 220, className, fill, onOpenChange }: {
   trigger: (open: () => void) => ReactNode;
   children: (close: () => void) => ReactNode;
@@ -274,6 +289,19 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+
+  const outer = useContext(Nest);
+  const owned = useRef(new Set<Node>());
+  const claim = useCallback((node: Node) => {
+    owned.current.add(node);
+    outer?.(node);
+  }, [outer]);
+
+  /** Menus opened from inside this one, still on the page. */
+  const nested = useCallback((): Node[] => {
+    for (const n of owned.current) if (!n.isConnected) owned.current.delete(n);
+    return [...owned.current];
+  }, []);
 
   const place = useCallback(() => {
     const el = anchor.current;
@@ -300,13 +328,24 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   report.current = onOpenChange;
   useEffect(() => { report.current?.(open); }, [open]);
 
+  // Tell whoever opened this one that the menu belongs to them too.
+  useEffect(() => {
+    if (open && menu.current) outer?.(menu.current);
+  }, [open, outer]);
+
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent) => {
       const t = e.target as Node;
-      if (!anchor.current?.contains(t) && !menu.current?.contains(t)) setOpen(false);
+      if (anchor.current?.contains(t) || menu.current?.contains(t)) return;
+      if (nested().some((n) => n.contains(t))) return;
+      setOpen(false);
     };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    const esc = (e: KeyboardEvent) => {
+      // The innermost open menu takes it, so Escape backs out one step rather
+      // than collapsing the whole stack.
+      if (e.key === "Escape" && !nested().length) setOpen(false);
+    };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", esc);
     window.addEventListener("resize", place);
@@ -317,7 +356,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
-  }, [open, place]);
+  }, [open, place, nested]);
 
   return (
     <div ref={anchor} style={fill ? { display: "flex", width: "100%" } : { display: "inline-flex" }}>
@@ -332,7 +371,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
                 transform: pos.up ? "translateY(-100%)" : undefined,
               }}
             >
-              {children(() => setOpen(false))}
+              <Nest.Provider value={claim}>{children(() => setOpen(false))}</Nest.Provider>
             </div>,
             document.body,
           )

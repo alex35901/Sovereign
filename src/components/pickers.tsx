@@ -8,13 +8,21 @@ import type { RangeKey } from "../lib/range";
 import { RANGES } from "../lib/range";
 
 /** Searchable category menu, grouped the way the budget screen groups them. */
-export function CategoryPicker({ value, onChange, trigger, clearLabel }: {
+export function CategoryPicker({ value, onChange, trigger, clearLabel, note, only }: {
   value: string;
   onChange: (id: string) => void;
   trigger?: (cat: Category | undefined, open: () => void) => React.ReactNode;
   /** Offers a row that picks nothing, for a filter. Absent on a transaction's
    *  own category, where "no category" is Uncategorized rather than empty. */
   clearLabel?: string;
+  /**
+   * Something to show at the end of each row — what is left in it, when the
+   * choice depends on that. Picking where to move money from is guesswork
+   * without it: the figures are the whole reason one category is the answer.
+   */
+  note?: (c: Category) => React.ReactNode;
+  /** Narrows what is offered, so a choice that cannot work is not on the list. */
+  only?: (c: Category) => boolean;
 }) {
   const db = useDB();
   const [q, setQ] = useState("");
@@ -27,11 +35,12 @@ export function CategoryPicker({ value, onChange, trigger, clearLabel }: {
       .map((g) => ({
         group: g,
         cats: db.categories
-          .filter((c) => c.groupId === g.id && !c.archived && (!needle || c.name.toLowerCase().includes(needle)))
+          .filter((c) => c.groupId === g.id && !c.archived && (!only || only(c))
+            && (!needle || c.name.toLowerCase().includes(needle)))
           .sort((a, b) => a.order - b.order),
       }))
       .filter((x) => x.cats.length);
-  }, [db.groups, db.categories, q]);
+  }, [db.groups, db.categories, q, only]);
 
   return (
     <Popover
@@ -65,6 +74,7 @@ export function CategoryPicker({ value, onChange, trigger, clearLabel }: {
                 <button key={c.id} onClick={() => { onChange(c.id); setQ(""); close(); }}>
                   <span>{c.icon}</span>
                   <span className="grow truncate">{c.name}</span>
+                  {note ? note(c) : null}
                   {c.id === value ? <span className="tiny" style={{ color: "var(--accent)" }}>✓</span> : null}
                 </button>
               ))}
