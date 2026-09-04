@@ -222,6 +222,15 @@ function KeyCell({ row }: { row: Integration }) {
     );
   }
 
+  if (row.credential.kind === "platform") {
+    return (
+      <div className="col" style={{ gap: 1 }}>
+        <span className="small">No key of its own</span>
+        <span className="tiny faint">{row.credential.what}</span>
+      </div>
+    );
+  }
+
   if (row.credential.kind === "claimed") {
     return (
       <div className="col" style={{ gap: 1 }}>

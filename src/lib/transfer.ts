@@ -80,7 +80,32 @@ export async function measure(res: Response, sent: BodyInit | null | undefined):
   return bytes;
 }
 
-/** Neon's free plan, in bytes. The one that ran out. */
+/** Neon's free plan, in bytes. The first of the two to run out. */
 export const MONTHLY_TRANSFER = 5 * 1024 * 1024 * 1024;
+
+/**
+ * Vercel's Hobby allowance for Fast Origin Transfer, in bytes.
+ *
+ * The same traffic, metered a second time by a second company: Vercel counts
+ * what moves between its edge and the functions, which is this app's document
+ * going up as well as coming back. Exceeding it pauses the project rather than
+ * billing for it, so it is worth watching rather than discovering.
+ */
+export const MONTHLY_ORIGIN_TRANSFER = 10 * 1024 * 1024 * 1024;
+
+/**
+ * What one save of the document costs, in megabytes.
+ *
+ * The whole thing goes up on every save, so this is the unit both allowances
+ * are actually spent in — and the number that says whether the answer is
+ * "save less often" or "carry less around".
+ */
+export function documentMB(db: unknown): number {
+  try {
+    return asMB(JSON.stringify(db).length);
+  } catch {
+    return 0;
+  }
+}
 
 export const asMB = (bytes: number): number => Math.round((bytes / (1024 * 1024)) * 10) / 10;

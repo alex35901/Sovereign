@@ -86,6 +86,15 @@ between visits.
 
 ## Bank sync
 
+The document is one JSON blob, pushed whole on every save, and **two companies meter that
+traffic**: Neon allows 5 GB of network transfer a month and Vercel 10 GB of Fast Origin
+Transfer, which counts the request going up as well as the answer coming back. Exceeding
+either pauses things rather than billing for them. So saves are coalesced — eight seconds of
+quiet, and never more than thirty from the first unsent edit — which turns an evening of
+categorising from forty copies of the budget into two. Leaving the tab flushes immediately, so
+the longer wait costs another device nothing. Both allowances have a row in the table below,
+reading the same measurement against their own ceiling, and both say what one save costs.
+
 Settings → *Integrations* is one table over all of them — the five data providers below plus
 the two pieces of infrastructure they run on: what each does, where its key lives, how much of
 its free tier this period has spent, when it last ran and whether it is working. **Neon** shows

@@ -4,7 +4,7 @@ import { MONTHLY_LOOKUPS } from "./property.js";
 import { MONTHLY_SYMBOLS, tickersOf } from "./prices.js";
 import type { Period } from "./usage.js";
 import { meterOf } from "./usage.js";
-import { MONTHLY_TRANSFER, asMB, transferThisMonth } from "./transfer.js";
+import { MONTHLY_ORIGIN_TRANSFER, MONTHLY_TRANSFER, asMB, documentMB, transferThisMonth } from "./transfer.js";
 
 /**
  * One row of the integrations table.
@@ -30,7 +30,9 @@ export interface Integration {
   credential:
     | { kind: "field"; field: "rentcastApiKey" | "tiingoApiKey"; placeholder: string }
     | { kind: "claimed"; held: string; where: string }
-    | { kind: "server"; vars: string };
+    | { kind: "server"; vars: string }
+    /** No credential of its own: it is the platform everything else runs on. */
+    | { kind: "platform"; what: string };
   set: boolean;
   used: number;
   ceiling: number;
@@ -97,6 +99,9 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   // "set up" means the app has actually talked to it: bytes over the API this
   // month, or a scheduled run recorded at some point.
   const cloud = moved.calls > 0 || Boolean(vercel.at);
+  // What one save costs, which is what makes the allowance legible: an
+  // allowance in gigabytes means nothing until you know the unit it is spent in.
+  const perSave = documentMB(db);
   const simplefin = meterOf(usage, "simplefin", "ever", now);
   const plaid = meterOf(usage, "plaid", "ever", now);
   const tiingo = meterOf(usage, "tiingo", "month", now);
@@ -177,10 +182,27 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       used: asMB(moved.bytes),
       ceiling: asMB(MONTHLY_TRANSFER),
       unit: "MB transferred",
-      caveat: "measured in this browser",
+      caveat: perSave ? `measured here · ${perSave} MB per save` : "measured in this browser",
       period: "month",
       lastAt: s.lastSyncAt,
       note: moved.calls > 20_000 ? `${moved.calls.toLocaleString()} requests this month — more than a sync should need` : undefined,
+    },
+    {
+      id: "vercel-transfer",
+      process: "Origin transfer",
+      provider: "Vercel",
+      credential: { kind: "platform", what: "the deployment itself" },
+      set: cloud,
+      // The same bytes the Neon row counts. They are metered twice, by two
+      // companies, against two different ceilings — and the smaller allowance
+      // is not the one that runs out first, because Vercel counts the request
+      // going up as well as the answer coming back.
+      used: asMB(moved.bytes),
+      ceiling: asMB(MONTHLY_ORIGIN_TRANSFER),
+      unit: "MB transferred",
+      caveat: perSave ? `measured here · ${perSave} MB per save` : "measured in this browser",
+      period: "month",
+      lastAt: s.lastSyncAt,
     },
     {
       id: "vercel",

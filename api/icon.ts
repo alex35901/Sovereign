@@ -37,8 +37,15 @@ const TIMEOUT_MS = 6_000;
 /** Below this an .ico is a header and a couple of blank pixels, never a mark. */
 const MIN_BYTES = 100;
 
-/** A week in the browser's cache: a brand's mark does not change on Tuesdays. */
-const CACHE = "public, max-age=604800, stale-while-revalidate=86400";
+/**
+ * A week in the browser's cache, and a week in Vercel's.
+ *
+ * `s-maxage` is the half that matters for the bill: without it every browser
+ * that has not seen a mark before invokes the function and pulls the bytes
+ * from the origin again, and that traffic is metered. With it the CDN answers
+ * and the function is asked about each brand roughly once.
+ */
+const CACHE = "public, max-age=604800, s-maxage=604800, stale-while-revalidate=86400";
 
 /** Hostnames only: letters, digits, dots and dashes, and at least one dot. */
 const isDomain = (d: string): boolean =>

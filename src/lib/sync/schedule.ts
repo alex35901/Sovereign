@@ -77,3 +77,39 @@ export function untilLabel(at: number, now: number): string {
   const days = Math.round(ms / (24 * HOUR));
   return `in ${days} day${days === 1 ? "" : "s"}`;
 }
+
+/* ── how often the document is sent ───────────────────────────────────── */
+
+/**
+ * How long edits have to stop before the document is saved to the cloud.
+ *
+ * The whole document goes up on every save — it is one encrypted blob, there
+ * is no delta format — so the number of saves is the bill, twice over: Neon
+ * meters the traffic and so does Vercel. At a second and a half, categorising
+ * forty transactions was forty copies of the budget, and a single evening of
+ * tidying could move more than a month of everything else.
+ */
+export const PUSH_QUIET_MS = 8_000;
+
+/**
+ * However busy the typing, unsent work never waits longer than this.
+ *
+ * Without a ceiling a steady stream of small edits keeps resetting the timer
+ * and nothing reaches the server at all.
+ */
+export const PUSH_MAX_WAIT_MS = 30_000;
+
+/**
+ * How long to wait before saving, given when the oldest unsent edit was made.
+ *
+ * Quiet is measured from the last edit and the ceiling from the first, so a
+ * burst coalesces into one save and a long stretch of steady work still gets
+ * one every half minute.
+ */
+export function saveDelay(firstEditAt: number, now: number = Date.now()): number {
+  if (!firstEditAt) return PUSH_QUIET_MS;
+  // A clock that jumped backwards makes this negative, which only ever widens
+  // the ceiling — so the quiet period wins and nothing stalls.
+  const waited = now - firstEditAt;
+  return Math.max(0, Math.min(PUSH_QUIET_MS, PUSH_MAX_WAIT_MS - waited));
+}

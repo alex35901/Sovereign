@@ -5,10 +5,9 @@ import {
   stashConflict, subscribeSync,
 } from "../lib/cloud";
 import { drainQueue } from "../lib/sync/drain";
+import { saveDelay } from "../lib/sync/schedule";
 import type { DB } from "../types";
 
-/** Local edits settle before a save; a burst of typing makes one request. */
-const PUSH_DEBOUNCE_MS = 1500;
 /** How often to look for changes made on another device. */
 const POLL_MS = 60_000;
 
@@ -31,6 +30,8 @@ export function CloudSync() {
   const busy = useRef(false);
   const ready = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** When the oldest unsent edit was made, so a busy hour still gets saved. */
+  const firstEdit = useRef(0);
 
   /**
    * The exact document this browser last took from the server.
@@ -201,8 +202,13 @@ export function CloudSync() {
     const state = cloudState();
     if (!state.dirty) setCloudState({ ...state, dirty: true });
 
+    // Waiting for quiet, but measured from the first unsent edit rather than
+    // the last, so a long stretch of steady typing still gets saved.
+    if (!firstEdit.current) firstEdit.current = Date.now();
+    const delay = saveDelay(firstEdit.current);
+
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { void pushNow(); }, PUSH_DEBOUNCE_MS);
+    timer.current = setTimeout(() => { firstEdit.current = 0; void pushNow(); }, delay);
 
     return () => { if (timer.current) clearTimeout(timer.current); };
   }, [db]);
@@ -248,7 +254,20 @@ export function CloudSync() {
     // it does need to know before the next thing typed into it, or that edit
     // is refused as a conflict and set aside in favour of the copy this tab
     // was too idle to have fetched.
-    const onVisible = () => { if (!document.hidden) void syncNow(); };
+    // Leaving the tab is the one moment worth not waiting for quiet: the work
+    // survives locally either way, but another device picking the budget up
+    // next would otherwise be working from a copy that is eight seconds stale.
+    const onVisible = () => {
+      if (document.hidden) {
+        if (cloudState().dirty) {
+          if (timer.current) clearTimeout(timer.current);
+          firstEdit.current = 0;
+          void pushNow();
+        }
+        return;
+      }
+      void syncNow();
+    };
     document.addEventListener("visibilitychange", onVisible);
 
     const id = window.setInterval(() => {

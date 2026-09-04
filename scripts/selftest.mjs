@@ -83,7 +83,7 @@ await build({
       export { thisMonth, addMonths, addDays } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
-      export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel } from "./src/lib/sync/schedule.ts";
+      export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS } from "./src/lib/sync/schedule.ts";
       export { syncSimplefin } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
@@ -659,7 +659,7 @@ const rowsOf = (db, hopper = null, now = SEP) =>
 await test("every provider is a row, and an unconfigured one reads as off", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   for (const r of Object.values(rows)) {
     assert.equal(r.set, false, `${r.id} should not look configured`);
     assert.equal(M.healthOf(r).state, "off", r.id);
@@ -803,7 +803,7 @@ await test("a response is measured from its header, and from a clone when there 
 await test("Neon and Vercel are rows too, and read as off before anything has run", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   assert.equal(rows.neon.set, false, "no traffic yet means nothing to report");
   assert.equal(rows.vercel.set, false);
 });
@@ -817,6 +817,37 @@ await test("the Neon row measures this month against the five gigabytes that ran
   assert.ok(row.used > 4700 && row.used < 4720, `${row.used} MB`);
   assert.match(row.caveat, /measured in this browser/, "it must not claim to be Neon's own figure");
   assert.equal(M.healthOf(row).state, "warn", "and warn before the allowance is gone");
+  localStorage.clear();
+});
+
+await test("the same bytes are metered against Vercel's ceiling as well as Neon's", () => {
+  // Two companies charge for one document going up and coming back, against
+  // two different allowances — and the larger one ran out first, because
+  // Vercel counts the request as well as the answer.
+  localStorage.clear();
+  M.TR.noteTransfer(9 * 1024 * 1024 * 1024, SEP);
+  const rows = rowsOf(M.emptyDB(), null, SEP);
+
+  assert.equal(rows["vercel-transfer"].ceiling, 10240, "ten gigabytes, in megabytes");
+  assert.equal(rows.neon.ceiling, 5120);
+  assert.equal(rows["vercel-transfer"].used, rows.neon.used, "one measurement, two ceilings");
+  assert.equal(M.healthOf(rows.neon).state, "down", "past Neon's already");
+  assert.equal(M.healthOf(rows["vercel-transfer"]).state, "warn", "and closing on Vercel's");
+  assert.equal(rows["vercel-transfer"].credential.kind, "platform", "it has no key of its own");
+  localStorage.clear();
+});
+
+await test("what one save costs is spelled out, because it is the unit both are spent in", () => {
+  localStorage.clear();
+  M.TR.noteTransfer(1024 * 1024, SEP);
+  const db = M.buildDemoDB();
+  const size = M.TR.documentMB(db);
+  assert.ok(size > 0.05, `a demo budget should not be ${size} MB`);
+  assert.match(rowsOf(db, null, SEP)["vercel-transfer"].caveat, new RegExp(`${size} MB per save`));
+  // and it never throws on something that cannot be stringified
+  const loop = {};
+  loop.self = loop;
+  assert.equal(M.TR.documentMB(loop), 0);
   localStorage.clear();
 });
 
@@ -942,6 +973,27 @@ const iconSource = (ddg, google) => async (url) => {
   throw new Error(`unexpected fetch: ${href}`);
 };
 
+await test("a burst of edits becomes one save, and steady work still gets saved", () => {
+  // The whole document goes up on every save and two companies meter that, so
+  // the number of saves is the bill. Quiet is measured from the last edit; the
+  // ceiling from the first.
+  const now = Date.parse("2026-09-04T12:00:00.000Z");
+  const ago = (ms) => now - ms;
+
+  assert.equal(M.saveDelay(0, now), M.PUSH_QUIET_MS, "nothing unsent waits the full quiet period");
+  assert.equal(M.saveDelay(ago(0), now), M.PUSH_QUIET_MS, "a fresh edit does too");
+  assert.equal(M.saveDelay(ago(5_000), now), M.PUSH_QUIET_MS, "and so does one still inside the ceiling");
+
+  // once the ceiling is in sight the wait shortens to meet it exactly
+  assert.equal(M.saveDelay(ago(M.PUSH_MAX_WAIT_MS - 3_000), now), 3_000);
+  assert.equal(M.saveDelay(ago(M.PUSH_MAX_WAIT_MS), now), 0, "at the ceiling it goes now");
+  assert.equal(M.saveDelay(ago(120_000), now), 0, "and past it, still now rather than never");
+  assert.equal(M.saveDelay(now + 60_000, now), M.PUSH_QUIET_MS, "a clock that jumped does not stall the save");
+
+  assert.ok(M.PUSH_QUIET_MS >= 5_000, "shorter than this and a burst is not coalesced at all");
+  assert.ok(M.PUSH_MAX_WAIT_MS > M.PUSH_QUIET_MS, "the ceiling has to be the looser of the two");
+});
+
 await test("the icon function rejects anything that is not a domain", async () => {
   M.forgetPlaceholders();
   assert.equal((await invokeIcon("/api/icon?domain=starbucks.com")).status !== 400, true);
@@ -962,6 +1014,10 @@ await test("a real mark is passed through, cached, and asked of nobody twice", a
   assert.equal(r.status, 200);
   assert.equal(r.headers["content-type"], "image/png");
   assert.match(r.headers["cache-control"], /max-age=604800/);
+  // s-maxage is the half that matters for the bill: without it every browser
+  // that has not seen a brand before invokes the function and pulls the bytes
+  // from the origin again, and that traffic is metered.
+  assert.match(r.headers["cache-control"], /s-maxage=604800/);
   assert.equal(r.body.toString("utf8").startsWith("STARBUCKS"), true);
   assert.equal(asked.some((u) => u.includes("google")), false, "the second source is not troubled");
 
