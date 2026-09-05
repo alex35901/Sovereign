@@ -5021,17 +5021,38 @@ await test("an account swept to its own goal has nothing available either way", 
   assert.equal(ira.free, 0, "the leftovers are spoken for, not spare and not short");
 });
 
-await test("a lone goal drifting down with its account is not a shortfall", () => {
-  // The counterpart to the test above, and the reason the sign is tied to
-  // `over` rather than to raw arithmetic. One goal, one account, a balance
-  // that fell: the goal already reports what is really there, so showing
-  // minus five hundred would be inventing a problem to go and solve.
+await test("the reported case: allocate the lot, spend some, see the gap", () => {
+  // LLC Savings, one goal, allocated in full and then drawn down. The figures
+  // are the ones off the screenshot, because the bug was not that the
+  // arithmetic was wrong — it was that this arithmetic never ran.
+  const db = funded({
+    accounts: funded().accounts.map((a) => (a.id === "sav" ? { ...a, balance: 10_475_10 } : a)),
+    goals: funded().goals.map((g) => (g.id === "emg" ? { ...g, allocations: { sav: 11_807_92 } } : g)),
+  });
+  const sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.available, -1_332_82, "the gap between what is promised and what is there");
+  assert.equal(sav.over, 1_332_82);
+  // and it can still be corrected: the ceiling has to allow the claim down to
+  // the balance, or the only way out of the shortfall would be closed
+  assert.equal(M.GF.ceilingFor(db, "emg", "sav"), 10_475_10);
+  const fixed = M.GF.allocate(db, "emg", "sav", 10_475_10);
+  assert.equal(M.GF.funding(fixed).accounts.find((a) => a.account.id === "sav").available, 0, "and squaring it clears it");
+});
+
+await test("a lone goal left claiming more than the account holds is a shortfall", () => {
+  // Reported from a real budget: an account allocated in full to one goal,
+  // then spent down. The shortfall showed as nothing, because it was only
+  // ever raised when two goals were claiming. But the money had gone and the
+  // goal was still promised it, and the fix — lowering the goal — cannot be
+  // made by someone who is being shown a zero.
   const db = M.GF.allocate(funded(), "emg", "sav", 900_00);
   const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
   const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
-  assert.equal(sav.over, 0);
-  assert.equal(sav.available, 0, "absorbed, not raised");
-  assert.equal(M.GF.funding(dropped).available, 500_00, "and the headline is untouched by it");
+  assert.equal(sav.over, 500_00, "one claim past one balance is still past it");
+  assert.equal(sav.available, -500_00, "and the dialog says so rather than showing nothing");
+  assert.equal(sav.free, 0, "there is still nothing that could be handed out");
+  assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00, "the goal still reports what is really there");
+  assert.equal(M.GF.funding(dropped).available, 0, "and it eats the spare in the other account");
 });
 
 await test("a shortfall does not shrink the ceiling of the goal that has to give way", () => {
@@ -5047,19 +5068,20 @@ await test("a shortfall does not shrink the ceiling of the goal that has to give
   assert.equal(M.GF.funding(fixed).accounts.find((a) => a.account.id === "sav").available, 0, "and doing so clears it");
 });
 
-await test("an account that is one goal's in full just follows its balance down", () => {
-  // A savings account assigned entirely to one goal drifts down with a
-  // monthly transfer. There is nothing to decide and nothing to fix: the goal
-  // already shows exactly what the account holds, so telling someone they are
-  // $500 over is asking them to go and correct arithmetic.
-  let db = M.GF.allocate(funded(), "emg", "sav", 900_00);
-  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
+await test("an account swept to its own goal cannot be over-assigned", () => {
+  // The one case still absorbed, and the only one where absorbing is right:
+  // the leftovers of an account pointed at a goal are that goal's by
+  // definition, so a balance that falls takes the goal's figure down with it
+  // and there is nothing to exceed. No claim is made, so none can be missed.
+  const db = funded({
+    accounts: funded().accounts.map((a) => (a.id === "sav" ? { ...a, autoGoalId: "emg" } : a)),
+  });
+  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, autoGoalId: "emg", balance: 400_00 } : a)) };
   const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
-  assert.equal(sav.over, 0, "one claim over one balance is not an error");
-  assert.equal(sav.allocated, 400_00);
-  assert.equal(sav.available, 0);
-  assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00, "and the goal reports what is really there");
-  assert.equal(M.GF.funding(dropped).over, 0, "so nothing is flagged at the top either");
+  assert.equal(sav.over, 0, "a swept account is never over");
+  assert.equal(sav.available, 0, "and never has anything spare either");
+  assert.equal(sav.auto, 400_00, "the whole balance is the goal's, whatever it is");
+  assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00);
 });
 
 await test("two goals over one balance is reported, because it double-counts", () => {
@@ -5076,21 +5098,24 @@ await test("two goals over one balance is reported, because it double-counts", (
   assert.equal(M.GF.goalSaved(dropped, "kit"), 100_00);
 });
 
-await test("an archived claim does not turn a lone one into a crowd", () => {
-  let db = M.GF.allocate(funded(), "emg", "sav", 900_00);
-  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 100_00 }, archived: true } : g)) };
-  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
-  const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
-  assert.equal(sav.over, 0, "the archived goal holds nothing, so one claim is left");
+await test("an archived goal's claim is not counted against the balance", () => {
+  // Archiving a goal releases what it was holding. If its claim still counted
+  // toward the shortfall, archiving would make an account look worse rather
+  // than freeing the money up.
+  let db = M.GF.allocate(funded(), "emg", "sav", 300_00);
+  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 900_00 }, archived: true } : g)) };
+  const sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.over, 0, "the archived claim is not a claim");
+  assert.equal(sav.available, 700_00, "and its money is back on the table");
 });
 
-await test("claims are counted per goal, and zeroes are not claims", () => {
+await test("what an account owes is added up across every goal that wants it", () => {
   let db = M.GF.allocate(funded(), "emg", "sav", 600_00);
   db = M.GF.allocate(db, "kit", "sav", 250_00);
-  assert.deepEqual(M.GF.claimsOn(db, "sav"), [600_00, 250_00]);
-  assert.deepEqual(M.GF.claimsOn(db, "ira"), []);
+  assert.equal(M.GF.claimedFrom(db, "sav"), 850_00);
+  assert.equal(M.GF.claimedFrom(db, "ira"), 0, "an account nobody has claimed owes nothing");
   const zeroed = M.GF.allocate(db, "kit", "sav", 0);
-  assert.deepEqual(M.GF.claimsOn(zeroed, "sav"), [600_00]);
+  assert.equal(M.GF.claimedFrom(zeroed, "sav"), 600_00, "releasing a claim releases it");
 });
 
 await test("an archived goal stops holding money", () => {

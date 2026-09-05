@@ -36,9 +36,8 @@ export interface AccountFunding {
    * Clamping it at zero made the one account that needed attention look
    * exactly like every account that simply had nothing spare.
    *
-   * It goes below zero only where `over` does, so an account whose single
-   * goal has drifted down with the balance still reads nothing rather than
-   * accusing anyone of a mistake. See `over`.
+   * It goes below zero wherever the goals claim more than the balance holds,
+   * however many of them are doing the claiming. See `over`.
    */
   available: number;
   /**
@@ -50,18 +49,24 @@ export interface AccountFunding {
    */
   free: number;
   /**
-   * Allocated beyond what is in the account, and worth saying so.
+   * Allocated beyond what is in the account.
    *
-   * Only ever set when more than one goal claims the account. With two claims
-   * over one balance the excess is a real error: each goal is clamped to the
-   * balance separately, so the same money is counted twice and one of the two
-   * has to give it up — a decision only a person can make.
+   * This used to be raised only when two or more goals claimed the account,
+   * on the reasoning that a lone claim tracking a falling balance was nobody's
+   * mistake and not worth nagging about — the goal already reports what is
+   * really there, so saying "you are $500 over" was asking someone to go and
+   * correct arithmetic.
    *
-   * With a single claim there is nothing to decide and nothing to double
-   * count. The account is that goal's in full, the goal already shows exactly
-   * what the account holds, and a balance that drifts down with the market or
-   * a monthly transfer is not a mistake anyone made. So it is absorbed: the
-   * claim simply tracks the balance.
+   * That was wrong, and wrong in the way that matters: an account allocated in
+   * full and then spent down showed a shortfall of nothing. The money had gone
+   * somewhere and the goal was still promised it, which is exactly the moment
+   * to say so — the fix is to lower the goal, and nobody can lower a goal they
+   * cannot see is over.
+   *
+   * So it is the plain shortfall now, whoever is claiming. The one case still
+   * absorbed is an account swept to its own goal (`autoGoalId`), where there
+   * is genuinely nothing to decide: the leftovers are that goal's by
+   * definition, so they cannot exceed themselves.
    */
   over: number;
 }
@@ -87,22 +92,6 @@ export function goalAccounts(db: DB): Account[] {
 /** What each goal has claimed from one account. */
 export const claimOn = (goal: Goal, accountId: ID): number => goal.allocations?.[accountId] ?? 0;
 
-/**
- * What each goal claims from one account, largest first, zeroes dropped.
- *
- * How many claims there are decides whether an over-assignment is worth
- * raising, so the claims are kept apart rather than added up on the way past.
- */
-export function claimsOn(db: DB, accountId: ID): number[] {
-  const out: number[] = [];
-  for (const g of db.goals) {
-    if (g.archived) continue;
-    const claim = claimOn(g, accountId);
-    if (claim > 0) out.push(claim);
-  }
-  return out.sort((a, b) => b - a);
-}
-
 /** Everything claimed from one account, across every goal. */
 export function claimedFrom(db: DB, accountId: ID): number {
   let total = 0;
@@ -117,13 +106,9 @@ export function funding(db: DB): Funding {
   const accounts = goalAccounts(db).map((account): AccountFunding => {
     // A goal account holding a negative balance is not money to allocate.
     const balance = Math.max(0, account.balance);
-    const claims = claimsOn(db, account.id);
-    const claimed = claims.reduce((s, c) => s + c, 0);
+    const claimed = claimedFrom(db, account.id);
     const allocated = Math.min(claimed, balance);
-    // See AccountFunding.over: an account assigned in full to one goal cannot
-    // be over-assigned in any way that matters, so the excess is absorbed
-    // rather than raised as something to go and fix.
-    const over = claims.length > 1 ? Math.max(0, claimed - balance) : 0;
+    const over = Math.max(0, claimed - balance);
     const spare = balance - allocated;
     // An account with a goal of its own has no spare: whatever is not spoken
     // for is already this goal's, which is the entire point of setting one.
