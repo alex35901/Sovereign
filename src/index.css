@@ -641,9 +641,49 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .move-arrow { display: flex; align-items: center; gap: 6px; color: var(--faint); padding-left: 40px; }
 .move-arrow::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
 
+
+/* ── Integrations ──
+   Seven columns of numbers is a table on a desktop and a scroll-sideways
+   puzzle on a phone, where the two columns worth reading — how much of the
+   allowance is left, and whether it works — end up furthest off screen. So
+   the same rows render twice and the breakpoint picks one. */
+.int-cards { display: none; }
+
+.int-row {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 0; border-top: 1px solid var(--line-soft);
+}
+.int-row:first-child { border-top: 0; padding-top: 4px; }
+.int-facts {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+.int-dot { width: 7px; height: 7px; border-radius: 99px; flex: 0 0 auto; }
+.int-bar { height: 3px; border-radius: 2px; background: var(--line); margin-top: 4px; }
+.int-bar > span { display: block; height: 100%; border-radius: 2px; }
+
+/* ── Hopper ──
+   A chat, so the question is right-aligned and the answer is a card like
+   every other panel in the app. The composer sticks to the bottom of the
+   page rather than the viewport: on a phone the tab bar is already there,
+   and two things pinned to the same edge fight. */
+.hopper { padding-bottom: 8px; }
+.hopper-you {
+  align-self: flex-end; max-width: 82%; padding: 9px 13px;
+  background: var(--accent-soft); color: var(--text);
+  border-radius: 14px 14px 3px 14px; font-size: 13.5px;
+}
+.hopper-answer p { margin: 0; font-size: 13.5px; line-height: 1.55; }
+.hopper-list { margin: 0; padding-left: 18px; font-size: 13.5px; line-height: 1.55; }
+.hopper-list li { margin: 3px 0; }
+.hopper-ask { display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; padding: 10px 0 2px; background: var(--bg); }
+.hopper-ask .input { flex: 1; }
+
 /* ── responsive ───────────────────────────────────────────────────────────
  *
- * Every width-based override lives here and nowhere else, widest first.
+ * Every width-based override lives here and nowhere else, widest first, and
+ * this section stays at the end of the file — the first rule below is only
+ * true while it is. Add a new component's rules above it, never after.
  *
  * They used to sit beside the rules they changed, scattered through six
  * separate 720px blocks, and that cost real bugs: whether an override won
@@ -682,6 +722,11 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 }
 
 @media (max-width: 720px) {
+  /* Seven columns of numbers is a table on a desktop and a scroll-sideways
+     puzzle on a phone. The same rows render twice; this picks which one. */
+  .int-table { display: none; }
+  .int-cards { display: block; }
+
   /* ── shell ── */
   .sidebar { display: none; }
   .main { margin-left: 0; }
@@ -762,46 +807,4 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .bcol-plan { width: 76px; }
   .bcol-left { width: 72px; }
   .list-row { gap: 6px; padding: 10px 10px; }
-}
-
-/* ── Hopper ──
-   A chat, so the question is right-aligned and the answer is a card like
-   every other panel in the app. The composer sticks to the bottom of the
-   page rather than the viewport: on a phone the tab bar is already there,
-   and two things pinned to the same edge fight. */
-.hopper { padding-bottom: 8px; }
-.hopper-you {
-  align-self: flex-end; max-width: 82%; padding: 9px 13px;
-  background: var(--accent-soft); color: var(--text);
-  border-radius: 14px 14px 3px 14px; font-size: 13.5px;
-}
-.hopper-answer p { margin: 0; font-size: 13.5px; line-height: 1.55; }
-.hopper-list { margin: 0; padding-left: 18px; font-size: 13.5px; line-height: 1.55; }
-.hopper-list li { margin: 3px 0; }
-.hopper-ask { display: flex; gap: 8px; align-items: center; position: sticky; bottom: 0; padding: 10px 0 2px; background: var(--bg); }
-.hopper-ask .input { flex: 1; }
-
-/* ── Integrations ──
-   Seven columns of numbers is a table on a desktop and a scroll-sideways
-   puzzle on a phone, where the two columns worth reading — how much of the
-   allowance is left, and whether it works — end up furthest off screen. So
-   the same rows render twice and the breakpoint picks one. */
-.int-cards { display: none; }
-
-.int-row {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 12px 0; border-top: 1px solid var(--line-soft);
-}
-.int-row:first-child { border-top: 0; padding-top: 4px; }
-.int-facts {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 14px;
-}
-.int-dot { width: 7px; height: 7px; border-radius: 99px; flex: 0 0 auto; }
-.int-bar { height: 3px; border-radius: 2px; background: var(--line); margin-top: 4px; }
-.int-bar > span { display: block; height: 100%; border-radius: 2px; }
-
-@media (max-width: 720px) {
-  .int-table { display: none; }
-  .int-cards { display: block; }
 }
