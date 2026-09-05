@@ -60,27 +60,26 @@ export default function Budget() {
                 <CalendarDays size={14} /> This month
               </Btn>
             </div>
-            <div className="row wrap" style={{ gap: 26 }}>
+            {/* An even grid rather than a row of content-sized columns: four
+                figures of different lengths left-aligned under labels of
+                different lengths never looked like four of the same thing. */}
+            <div className="budget-stats">
               <Stat label="Planned income" value={summary.plannedIncome} actual={summary.actualIncome} />
               <Stat label="Planned expenses" value={summary.plannedExpense} actual={summary.actualExpense} />
-              <div className="col">
-                <span className="tile-label">Left to budget</span>
-                <span className={cx("num bold", summary.leftToBudget < 0 ? "neg" : "pos")} style={{ fontSize: 20 }}>
-                  <Money value={summary.leftToBudget} cents={false} />
-                </span>
-              </div>
-              <div className="col">
-                <span className="tile-label">Actual saved</span>
-                <span className={cx("num bold", summary.actualSavings < 0 ? "neg" : "pos")} style={{ fontSize: 20 }}>
-                  <Money value={summary.actualSavings} cents={false} />
-                </span>
-              </div>
+              <Stat label="Left to budget" value={summary.leftToBudget} tone />
+              <Stat label="Actual saved" value={summary.actualSavings} tone />
             </div>
           </div>
           <div className="divider" />
+          {/* Green while the spending is inside the plan, red once it is not,
+              and the plan itself marked — because once spending passes it the
+              bar grows past it too, and the plan stops being the bar's end. */}
           <Progress
             value={summary.actualExpense} max={Math.max(summary.plannedExpense, summary.actualExpense, 1)}
             over={summary.actualExpense > summary.plannedExpense}
+            color="--pos"
+            mark={summary.plannedExpense}
+            markTitle={`Planned ${fmt0(summary.plannedExpense)}`}
           />
           <div className="spread small muted" style={{ marginTop: 6 }}>
             <span><Money value={summary.actualExpense} cents={false} /> spent</span>
@@ -103,12 +102,20 @@ export default function Budget() {
   );
 }
 
-function Stat({ label, value, actual }: { label: string; value: number; actual: number }) {
+function Stat({ label, value, actual, tone }: {
+  label: string; value: number;
+  /** The figure that actually happened, under the one that was planned. */
+  actual?: number;
+  /** Green or red on its sign, for the two figures that are a verdict. */
+  tone?: boolean;
+}) {
   return (
     <div className="col">
       <span className="tile-label">{label}</span>
-      <span className="num bold" style={{ fontSize: 20 }}><Money value={value} cents={false} /></span>
-      <span className="tiny faint">actual <Money value={actual} cents={false} /></span>
+      <span className={cx("num bold", tone && (value < 0 ? "neg" : "pos"))} style={{ fontSize: 20 }}>
+        <Money value={value} cents={false} />
+      </span>
+      {actual !== undefined ? <span className="tiny faint">actual <Money value={actual} cents={false} /></span> : null}
     </div>
   );
 }
@@ -119,11 +126,10 @@ function GroupCard({ data, month, collapsed, onToggle }: {
   const income = data.group.kind === "income";
   return (
     <Card pad={false}>
-      <div className="card-head flush" style={{ cursor: "pointer" }} onClick={onToggle}>
+      <div className="card-head flush bgroup-head" style={{ cursor: "pointer" }} onClick={onToggle}>
         <div className="row" style={{ gap: 7 }}>
           {collapsed ? <ChevronRight size={15} className="faint" /> : <ChevronDown size={15} className="faint" />}
           <h2>{data.group.name}</h2>
-          <span className="tiny faint">{data.rows.length}</span>
         </div>
         <div className="row budget-head">
           <div className="bcol bcol-plan">

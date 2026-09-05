@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -631,6 +631,126 @@ try {
       check("390px — the detail screen fits the pocket it is on", fits === true, "it runs off the edge");
     }
     await pocket.close();
+  }
+
+  if (want("budget")) {
+    // ── the budget's columns, headers and bar ──
+    //
+    // The group header's figures and the rows beneath them are two separate
+    // flex layouts that have to agree on where three columns sit. They stopped
+    // agreeing the moment a group name grew long enough to wrap the header onto
+    // its own line, where space-between had nothing left to space and the
+    // columns went hard left — 180px out of step with the rows they label.
+
+    /** One document with long group names and a month put over budget: both
+     *  cases are invisible in the demo data as it ships. */
+    const budgetDoc = async () => {
+      const seed = await browser.newContext();
+      const p0 = await seed.newPage();
+      await p0.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+      await p0.waitForTimeout(1200);
+      const raw = await p0.evaluate(() => localStorage.getItem("sovereign.db.v1"));
+      await seed.close();
+      const db = JSON.parse(raw);
+      const income = new Set(db.categories
+        .filter((c) => db.groups.find((g) => g.id === c.groupId)?.kind === "income")
+        .map((c) => c.id));
+      // Every month, not just one: the page opens on whichever month is
+      // current when the suite runs, and cutting the wrong one leaves the bar
+      // comfortably green and the test quietly measuring nothing.
+      const cut = (plan) => Object.fromEntries(Object.entries(plan)
+        .map(([k, v]) => [k, income.has(k) ? v : Math.round(v * 0.35)]));
+      return {
+        ...db,
+        groups: db.groups.map((g) => (g.kind === "income" ? g : { ...g, name: `${g.name} & Everything Else` })),
+        budgets: Object.fromEntries(Object.entries(db.budgets).map(([m, plan]) => [m, cut(plan)])),
+      };
+    };
+
+    const seeded = async (doc, width) => {
+      const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+      await ctx.addInitScript((d) => {
+        if (!localStorage.getItem("sovereign.db.v1")) localStorage.setItem("sovereign.db.v1", d);
+      }, JSON.stringify(doc));
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+      return page;
+    };
+
+    const doc = await budgetDoc();
+
+    // Every width, because the head's padding and gap track the row's at each
+    // one and they are set in three separate places.
+    for (const w of [1180, 700, 390, 360]) {
+      const page = await seeded(doc, w);
+      const offsets = await page.evaluate(() => [...document.querySelectorAll(".card")].map((card) => {
+        const head = card.querySelector(".budget-head .bcol-plan");
+        const row = card.querySelector(".list-row .bcol-plan");
+        if (!head || !row) return null;
+        const a = head.getBoundingClientRect(), b = row.getBoundingClientRect();
+        return Math.round((a.left + a.width / 2) - (b.left + b.width / 2));
+      }).filter((x) => x !== null));
+      const worst = offsets.length ? Math.max(...offsets.map(Math.abs)) : -1;
+      check(`${w}px — every Planned header sits over its own column, long names included`,
+        offsets.length > 0 && worst <= 1, `worst ${worst}px out across ${offsets.length} groups`);
+
+      if (w === 390) {
+        const counted = await page.evaluate(() =>
+          document.querySelectorAll(".card-head .row .tiny").length);
+        check("a group no longer counts its own categories beside its name",
+          counted === 0, `${counted} counts still there`);
+
+        const grid = await page.evaluate(() => {
+          const el = document.querySelector(".budget-stats");
+          const cols = getComputedStyle(el).gridTemplateColumns.split(" ").map(parseFloat);
+          const cell = el.firstElementChild;
+          const mid = (r) => r.left + r.width / 2;
+          const c = cell.getBoundingClientRect();
+          return {
+            n: cols.length,
+            even: Math.max(...cols) - Math.min(...cols) < 1,
+            wide: el.getBoundingClientRect().width > window.innerWidth * 0.7,
+            centred: Math.abs(mid(cell.querySelector(".tile-label").getBoundingClientRect()) - mid(c)) < 2
+              && Math.abs(mid(cell.querySelector(".num").getBoundingClientRect()) - mid(c)) < 2,
+          };
+        });
+        check("390px — the four figures sit two to a row", grid.n === 2, `${grid.n} columns`);
+        check("390px — sharing the width evenly, not by how long their labels are", grid.even === true);
+        check("390px — across the whole card rather than bunched to one side", grid.wide === true);
+        check("390px — with label and figure centred in their column", grid.centred === true);
+      }
+      await page.close();
+    }
+
+    // The bar: green inside the plan, red past it, and the plan marked only
+    // once the bar has grown past it and it is no longer the bar's own end.
+    const bar = async (page) => page.evaluate(() => {
+      const el = document.querySelector(".bar");
+      const b = el.getBoundingClientRect();
+      const mk = el.querySelector(".bar-mark");
+      return {
+        fill: getComputedStyle(el.querySelector("i")).backgroundColor,
+        marks: el.querySelectorAll(".bar-mark").length,
+        at: mk ? Math.round(((mk.getBoundingClientRect().left + 1 - b.left) / b.width) * 100) : null,
+      };
+    });
+
+    const plain = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+    await plain.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+    await plain.waitForTimeout(600);
+    const good = await bar(plain);
+    check("inside the plan the bar is green", good.fill === "rgb(53, 196, 140)", good.fill);
+    check("and the plan is not marked, because the end of the bar is the plan",
+      good.marks === 0, `${good.marks} marks`);
+    await plain.close();
+
+    const spent = await seeded(doc, 1180);
+    const bad = await bar(spent);
+    check("past the plan the bar is red", bad.fill === "rgb(242, 104, 94)", bad.fill);
+    check("and the plan is marked where it fell", bad.marks === 1 && bad.at > 20 && bad.at < 99,
+      `${bad.marks} marks at ${bad.at}%`);
+    await spent.close();
   }
 
 } finally {

@@ -405,6 +405,14 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .bar { height: 7px; border-radius: 99px; background: var(--surface-3); overflow: hidden; position: relative; }
 .bar > i { display: block; height: 100%; border-radius: 99px; }
+/* Only a marked bar stops clipping: the mark stands slightly proud of the bar
+   so it is findable on a 7px rule, and the fill rounds its own corners so
+   nothing else depended on the clip. */
+.bar.marked { overflow: visible; }
+.bar-mark {
+  position: absolute; top: -3px; bottom: -3px; width: 2px; border-radius: 2px;
+  margin-left: -1px; background: var(--text); box-shadow: 0 0 0 1.5px var(--surface);
+}
 .divider { height: 1px; background: var(--line-soft); margin: 12px -16px; }
 .empty { padding: 40px 20px; text-align: center; color: var(--faint); }
 .empty h3 { color: var(--muted); margin-bottom: 4px; }
@@ -583,11 +591,26 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 /* One grid for the whole sheet, so the group totals and the column labels sit
    directly above the cells they describe. */
+/* The four figures across the top of the budget. An even grid, each figure
+   centred under its own label, so they read as four of the same thing rather
+   than four columns sized by how long their words happen to be. */
+.budget-stats {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 20px; flex: 1 1 440px;
+}
+.budget-stats > * { align-items: center; text-align: center; }
+
 .bcol { flex: none; text-align: center; }
 .bcol-plan { width: 116px; }
 .bcol-actual { width: 100px; }
 .bcol-left { width: 100px; }
-.budget-head { align-items: flex-end; gap: 12px; }
+/* margin-left:auto, not the card head's space-between: once a long group name
+   pushes these onto a second line, space-between has nothing to space and the
+   columns go hard left — 180px out of step with the rows they label. */
+.budget-head { align-items: flex-end; gap: 12px; margin-left: auto; }
+/* And the head's own padding tracks .list-row's rather than the card's, at
+   every width, because that padding is the other half of the same alignment. */
+.card-head.bgroup-head { padding-left: 16px; padding-right: 16px; }
 
 
 
@@ -783,6 +806,8 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .bcol-plan { width: 88px; }
   .bcol-left { width: 84px; }
   .budget-head { gap: 8px; }
+  .card-head.bgroup-head { padding-left: 12px; padding-right: 12px; }
+  .budget-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
   .list-row { gap: 8px; padding: 10px 12px; }
 
   /* ── accounts ──
@@ -807,4 +832,6 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .bcol-plan { width: 76px; }
   .bcol-left { width: 72px; }
   .list-row { gap: 6px; padding: 10px 10px; }
+  .budget-head { gap: 6px; }
+  .card-head.bgroup-head { padding-left: 10px; padding-right: 10px; }
 }

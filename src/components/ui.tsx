@@ -491,11 +491,24 @@ export function HoverCard({ children, card, width = 260, fill, disabled }: {
   );
 }
 
-export function Progress({ value, max, color: c = "--accent", over }: { value: number; max: number; color?: string; over?: boolean }) {
-  const pctRaw = max > 0 ? (value / max) * 100 : 0;
+export function Progress({ value, max, color: c = "--accent", over, mark, markTitle }: {
+  value: number; max: number; color?: string; over?: boolean;
+  /**
+   * A second figure on the same scale, drawn as a line across the bar.
+   *
+   * For a bar that has both a length and a target: once spending passes the
+   * plan the bar has to grow past it, so the plan stops being the end of the
+   * bar and needs somewhere of its own to stand.
+   */
+  mark?: number;
+  markTitle?: string;
+}) {
+  const pct = (n: number) => Math.min(100, Math.max(0, max > 0 ? (n / max) * 100 : 0));
+  const marked = mark !== undefined && mark > 0 && mark < max;
   return (
-    <div className="bar">
-      <i style={{ width: `${Math.min(100, Math.max(0, pctRaw))}%`, background: over ? "var(--neg)" : color(c) }} />
+    <div className={cx("bar", marked && "marked")}>
+      <i style={{ width: `${pct(value)}%`, background: over ? "var(--neg)" : color(c) }} />
+      {marked ? <b className="bar-mark" style={{ left: `${pct(mark)}%` }} title={markTitle} /> : null}
     </div>
   );
 }
