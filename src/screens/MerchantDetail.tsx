@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel } from "../lib/date";
@@ -66,6 +66,7 @@ export default function MerchantDetail() {
   return (
     <Drilldown
       title={display}
+      back={{ to: "/transactions", label: "Transactions" }}
       actions={(period) => (
         <Btn onClick={() => exportCSV(period)} disabled={!period.entries.length}>
           <Download size={14} /> <span className="btn-label">Export</span>
@@ -77,13 +78,10 @@ export default function MerchantDetail() {
       nothingEver="Nothing from this merchant is visible in reports."
       crumb={
         <>
-          <Link to="/transactions" className="row tiny faint" style={{ gap: 5 }}>
-            <ArrowLeft size={13} /> Transactions
-          </Link>
           <MerchantAvatar name={display} size={20} />
           {lifetime.first ? (
             <span className="tiny faint">
-              · {lifetime.count.toLocaleString()} transaction{lifetime.count === 1 ? "" : "s"} since{" "}
+              {lifetime.count.toLocaleString()} transaction{lifetime.count === 1 ? "" : "s"} since{" "}
               {dateLabel(lifetime.first, { year: true })}, <Money value={lifetime.total} /> all told
             </span>
           ) : null}

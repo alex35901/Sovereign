@@ -158,14 +158,6 @@ export function GoalFunding() {
                         {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={row.available} />}
                       </span>
                     </div>
-
-                    {!row.account.autoGoalId ? (
-                      <div className="row wrap" style={{ gap: 8, marginTop: 4 }}>
-                        <Btn size="sm" onClick={() => setAllocating(row.account)}>
-                          <Sparkles size={13} /> Allocate this account
-                        </Btn>
-                      </div>
-                    ) : null}
                   </div>
                 ) : null}
               </div>

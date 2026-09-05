@@ -1,5 +1,6 @@
-import { Eye, EyeOff, Moon, RefreshCw, Sun } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, Moon, RefreshCw, Sun } from "lucide-react";
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useStore } from "../store";
 import { Btn } from "../components/ui";
 
@@ -15,9 +16,15 @@ import { Btn } from "../components/ui";
  * one, and Reports, and Categories — a button that answered a question nobody
  * on those screens was asking, sitting where that screen's actual action
  * should have been.
+ *
+ * The way out of a drill-down lives here too, for the reason the bar itself is
+ * sticky: a way back that scrolls off the top of a long transaction list is
+ * only a way back for the first screenful of it.
  */
-export function TopBar({ title, actions, primary }: {
+export function TopBar({ title, back, actions, primary }: {
   title: string;
+  /** Where a drill-down sits under, named so the arrow is not a guess. */
+  back?: { to: string; label: string };
   /** Filters and icon buttons, to the left of the toggles. */
   actions?: ReactNode;
   /** This screen's one add button, to the right of them. */
@@ -28,6 +35,17 @@ export function TopBar({ title, actions, primary }: {
 
   return (
     <header className="topbar">
+      {/* A fixed destination rather than history: you can reach a category
+          from four different screens, and an arrow that lands somewhere
+          different each time is not somewhere you can aim. */}
+      {back ? (
+        <Link
+          to={back.to} className="btn btn-ghost btn-icon topbar-back"
+          title={back.label} aria-label={back.label}
+        >
+          <ArrowLeft size={17} />
+        </Link>
+      ) : null}
       <h1 className="grow truncate" style={{ fontSize: 19 }}>{title}</h1>
       <div className="row topbar-actions" style={{ gap: 6 }}>
         {actions}

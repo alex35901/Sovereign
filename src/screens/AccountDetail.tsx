@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, MoreHorizontal, Pencil, Upload } from "lucide-react";
+import { Link, useParams } from "react-router-dom";
+import { Download, MoreHorizontal, Pencil, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, monthOf, thisMonth, today } from "../lib/date";
@@ -30,7 +30,6 @@ export default function AccountDetail() {
   const { id = "" } = useParams();
   const db = useDB();
   const { actions } = useStore();
-  const nav = useNavigate();
   const [range, setRange] = useState<RangeKey>("6m");
   const [editing, setEditing] = useState(false);
   const [editTxn, setEditTxn] = useState<Transaction | null>(null);
@@ -60,7 +59,7 @@ export default function AccountDetail() {
   if (!account) {
     return (
       <>
-        <TopBar title="Account" />
+        <TopBar title="Account" back={{ to: "/accounts", label: "All accounts" }} />
         <div className="page"><Card><Empty title="Account not found" action={<Link to="/accounts"><Btn>Back to accounts</Btn></Link>} /></Card></div>
       </>
     );
@@ -74,6 +73,7 @@ export default function AccountDetail() {
     <>
       <TopBar
         title={account.name}
+        back={{ to: "/accounts", label: "All accounts" }}
         actions={
           <>
             <Btn onClick={() => setEditing(true)}><Pencil size={14} /> Edit</Btn>
@@ -113,10 +113,6 @@ export default function AccountDetail() {
         }
       />
       <div className="page stack">
-        <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => nav("/accounts")}>
-          <ArrowLeft size={14} /> All accounts
-        </button>
-
         <div className="grid g4">
           <Tile label="Current balance" value={<Money value={account.balance} cents={false} />}
             sub={<span className="muted">{account.institution} · {ACCOUNT_TYPE_LABEL[account.type]}</span>} />

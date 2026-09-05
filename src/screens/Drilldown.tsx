@@ -42,9 +42,11 @@ export interface Period {
   skipped: number;
 }
 
-export function Drilldown({ title, actions, crumb, tone, earliest, load, aside, nothingEver }: {
+export function Drilldown({ title, back, actions, crumb, tone, earliest, load, aside, nothingEver }: {
   /** The page's heading, in the bar across the top. */
   title: string;
+  /** Where this drill-down sits under, for the arrow beside the heading. */
+  back: { to: string; label: string };
   /** The buttons beside it. Given the period, because Export needs to know
    *  which one it is exporting and whether there is anything in it. */
   actions?: (period: Period) => ReactNode;
@@ -166,7 +168,7 @@ export function Drilldown({ title, actions, crumb, tone, earliest, load, aside, 
 
   return (
     <>
-      <TopBar title={title} actions={actions?.(period)} />
+      <TopBar title={title} back={back} actions={actions?.(period)} />
 
       <div className="page stack">
         <div className="row wrap" style={{ gap: 10 }}>{crumb}</div>

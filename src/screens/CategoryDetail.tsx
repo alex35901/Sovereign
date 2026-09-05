@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Download, Pencil } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Download, Pencil } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { monthLabel } from "../lib/date";
@@ -69,6 +69,7 @@ export default function CategoryDetail() {
     <>
       <Drilldown
         title={`${category.icon} ${category.name}`}
+        back={{ to: "/transactions", label: "Transactions" }}
         actions={(period) => (
           <>
             <Btn onClick={() => setEditing(true)}><Pencil size={14} /> <span className="btn-label">Edit</span></Btn>
@@ -83,10 +84,7 @@ export default function CategoryDetail() {
         nothingEver="Nothing has ever been put in this category."
         crumb={
           <>
-            <Link to="/transactions" className="row tiny faint" style={{ gap: 5 }}>
-              <ArrowLeft size={13} /> Transactions
-            </Link>
-            {group ? <span className="tiny faint">· in {group.name}</span> : null}
+            {group ? <span className="tiny faint">in {group.name}</span> : null}
             {category.excludeFromBudget ? (
               <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>off-budget</span>
             ) : null}

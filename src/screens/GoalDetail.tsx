@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Pencil } from "lucide-react";
+import { Pencil } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, monthLabel, thisMonth } from "../lib/date";
@@ -51,14 +51,11 @@ export default function GoalDetail() {
     <>
       <TopBar
         title={`${goal.emoji} ${goal.name}`}
+        back={{ to: "/goals", label: "Goals" }}
         primary={<Btn variant="primary" onClick={() => setEditing(true)}><Pencil size={14} /> <span className="btn-label">Edit</span></Btn>}
       />
 
       <div className="page stack">
-        <Link to="/goals" className="row tiny faint" style={{ gap: 5 }}>
-          <ArrowLeft size={13} /> Goals
-        </Link>
-
         <Card>
           <div className="col" style={{ gap: 10 }}>
             <div className="spread wrap" style={{ gap: 12 }}>

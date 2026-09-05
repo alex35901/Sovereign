@@ -32,11 +32,12 @@ export default function Goals() {
         primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Goal</span></Btn>}
       />
       <div className="page stack">
-        <div className="grid g3">
+        {/* No count tile: the goals are listed below it, and a card whose
+            whole content is "3" is a fact you can get by looking. */}
+        <div className="grid g2">
           <Tile label="Saved toward goals" value={<Money value={totalSaved} cents={false} />}
             sub={<span className="muted">of <Money value={totalTarget} cents={false} /> targeted</span>} />
           <Tile label="Monthly contributions" value={<Money value={monthly} cents={false} />} />
-          <Tile label="Active goals" value={String(goals.length)} />
         </div>
 
         <GoalFunding />

@@ -345,6 +345,115 @@ try {
       "the panel closed under the choice");
   }
   await nest.close();
+
+  // ── the way out of a drill-down ──
+  //
+  // Every drill-down used to carry its own back link in the page body, which
+  // scrolled away with the body: on a category with two years of transactions
+  // the way out was the one thing you could not reach without going back up
+  // for it. It lives in the sticky bar now, which means it has to be on every
+  // one of them, point at the right place, and still be there at the bottom.
+  const DRILLDOWNS = [
+    { path: "/accounts/a_savings", parent: "/accounts" },
+    { path: "/goals/gl_efund", parent: "/goals" },
+    { path: "/categories/c_groceries", parent: "/transactions" },
+    { path: "/merchants/Amazon", parent: "/transactions" },
+  ];
+
+  const drill = await browser.newPage({ viewport: { width: 1280, height: 700 } });
+  for (const { path, parent } of DRILLDOWNS) {
+    await drill.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+    await drill.waitForTimeout(400);
+    const href = await drill.evaluate(() => document.querySelector(".topbar-back")?.getAttribute("href") ?? null);
+    check(`${path} — the bar carries a way back, to ${parent}`, href === parent, `points at ${href}`);
+
+    // Not two ways back. The body's own link was removed in the same change,
+    // and a page carrying both would be the repetition this was meant to end.
+    const strays = await drill.evaluate(() => document.querySelectorAll(".page .lucide-arrow-left").length);
+    check(`${path} — and only the one`, strays === 0, `${strays} arrows left in the body`);
+
+    // The whole point: still reachable from the far end of the page.
+    await drill.evaluate(() => window.scrollTo(0, 99999));
+    await drill.waitForTimeout(250);
+    const scrolled = await drill.evaluate(() => window.scrollY);
+    // Allowed to be missing: against a build that dropped the arrow this is
+    // the line that would otherwise abandon the run with a stack trace, and
+    // take the list of what else passed down with it.
+    const box = await drill.locator(".topbar-back").boundingBox({ timeout: 3000 }).catch(() => null);
+    check(`${path} — and it is still on screen at the bottom of the page`,
+      scrolled === 0 || (box !== null && box.y >= 0 && box.y < 60),
+      `scrolled ${scrolled}px, arrow at ${box ? Math.round(box.y) : "nowhere"}`);
+  }
+
+  // It goes where it says it goes.
+  await drill.goto(`${BASE}/categories/c_groceries`, { waitUntil: "networkidle" });
+  await drill.waitForTimeout(400);
+  await tryStep("the back arrow can be clicked", () => drill.locator(".topbar-back").click({ timeout: 5000 }));
+  await drill.waitForTimeout(600);
+  check("the back arrow lands on the screen it names",
+    new URL(drill.url()).pathname === "/transactions", `landed on ${new URL(drill.url()).pathname}`);
+  await drill.close();
+
+  // ── a drill-down opens at its own top ──
+  //
+  // The window scrolls the whole app, so opening a category from halfway down
+  // a long list used to keep that offset — landing you in the middle of a
+  // chart you had never seen the top of.
+  const jump = await browser.newPage({ viewport: { width: 1280, height: 700 } });
+  await jump.goto(`${BASE}/categories`, { waitUntil: "networkidle" });
+  await jump.waitForTimeout(500);
+  await jump.evaluate(() => window.scrollTo(0, 900));
+  await jump.waitForTimeout(250);
+  const from = await jump.evaluate(() => window.scrollY);
+  const drilled = await tryStep("a category can be opened from down the page", async () => {
+    const link = jump.locator('a[href^="/categories/"]').last();
+    await link.scrollIntoViewIfNeeded();
+    await link.click({ timeout: 5000 });
+    await jump.waitForTimeout(600);
+  });
+  if (drilled) {
+    check("opening a drill-down from down the page starts it at the top",
+      from > 0 && await jump.evaluate(() => window.scrollY) === 0,
+      `left ${from}px, arrived at ${await jump.evaluate(() => window.scrollY)}px`);
+
+    // But reading the same page must not: a drill-down keeps the period in
+    // the query string, so jumping to the top on every bar click would pull
+    // the list out from under whoever clicked it.
+    await jump.evaluate(() => window.scrollTo(0, 400));
+    await jump.waitForTimeout(200);
+    const held = await tryStep("the grain can be changed", async () => {
+      await jump.locator(".seg button").last().click({ timeout: 5000 });
+      await jump.waitForTimeout(500);
+    });
+    if (held) {
+      check("changing the period within a drill-down leaves the page where it was",
+        await jump.evaluate(() => window.scrollY) > 0,
+        "it jumped to the top on a query-string change");
+    }
+  }
+  await jump.close();
+
+  // ── two things taken away ──
+  const gone = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await gone.goto(`${BASE}/goals`, { waitUntil: "networkidle" });
+  await gone.waitForTimeout(600);
+  const tiles = await gone.evaluate(() => [...document.querySelectorAll(".tile-label")].map((e) => e.innerText.trim()));
+  check("the goals screen no longer counts the goals it is listing",
+    !tiles.some((t) => /active goals/i.test(t)), tiles.join(", "));
+
+  // Expanding a goal account offered "Allocate this account" directly above
+  // the "Allocate funds" button that does the same job.
+  await tryStep("a goal account can be expanded", async () => {
+    await gone.locator(".list-row").filter({ hasText: "High Yield Savings" }).first().click({ timeout: 5000 });
+    await gone.waitForTimeout(400);
+  });
+  const buttons = await gone.evaluate(() =>
+    [...document.querySelectorAll("button")].map((b) => b.innerText.trim()).filter((t) => /allocate/i.test(t)));
+  check("and an expanded goal account does not repeat the allocate button",
+    !buttons.some((t) => /this account/i.test(t)), buttons.join(" | "));
+  check("while the one at the foot of the card stays",
+    buttons.some((t) => /^allocate funds$/i.test(t)), buttons.join(" | "));
+  await gone.close();
 } finally {
   await browser.close();
 }

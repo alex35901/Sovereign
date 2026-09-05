@@ -194,6 +194,10 @@ h3 { font-size: 14px; }
   padding: 12px 28px; background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px); border-bottom: 1px solid var(--line-soft);
 }
+/* The way out of a drill-down. Pulled tight to the heading on both sides so
+   the pair reads as one thing, and never shrinking: it is the control most
+   worth keeping when a long title is competing for the same line. */
+.topbar-back { flex: none; margin-left: -8px; margin-right: -4px; text-decoration: none; }
 
 /* ── card ─────────────────────────────────────────────────────────────── */
 .card {
