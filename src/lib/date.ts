@@ -55,6 +55,11 @@ export function dateLabel(d: ISODate, opts: { weekday?: boolean; year?: boolean 
     year: opts.year ? "numeric" : undefined,
   });
 }
+/** "September 4, 2026" — for a detail screen, where the month has room to say
+ *  its whole name and an abbreviation would only look abbreviated. */
+export const longDate = (d: ISODate): string =>
+  parseISO(d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
 export function relativeDay(d: ISODate): string {
   const diff = Math.round((parseISO(d).getTime() - parseISO(today()).getTime()) / 86400000);
   if (diff === 0) return "Today";

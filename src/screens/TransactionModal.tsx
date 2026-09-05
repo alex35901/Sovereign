@@ -1,14 +1,111 @@
-import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { ChevronDown, CircleHelp, Plus, Trash2 } from "lucide-react";
 import type { Transaction } from "../types";
 import { useDB, useStore } from "../store";
-import { today } from "../lib/date";
-import { fmt } from "../lib/money";
+import { longDate, today } from "../lib/date";
+import { fmt, parseMoney, toInput } from "../lib/money";
 import { UNCATEGORIZED } from "../lib/categories";
-import { Btn, Field, Modal, Money, MoneyInput, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
+import { Btn, Modal, Money, MoneyInput, SelectInput, TagPill, Toggle, cx } from "../components/ui";
 import { CategoryPicker } from "../components/pickers";
 import { ActivityLog } from "../components/ActivityLog";
+import { InstitutionLogo } from "../components/InstitutionLogo";
+import { MerchantAvatar } from "./Transactions";
 import { accountOptions } from "../lib/select";
+
+/**
+ * One line of the detail screen: what it is called, and what it is.
+ *
+ * Label hard left, value hard right, one per line. It is the shape every
+ * banking app converges on because it survives any length of value — a
+ * merchant with four words in its name and a category with one sit on the
+ * same line as each other without a grid to fight over.
+ */
+function DetailRow({ label, help, children, top }: {
+  label: string;
+  /** A question mark beside the label, for a value that needs explaining. */
+  help?: string;
+  children: ReactNode;
+  /** Aligns to the first line rather than the middle, for a value that wraps. */
+  top?: boolean;
+}) {
+  return (
+    <div className={cx("drow", top && "drow-top")}>
+      <span className="drow-label">
+        {label}
+        {help ? <CircleHelp size={13} className="faint" aria-label={help}><title>{help}</title></CircleHelp> : null}
+      </span>
+      <span className="drow-val">{children}</span>
+    </div>
+  );
+}
+
+/**
+ * A value that becomes its own control when you go to change it.
+ *
+ * The row reads as a fact — a logo, a name, a chevron — and a form field is
+ * conjured only once you have said you want one. That is Monarch's behaviour,
+ * and it is also the only way the value stays hard right: a text box wide
+ * enough to type into is wider than the words in it, so an input left sitting
+ * in the row strands the logo in the middle of it.
+ */
+function Editable({ view, edit, chevron = true }: {
+  view: ReactNode;
+  /** Given a way to put the row back to reading; call it on blur or Enter. */
+  edit: (close: () => void) => ReactNode;
+  chevron?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const btn = useRef<HTMLButtonElement>(null);
+  // Focus goes back where the click was, or a keyboard is left nowhere.
+  const close = () => { setOpen(false); requestAnimationFrame(() => btn.current?.focus()); };
+  if (open) return <>{edit(close)}</>;
+  return (
+    <button ref={btn} className="drow-btn" onClick={() => setOpen(true)}>
+      {view}
+      {chevron ? <ChevronDown size={14} /> : null}
+    </button>
+  );
+}
+
+/**
+ * The amount, big and centred above everything else.
+ *
+ * Text until you put the cursor in it, and the raw number after: "$31.01" is
+ * what you came to read and "31.01" is what you have to edit. An input holding
+ * the formatted string would need parsing back on every keystroke, and one
+ * holding the raw number would leave the headline of the screen looking like a
+ * spreadsheet cell.
+ *
+ * Green for money in, plain for money out — the same asymmetry the rest of the
+ * app uses, and the reason spending is not painted red here: on a screen about
+ * one transaction, every figure would be red, and a colour that is always on
+ * says nothing.
+ */
+function AmountHeader({ value, onChange, autoFocus }: {
+  value: number; onChange: (cents: number) => void; autoFocus?: boolean;
+}) {
+  const { db } = useStore();
+  const [buf, setBuf] = useState<string | null>(null);
+  return (
+    <div className="txn-amount">
+      <input
+        className={cx("num", value > 0 && "pos", db.settings.privacyMode && "blurred")}
+        inputMode="decimal" autoFocus={autoFocus} aria-label="Amount"
+        value={buf ?? fmt(value)}
+        onFocus={(e) => {
+          setBuf(toInput(value));
+          // After the swap to the raw number, or it selects the formatted
+          // string that is about to be replaced.
+          const el = e.currentTarget;
+          requestAnimationFrame(() => el.select());
+        }}
+        onChange={(e) => { setBuf(e.target.value); onChange(parseMoney(e.target.value)); }}
+        onBlur={() => setBuf(null)}
+      />
+    </div>
+  );
+}
 
 /** Add or edit a transaction, including splits and tags. */
 export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose: () => void }) {
@@ -29,6 +126,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   const [hideFromReports, setHide] = useState(txn?.hideFromReports ?? false);
   const [splits, setSplits] = useState(txn?.splits?.map((s) => ({ categoryId: s.categoryId, amount: s.amount })) ?? []);
 
+  const account = db.accounts.find((a) => a.id === accountId);
   const splitTotal = splits.reduce((s, x) => s + x.amount, 0);
   const splitOff = splits.length > 0 && splitTotal !== amount;
 
@@ -61,7 +159,8 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
 
   return (
     <Modal
-      title={editing ? "Edit transaction" : "Add transaction"}
+      flush
+      title={editing ? (txn?.merchant || "Transaction") : "Add transaction"}
       onClose={onClose}
       footer={
         <>
@@ -78,53 +177,111 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         </>
       }
     >
-      <div className="row" style={{ gap: 12 }}>
-        <Field label="Date"><TextInput type="date" value={date} onChange={setDate} /></Field>
-        <Field label="Amount" hint="Negative for spending, positive for income">
-          <MoneyInput value={amount} onChange={setAmount} autoFocus={!editing} />
-        </Field>
-      </div>
-      <Field label="Merchant"><TextInput value={merchant} onChange={setMerchant} placeholder="Blue Bottle Coffee" /></Field>
-      {txn?.statement ? (
-        <Field label="Original statement" hint="Exactly as the bank sent it — kept for reference and never edited">
-          <div className="statement">{txn.statement}</div>
-        </Field>
-      ) : null}
-      <div className="row" style={{ gap: 12, alignItems: "flex-end" }}>
-        <Field label="Account">
-          <SelectInput
-            value={accountId} onChange={setAccountId}
-            options={accountOptions(db.accounts.filter((a) => !a.hidden), (a) => `${a.name} · ${a.institution}`)}
-          />
-        </Field>
-        <Field label="Category">
-          {splits.length ? (
-            <span className="small muted" style={{ padding: "7px 0" }}>Split across {splits.length}</span>
-          ) : (
-            <CategoryPicker value={categoryId} onChange={setCategoryId} />
+      <AmountHeader value={amount} onChange={setAmount} autoFocus={!editing} />
+
+      <DetailRow label="Merchant">
+        <Editable
+          view={<>
+            {merchant ? <MerchantAvatar name={merchant} size={22} /> : null}
+            <span className={cx("truncate", !merchant && "faint")}>{merchant || "Blue Bottle Coffee"}</span>
+          </>}
+          edit={(close) => (
+            <input
+              className="input" value={merchant} placeholder="Blue Bottle Coffee" autoFocus aria-label="Merchant"
+              onChange={(e) => setMerchant(e.target.value)} onBlur={close}
+              onKeyDown={(e) => { if (e.key === "Enter") close(); }}
+            />
           )}
-        </Field>
-      </div>
+        />
+      </DetailRow>
 
-      <Field label="Notes"><TextInput value={notes} onChange={setNotes} placeholder="Optional" /></Field>
+      {txn?.statement ? (
+        <DetailRow label="Original statement" help="Exactly as the bank sent it — kept for reference and never edited">
+          {/* Its whole value on hover, because the useful half of a statement
+              line is often the half that does not fit. */}
+          <span className="drow-statement truncate" title={txn.statement}>{txn.statement}</span>
+        </DetailRow>
+      ) : null}
 
-      <div className="col" style={{ gap: 7 }}>
-        <span className="small muted">Tags</span>
-        <div className="row wrap" style={{ gap: 6 }}>
-          {db.tags.map((t) => (
-            <button
-              key={t.id}
-              className={cx("chip", tags.includes(t.id) && "on")}
-              onClick={() => setTags((prev) => (prev.includes(t.id) ? prev.filter((x) => x !== t.id) : [...prev, t.id]))}
-            >
-              <TagPill name={t.name} tone={t.color} />
-            </button>
-          ))}
-          {!db.tags.length ? <span className="tiny faint">Create tags in Settings.</span> : null}
-        </div>
-      </div>
+      <DetailRow label="Account">
+        <Editable
+          view={<>
+            {account ? <InstitutionLogo account={account} size={22} round /> : null}
+            <span className="truncate">{account?.name ?? "Choose an account"}</span>
+          </>}
+          edit={(close) => (
+            <SelectInput
+              autoFocus onBlur={close}
+              value={accountId} onChange={(id) => { setAccountId(id); close(); }}
+              options={accountOptions(db.accounts.filter((a) => !a.hidden))}
+            />
+          )}
+        />
+      </DetailRow>
 
-      <div className="col" style={{ gap: 8 }}>
+      <DetailRow label="Category">
+        {splits.length ? (
+          <span className="muted">Split across {splits.length}</span>
+        ) : (
+          <CategoryPicker
+            value={categoryId} onChange={setCategoryId}
+            trigger={(cat, open) => (
+              <button className="drow-btn" onClick={open}>
+                <span>{cat?.icon}</span>
+                <span className="truncate">{cat?.name ?? "Uncategorized"}</span>
+                <ChevronDown size={14} />
+              </button>
+            )}
+          />
+        )}
+      </DetailRow>
+
+      <DetailRow label="Date">
+        <Editable
+          view={<span className="truncate">{longDate(date)}</span>}
+          edit={(close) => (
+            <input
+              className="input" type="date" value={date} autoFocus aria-label="Date"
+              onChange={(e) => setDate(e.target.value)} onBlur={close}
+            />
+          )}
+        />
+      </DetailRow>
+
+      <DetailRow label="Notes">
+        <Editable
+          chevron={false}
+          view={<span className={cx("truncate", !notes && "faint")}>{notes || "Add a note"}</span>}
+          edit={(close) => (
+            <input
+              className="input" value={notes} placeholder="Add a note" autoFocus aria-label="Notes"
+              onChange={(e) => setNotes(e.target.value)} onBlur={close}
+              onKeyDown={(e) => { if (e.key === "Enter") close(); }}
+            />
+          )}
+        />
+      </DetailRow>
+
+      <DetailRow label="Tags" top>
+        {db.tags.length ? db.tags.map((t) => (
+          <button
+            key={t.id}
+            className={cx("chip", tags.includes(t.id) && "on")}
+            onClick={() => setTags((prev) => (prev.includes(t.id) ? prev.filter((x) => x !== t.id) : [...prev, t.id]))}
+          >
+            <TagPill name={t.name} tone={t.color} />
+          </button>
+        )) : <span className="faint">Create tags in Settings</span>}
+      </DetailRow>
+
+      <DetailRow label="Reviewed">
+        <Toggle on={reviewed} onChange={setReviewed} />
+      </DetailRow>
+      <DetailRow label="Hide from reports and budget">
+        <Toggle on={hideFromReports} onChange={setHide} />
+      </DetailRow>
+
+      <div className="drow-block">
         <div className="spread">
           <span className="small muted">Splits</span>
           <Btn size="sm" onClick={() => setSplits((s) => [...s, { categoryId: UNCATEGORIZED, amount: amount - splitTotal }])}>
@@ -156,12 +313,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         ) : null}
       </div>
 
-      <div className="col" style={{ gap: 8 }}>
-        <Toggle on={reviewed} onChange={setReviewed} label={<span className="small">Reviewed</span>} />
-        <Toggle on={hideFromReports} onChange={setHide} label={<span className="small">Hide from reports and budget</span>} />
-      </div>
-
-      {txn ? <ActivityLog txn={txn} /> : null}
+      {txn ? <div className="drow-block"><ActivityLog txn={txn} /></div> : null}
     </Modal>
   );
 }

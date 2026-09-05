@@ -418,6 +418,52 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); }
 .modal-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 18px; border-top: 1px solid var(--line-soft); }
+.modal-body.flush { padding: 0; gap: 0; }
+
+/* ── a transaction, as a detail screen ──
+   The amount alone at the top, then one labelled line per thing about it.
+   It replaced a form of stacked fields: the same facts, but a form asks to be
+   filled in, and most visits to this screen are to read it or change one
+   thing. So the values are the page, and the controls only look like controls
+   once you are in one. */
+.txn-amount { padding: 20px 18px 22px; text-align: center; border-bottom: 1px solid var(--line-soft); }
+.txn-amount input {
+  /* Wide enough for any figure, narrow enough that the box it grows on hover
+     reads as belonging to the number rather than to the dialog. */
+  width: 100%; max-width: 320px; margin: 0 auto; display: block;
+  border: 1px solid transparent; background: none; outline: none; text-align: center;
+  font-size: 38px; font-weight: 650; letter-spacing: -0.02em; color: var(--text);
+  font-variant-numeric: tabular-nums; padding: 2px 0; border-radius: 10px;
+}
+.txn-amount input.pos { color: var(--pos); }
+.txn-amount input:hover { background: var(--surface-2); }
+.txn-amount input:focus { background: var(--surface-2); border-color: var(--line); }
+
+.drow { display: flex; align-items: center; gap: 12px; padding: 8px 18px; min-height: 50px; border-bottom: 1px solid var(--line-soft); }
+.drow-top { align-items: flex-start; padding-top: 14px; padding-bottom: 14px; }
+.drow-top .drow-label { padding-top: 4px; }
+.drow-label { display: flex; align-items: center; gap: 5px; flex: none; color: var(--muted); font-size: 13px; }
+/* Grows so the value can shrink: a long merchant name has to give way inside
+   the row rather than push the row wider than the dialog. */
+.drow-val { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 500; }
+/* A control in a row is the value, not a form field: no chrome until it is
+   being pointed at or used. */
+.drow-val .input, .drow-val .select {
+  background: var(--surface-2); text-align: right;
+  font-size: 14px; font-weight: 500; padding: 6px 8px; width: 100%; max-width: 250px;
+}
+.drow-val .select { padding-right: 24px; background-position: calc(100% - 12px) 12px, calc(100% - 7px) 12px; }
+.drow-btn {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: none;
+  color: var(--text); font-size: 14px; font-weight: 500; padding: 6px 8px; cursor: pointer;
+}
+.drow-btn:hover { background: var(--surface-2); }
+.drow-btn > svg { color: var(--faint); flex: none; }
+.drow-statement { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); user-select: all; }
+/* Everything that is not one of those lines — splits, the activity log. */
+.drow-block { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); }
+.drow-block:last-child { border-bottom: 0; }
 /* ── the More sheet ──
    Rises from the bottom bar rather than floating in the middle, so it comes
    from where the thumb pressed and lands under it. Only ever opened from the

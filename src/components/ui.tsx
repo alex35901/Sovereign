@@ -218,12 +218,15 @@ export function PercentInput({ value, onChange, placeholder }: {
  * carries one renders exactly as it always did, which is what makes this safe
  * to add to a component every screen uses.
  */
-export function SelectInput<T extends string>({ value, onChange, options, placeholder, style }: {
+export function SelectInput<T extends string>({ value, onChange, options, placeholder, style, autoFocus, onBlur }: {
   value: T;
   onChange: (v: T) => void;
   options: { value: T; label: string; group?: string }[];
   placeholder?: string;
   style?: CSSProperties;
+  /** For a select conjured by a click, which has to land where the click was. */
+  autoFocus?: boolean;
+  onBlur?: () => void;
 }) {
   const runs: { group?: string; items: typeof options }[] = [];
   for (const o of options) {
@@ -233,7 +236,10 @@ export function SelectInput<T extends string>({ value, onChange, options, placeh
   }
 
   return (
-    <select className="select" style={style} value={value} onChange={(e) => onChange(e.target.value as T)}>
+    <select
+      className="select" style={style} value={value} autoFocus={autoFocus} onBlur={onBlur}
+      onChange={(e) => onChange(e.target.value as T)}
+    >
       {placeholder ? <option value="">{placeholder}</option> : null}
       {runs.map((run, i) => {
         const items = run.items.map((o) => <option key={o.value} value={o.value}>{o.label}</option>);
@@ -255,8 +261,11 @@ export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boo
   );
 }
 
-export function Modal({ title, children, onClose, footer, wide }: {
+export function Modal({ title, children, onClose, footer, wide, flush }: {
   title: ReactNode; children: ReactNode; onClose: () => void; footer?: ReactNode; wide?: boolean;
+  /** Drops the body's padding, for content that runs edge to edge — a list of
+   *  rows whose dividers have to reach both sides to read as one list. */
+  flush?: boolean;
 }) {
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -271,7 +280,7 @@ export function Modal({ title, children, onClose, footer, wide }: {
           <h2>{title}</h2>
           <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close"><X size={16} /></button>
         </div>
-        <div className="modal-body">{children}</div>
+        <div className={cx("modal-body", flush && "flush")}>{children}</div>
         {footer ? <div className="modal-foot">{footer}</div> : null}
       </div>
     </div>,

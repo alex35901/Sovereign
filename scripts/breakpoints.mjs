@@ -454,6 +454,132 @@ try {
   check("while the one at the foot of the card stays",
     buttons.some((t) => /^allocate funds$/i.test(t)), buttons.join(" | "));
   await gone.close();
+
+  // ── a transaction, as a detail screen ──
+  //
+  // It was a stack of form fields; it is now the amount alone at the top and
+  // one labelled line per fact, with each value a piece of text until you go
+  // to change it. The reason for that last part is not decoration: an input
+  // wide enough to type into is wider than the words in it, so a text box left
+  // sitting in the row pushes the merchant's logo into the middle of it.
+  const det = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+  await det.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+  await det.waitForTimeout(700);
+
+  const openedTxn = await tryStep("a transaction opens its detail screen", async () => {
+    await det.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(1).click({ timeout: 5000 });
+    await det.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+  });
+
+  if (openedTxn) {
+    const labels = await det.evaluate(() =>
+      [...document.querySelectorAll(".modal .drow-label")].map((e) => e.innerText.trim()));
+    check("the detail screen names the same things Monarch's does, in that order",
+      labels.slice(0, 5).join(" / ") === "Merchant / Original statement / Account / Category / Date",
+      labels.join(" / "));
+
+    // Measured on an untouched dialog, and it has to stay first: clicking
+    // anything at all blurs an open row and closes it, so this same check run
+    // later would pass against a screen that had opened every row at once.
+    const untouched = await det.evaluate(() => document.querySelectorAll(".modal .drow input").length);
+    check("a row is text, not a form field, until it is asked to be",
+      untouched === 0, `${untouched} inputs sitting in rows unasked`);
+
+    // Values sit hard right, logo included — the alignment the tap-to-edit
+    // pattern exists to protect.
+    const merchantRow = det.locator(".modal .drow").filter({ hasText: "Merchant" }).first();
+    // The date is spelled out, as it is on the screen this was matched to —
+    // "Sep 5, 2026" is what a cramped list says, and this screen is not one.
+    const dateText = await det.evaluate(() =>
+      [...document.querySelectorAll(".modal .drow")]
+        .find((r) => r.querySelector(".drow-label").innerText.trim() === "Date")
+        ?.querySelector(".drow-val").innerText.trim() ?? "");
+    check("the date is written out in full",
+      /^(January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4}$/.test(dateText),
+      dateText);
+
+    // The last thing in the value, not the box holding it: that box spans the
+    // rest of the row whichever end its contents are pushed to, so measuring
+    // it would pass against a screen with every value hard left.
+    const rowGap = await merchantRow.evaluate((row) => {
+      const last = row.querySelector(".drow-val").lastElementChild;
+      const pad = parseFloat(getComputedStyle(row).paddingRight);
+      return Math.round((row.getBoundingClientRect().right - pad) - last.getBoundingClientRect().right);
+    });
+    check("a value ends where its row ends", rowGap >= 0 && rowGap <= 4, `${rowGap}px short of the edge`);
+
+    // The amount is the heading, and reads as money until it is being edited.
+    const shown = await det.evaluate(() => document.querySelector(".modal .txn-amount input").value);
+    check("the amount reads as money above everything else", /^-?\$[\d,]+\.\d\d$/.test(shown), shown);
+    const big = await det.evaluate(() =>
+      parseFloat(getComputedStyle(document.querySelector(".modal .txn-amount input")).fontSize));
+    check("and it is the largest thing on the screen", big >= 30, `${big}px`);
+
+    await det.locator(".modal .txn-amount input").click();
+    await det.waitForTimeout(250);
+    const raw = await det.evaluate(() => document.querySelector(".modal .txn-amount input").value);
+    check("putting the cursor in it swaps the money for the number you edit",
+      /^-?\d+\.\d\d$/.test(raw), raw);
+
+    // The statement is shown as the bank sent it, with the whole of it on
+    // hover — the useful half of a statement line is often the half that will
+    // not fit. CSS clips it, so innerText is still the whole string and the
+    // title has to match it exactly.
+    const stmt = await det.evaluate(() => {
+      const el = document.querySelector(".modal .drow-statement");
+      return el ? { text: el.innerText.trim(), title: el.getAttribute("title") } : null;
+    });
+    check("the original statement is carried through verbatim, hover and all",
+      stmt !== null && stmt.text.length > 0 && stmt.title === stmt.text,
+      stmt === null ? "no statement row at all" : `shows "${stmt.text}", hover says "${stmt.title}"`);
+
+    // Clicking a value opens that row and only that row, and what is typed
+    // into it survives the save.
+    const editable = await tryStep("the merchant can be clicked to edit", async () => {
+      await merchantRow.locator(".drow-btn").click({ timeout: 5000 });
+      await det.waitForTimeout(300);
+    });
+    if (editable) {
+      const fields = await det.evaluate(() => document.querySelectorAll(".modal .drow input").length);
+      check("clicking a value turns that one row into a field, and no others",
+        fields === 1, `${fields} rows became fields`);
+
+      const saved = await tryStep("the merchant can be retyped and saved", async () => {
+        await merchantRow.locator("input").fill("Bodega Cat Supply", { timeout: 5000 });
+        await det.locator(".modal .drow-label").first().click({ timeout: 5000 });
+        await det.waitForTimeout(250);
+        await det.locator(".modal-foot button", { hasText: "Save changes" }).click({ timeout: 5000 });
+        await det.waitForTimeout(700);
+        await det.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(1).click({ timeout: 5000 });
+        await det.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+      });
+      if (saved) {
+        const kept = await det.evaluate(() =>
+          document.querySelector(".modal .drow .drow-btn")?.innerText.trim() ?? "");
+        check("and what was typed into it is what gets saved",
+          kept.includes("Bodega Cat Supply"), `reopened as "${kept}"`);
+      }
+    }
+  }
+  await det.close();
+
+  // A dialog that runs off a pocket is a dialog with a button you cannot press.
+  const pocket = await browser.newPage({ viewport: { width: 390, height: 860 } });
+  await pocket.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+  await pocket.waitForTimeout(800);
+  const onPhone = await tryStep("390px — a transaction opens its detail screen", async () => {
+    await pocket.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(1).click({ timeout: 5000 });
+    await pocket.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+  });
+  if (onPhone) {
+    const fits = await pocket.evaluate(() => {
+      const m = document.querySelector(".modal").getBoundingClientRect();
+      return m.left >= 0 && m.right <= window.innerWidth
+        && document.documentElement.scrollWidth <= window.innerWidth;
+    });
+    check("390px — the detail screen fits the pocket it is on", fits === true, "it runs off the edge");
+  }
+  await pocket.close();
 } finally {
   await browser.close();
 }
