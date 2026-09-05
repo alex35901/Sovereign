@@ -254,11 +254,15 @@ function GoalAccountsModal({ onClose }: { onClose: () => void }) {
 function AllocateModal({ account, onClose }: { account: Account; onClose: () => void }) {
   const db = useDB();
   const goals = db.goals.filter((g) => !g.archived).sort((a, b) => a.priority - b.priority);
-  const row = funding(db).accounts.find((a) => a.account.id === account.id);
+  // Worked out once rather than three times, and recomputed on every render —
+  // which is what makes the figure below follow what is typed into the rows.
+  const rows = funding(db).accounts;
+  const row = rows.find((a) => a.account.id === account.id);
 
   const [which, setWhich] = useState<string>(account.id);
-  const active = funding(db).accounts.find((a) => a.account.id === which)?.account ?? account;
-  const current = funding(db).accounts.find((a) => a.account.id === which);
+  const current = rows.find((a) => a.account.id === which);
+  const active = current?.account ?? account;
+  const net = current?.net ?? 0;
 
   if (!row) return null;
 
@@ -270,23 +274,14 @@ function AllocateModal({ account, onClose }: { account: Account; onClose: () => 
       <div className="col" style={{ gap: 14 }}>
         <div className="row wrap" style={{ gap: 10, alignItems: "center" }}>
           <span className="small muted">From</span>
-          {(() => {
-            // Grouped like every other account dropdown, with each one's
-            // unassigned balance still on the line — that figure is the reason
-            // you are picking one.
-            const rows = funding(db).accounts;
-            const spare = new Map(rows.map((r) => [r.account.id, r.available]));
-            return (
-              <SelectInput
-                style={{ width: "auto", maxWidth: 300 }}
-                value={which} onChange={setWhich}
-                options={accountOptions(
-                  rows.map((r) => r.account),
-                  (a) => `${a.name} — ${fmtish(spare.get(a.id) ?? 0)} unassigned`,
-                )}
-              />
-            );
-          })()}
+          {/* Just the names, grouped like every other account dropdown. The
+              figure that matters is on the line below, where it moves as the
+              allocations are typed. */}
+          <SelectInput
+            style={{ width: "auto", maxWidth: 300 }}
+            value={which} onChange={setWhich}
+            options={accountOptions(rows.map((r) => r.account))}
+          />
         </div>
 
         {active.autoGoalId ? (
@@ -300,9 +295,12 @@ function AllocateModal({ account, onClose }: { account: Account; onClose: () => 
         ) : (
           <>
             <div className="spread small">
-              <span className="muted">Unassigned in this account</span>
-              <span className={`num bold ${(current?.available ?? 0) > 0 ? "pos" : "muted"}`}>
-                <Money value={current?.available ?? 0} />
+              <span className="muted">Available funds</span>
+              {/* Signed, unlike the headline: below zero means more is assigned
+                  than the account holds, which is a different thing from
+                  having nothing left and the only one of the two to act on. */}
+              <span className={`num bold ${net > 0 ? "pos" : net < 0 ? "neg" : "muted"}`}>
+                <Money value={net} />
               </span>
             </div>
             <div className="col" style={{ gap: 0 }}>

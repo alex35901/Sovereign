@@ -30,6 +30,16 @@ export interface AccountFunding {
   /** Arrived and not yet given a job. Never negative. */
   available: number;
   /**
+   * The same figure, allowed to go below zero.
+   *
+   * `available` stops at nothing because that is what is genuinely there to
+   * hand out, and a headline reading minus two hundred pounds of spare money
+   * would be nonsense. But inside the allocation dialog the sign is the whole
+   * point: it is the difference between "nothing left" and "two hundred more
+   * assigned than the account holds", and only one of those needs fixing.
+   */
+  net: number;
+  /**
    * Allocated beyond what is in the account, and worth saying so.
    *
    * Only ever set when more than one goal claims the account. With two claims
@@ -106,7 +116,7 @@ export function funding(db: DB): Funding {
     // An account with a goal of its own has no spare: whatever is not spoken
     // for is already this goal's, which is the entire point of setting one.
     const auto = account.autoGoalId ? spare : 0;
-    return { account, balance, allocated, auto, available: spare - auto, over };
+    return { account, balance, allocated, auto, available: spare - auto, net: balance - claimed - auto, over };
   });
 
   return {

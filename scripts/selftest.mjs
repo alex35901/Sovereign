@@ -4973,6 +4973,39 @@ await test("new money in a shared account is flagged rather than absorbed", () =
   assert.equal(M.GF.funding(paid).available, 900_00, "the new money is there to be assigned");
 });
 
+await test("the allocation dialog's figure goes below zero where the headline cannot", () => {
+  // Two things that look alike and are not: nothing left to hand out, and more
+  // handed out than the account holds. Only the second needs fixing, and the
+  // sign is the only thing that tells them apart.
+  let db = M.GF.allocate(funded(), "emg", "sav", 1_000_00);
+  let sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.available, 0, "nothing spare");
+  assert.equal(sav.net, 0, "and nothing over either");
+
+  // now two goals claim more than the account holds
+  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 200_00 } } : g)) };
+  sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.available, 0, "the headline still says there is nothing to hand out");
+  assert.equal(sav.net, -200_00, "and the dialog says how much too much was handed out");
+  assert.equal(sav.over, 200_00);
+});
+
+await test("with money still spare the two figures agree", () => {
+  const db = M.GF.allocate(funded(), "emg", "sav", 600_00);
+  const sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.available, 400_00);
+  assert.equal(sav.net, 400_00, "above zero there is nothing to tell apart");
+});
+
+await test("an account swept to its own goal has nothing available either way", () => {
+  const db = funded({
+    accounts: funded().accounts.map((a) => (a.id === "ira" ? { ...a, autoGoalId: "ret" } : a)),
+  });
+  const ira = M.GF.funding(db).accounts.find((a) => a.account.id === "ira");
+  assert.equal(ira.available, 0);
+  assert.equal(ira.net, 0, "the leftovers are spoken for, not spare and not over");
+});
+
 await test("an account that is one goal's in full just follows its balance down", () => {
   // A savings account assigned entirely to one goal drifts down with a
   // monthly transfer. There is nothing to decide and nothing to fix: the goal
