@@ -128,6 +128,72 @@ export function netWorthSplitAt(db: DB, date: ISODate): { assets: number; liabil
 }
 
 /** Summed balance of several accounts on each of the given days. */
+/**
+ * The Accounts screen, sliced: the whole picture first, then each kind.
+ *
+ * One function rather than a map() on the screen because the slices have to
+ * agree with each other. "3% of assets" is only true if every slice measures
+ * its share against the same total, and the chart above the list only means
+ * anything if it is drawn from the same accounts the list is showing.
+ */
+export interface AccountSlice {
+  key: string;
+  label: string;
+  accounts: Account[];
+  /** What it is worth today. */
+  total: number;
+  /** What it was worth on each of the sampled days. */
+  series: number[];
+  /** Where it ended against where it began, over those days. */
+  change: number;
+  /** That change against where it began, or null when it began at nothing. */
+  pct: number | null;
+  /**
+   * Share of everything owned — or of everything owed, for a slice that is
+   * owed. A credit card is 4% of the debt, never a negative share of assets.
+   */
+  share: number | null;
+  shareOf: "assets" | "debt";
+}
+
+export function accountSlices(db: DB, dates: ISODate[]): AccountSlice[] {
+  const visible = db.accounts.filter((a) => !a.hidden);
+  // The base every share is measured against. Taken from the same accounts the
+  // slices are built from, so the shares of the asset slices come to a hundred
+  // rather than to whatever is left after net worth's own exclusions.
+  const assets = visible.reduce((s, a) => s + Math.max(0, a.balance), 0);
+  const debt = visible.reduce((s, a) => s + Math.max(0, -a.balance), 0);
+
+  const build = (key: string, label: string, accounts: Account[], shared: boolean): AccountSlice => {
+    const series = aggregateSeries(accounts, dates);
+    const first = series[0] ?? 0;
+    const change = series.length > 1 ? series[series.length - 1] - first : 0;
+    const total = accounts.reduce((s, a) => s + a.balance, 0);
+    const owed = total < 0;
+    const base = owed ? debt : assets;
+    return {
+      key, label, accounts, total, series, change,
+      // Against where it began, in size: a debt shrinking from -1,000 to -500
+      // has improved by half, and a minus sign on the denominator would call
+      // that minus fifty per cent.
+      pct: first === 0 ? null : change / Math.abs(first),
+      share: shared && base > 0 ? Math.abs(total) / base : null,
+      shareOf: owed ? "debt" : "assets",
+    };
+  };
+
+  const slices = [
+    build("net", "Net Worth", visible.filter((a) => a.includeInNetWorth), false),
+  ];
+  for (const g of ACCOUNT_GROUPS) {
+    const accounts = visible
+      .filter((a) => g.types.includes(a.type))
+      .sort((a, b) => a.order - b.order);
+    if (accounts.length) slices.push(build(g.key, g.label, accounts, true));
+  }
+  return slices;
+}
+
 export function aggregateSeries(accounts: Account[], dates: ISODate[]): number[] {
   return dates.map((d) => accounts.reduce((sum, a) => sum + balanceAt(a, d), 0));
 }

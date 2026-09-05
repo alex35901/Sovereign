@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -751,6 +751,92 @@ try {
     check("and the plan is marked where it fell", bad.marks === 1 && bad.at > 20 && bad.at < 99,
       `${bad.marks} marks at ${bad.at}%`);
     await spent.close();
+  }
+
+  if (want("accounts")) {
+    // ── the accounts headline ──
+    //
+    // A slider of kinds over a full-width chart, and choosing one has to move
+    // three things at once: the figure, the line under it, and which accounts
+    // are listed. A filter that changes only the list is the bug worth
+    // guarding against, because it still looks like it worked.
+    const acc = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await acc.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
+    await acc.waitForTimeout(800);
+
+    const pills = await acc.evaluate(() =>
+      [...document.querySelectorAll(".scope-pill")].map((b) => b.innerText.trim()));
+    check("the whole picture is offered first, then each kind",
+      pills[0] === "Net Worth" && pills.length > 2, pills.join(" / "));
+
+    const read = () => acc.evaluate(() => ({
+      total: document.querySelector(".nw-value").innerText.trim(),
+      groups: [...document.querySelectorAll(".acct-group-head h2")].map((h) => h.innerText.trim()),
+      line: document.querySelector(".chart-wrap path[stroke]")?.getAttribute("d") ?? "",
+    }));
+    const all = await read();
+    check("net worth lists every kind at once", all.groups.length > 2, all.groups.join(", "));
+
+    const picked = pills.find((p) => p === "Investments") ?? pills[1];
+    const filtered = await tryStep(`the ${picked} pill can be chosen`, async () => {
+      await acc.locator(".scope-pill", { hasText: new RegExp(`^${picked}$`) }).click({ timeout: 5000 });
+      await acc.waitForTimeout(700);
+    });
+    if (filtered) {
+      const one = await read();
+      check("choosing a kind narrows the list to it",
+        one.groups.length === 1 && one.groups[0] === picked, one.groups.join(", "));
+      check("and moves the headline figure with it", one.total !== all.total,
+        `still ${one.total}`);
+      check("and redraws the line, rather than leaving the old one under it",
+        one.line !== all.line && one.line.length > 0, "the chart did not change");
+
+      // The pill has to be readable after it is chosen, not half off the edge.
+      const visible = await acc.evaluate(() => {
+        const bar = document.querySelector(".scope-bar");
+        const on = bar.querySelector('[aria-selected="true"]');
+        const b = bar.getBoundingClientRect(), p = on.getBoundingClientRect();
+        return p.left >= b.left - 1 && p.right <= b.right + 1;
+      });
+      check("and scrolls the chosen pill fully into view", visible === true);
+    }
+
+    // Where the line itself begins and ends, not where its wrapper sits: the
+    // axis gutter is padding inside the SVG, so the wrapper spans the card
+    // whether the line reaches the edges or stops 52px short of them.
+    const spans = await acc.evaluate(() => {
+      const wrap = document.querySelector(".nw-card .chart-wrap");
+      const svg = wrap.querySelector("svg");
+      const d = svg.querySelector("path[stroke]").getAttribute("d");
+      const xs = [...d.matchAll(/[ML](-?[\d.]+),/g)].map((m) => parseFloat(m[1]));
+      const card = document.querySelector(".nw-card");
+      const w = wrap.getBoundingClientRect(), c = card.getBoundingClientRect();
+      return {
+        left: Math.round(Math.min(...xs)),
+        right: Math.round(w.width - Math.max(...xs)),
+        gutter: Math.round(w.left - c.left) + Math.round(c.right - w.right),
+        ticks: svg.querySelectorAll(".axis-text").length,
+      };
+    });
+    check("the chart runs edge to edge inside its card",
+      spans.gutter <= 2 && spans.left <= 2 && spans.right <= 2,
+      `line starts ${spans.left}px in and ends ${spans.right}px short, card margin ${spans.gutter}px`);
+    check("and carries no axis labels, because the figures are spelled out above it",
+      spans.ticks === 0, `${spans.ticks} axis labels`);
+
+    // Changing the period changes the line and the figure beside it.
+    const before = await read();
+    const ranged = await tryStep("a longer period can be chosen", async () => {
+      await acc.locator(".span-pill", { hasText: "1Y" }).click({ timeout: 5000 });
+      await acc.waitForTimeout(700);
+    });
+    if (ranged) {
+      const after = await read();
+      check("a different period redraws the chart", after.line !== before.line);
+      const said = await acc.evaluate(() => document.querySelector(".nw-head").innerText);
+      check("and says which period it is now reporting", /1 year/.test(said), said.replace(/\n/g, " | "));
+    }
+    await acc.close();
   }
 
 } finally {

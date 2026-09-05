@@ -1,73 +1,82 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Plus } from "lucide-react";
 import type { Account, AccountType, ISODate } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel, today } from "../lib/date";
-import { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, aggregateSeries, balanceAt, earliestHistoryDate, netWorthAt, netWorthNow, netWorthSplitAt, trendTone } from "../lib/select";
+import { dateLabel, sinceLabel, today } from "../lib/date";
+import type { AccountSlice } from "../lib/select";
+import {
+  ACCOUNT_TYPE_LABEL, accountSlices, balanceAt, earliestHistoryDate, trendTone,
+} from "../lib/select";
 import { AreaChart, Sparkline } from "../components/charts";
-import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
-import { RangePicker } from "../components/pickers";
+import { Btn, Card, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Toggle, cx } from "../components/ui";
 import { HiddenToggle } from "./AccountControls";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
+/**
+ * The periods the chart offers, in the order a phone shows them.
+ *
+ * Two names each: the button is abbreviated because six of them share one
+ * line, and the sentence under the headline is not, because "$25,460 (3%) 1M
+ * period" is a button label read aloud rather than a sentence.
+ */
+const SPANS: { value: RangeKey; label: string; period: string }[] = [
+  { value: "1m", label: "1M", period: "1 month" },
+  { value: "3m", label: "3M", period: "3 months" },
+  { value: "6m", label: "6M", period: "6 months" },
+  { value: "ytd", label: "YTD", period: "year to date" },
+  { value: "1y", label: "1Y", period: "1 year" },
+  { value: "all", label: "ALL", period: "all time" },
+];
+
 export default function Accounts() {
   const db = useDB();
-  const [range, setRange] = useState<RangeKey>("1y");
+  const [range, setRange] = useState<RangeKey>("1m");
+  const [scope, setScope] = useState("net");
   const [adding, setAdding] = useState(false);
-  const nw = netWorthNow(db);
 
   // The first day of the chosen period, or the first day there is any data —
-  // shared so the tiles and the chart can't measure over different spans.
+  // shared by the chart and every figure beside it, so nothing on the screen
+  // is measuring a different span from anything else.
   const start = useMemo(() => {
     const earliest = earliestHistoryDate(db.accounts);
     const from = rangeStart(range, earliest);
     return earliest && earliest > from ? earliest : from;
   }, [db.accounts, range]);
 
-  const series = useMemo(() => {
-    const end = today();
-    const days = spanDays(start, end);
-    return sampleDates(start, end).map((d) => ({
-      label: sampleLabel(d, days),
-      value: netWorthAt(db, d),
-      sub: dateLabel(d, { year: true }),
-    }));
-  }, [db, start]);
+  const dates = useMemo(() => sampleDates(start, today()), [start]);
+  const slices = useMemo(() => accountSlices(db, dates), [db, dates]);
 
-  // Where the line ended against where it began, which is what colours it.
-  const netWorthTone = trendTone(series.map((p) => p.value));
+  // A slice can disappear underneath the selection — the last credit card
+  // closed, say — and a screen filtered to nothing is a screen with no way
+  // back to itself.
+  const current = slices.find((s) => s.key === scope) ?? slices[0];
+  const groups = slices.slice(1);
+  const shown = current.key === "net" ? groups : groups.filter((g) => g.key === current.key);
 
-  const then = useMemo(() => netWorthSplitAt(db, start), [db, start]);
-  const change = nw.net - then.net;
-  const assetChange = nw.assets - then.assets;
-  // Liabilities are stored negative, so a rise is debt shrinking.
-  const owedChange = nw.liabilities - then.liabilities;
+  const days = spanDays(start, today());
+  const points = current.series.map((value, i) => ({
+    label: sampleLabel(dates[i], days),
+    value,
+    sub: dateLabel(dates[i], { year: true }),
+  }));
+  const tone = trendTone(current.series);
 
-  // every sparkline on the page covers the same days as the chart above them
-  const dates = useMemo(() => {
-    const earliest = earliestHistoryDate(db.accounts);
-    const from = rangeStart(range, earliest);
-    const start = earliest && earliest > from ? earliest : from;
-    return sampleDates(start, today(), 24);
-  }, [db.accounts, range]);
+  // Sparklines are drawn against a coarser sample than the headline chart:
+  // two dozen points is all a 60px rule can show, and asking for 300 makes
+  // every row redraw the whole period.
+  const sparkDates = useMemo(() => sampleDates(start, today(), 24), [start]);
 
-  const groups = ACCOUNT_GROUPS.map((g) => {
-    const accounts = db.accounts
-      .filter((a) => g.types.includes(a.type) && !a.hidden)
-      .sort((a, b) => a.order - b.order);
-    const series = aggregateSeries(accounts, dates);
-    return {
-      ...g,
-      accounts,
-      series,
-      change: series.length > 1 ? series[series.length - 1] - series[0] : 0,
-      total: accounts.reduce((s, a) => s + a.balance, 0),
-    };
-  }).filter((g) => g.accounts.length);
+  // A pill chosen from the far end of the run can be half off the screen when
+  // the tap lands, which reads as though the tap missed.
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bar.current?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [current.key]);
 
   const hidden = db.accounts.filter((a) => a.hidden);
   const [showHidden, setShowHidden] = useState(false);
@@ -79,57 +88,60 @@ export default function Accounts() {
         primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Account</span></Btn>}
       />
       <div className="page stack">
-        <div className="grid g3">
-          <Tile label="Net worth" value={<Money value={nw.net} cents={false} />}
-            sub={<span className={change >= 0 ? "pos" : "neg"}><Money value={change} cents={false} sign={change >= 0} /> over {range.toUpperCase()}</span>} />
-          <Tile
-            label="Assets" value={<Money value={nw.assets} cents={false} />} tone="pos"
-            sub={<Change amount={assetChange} range={range} />}
-          />
-          <Tile
-            label="Liabilities" value={<Money value={nw.liabilities} cents={false} />} tone="neg"
-            sub={<Change amount={owedChange} range={range} />}
-          />
-        </div>
+        {db.accounts.length ? (
+          <Card pad={false} className="nw-card">
+            {/* Scrolls sideways rather than wrapping: the kinds are a single
+                ordered run, and a second line of them reads as a second,
+                lesser row of options. */}
+            <div className="scope-bar" ref={bar} role="tablist" aria-label="What to show">
+              {slices.map((s) => (
+                <button
+                  key={s.key} role="tab" aria-selected={s.key === current.key}
+                  className={cx("scope-pill", s.key === current.key && "on")}
+                  onClick={() => setScope(s.key)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
 
-        <Card>
-          <CardHead
-            title="Net worth over time"
-            sub={series.length ? `${series[0].sub} — today` : undefined}
-            right={<RangePicker value={range} onChange={setRange} />}
-          />
-          {/* One colour across the whole line, decided by where it ended
-              against where it started — the dashed line the chart draws at the
-              opening value. Not by its sign: a net worth under water all year
-              and climbing is good news, and the range picker above is what
-              decides which "started" we mean. */}
-          <AreaChart points={series} height={230} tone={netWorthTone} negativeTone={netWorthTone} startLine />
-        </Card>
+            <div className="nw-head">
+              <div className="nw-value num"><Money value={current.total} /></div>
+              <Delta slice={current} range={range} />
+            </div>
 
-        {groups.map((g) => (
+            {/* Edge to edge, and no axis labels: every figure they would carry
+                is spelled out in words directly above them. */}
+            <AreaChart points={points} height={200} tone={tone} negativeTone={tone} bare />
+
+            <div className="span-bar">
+              {SPANS.map((r) => (
+                <button
+                  key={r.value} className={cx("span-pill", r.value === range && "on")}
+                  onClick={() => setRange(r.value)}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </Card>
+        ) : null}
+
+        {shown.map((g) => (
           <Card key={g.key} pad={false}>
-            <CardHead
-              flush
-              title={g.label}
-              sub={
-                g.change !== 0 ? (
-                  <span className={g.change > 0 ? "pos" : "neg"}>
-                    <Money value={g.change} cents={false} sign={g.change > 0} /> over the period
-                  </span>
-                ) : undefined
-              }
-              right={
-                <span className="row" style={{ gap: 12 }}>
-                  <span className="acct-spark">
-                    {g.series.length > 2 ? <Sparkline values={g.series} baseline tone={trendTone(g.series)} /> : null}
-                  </span>
-                  <span className="num bold acct-amount"><Money value={g.total} cents={false} /></span>
-                  {/* stands in for the row chevron, so the totals column lines up */}
-                  <span className="acct-chevron" />
-                </span>
-              }
-            />
-            {g.accounts.map((a) => <AccountRow key={a.id} account={a} dates={dates} />)}
+            <div className="acct-group-head">
+              <div className="spread">
+                <h2>{g.label}</h2>
+                <span className="num bold" style={{ fontSize: 17 }}><Money value={g.total} /></span>
+              </div>
+              <div className="spread small">
+                <Delta slice={g} range={range} small />
+                {g.share !== null ? (
+                  <span className="faint">{pctLabel(g.share)} of {g.shareOf}</span>
+                ) : null}
+              </div>
+            </div>
+            {g.accounts.map((a) => <AccountRow key={a.id} account={a} dates={sparkDates} />)}
           </Card>
         ))}
 
@@ -145,7 +157,7 @@ export default function Accounts() {
 
         {hidden.length ? (
           <Card pad={false}>
-            {showHidden ? hidden.map((a) => <AccountRow key={a.id} account={a} dates={dates} />) : null}
+            {showHidden ? hidden.map((a) => <AccountRow key={a.id} account={a} dates={sparkDates} />) : null}
             <HiddenToggle count={hidden.length} open={showHidden} onToggle={() => setShowHidden((v) => !v)} />
           </Card>
         ) : null}
@@ -155,19 +167,31 @@ export default function Accounts() {
   );
 }
 
+/** "2.5%", and "<0.1%" rather than a rounded-away nothing. */
+function pctLabel(fraction: number): string {
+  const p = Math.abs(fraction) * 100;
+  if (p > 0 && p < 0.1) return "<0.1%";
+  return `${p >= 10 ? Math.round(p) : Math.round(p * 10) / 10}%`;
+}
+
 /**
- * How a figure moved over the period.
+ * How a slice moved over the period, in money and in proportion.
  *
- * Signed throughout, liabilities included: they are stored negative, so the
- * delta already reads the right way round — debt growing is a fall, and comes
- * out negative and red.
+ * Signed throughout, liabilities included: they are stored negative, so a card
+ * paid down comes out positive and green without a special case. A slice that
+ * began at nothing has no proportion to report and simply doesn't.
  */
-function Change({ amount, range }: { amount: number; range: RangeKey }) {
-  const over = ` over ${range.toUpperCase()}`;
-  if (amount === 0) return <span className="muted">No change{over}</span>;
+function Delta({ slice, range, small }: { slice: AccountSlice; range: RangeKey; small?: boolean }) {
+  const period = SPANS.find((s) => s.value === range)?.period ?? range;
+  if (slice.change === 0) return <span className="muted">No change · {period}</span>;
+  const up = slice.change > 0;
   return (
-    <span className={amount > 0 ? "pos" : "neg"}>
-      <Money value={amount} cents={false} sign={amount > 0} />{over}
+    <span className={cx("row", small ? "tiny-gap" : undefined)} style={{ gap: 7 }}>
+      <span className={up ? "pos" : "neg"}>
+        {up ? "\u2197" : "\u2198"} <Money value={slice.change} />
+        {slice.pct !== null ? ` (${pctLabel(slice.pct)})` : ""}
+      </span>
+      <span className="faint">{period}</span>
     </span>
   );
 }
@@ -178,12 +202,16 @@ function AccountRow({ account, dates }: { account: Account; dates: ISODate[] }) 
   const history = useMemo(() => dates.map((d) => balanceAt(account, d)), [account, dates]);
   return (
     <Link to={`/accounts/${account.id}`} className="list-row click">
-      <InstitutionLogo account={account} />
+      <InstitutionLogo account={account} round />
       <div className="grow col" style={{ gap: 1 }}>
-        <span className="truncate" style={{ fontWeight: 500 }}>{account.name}</span>
-        <span className="tiny faint">
-          {account.institution} · {ACCOUNT_TYPE_LABEL[account.type]}
-          {account.mask ? ` ••${account.mask}` : ""}
+        <span className="truncate" style={{ fontWeight: 500 }}>
+          {account.name}{account.mask ? ` (\u2026${account.mask})` : ""}
+        </span>
+        <span className="tiny faint truncate">
+          {ACCOUNT_TYPE_LABEL[account.type]}
+          {/* When it last came in, because the only question a balance on a
+              list invites is whether it is still true. */}
+          {account.lastSyncedAt ? ` · ${sinceLabel(account.lastSyncedAt)}` : ""}
           {account.hidden ? " · hidden" : ""}
           {!account.includeInNetWorth ? " · excluded from net worth" : ""}
         </span>
@@ -192,7 +220,7 @@ function AccountRow({ account, dates }: { account: Account; dates: ISODate[] }) 
         {history.length > 2 ? <Sparkline values={history} baseline tone={trendTone(history)} /> : null}
       </span>
       <span className="num bold acct-amount">
-        <Money value={account.balance} cents={false} />
+        <Money value={account.balance} />
       </span>
       <ChevronRight size={15} className="faint acct-chevron" />
     </Link>

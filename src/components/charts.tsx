@@ -69,12 +69,21 @@ export interface Point { label: string; value: number; sub?: string }
 
 export function AreaChart({
   points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
-  markLine, markLabel,
+  markLine, markLabel, bare = false,
 }: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
   /** A horizontal line to aim at — a goal's target, and where the line meets it. */
   markLine?: number;
   markLabel?: string;
+  /**
+   * No axes, no labels, no margins: the line runs the full width it is given.
+   *
+   * For a headline chart whose figures are already spelled out above it in
+   * words. Axis labels there are a second, smaller copy of what the reader
+   * has just been told, and the gutter they need is what stops the line
+   * reaching either edge.
+   */
+  bare?: boolean;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -82,10 +91,13 @@ export function AreaChart({
   const uid = raw.replace(/[^a-zA-Z0-9]/g, "");
   if (!points.length) return <div ref={ref} style={{ height }} />;
 
-  const padL = 52;
-  const padR = 8;
-  const padT = 10;
-  const padB = 22;
+  // One pixel, not none: the line is 2px wide and centred on its endpoints,
+  // so at a true zero margin a clipping chart shaves the outer half off both
+  // ends and the run looks cut rather than finished.
+  const padL = bare ? 1 : 52;
+  const padR = bare ? 1 : 8;
+  const padT = bare ? 2 : 10;
+  const padB = bare ? 2 : 22;
   const innerW = Math.max(40, w - padL - padR);
   const innerH = height - padT - padB;
   const values = points.map((p) => p.value);
@@ -133,7 +145,7 @@ export function AreaChart({
   return (
     <div ref={ref} className="chart-wrap" style={{ height }}>
       <svg
-        width="100%" height={height} style={{ display: "block", overflow: "visible" }}
+        width="100%" height={height} style={{ display: "block", overflow: bare ? "hidden" : "visible" }}
         onMouseLeave={() => setHover(null)}
         onMouseMove={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
@@ -160,7 +172,7 @@ export function AreaChart({
           </clipPath>
         </defs>
 
-        {ticks.map((t, i) => (
+        {bare ? null : ticks.map((t, i) => (
           <g key={i}>
             <line className="grid-line" x1={padL} x2={padL + innerW} y1={y(t)} y2={y(t)} />
             <text className="axis-text" x={padL - 8} y={y(t) + 3.5} textAnchor="end">{label(t)}</text>
@@ -196,7 +208,7 @@ export function AreaChart({
           />
         ) : null}
 
-        {labelled.map((i) => (
+        {bare ? null : labelled.map((i) => (
           <text key={points[i].label + i} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">
             {points[i].label}
           </text>

@@ -76,7 +76,7 @@ await build({
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
-      export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary } from "./src/lib/select.ts";
+      export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
 
@@ -2316,6 +2316,90 @@ await test("a group's series is the sum of its accounts on each day", () => {
   // balances carry forward, and an account contributes nothing before it exists
   assert.deepEqual(M.aggregateSeries([a, b], dates), [1000, 1500, 3500]);
   assert.deepEqual(M.aggregateSeries([], dates), [0, 0, 0]);
+});
+
+/* ── the accounts screen's slices ─────────────────────────────────────── */
+
+const slicer = (over) => {
+  const mk = (id, type, history, extra = {}) => ({
+    ...acct(id, history), type, ...extra,
+  });
+  return {
+    accounts: [
+      mk("chk", "checking", [{ date: "2026-01-01", balance: 1_000_00 }, { date: "2026-03-01", balance: 1_500_00 }]),
+      mk("sav", "savings", [{ date: "2026-01-01", balance: 3_000_00 }, { date: "2026-03-01", balance: 2_500_00 }]),
+      mk("card", "credit", [{ date: "2026-01-01", balance: -1_000_00 }, { date: "2026-03-01", balance: -500_00 }]),
+      ...(over ?? []),
+    ],
+    goals: [], categories: [], groups: [], transactions: [], tags: [], budgets: {},
+  };
+};
+const DAYS = ["2026-01-01", "2026-02-01", "2026-03-01"];
+const sliceOf = (db, key) => M.accountSlices(db, DAYS).find((s) => s.key === key);
+
+await test("the whole picture comes first, then one slice per kind", () => {
+  const slices = M.accountSlices(slicer(), DAYS);
+  assert.equal(slices[0].key, "net", "net worth leads, because it is what the screen opens on");
+  assert.equal(slices[0].label, "Net Worth");
+  assert.deepEqual(slices.slice(1).map((s) => s.key), ["cash", "credit"],
+    "and a kind nobody holds is not offered as a filter");
+});
+
+await test("a slice knows what it is worth and how it got there", () => {
+  const cash = sliceOf(slicer(), "cash");
+  assert.equal(cash.total, 4_000_00, "1,500 and 2,500 today");
+  assert.deepEqual(cash.series, [4_000_00, 4_000_00, 4_000_00], "which is where it started too");
+  assert.equal(cash.change, 0);
+  assert.equal(cash.pct, 0);
+
+  const net = sliceOf(slicer(), "net");
+  assert.equal(net.total, 3_500_00, "4,000 of cash less 500 owed");
+  assert.equal(net.change, 500_00, "the card was paid down half way");
+});
+
+await test("a debt improving is a rise, not a fall", () => {
+  // Stored signed, so -1,000 to -500 is +500. Measured against the size of
+  // where it started, or a minus sign on the denominator would report paying
+  // off half a card as minus fifty per cent.
+  const card = sliceOf(slicer(), "credit");
+  assert.equal(card.change, 500_00);
+  assert.equal(card.pct, 0.5);
+});
+
+await test("a slice that has only ever been nothing has no percentage to give", () => {
+  const db = slicer([{ ...acct("new", []), id: "new", type: "investment", balance: 0, history: [] }]);
+  const inv = sliceOf(db, "investments");
+  assert.equal(inv.change, 0);
+  assert.equal(inv.pct, null, "nought to nought is not a hundred per cent of anything");
+});
+
+await test("what is owed is a share of the debt, never a negative share of assets", () => {
+  const db = slicer();
+  assert.equal(sliceOf(db, "credit").shareOf, "debt");
+  assert.equal(sliceOf(db, "credit").share, 1, "the only debt there is");
+  assert.equal(sliceOf(db, "cash").shareOf, "assets");
+  assert.equal(sliceOf(db, "cash").share, 1);
+  // and the shares of the asset slices come to one between them
+  const withInv = slicer([{ ...acct("ira", [{ date: "2026-01-01", balance: 4_000_00 }]), id: "ira", type: "investment" }]);
+  const shares = M.accountSlices(withInv, DAYS).slice(1)
+    .filter((x) => x.shareOf === "assets").map((x) => x.share);
+  assert.equal(Math.round(shares.reduce((a, b) => a + b, 0) * 1000) / 1000, 1);
+  assert.equal(sliceOf(withInv, "cash").share, 0.5, "4,000 of 8,000");
+});
+
+await test("net worth leaves out what it was told to; the kinds still list it", () => {
+  // An account excluded from net worth is still an account you own, so it
+  // belongs in its own group's list and total — but not in the headline.
+  const db = slicer([{ ...acct("play", [{ date: "2026-01-01", balance: 900_00 }]), id: "play", type: "savings", includeInNetWorth: false }]);
+  assert.equal(sliceOf(db, "net").total, 3_500_00, "the headline is untouched by it");
+  assert.equal(sliceOf(db, "cash").total, 4_900_00, "its own group counts it");
+  assert.ok(sliceOf(db, "cash").accounts.some((a) => a.id === "play"), "and lists it");
+});
+
+await test("a hidden account is in no slice at all", () => {
+  const db = slicer([{ ...acct("old", [{ date: "2026-01-01", balance: 700_00 }]), id: "old", type: "savings", hidden: true }]);
+  assert.equal(sliceOf(db, "cash").total, 4_000_00);
+  assert.equal(sliceOf(db, "net").total, 3_500_00);
 });
 
 await test("paying down a debt reads as green, not red", () => {

@@ -60,6 +60,28 @@ export function dateLabel(d: ISODate, opts: { weekday?: boolean; year?: boolean 
 export const longDate = (d: ISODate): string =>
   parseISO(d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
+/**
+ * How long ago, in one or two characters plus a unit.
+ *
+ * For a line that already carries the account's name, its kind and its
+ * balance: "13h ago" fits where "September 4, 2026 at 11:42" does not, and
+ * the only question being asked of it is whether the figure beside it is
+ * fresh. Anything older than a week is a date, because by then the
+ * difference between nine days and eleven has stopped mattering.
+ */
+export function sinceLabel(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const mins = Math.floor((now.getTime() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return dateLabel(iso.slice(0, 10), { year: now.getFullYear() !== new Date(then).getFullYear() });
+}
+
 export function relativeDay(d: ISODate): string {
   const diff = Math.round((parseISO(d).getTime() - parseISO(today()).getTime()) / 86400000);
   if (diff === 0) return "Today";
