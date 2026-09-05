@@ -4973,28 +4973,43 @@ await test("new money in a shared account is flagged rather than absorbed", () =
   assert.equal(M.GF.funding(paid).available, 900_00, "the new money is there to be assigned");
 });
 
-await test("the allocation dialog's figure goes below zero where the headline cannot", () => {
-  // Two things that look alike and are not: nothing left to hand out, and more
-  // handed out than the account holds. Only the second needs fixing, and the
-  // sign is the only thing that tells them apart.
+await test("what is available goes below zero when the goals ask for more than is there", () => {
+  // Nothing left to hand out and more handed out than exists are two
+  // different situations, and only the second is anyone's to fix. The sign is
+  // what tells them apart, so it is not clamped away.
   let db = M.GF.allocate(funded(), "emg", "sav", 1_000_00);
   let sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
-  assert.equal(sav.available, 0, "nothing spare");
-  assert.equal(sav.net, 0, "and nothing over either");
+  assert.equal(sav.available, 0, "spent to the penny is nothing, not a shortfall");
+  assert.equal(sav.free, 0);
 
-  // now two goals claim more than the account holds
+  // now a second goal claims more than the account holds
   db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 200_00 } } : g)) };
   sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
-  assert.equal(sav.available, 0, "the headline still says there is nothing to hand out");
-  assert.equal(sav.net, -200_00, "and the dialog says how much too much was handed out");
+  assert.equal(sav.available, -200_00, "the shortfall is the figure to act on");
   assert.equal(sav.over, 200_00);
+  assert.equal(sav.free, 0, "and there is still nothing that could be handed out");
 });
 
-await test("with money still spare the two figures agree", () => {
+await test("the shortfall reaches the headline, not just the one account", () => {
+  // The number at the top of the screen is the one that gets looked at, so a
+  // total that stops at zero hides the very thing it should be raising.
+  let db = M.GF.allocate(funded(), "emg", "sav", 1_000_00);
+  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 200_00 } } : g)) };
+  const f = M.GF.funding(db);
+  assert.equal(f.over, 200_00);
+  assert.equal(f.free, 500_00, "the untouched account still has its money");
+  assert.equal(f.available, 300_00, "which the shortfall eats into rather than being hidden beside");
+
+  // and when the shortfall is the larger of the two, the headline says so
+  const worse = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 900_00 } } : g)) };
+  assert.equal(M.GF.funding(worse).available, -400_00);
+});
+
+await test("with money still spare, available and free agree", () => {
   const db = M.GF.allocate(funded(), "emg", "sav", 600_00);
   const sav = M.GF.funding(db).accounts.find((a) => a.account.id === "sav");
   assert.equal(sav.available, 400_00);
-  assert.equal(sav.net, 400_00, "above zero there is nothing to tell apart");
+  assert.equal(sav.free, 400_00, "above zero there is nothing to tell apart");
 });
 
 await test("an account swept to its own goal has nothing available either way", () => {
@@ -5003,7 +5018,33 @@ await test("an account swept to its own goal has nothing available either way", 
   });
   const ira = M.GF.funding(db).accounts.find((a) => a.account.id === "ira");
   assert.equal(ira.available, 0);
-  assert.equal(ira.net, 0, "the leftovers are spoken for, not spare and not over");
+  assert.equal(ira.free, 0, "the leftovers are spoken for, not spare and not short");
+});
+
+await test("a lone goal drifting down with its account is not a shortfall", () => {
+  // The counterpart to the test above, and the reason the sign is tied to
+  // `over` rather than to raw arithmetic. One goal, one account, a balance
+  // that fell: the goal already reports what is really there, so showing
+  // minus five hundred would be inventing a problem to go and solve.
+  const db = M.GF.allocate(funded(), "emg", "sav", 900_00);
+  const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
+  const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
+  assert.equal(sav.over, 0);
+  assert.equal(sav.available, 0, "absorbed, not raised");
+  assert.equal(M.GF.funding(dropped).available, 500_00, "and the headline is untouched by it");
+});
+
+await test("a shortfall does not shrink the ceiling of the goal that has to give way", () => {
+  // The dialog lets a claim be dragged down without releasing it first, which
+  // works because the ceiling includes what the goal already holds. If the
+  // ceiling used the signed figure, an over-assigned account would clamp
+  // every claim below where it already sits and the only way out of the
+  // shortfall would be blocked.
+  let db = M.GF.allocate(funded(), "emg", "sav", 1_000_00);
+  db = { ...db, goals: db.goals.map((g) => (g.id === "kit" ? { ...g, allocations: { sav: 200_00 } } : g)) };
+  assert.equal(M.GF.ceilingFor(db, "emg", "sav"), 1_000_00, "it can still be dragged anywhere at or below where it is");
+  const fixed = M.GF.allocate(db, "emg", "sav", 800_00);
+  assert.equal(M.GF.funding(fixed).accounts.find((a) => a.account.id === "sav").available, 0, "and doing so clears it");
 });
 
 await test("an account that is one goal's in full just follows its balance down", () => {
@@ -5030,7 +5071,7 @@ await test("two goals over one balance is reported, because it double-counts", (
   const dropped = { ...db, accounts: db.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 400_00 } : a)) };
   const sav = M.GF.funding(dropped).accounts.find((a) => a.account.id === "sav");
   assert.equal(sav.over, 600_00, "the shortfall across both claims has to be visible");
-  assert.equal(sav.available, 0);
+  assert.equal(sav.available, -600_00, "and it is what the account reports having, not a flat nothing");
   assert.equal(M.GF.goalSaved(dropped, "emg"), 400_00);
   assert.equal(M.GF.goalSaved(dropped, "kit"), 100_00);
 });
@@ -5064,6 +5105,8 @@ await test("a negative goal account offers nothing rather than a negative", () =
   const f = M.GF.funding(db);
   const sav = f.accounts.find((a) => a.account.id === "sav");
   assert.equal(f.available, 500_00);
+  // Available is signed now, but only ever by a shortfall against a claim.
+  // An overdrawn account has no claim on it, so it drags nothing down.
   assert.ok(f.accounts.every((a) => a.available >= 0));
   // Nothing is allocated against it, so it is not over-allocated either — an
   // overdrawn account is a different problem from a mis-assigned one, and

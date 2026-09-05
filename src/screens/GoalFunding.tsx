@@ -58,18 +58,22 @@ export function GoalFunding() {
         <div
           className="col" style={{
             gap: 2, padding: "18px 16px", alignItems: "center", textAlign: "center",
-            background: f.available > 0 ? "var(--pos-soft)" : "var(--surface-2)",
+            background: f.available > 0 ? "var(--pos-soft)" : f.available < 0 ? "var(--neg-soft)" : "var(--surface-2)",
             borderBottom: "1px solid var(--line-soft)",
           }}
         >
-          <span className={`tile-value ${f.available > 0 ? "pos" : "muted"}`}>
+          {/* Below zero is a real reading, not an error state: it is the size
+              of the cut the goals need before the balances can cover them. */}
+          <span className={`tile-value ${tone(f.available)}`}>
             <Money value={f.available} />
           </span>
-          <span className={`small row ${f.available > 0 ? "pos" : "muted"}`} style={{ gap: 5 }}>
+          <span className={`small row ${tone(f.available)}`} style={{ gap: 5 }}>
             Available for goals
             <span title={
               `${db.accounts.filter((a) => a.goalAccount).length} accounts hold ${fmtish(f.pooled)} between them. `
-              + `${fmtish(f.allocated + f.auto)} is assigned to goals; the rest has arrived and has not been given a job.`
+              + (f.available < 0
+                ? `${fmtish(f.allocated + f.auto + f.over)} is assigned to goals — ${fmtish(f.over)} more than those balances hold.`
+                : `${fmtish(f.allocated + f.auto)} is assigned to goals; the rest has arrived and has not been given a job.`)
             }>
               <Info size={13} />
             </span>
@@ -101,13 +105,10 @@ export function GoalFunding() {
                   {expanded ? <ChevronDown size={14} className="faint" /> : <ChevronRight size={14} className="faint" />}
                   <InstitutionLogo account={row.account} size={26} round />
                   <span className="grow truncate" style={{ fontWeight: 500 }}>{row.account.name}</span>
-                  {row.over > 0 ? (
-                    <span className="tag" style={{ background: "var(--neg-soft)", color: "var(--neg)" }}>
-                      <Money value={row.over} /> over
-                    </span>
-                  ) : null}
-                  <span className={`num ${row.available > 0 ? "pos" : "faint"}`}>
-                    {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={0} />}
+                  {/* No "$200 over" tag beside it any more: the figure is
+                      signed, so the tag was the same news twice. */}
+                  <span className={`num ${tone(row.available)}`}>
+                    {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={row.available} />}
                   </span>
                 </div>
 
@@ -153,8 +154,8 @@ export function GoalFunding() {
                     <div className="divider" style={{ margin: "2px 0" }} />
                     <div className="spread small">
                       <span style={{ fontWeight: 500 }}>Available</span>
-                      <span className={`num ${row.available > 0 ? "pos" : "faint"}`} style={{ fontWeight: 500 }}>
-                        {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={0} />}
+                      <span className={`num ${tone(row.available)}`} style={{ fontWeight: 500 }}>
+                        {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={row.available} />}
                       </span>
                     </div>
 
@@ -175,8 +176,15 @@ export function GoalFunding() {
         <div className="col" style={{ gap: 8, padding: 12, borderTop: "1px solid var(--line-soft)" }}>
           <Btn
             variant="primary"
-            disabled={!goals.length || (f.available <= 0 && f.allocated <= 0)}
-            onClick={() => setAllocating(f.accounts.find((a) => a.available > 0)?.account ?? f.accounts[0]!.account)}
+            disabled={!goals.length || (f.free <= 0 && f.allocated <= 0)}
+            onClick={() => setAllocating(
+              // The account that needs a decision comes first, then one with
+              // money to hand out. Opening on a settled account when another
+              // is short is a wasted trip.
+              (f.accounts.find((a) => a.available < 0)
+                ?? f.accounts.find((a) => a.available > 0)
+                ?? f.accounts[0]!).account,
+            )}
           >
             <Sparkles size={14} /> Allocate funds
           </Btn>
@@ -189,6 +197,15 @@ export function GoalFunding() {
     </>
   );
 }
+
+/**
+ * Green above nothing, red below, grey at rest.
+ *
+ * One helper because the same figure is shown in four places and they have to
+ * agree — a headline that says minus two hundred over a row that says nothing
+ * is worse than either on its own.
+ */
+const tone = (cents: number): string => (cents > 0 ? "pos" : cents < 0 ? "neg" : "muted");
 
 /** Whole dollars, for prose where the cents would be noise. */
 const fmtish = (cents: number): string =>
@@ -262,7 +279,7 @@ function AllocateModal({ account, onClose }: { account: Account; onClose: () => 
   const [which, setWhich] = useState<string>(account.id);
   const current = rows.find((a) => a.account.id === which);
   const active = current?.account ?? account;
-  const net = current?.net ?? 0;
+  const spare = current?.available ?? 0;
 
   if (!row) return null;
 
@@ -296,11 +313,8 @@ function AllocateModal({ account, onClose }: { account: Account; onClose: () => 
           <>
             <div className="spread small">
               <span className="muted">Available funds</span>
-              {/* Signed, unlike the headline: below zero means more is assigned
-                  than the account holds, which is a different thing from
-                  having nothing left and the only one of the two to act on. */}
-              <span className={`num bold ${net > 0 ? "pos" : net < 0 ? "neg" : "muted"}`}>
-                <Money value={net} />
+              <span className={`num bold ${tone(spare)}`}>
+                <Money value={spare} />
               </span>
             </div>
             <div className="col" style={{ gap: 0 }}>

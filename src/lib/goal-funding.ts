@@ -27,18 +27,28 @@ export interface AccountFunding {
   allocated: number;
   /** Swept to this account's own goal, if it has one. */
   auto: number;
-  /** Arrived and not yet given a job. Never negative. */
+  /**
+   * Arrived and not yet given a job — or, below zero, promised and not there.
+   *
+   * Signed on purpose. Minus two hundred dollars available is not a
+   * contradiction to be tidied away: it is two hundred dollars of goals the
+   * balance does not cover, and the shortfall is the number worth acting on.
+   * Clamping it at zero made the one account that needed attention look
+   * exactly like every account that simply had nothing spare.
+   *
+   * It goes below zero only where `over` does, so an account whose single
+   * goal has drifted down with the balance still reads nothing rather than
+   * accusing anyone of a mistake. See `over`.
+   */
   available: number;
   /**
-   * The same figure, allowed to go below zero.
+   * The same figure with the shortfall left out: what could actually be
+   * handed to a goal this moment, which is never less than nothing.
    *
-   * `available` stops at nothing because that is what is genuinely there to
-   * hand out, and a headline reading minus two hundred pounds of spare money
-   * would be nonsense. But inside the allocation dialog the sign is the whole
-   * point: it is the difference between "nothing left" and "two hundred more
-   * assigned than the account holds", and only one of those needs fixing.
+   * Only for arithmetic — allocation ceilings — never for display. A screen
+   * showing this instead of `available` is the bug described above.
    */
-  net: number;
+  free: number;
   /**
    * Allocated beyond what is in the account, and worth saying so.
    *
@@ -62,8 +72,10 @@ export interface Funding {
   pooled: number;
   allocated: number;
   auto: number;
-  /** The headline: what has arrived and is still unassigned. */
+  /** The headline: what has arrived and is still unassigned, shortfall and all. */
   available: number;
+  /** The same, floored at nothing. */
+  free: number;
   over: number;
 }
 
@@ -116,7 +128,10 @@ export function funding(db: DB): Funding {
     // An account with a goal of its own has no spare: whatever is not spoken
     // for is already this goal's, which is the entire point of setting one.
     const auto = account.autoGoalId ? spare : 0;
-    return { account, balance, allocated, auto, available: spare - auto, net: balance - claimed - auto, over };
+    const free = spare - auto;
+    // Never both: an account can only be over-assigned once its spare is
+    // gone, so the two are one signed figure written as two.
+    return { account, balance, allocated, auto, available: free - over, free, over };
   });
 
   return {
@@ -125,6 +140,7 @@ export function funding(db: DB): Funding {
     allocated: accounts.reduce((s, a) => s + a.allocated, 0),
     auto: accounts.reduce((s, a) => s + a.auto, 0),
     available: accounts.reduce((s, a) => s + a.available, 0),
+    free: accounts.reduce((s, a) => s + a.free, 0),
     over: accounts.reduce((s, a) => s + a.over, 0),
   };
 }
@@ -170,7 +186,10 @@ export function ceilingFor(db: DB, goalId: ID, accountId: ID): number {
   const goal = db.goals.find((g) => g.id === goalId);
   const f = funding(db).accounts.find((x) => x.account.id === accountId);
   if (!goal || !f) return 0;
-  return f.available + Math.min(claimOn(goal, accountId), f.balance);
+  // `free`, not `available`: a shortfall elsewhere in the account must not
+  // drag this goal's ceiling below what it already holds, or the dialog would
+  // refuse to let it be dragged back down.
+  return f.free + Math.min(claimOn(goal, accountId), f.balance);
 }
 
 /**
