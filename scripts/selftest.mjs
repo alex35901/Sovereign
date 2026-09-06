@@ -77,6 +77,8 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
+      export { spendPace, monthProgress, dueSoon } from "./src/lib/dashboard.ts";
+      export { creditSummary, recordCredit, bandOf, CREDIT_BANDS } from "./src/lib/credit.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
@@ -2317,6 +2319,141 @@ await test("a group's series is the sum of its accounts on each day", () => {
   // balances carry forward, and an account contributes nothing before it exists
   assert.deepEqual(M.aggregateSeries([a, b], dates), [1000, 1500, 3500]);
   assert.deepEqual(M.aggregateSeries([], dates), [0, 0, 0]);
+});
+
+/* ── the dashboard's comparisons ──────────────────────────────────────── */
+
+const dashDb = (txns, over = {}) => ({
+  accounts: [{ id: "a", name: "A", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 }],
+  transactions: txns.map((t, i) => ({
+    id: `t${i}`, accountId: "a", merchant: "M", amount: t.amount, date: t.date,
+    categoryId: "c", tags: [], reviewed: true, ...t,
+  })),
+  recurring: [], goals: [], categories: [], groups: [], tags: [], budgets: {}, holdings: [], rules: [],
+  settings: {}, ...over,
+});
+
+await test("spending is counted from the first of the month, day by day", () => {
+  const db = dashDb([
+    { date: "2026-09-02", amount: -10_00 },
+    { date: "2026-09-02", amount: -5_00 },
+    { date: "2026-09-04", amount: -20_00 },
+    { date: "2026-08-10", amount: -99_00 },
+  ]);
+  const p = M.spendPace(db, "2026-09-05");
+  assert.deepEqual(p.thisMonth.map((x) => x.total), [0, 15_00, 15_00, 35_00, 35_00],
+    "it runs to today, carrying the running total across days with nothing on them");
+  assert.equal(p.spent, 35_00);
+  assert.equal(p.spentLast, 99_00, "and last month is counted whole");
+  assert.equal(p.lastMonth.length, 31, "August, right to the end of it");
+});
+
+await test("this month stops at today; last month does not", () => {
+  const db = dashDb([
+    { date: "2026-09-02", amount: -10_00 },
+    { date: "2026-09-20", amount: -50_00 },
+  ]);
+  const p = M.spendPace(db, "2026-09-05");
+  assert.equal(p.thisMonth.length, 5, "five days in, five points");
+  assert.equal(p.spent, 10_00, "a charge dated later this month is not spent yet");
+});
+
+await test("money coming in does not walk the spending line backwards", () => {
+  // "Spent so far" and "net so far" are different questions, and the budget
+  // card answers the second one.
+  const db = dashDb([
+    { date: "2026-09-02", amount: -30_00 },
+    { date: "2026-09-03", amount: 2_000_00 },
+  ]);
+  assert.equal(M.spendPace(db, "2026-09-04").spent, 30_00);
+});
+
+await test("a muted account is left out of the comparison, on both sides", () => {
+  const db = dashDb([
+    { date: "2026-09-02", amount: -10_00 },
+    { date: "2026-09-02", amount: -70_00, accountId: "hidden" },
+    { date: "2026-08-02", amount: -70_00, accountId: "hidden" },
+  ], {
+    accounts: [
+      { id: "a", name: "A", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "hidden", name: "H", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, hideTransactions: true, history: [], order: 1 },
+    ],
+  });
+  const p = M.spendPace(db, "2026-09-05");
+  assert.equal(p.spent, 10_00);
+  assert.equal(p.spentLast, 0, "or the two months would be counting different things");
+});
+
+await test("how far through the month it is", () => {
+  assert.equal(M.monthProgress("2026-09", "2026-09-15"), 15 / 30);
+  assert.equal(M.monthProgress("2026-09", "2026-09-30"), 1, "the last day is the whole month, not a day short");
+  assert.equal(M.monthProgress("2026-09", "2026-08-31"), 0, "a month not started yet is at nought");
+  assert.equal(M.monthProgress("2026-09", "2026-10-01"), 1, "and one gone by is full");
+});
+
+await test("what is still to come out counts only what is left, and only bills", () => {
+  const db = dashDb([], {
+    recurring: [
+      { id: "r1", merchant: "Rent", amount: -1_500_00, cadence: "monthly", nextDate: "2026-09-10", accountId: "a", categoryId: "c" },
+      { id: "r2", merchant: "Gone", amount: -40_00, cadence: "monthly", nextDate: "2026-09-02", accountId: "a", categoryId: "c" },
+      { id: "r3", merchant: "Payday", amount: 3_000_00, cadence: "monthly", nextDate: "2026-09-15", accountId: "a", categoryId: "c" },
+      { id: "r4", merchant: "Next month", amount: -90_00, cadence: "monthly", nextDate: "2026-10-03", accountId: "a", categoryId: "c" },
+    ],
+  });
+  const d = M.dueSoon(db, "2026-09-05");
+  assert.equal(d.remaining, 1_500_00,
+    "the 2nd is spent, the paycheque is not a bill, and October is not this month");
+  assert.deepEqual(d.items.map((r) => r.id), ["r1", "r3", "r4"], "but everything ahead is still listed");
+});
+
+/* ── credit scores ────────────────────────────────────────────────────── */
+
+await test("a score is placed in its band and on the scale", () => {
+  assert.equal(M.bandOf(819).label, "Excellent");
+  assert.equal(M.bandOf(800).label, "Excellent", "the boundary belongs to the band above it");
+  assert.equal(M.bandOf(799).label, "Very good");
+  assert.equal(M.bandOf(300).label, "Poor");
+  assert.equal(M.bandOf(0).label, "Poor", "and a score off the bottom is still poor, not undefined");
+});
+
+await test("the newest reading leads, and is compared with the one before it", () => {
+  const db = { credit: [
+    { date: "2026-07-01", score: 800 },
+    { date: "2026-09-01", score: 819 },
+    { date: "2026-08-01", score: 816 },
+  ] };
+  const c = M.creditSummary(db);
+  assert.deepEqual(c.readings.map((r) => r.date), ["2026-07-01", "2026-08-01", "2026-09-01"],
+    "sorted, because a chart drawn from an unsorted array zigzags for the wrong reason");
+  assert.equal(c.latest.score, 819);
+  assert.equal(c.change, 3, "against August, not against the first one recorded");
+  assert.equal(c.band.label, "Excellent");
+  assert.equal(Math.round(c.position * 1000) / 1000, Math.round(((819 - 300) / 550) * 1000) / 1000);
+});
+
+await test("a budget with no scores says nothing rather than nought", () => {
+  const c = M.creditSummary({});
+  assert.equal(c.latest, undefined);
+  assert.equal(c.band, undefined, "no band, rather than 'Poor' for a score nobody has given");
+  assert.deepEqual(c.readings, []);
+});
+
+await test("one reading has nothing to be compared with", () => {
+  const c = M.creditSummary({ credit: [{ date: "2026-09-01", score: 700 }] });
+  assert.equal(c.change, 0);
+  assert.equal(c.band.label, "Good");
+});
+
+await test("a second reading for the same day replaces the first", () => {
+  // A provider polled twice in an afternoon must not put two points a pixel
+  // apart, and a correction should replace the mistake rather than sit by it.
+  let db = M.recordCredit({}, { date: "2026-09-01", score: 700 });
+  db = M.recordCredit(db, { date: "2026-09-02", score: 705 });
+  db = M.recordCredit(db, { date: "2026-09-01", score: 710 });
+  assert.deepEqual(db.credit, [
+    { date: "2026-09-01", score: 710 },
+    { date: "2026-09-02", score: 705 },
+  ]);
 });
 
 /* ── whether an account is still being fed ────────────────────────────── */

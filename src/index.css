@@ -725,6 +725,23 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .span-pill:hover { color: var(--text); }
 .span-pill.on { background: var(--surface-3); color: var(--text); }
 
+/* ── dashboard ── */
+.dash-head { display: flex; justify-content: flex-end; padding: 10px 14px 0; }
+.dash-card-head { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
+.dash-card-head h2 { font-size: 16px; }
+
+/* The five bands laid end to end, with a pin where the score falls. */
+.credit-scale { position: relative; display: flex; gap: 3px; height: 8px; }
+.credit-scale > i { flex: 1 1 0; border-radius: 99px; display: block; }
+.credit-pin {
+  position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1.5px;
+  border-radius: 2px; background: var(--text); box-shadow: 0 0 0 1.5px var(--surface);
+}
+
+/* Two runs over one stretch: which line is which, under the chart. */
+.cmp-key { justify-content: center; gap: 18px; color: var(--muted); padding-top: 4px; }
+.cmp-swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+
 /* ── connection status ── */
 .conn-icon { display: inline-flex; color: var(--faint); }
 .conn-detail { padding: 0 16px 14px; }

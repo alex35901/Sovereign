@@ -69,7 +69,7 @@ export interface Point { label: string; value: number; sub?: string }
 
 export function AreaChart({
   points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
-  markLine, markLabel, bare = false, onScrub,
+  markLine, markLabel, bare = false, onScrub, format,
 }: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
   /** A horizontal line to aim at — a goal's target, and where the line meets it. */
@@ -92,6 +92,14 @@ export function AreaChart({
    * since two readouts of the same point is one too many.
    */
   onScrub?: (index: number | null) => void;
+  /**
+   * How to write a value, when it is not money.
+   *
+   * A credit score charted with the money formatter comes out as an axis of
+   * "$8" — every reading rounded to the nearest thousand dollars, which is
+   * both wrong and unreadable.
+   */
+  format?: (value: number) => string;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -148,7 +156,7 @@ export function AreaChart({
   // series paints the band between 0 and the balance instead of a thin sliver.
   const area = `${line} L${x(points.length - 1).toFixed(1)},${zeroY} L${x(0).toFixed(1)},${zeroY} Z`;
   const ticks = rangeTicks(lo, hi);
-  const label = axisFormat(lo, hi);
+  const label = format ?? axisFormat(lo, hi);
 
   // Sampled days can land twice in the same month, which would print "Jan '26"
   // beside itself; only the first of a repeated label is drawn.
@@ -270,10 +278,96 @@ export function AreaChart({
       {hover !== null && !onScrub ? (
         <Tip x={x(hover)} y={y(points[hover].value)} width={w}>
           <div className="tiny muted">{points[hover].label}</div>
-          <div className={`num bold ${points[hover].value < 0 ? "neg" : ""}`}>{fmt0(points[hover].value)}</div>
+          <div className={`num bold ${points[hover].value < 0 ? "neg" : ""}`}>
+            {format ? format(points[hover].value) : fmt0(points[hover].value)}
+          </div>
           {points[hover].sub ? <div className="tiny muted">{points[hover].sub}</div> : null}
         </Tip>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Two runs of the same thing over the same stretch, for comparison.
+ *
+ * One of them is complete and one is still being written, which is the whole
+ * point: this month's line stops where today is, and the gap between where it
+ * stopped and where the other line had got to by the same day is the answer
+ * being looked for. The finished run is drawn behind and in grey so the live
+ * one reads as the subject rather than as one of a pair.
+ */
+export function CompareChart({ current, previous, height = 210, span, tone = "--accent", label, priorLabel }: {
+  /** [x, y] pairs. x is shared between the two — a day of the month. */
+  current: [number, number][];
+  previous: [number, number][];
+  height?: number;
+  /** The widest x either run can reach, so both are drawn to one scale. */
+  span: number;
+  tone?: string;
+  label: string;
+  priorLabel: string;
+}) {
+  const [ref, w] = useWidth<HTMLDivElement>();
+  const raw = useId();
+  const uid = raw.replace(/[^a-zA-Z0-9]/g, "");
+  const padL = 46;
+  const padR = 10;
+  const padT = 10;
+  const padB = 26;
+  const innerW = Math.max(40, w - padL - padR);
+  const innerH = height - padT - padB;
+  const hi = Math.max(1, ...current.map((p) => p[1]), ...previous.map((p) => p[1]));
+  const x = (day: number) => padL + (span <= 1 ? 0 : ((day - 1) / (span - 1)) * innerW);
+  const y = (v: number) => padT + innerH - (v / hi) * innerH;
+  const path = (pts: [number, number][]) =>
+    pts.map((p, i) => `${i ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+  const ticks = rangeTicks(0, hi);
+  const fmtTick = axisFormat(0, hi);
+  const tip = current[current.length - 1];
+
+  return (
+    <div ref={ref} className="chart-wrap" style={{ height }}>
+      <svg width="100%" height={height} style={{ display: "block", overflow: "visible" }}>
+        <defs>
+          <linearGradient id={`cmp-${uid}`} gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={padT + innerH}>
+            <stop offset="0%" stopColor={color(tone)} stopOpacity="0.26" />
+            <stop offset="100%" stopColor={color(tone)} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line className="grid-line" x1={padL} x2={padL + innerW} y1={y(t)} y2={y(t)} />
+            <text className="axis-text" x={padL - 8} y={y(t) + 3.5} textAnchor="end">{fmtTick(t)}</text>
+          </g>
+        ))}
+        {previous.length > 1 ? (
+          <path d={path(previous)} fill="none" stroke={color("--muted")} strokeWidth={2} strokeLinejoin="round" opacity={0.65} />
+        ) : null}
+        {current.length > 1 ? (
+          <>
+            <path
+              d={`${path(current)} L${x(current[current.length - 1][0]).toFixed(1)},${(padT + innerH).toFixed(1)} L${x(current[0][0]).toFixed(1)},${(padT + innerH).toFixed(1)} Z`}
+              fill={`url(#cmp-${uid})`}
+            />
+            <path d={path(current)} fill="none" stroke={color(tone)} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
+          </>
+        ) : null}
+        {tip ? (
+          <>
+            <circle cx={x(tip[0])} cy={y(tip[1])} r={3.5} fill={color(tone)} />
+            <text className="axis-text" x={Math.min(x(tip[0]) + 8, padL + innerW)} y={y(tip[1]) - 8} textAnchor={x(tip[0]) > padL + innerW * 0.7 ? "end" : "start"} fill={color(tone)}>
+              {fmt0(tip[1])}
+            </text>
+          </>
+        ) : null}
+        <text className="axis-text" x={padL} y={height - 6}>Day 1</text>
+        <text className="axis-text" x={padL + innerW} y={height - 6} textAnchor="end">{`Day ${span}`}</text>
+      </svg>
+      <div className="row cmp-key tiny">
+        <span className="row" style={{ gap: 6 }}><i className="cmp-swatch" style={{ background: color(tone) }} />{label}</span>
+        <span className="row" style={{ gap: 6 }}><i className="cmp-swatch" style={{ background: color("--muted") }} />{priorLabel}</span>
+      </div>
     </div>
   );
 }

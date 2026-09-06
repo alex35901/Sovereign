@@ -1,35 +1,29 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, TrendingDown, TrendingUp } from "lucide-react";
-import { useDB } from "../store";
+import { ArrowRight, Plus, TrendingDown, TrendingUp } from "lucide-react";
+import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { addMonths, dateLabel, lastMonths, monthEnd, monthLabel, monthStart, relativeDay, thisMonth } from "../lib/date";
-import { fmtPct, pct } from "../lib/money";
 import {
-  budgetSummary, cashFlowSeries, categoryTotals, goalProgress, netWorthSeries,
-  netWorthNow, recurringList,
+  dateLabel, daysInMonth, monthLabel, relativeDay, thisMonth, today,
+} from "../lib/date";
+import {
+  aggregateSeries, budgetSummary, earliestHistoryDate, netWorthAt, portfolioSummary, trendTone,
 } from "../lib/select";
-import { AreaChart, BarChart, Donut, HBars } from "../components/charts";
-import { Btn, Card, CardHead, Empty, Money, Progress, Tile } from "../components/ui";
+import { dueSoon, monthProgress, spendPace } from "../lib/dashboard";
+import { CREDIT_MAX, CREDIT_MIN, CREDIT_BANDS, creditSummary } from "../lib/credit";
+import { AreaChart, CompareChart } from "../components/charts";
+import { BalanceChart } from "../components/BalanceChart";
+import {
+  Btn, Card, CardHead, Empty, Field, Modal, Money, Progress, TextInput, cx, color,
+} from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
-import { CategoryTag } from "../components/pickers";
+import type { RangeKey } from "../lib/range";
+import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
 export default function Dashboard() {
   const db = useDB();
   const month = thisMonth();
-  const nw = netWorthNow(db);
-
-  const netWorth = useMemo(() => netWorthSeries(db, lastMonths(13)), [db]);
-  const flow = useMemo(() => cashFlowSeries(db, lastMonths(6)), [db]);
-  const budget = useMemo(() => budgetSummary(db, month), [db, month]);
-  const spend = useMemo(() => categoryTotals(db, monthStart(month), monthEnd(month)), [db, month]);
-  const upcoming = useMemo(() => recurringList(db).slice(0, 5), [db]);
-  const recent = db.transactions.slice(0, 7);
-
-  const monthAgo = netWorth[netWorth.length - 2]?.net ?? nw.net;
-  const nwChange = nw.net - monthAgo;
-  const current = flow[flow.length - 1] ?? { income: 0, expense: 0, net: 0 };
-  const savingsRate = current.income > 0 ? pct(current.net, current.income) : 0;
+  const [range, setRange] = useState<RangeKey>("1m");
 
   if (!db.accounts.length) {
     return (
@@ -52,186 +46,345 @@ export default function Dashboard() {
     <>
       <TopBar title="Dashboard" />
       <div className="page stack">
-        <div className="grid g4">
-          <Tile
-            label="Net worth"
-            value={<Money value={nw.net} cents={false} />}
-            sub={
-              <span className={nwChange >= 0 ? "pos" : "neg"}>
-                {nwChange >= 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />}{" "}
-                <Money value={nwChange} cents={false} sign={nwChange >= 0} /> this month
-              </span>
-            }
-          />
-          <Tile
-            label={`${monthLabel(month, true)} income`}
-            value={<Money value={current.income} cents={false} />}
-            sub={<span className="muted">across {db.accounts.filter((a) => !a.hidden).length} accounts</span>}
-          />
-          <Tile
-            label={`${monthLabel(month, true)} spending`}
-            value={<Money value={current.expense} cents={false} />}
-            sub={<span className="muted">{spend.length} categories</span>}
-          />
-          <Tile
-            label="Savings rate"
-            value={<span className={savingsRate >= 0 ? "pos" : "neg"}>{fmtPct(savingsRate, 0)}</span>}
-            sub={<span className="muted">saved <Money value={current.net} cents={false} /></span>}
-          />
-        </div>
-
-        <div className="grid g-2-1">
-          <Card>
-            <CardHead
-              title="Net worth"
-              sub={`${monthLabel(netWorth[0]?.month ?? month, true)} — today`}
-              right={<Link to="/accounts" className="link small">Accounts <ArrowRight size={12} /></Link>}
-            />
-            <AreaChart
-              points={netWorth.map((p) => ({
-                label: monthLabel(p.month, true),
-                value: p.net,
-                sub: `assets ${(p.assets / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}`,
-              }))}
-              height={210}
-            />
-          </Card>
-
-          <Card>
-            <CardHead title={`${monthLabel(month, true)} budget`} right={<Link to="/budget" className="link small">Open</Link>} />
-            <div className="col" style={{ gap: 4, marginBottom: 12 }}>
-              <div className="spread">
-                <span className="small muted">Spent of planned</span>
-                <span className="num small bold">
-                  <Money value={budget.actualExpense} cents={false} /> / <Money value={budget.plannedExpense} cents={false} />
-                </span>
-              </div>
-              <Progress
-                value={budget.actualExpense} max={budget.plannedExpense || 1}
-                over={budget.actualExpense > budget.plannedExpense}
-              />
-            </div>
-            <div className="col" style={{ gap: 10 }}>
-              {budget.expense
-                .flatMap((g) => g.rows)
-                .sort((a, b) => b.actual - a.actual)
-                .slice(0, 5)
-                .map((r) => (
-                  <div key={r.category.id} className="col" style={{ gap: 4 }}>
-                    <div className="spread">
-                      <span className="small truncate">{r.category.icon} {r.category.name}</span>
-                      <span className={`num tiny ${r.remaining < 0 ? "neg" : "muted"}`}>
-                        <Money value={Math.abs(r.remaining)} cents={false} /> {r.remaining < 0 ? "over" : "left"}
-                      </span>
-                    </div>
-                    <Progress value={r.actual} max={r.planned || r.actual || 1} color={r.category.color} over={r.remaining < 0} />
-                  </div>
-                ))}
-              {!budget.expense.length ? <span className="small faint">No budget set for this month.</span> : null}
-            </div>
-          </Card>
-        </div>
-
-        <div className="grid g-2-1">
-          <Card>
-            <CardHead title="Cash flow" sub="Income vs. spending, last 6 months" right={<Link to="/cash-flow" className="link small">Details</Link>} />
-            <BarChart
-              height={210}
-              groups={flow.map((f) => ({
-                label: monthLabel(f.month, true),
-                bars: [
-                  { key: "Income", value: f.income, tone: "--c3" },
-                  { key: "Expenses", value: f.expense, tone: "--c9" },
-                ],
-              }))}
-            />
-          </Card>
-
-          <Card>
-            <CardHead title="Where it went" sub={monthLabel(month)} right={<Link to="/reports" className="link small">Reports</Link>} />
-            {spend.length ? (
-              <Donut
-                size={150}
-                slices={spend.slice(0, 6).map((c) => ({ label: c.category.name, value: c.total, tone: c.category.color }))}
-                center={
-                  <div className="col" style={{ gap: 0 }}>
-                    <span className="tiny muted">Total</span>
-                    <Money value={spend.reduce((s, c) => s + c.total, 0)} cents={false} className="bold" />
-                  </div>
-                }
-              />
-            ) : <Empty title="No spending yet this month" />}
-          </Card>
-        </div>
-
-        <div className="grid g-2-1">
-          <Card pad={false}>
-            <CardHead flush title="Recent transactions" right={<Link to="/transactions" className="link small">See all</Link>} />
-            {recent.map((t) => (
-              <Link key={t.id} to="/transactions" className="list-row click">
-                <MerchantAvatar name={t.merchant} size={28} />
-                <div className="grow col" style={{ gap: 0 }}>
-                  <span className="truncate" style={{ fontWeight: 500 }}>{t.merchant}</span>
-                  <span className="tiny faint">{dateLabel(t.date)} · {db.accounts.find((a) => a.id === t.accountId)?.name}</span>
-                </div>
-                <CategoryTag categoryId={t.categoryId} />
-                <span className="num bold" style={{ width: 92, textAlign: "right" }}>
-                  <Money value={t.amount} colored={t.amount > 0} />
-                </span>
-              </Link>
-            ))}
-            {!recent.length ? <Empty title="No transactions yet" /> : null}
-          </Card>
-
-          <div className="stack">
-            <Card pad={false}>
-              <CardHead flush title="Upcoming" right={<Link to="/recurring" className="link small">All</Link>} />
-              {upcoming.map((r) => (
-                <div key={r.id} className="list-row">
-                  <MerchantAvatar name={r.merchant} size={26} />
-                  <div className="grow col" style={{ gap: 0 }}>
-                    <span className="truncate small" style={{ fontWeight: 500 }}>{r.merchant}</span>
-                    <span className="tiny faint">{relativeDay(r.nextDate)}</span>
-                  </div>
-                  <Money value={r.amount} cents={false} colored={r.amount > 0} className="bold small" />
-                </div>
-              ))}
-              {!upcoming.length ? <Empty title="Nothing detected yet" /> : null}
-            </Card>
-
-            <Card>
-              <CardHead title="Goals" right={<Link to="/goals" className="link small">All</Link>} />
-              <div className="col" style={{ gap: 12 }}>
-                {db.goals.filter((g) => !g.archived).slice(0, 3).map((g) => {
-                  const p = goalProgress(db, g.id);
-                  return (
-                    <div key={g.id} className="col" style={{ gap: 5 }}>
-                      <div className="spread">
-                        <span className="small">{g.emoji} {g.name}</span>
-                        <span className="tiny muted num">
-                          <Money value={p.saved} cents={false} /> / <Money value={g.targetAmount} cents={false} />
-                        </span>
-                      </div>
-                      <Progress value={p.saved} max={g.targetAmount} color="--c3" />
-                    </div>
-                  );
-                })}
-                {!db.goals.length ? <span className="small faint">No goals yet.</span> : null}
-              </div>
-            </Card>
-          </div>
-        </div>
-
-        <Card>
-          <CardHead title="Spending by category" sub={`${monthLabel(addMonths(month, -1))} vs ${monthLabel(month)}`} />
-          <HBars
-            rows={spend.slice(0, 8).map((c) => ({
-              label: c.category.name, value: c.total, tone: c.category.color,
-              icon: c.category.icon, sub: `${c.count} txn`,
-            }))}
-          />
-        </Card>
+        <NetWorthCard range={range} onRange={setRange} />
+        <SpendingCard />
+        <BudgetCard month={month} />
+        <CreditCard />
+        <RecurringCard />
+        <InvestmentCard />
       </div>
     </>
+  );
+}
+
+/* ── net worth ────────────────────────────────────────────────────────── */
+
+function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeKey) => void }) {
+  const db = useDB();
+  const start = useMemo(() => {
+    const earliest = earliestHistoryDate(db.accounts);
+    const from = rangeStart(range, earliest);
+    return earliest && earliest > from ? earliest : from;
+  }, [db.accounts, range]);
+
+  const { series, points, total } = useMemo(() => {
+    const dates = sampleDates(start, today());
+    const days = spanDays(start, today());
+    const values = dates.map((d) => netWorthAt(db, d));
+    return {
+      series: values,
+      points: values.map((value, i) => ({
+        label: sampleLabel(dates[i], days), value, sub: dateLabel(dates[i], { year: true }),
+      })),
+      total: values[values.length - 1] ?? 0,
+    };
+  }, [db, start]);
+
+  return (
+    <Card pad={false} className="nw-card">
+      <BalanceChart
+        label="Net worth"
+        total={total} series={series} points={points}
+        tone={trendTone(series)} range={range} onRange={onRange}
+        above={
+          <div className="dash-head">
+            <Link to="/accounts" className="link small">Accounts <ArrowRight size={12} /></Link>
+          </div>
+        }
+      />
+    </Card>
+  );
+}
+
+/* ── spending, against last month ─────────────────────────────────────── */
+
+function SpendingCard() {
+  const db = useDB();
+  const pace = useMemo(() => spendPace(db), [db]);
+  // Like for like: what had been spent by this day last month, not by the end
+  // of it. Comparing a fifth of one month against the whole of another is how
+  // a dashboard tells you every month that you are doing well.
+  const soFarLast = pace.lastMonth.find((p) => p.day === pace.thisMonth.length)?.total
+    ?? pace.spentLast;
+  const diff = pace.spent - soFarLast;
+
+  return (
+    <Card>
+      <CardHead
+        title="Spending"
+        sub="This month vs. last month"
+        right={<Link to="/cash-flow" className="link small">Cash flow <ArrowRight size={12} /></Link>}
+      />
+      {pace.thisMonth.length ? (
+        <>
+          <div className="row wrap" style={{ gap: 10, marginBottom: 6 }}>
+            <span className="num bold" style={{ fontSize: 22 }}><Money value={pace.spent} /></span>
+            <span className={cx("small", diff > 0 ? "neg" : "pos")}>
+              {diff > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}{" "}
+              <Money value={Math.abs(diff)} cents={false} /> {diff > 0 ? "more" : "less"} than by this day last month
+            </span>
+          </div>
+          <CompareChart
+            span={pace.days}
+            current={pace.thisMonth.map((p) => [p.day, p.total] as [number, number])}
+            previous={pace.lastMonth.map((p) => [p.day, p.total] as [number, number])}
+            tone="--c9"
+            label="This month"
+            priorLabel="Last month"
+          />
+        </>
+      ) : <Empty title="Nothing spent yet this month" />}
+    </Card>
+  );
+}
+
+/* ── budget ───────────────────────────────────────────────────────────── */
+
+/** One side of the month's plan, with today's place in it marked. */
+function BudgetLine({ label, planned, actual, doneWord, tone }: {
+  label: string; planned: number; actual: number; doneWord: string; tone: string;
+}) {
+  const remaining = planned - actual;
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <div className="spread small">
+        <span style={{ fontWeight: 600 }}>{label}</span>
+        <span className="muted num"><Money value={planned} cents={false} /> planned</span>
+      </div>
+      {/* The mark is where today is in the month, so the bar answers "am I
+          ahead of the calendar or behind it" rather than only "how much is
+          left" — which is the question a plan spread over a month invites. */}
+      <Progress
+        value={actual} max={Math.max(planned, actual, 1)} color={tone}
+        over={planned > 0 && actual > planned}
+        mark={Math.max(planned, actual, 1) * monthProgress(thisMonth())}
+        markTitle="Where today falls in the month"
+      />
+      <div className="spread small">
+        <span className="num bold"><Money value={actual} cents={false} /> {doneWord}</span>
+        <span className={remaining < 0 ? "neg" : "pos"}>
+          <span className="num bold"><Money value={Math.abs(remaining)} cents={false} /></span>{" "}
+          <span className="muted">{remaining < 0 ? "over" : "remaining"}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function BudgetCard({ month }: { month: string }) {
+  const db = useDB();
+  const b = useMemo(() => budgetSummary(db, month), [db, month]);
+  const day = Number(today().slice(8, 10));
+  return (
+    <Card>
+      <CardHead
+        title="Budget" sub={`${monthLabel(month)} · day ${day} of ${daysInMonth(month)}`}
+        right={<Link to="/budget" className="link small">Open <ArrowRight size={12} /></Link>}
+      />
+      {b.plannedIncome || b.plannedExpense ? (
+        <div className="col" style={{ gap: 18 }}>
+          <BudgetLine label="Income" planned={b.plannedIncome} actual={b.actualIncome} doneWord="earned" tone="--pos" />
+          <BudgetLine label="Expenses" planned={b.plannedExpense} actual={b.actualExpense} doneWord="spent" tone="--pos" />
+        </div>
+      ) : (
+        <Empty title="No budget set for this month" action={<Link to="/budget"><Btn>Set one up</Btn></Link>} />
+      )}
+    </Card>
+  );
+}
+
+/* ── credit score ─────────────────────────────────────────────────────── */
+
+function CreditCard() {
+  const db = useDB();
+  const { actions } = useStore();
+  const c = useMemo(() => creditSummary(db), [db]);
+  const [adding, setAdding] = useState(false);
+  const [date, setDate] = useState(today());
+  const [score, setScore] = useState(0);
+
+  return (
+    <Card>
+      <CardHead
+        title="Credit score"
+        sub={c.latest ? `Last recorded ${dateLabel(c.latest.date, { year: true })}` : "No readings yet"}
+        right={<Btn size="sm" onClick={() => setAdding(true)}><Plus size={13} /> Add reading</Btn>}
+      />
+      {c.latest && c.band ? (
+        <>
+          <div className="row wrap" style={{ gap: 14, alignItems: "baseline", marginBottom: 12 }}>
+            <span className="num" style={{ fontSize: 38, fontWeight: 650, color: color(c.band.tone) }}>
+              {c.latest.score}
+            </span>
+            <span className="tag" style={{ background: "var(--surface-3)", color: color(c.band.tone) }}>{c.band.label}</span>
+            {c.change !== 0 ? (
+              <span className={c.change > 0 ? "pos small" : "neg small"}>
+                {c.change > 0 ? "+" : ""}{c.change} points
+              </span>
+            ) : <span className="small faint">No change</span>}
+            {c.latest.source ? <span className="tiny faint">via {c.latest.source}</span> : null}
+          </div>
+
+          {/* The bands, in order, with where this score sits along them. */}
+          <div className="credit-scale">
+            {[...CREDIT_BANDS].reverse().map((b) => (
+              <i key={b.label} style={{ background: color(b.tone) }} title={`${b.label}, from ${b.from}`} />
+            ))}
+            <span className="credit-pin" style={{ left: `${c.position * 100}%` }} />
+          </div>
+          <div className="spread tiny faint" style={{ marginTop: 4 }}>
+            <span>{CREDIT_MIN}</span><span>{CREDIT_MAX}</span>
+          </div>
+
+          {c.readings.length > 1 ? (
+            <div style={{ marginTop: 10 }}>
+              <AreaChart
+                height={150} tone={c.band.tone} negativeTone={c.band.tone}
+                format={(v) => String(Math.round(v))}
+                points={c.readings.map((r) => ({
+                  label: dateLabel(r.date), value: r.score, sub: dateLabel(r.date, { year: true }),
+                }))}
+              />
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <Empty
+          title="No credit score recorded"
+          body="Nothing here reads a bureau yet. Add a score by hand and the history is kept — a provider, when there is one, writes to the same place."
+          action={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={14} /> Add a reading</Btn>}
+        />
+      )}
+
+      {adding ? (
+        <Modal
+          title="Add a credit score" onClose={() => setAdding(false)}
+          footer={
+            <>
+              <div className="grow" />
+              <Btn onClick={() => setAdding(false)}>Cancel</Btn>
+              <Btn
+                variant="primary"
+                disabled={score < CREDIT_MIN || score > CREDIT_MAX}
+                onClick={() => { actions.setCreditScore(date, score); setAdding(false); }}
+              >
+                Save
+              </Btn>
+            </>
+          }
+        >
+          <div className="row" style={{ gap: 12 }}>
+            <Field label="As of"><TextInput type="date" value={date} onChange={setDate} /></Field>
+            <Field label="Score" hint={`${CREDIT_MIN}–${CREDIT_MAX}`}>
+              <input
+                className="input num" type="number" min={CREDIT_MIN} max={CREDIT_MAX} autoFocus
+                value={score || ""} onChange={(e) => setScore(Number(e.target.value))}
+              />
+            </Field>
+          </div>
+          {c.readings.length ? (
+            <div className="col" style={{ gap: 0 }}>
+              <span className="small muted" style={{ marginBottom: 6 }}>Recorded so far</span>
+              {[...c.readings].reverse().slice(0, 8).map((r) => (
+                <div key={r.date} className="spread balance-point">
+                  <span className="small muted">{dateLabel(r.date, { year: true })}</span>
+                  <span className="row" style={{ gap: 10 }}>
+                    <span className="num bold">{r.score}</span>
+                    <button className="btn btn-ghost btn-sm" onClick={() => actions.forgetCreditScore(r.date)}>Remove</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </Modal>
+      ) : null}
+    </Card>
+  );
+}
+
+/* ── recurring ────────────────────────────────────────────────────────── */
+
+function RecurringCard() {
+  const db = useDB();
+  const due = useMemo(() => dueSoon(db), [db]);
+  return (
+    <Card pad={false}>
+      <div className="dash-card-head">
+        <div className="spread">
+          <h2>Recurring</h2>
+          <Link to="/recurring" className="link small">All <ArrowRight size={12} /></Link>
+        </div>
+        <span className="small muted">
+          <Money value={due.remaining} className="bold" /> still due this month
+        </span>
+      </div>
+      {due.items.map((r) => (
+        <Link key={r.id} to="/recurring" className="list-row click">
+          <MerchantAvatar name={r.merchant} size={30} />
+          <div className="grow col" style={{ gap: 1, minWidth: 0 }}>
+            <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
+            <span className="tiny faint truncate">Every {cadenceWord(r.cadence)}</span>
+          </div>
+          <div className="col" style={{ gap: 1, alignItems: "flex-end" }}>
+            <Money value={r.amount} colored={r.amount > 0} className="bold" />
+            <span className="tiny faint">{relativeDay(r.nextDate)}</span>
+          </div>
+        </Link>
+      ))}
+      {!due.items.length ? <Empty title="Nothing due" body="Recurring charges are spotted from your transactions." /> : null}
+    </Card>
+  );
+}
+
+const CADENCE_WORD: Record<string, string> = {
+  weekly: "week", biweekly: "2 weeks", monthly: "month",
+  quarterly: "quarter", semiannual: "6 months", yearly: "year",
+};
+const cadenceWord = (c: string): string => CADENCE_WORD[c] ?? c;
+
+/* ── investments ──────────────────────────────────────────────────────── */
+
+function InvestmentCard() {
+  const db = useDB();
+  const p = useMemo(() => portfolioSummary(db), [db]);
+  // Month to date, from the accounts' own balance history — the holdings only
+  // carry today's price, so a per-holding mover needs a price history this
+  // app does not keep yet.
+  const change = useMemo(() => {
+    const first = `${thisMonth()}-01`;
+    const [start, end] = aggregateSeries(p.invAccounts, [first, today()]);
+    return { start, delta: end - start };
+  }, [p.invAccounts]);
+
+  if (!p.invAccounts.length) return null;
+  const up = change.delta >= 0;
+
+  return (
+    <Card>
+      <CardHead
+        title="Investments" sub={`${monthLabel(thisMonth())} so far`}
+        right={<Link to="/investments" className="link small">Open <ArrowRight size={12} /></Link>}
+      />
+      <div className="row wrap" style={{ gap: 12, alignItems: "baseline" }}>
+        <span className="num bold" style={{ fontSize: 26 }}><Money value={p.accountsValue} cents={false} /></span>
+        <span className={up ? "pos" : "neg"}>
+          {up ? "↗" : "↘"} <Money value={change.delta} cents={false} />
+          {change.start ? ` (${Math.round((change.delta / Math.abs(change.start)) * 1000) / 10}%)` : ""}
+        </span>
+      </div>
+      {p.byClass.length ? (
+        <div className="col" style={{ gap: 8, marginTop: 14 }}>
+          {p.byClass.slice(0, 4).map((c) => (
+            <div key={c.key} className="col" style={{ gap: 4 }}>
+              <div className="spread small">
+                <span className="muted">{c.label}</span>
+                <span className="num"><Money value={c.value} cents={false} /></span>
+              </div>
+              <Progress value={c.value} max={p.value || 1} color="--c2" />
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </Card>
   );
 }

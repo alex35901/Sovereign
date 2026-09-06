@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, dashboard.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1204,6 +1204,126 @@ try {
       }
     }
     await fp.close();
+  }
+
+  if (want("dashboard")) {
+    // ── the dashboard ──
+    const dash = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await dash.waitForTimeout(900);
+
+    const cards = await dash.evaluate(() =>
+      [...document.querySelectorAll(".page > .card")].map((c) =>
+        (c.querySelector("h2")?.innerText ?? c.querySelector(".tile-label")?.innerText ?? "").trim()));
+    // Lower-cased on both sides: the net worth card's name is a tile label,
+    // which CSS puts in capitals, and the test is about which cards are there
+    // rather than about how they are typeset.
+    check("the dashboard is the six cards, in that order",
+      cards.join(" / ").toLowerCase() === "net worth / spending / budget / credit score / recurring / investments",
+      cards.join(" / "));
+    check("and recent transactions is not one of them",
+      !/recent transactions/i.test(await dash.evaluate(() => document.body.innerText)));
+
+    // Net worth: the same scrubbable chart as everywhere else.
+    const nw = await dash.evaluate(() => ({
+      label: document.querySelector(".nw-head .tile-label")?.innerText.trim() ?? "",
+      spans: document.querySelectorAll(".span-pill").length,
+      axis: document.querySelectorAll(".nw-card .axis-text").length,
+    }));
+    check("net worth leads with the shared chart, periods and all",
+      nw.label === "NET WORTH" && nw.spans === 6 && nw.axis === 0,
+      `${nw.label}, ${nw.spans} periods, ${nw.axis} axis labels`);
+
+    // Spending: this month stops at today, last month runs the whole month.
+    const spend = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Spending/.test(c.querySelector("h2")?.innerText ?? ""));
+      const paths = [...card.querySelectorAll("path[stroke]")];
+      const xs = (d) => [...d.matchAll(/[ML](-?[\d.]+),/g)].map((m) => parseFloat(m[1]));
+      const [prior, now] = paths.map((p) => xs(p.getAttribute("d")));
+      return {
+        lines: paths.length,
+        priorEnd: Math.max(...prior),
+        nowEnd: Math.max(...now),
+        keys: [...card.querySelectorAll(".cmp-key span")].map((e) => e.innerText.trim()),
+      };
+    });
+    check("spending draws both months on one scale", spend.lines === 2, `${spend.lines} lines`);
+    check("this month stops short of last month, because the month is not over",
+      spend.nowEnd < spend.priorEnd, `this ${spend.nowEnd} vs last ${spend.priorEnd}`);
+    check("and says which line is which",
+      spend.keys.join(" / ") === "This month / Last month", spend.keys.join(" / "));
+
+    // Budget: the marker is where today falls in the month, not where the
+    // spending got to — that is what the bar itself already says.
+    const budget = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Budget/.test(c.querySelector("h2")?.innerText ?? ""));
+      const bar = card.querySelector(".bar");
+      const mark = bar.querySelector(".bar-mark");
+      const b = bar.getBoundingClientRect();
+      const day = Number(new Date().toISOString().slice(8, 10));
+      const days = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+      return {
+        at: mark ? (mark.getBoundingClientRect().left + 1 - b.left) / b.width : null,
+        want: day / days,
+        rows: [...card.querySelectorAll(".spread")].map((r) => r.innerText.replace(/\n/g, " ")).join(" | "),
+      };
+    });
+    check("the budget bar marks where today falls in the month",
+      budget.at !== null && Math.abs(budget.at - budget.want) < 0.04,
+      `mark at ${budget.at === null ? "nowhere" : Math.round(budget.at * 100)}%, today is ${Math.round(budget.want * 100)}% through`);
+    check("and reports income and expenses against their plans",
+      /planned/.test(budget.rows) && /earned/.test(budget.rows) && /spent/.test(budget.rows),
+      budget.rows.slice(0, 120));
+
+    // Recurring: what is still ahead, and what it comes to.
+    const rec = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Recurring/.test(c.querySelector("h2")?.innerText ?? ""));
+      return { head: card.querySelector(".dash-card-head").innerText.replace(/\n/g, " | "), rows: card.querySelectorAll(".list-row").length };
+    });
+    check("recurring says what is still due and lists what is coming",
+      /still due this month/.test(rec.head) && rec.rows > 0, `${rec.head} — ${rec.rows} rows`);
+
+    // Credit: nothing is wired to a bureau, so the card has to say so rather
+    // than show a zero, and a reading typed in has to stick.
+    const credit = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
+      return { text: card.innerText.replace(/\n/g, " | "), zero: /\b0\b/.test(card.innerText) };
+    });
+    check("with no readings the credit card says so rather than showing a nought",
+      /no credit score recorded/i.test(credit.text), credit.text.slice(0, 100));
+
+    const added = await tryStep("a credit score can be recorded by hand", async () => {
+      await dash.locator(".card", { hasText: "Credit score" }).locator("button", { hasText: "Add a reading" }).first().click({ timeout: 5000 });
+      await dash.locator(".modal").waitFor({ timeout: 5000 });
+      await dash.locator('.modal input[type="number"]').fill("742");
+      await dash.locator(".modal-foot button", { hasText: "Save" }).click({ timeout: 5000 });
+      await dash.waitForTimeout(600);
+    });
+    if (added) {
+      const after = await dash.evaluate(() => {
+        const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
+        return card.innerText.replace(/\n/g, " | ");
+      });
+      check("and it comes back with its band", /742/.test(after) && /very good/i.test(after), after.slice(0, 120));
+
+      // Two readings make a chart, and a chart of scores must not be labelled
+      // in money: the money formatter rounds 742 to "$0" and 819 to "$0" too.
+      await dash.locator(".card", { hasText: "Credit score" }).locator("button", { hasText: "Add reading" }).first().click();
+      await dash.locator(".modal").waitFor();
+      await dash.locator('.modal input[type="date"]').fill("2026-01-15");
+      await dash.locator('.modal input[type="number"]').fill("690");
+      await dash.locator(".modal-foot button", { hasText: "Save" }).click();
+      await dash.waitForTimeout(600);
+      const axis = await dash.evaluate(() => {
+        const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
+        return [...card.querySelectorAll(".chart-wrap .axis-text")].map((t) => t.textContent.trim());
+      });
+      const scores = axis.filter((t) => /^\d{3}$/.test(t));
+      check("and its chart is labelled in scores, not in dollars",
+        axis.length > 0 && scores.length >= 2 && !axis.some((t) => t.includes("$")),
+        axis.join(" "));
+    }
+    await dash.close();
   }
 
 } finally {
