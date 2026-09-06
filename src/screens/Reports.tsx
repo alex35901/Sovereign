@@ -88,6 +88,13 @@ function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet
     [flow, grain],
   );
   const sankey = useMemo(() => sankeyData(db, from, to, facet), [db, from, to, facet]);
+  // Height is set by the busiest column, not by the node count: the three
+  // columns stack independently, so ten expense bands need ten bands' worth of
+  // room whether or not there is one income source or six. Bands are drawn in
+  // proportion, and a band under 26px has no room for its figure — so the taller
+  // the diagram, the more of it is labelled. It grows past the fold and the page
+  // scrolls, which costs nothing and is what a long list of categories needs.
+  const tallest = Math.max(...[0, 1, 2].map((d) => sankey.nodes.filter((n) => n.depth === d).length), 1);
 
   const income = flow.reduce((s, f) => s + f.income, 0);
   const expense = flow.reduce((s, f) => s + f.expense, 0);
@@ -135,7 +142,7 @@ function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet
           sankey.nodes.length > 1
             ? (
               <Sankey
-                data={sankey} height={Math.max(320, sankey.nodes.length * 30)}
+                data={sankey} height={Math.max(340, tallest * 62)}
                 /* Below this the three columns and their labels stop being
                    readable, so the diagram keeps its size and the card
                    scrolls sideways instead. */

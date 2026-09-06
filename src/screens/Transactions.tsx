@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, Plus, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
+import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, ListChecks, Plus, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { DB, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { IconAction, TopBar } from "../shell/TopBar";
@@ -107,6 +107,12 @@ export default function Transactions() {
   const [period, setPeriodState] = useState<DateFilter>(() => fromParams((k) => params.get(k)));
   const [tagId, setTagId] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /**
+   * Whether the list is in multi-select. Off by default: a checkbox on every
+   * row of a list you mostly read is 500 empty boxes for the one time a month
+   * you want to recategorise a batch.
+   */
+  const [picking, setPicking] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [importing, setImporting] = useState(false);
   const [deduping, setDeduping] = useState(false);
@@ -351,11 +357,16 @@ export default function Transactions() {
           </div>
         </Card>
 
-        {selected.size ? (
+        {picking ? (
           <Card style={{ position: "sticky", top: 60, zIndex: 20, borderColor: "var(--accent)" }}>
             <div className="row wrap" style={{ gap: 8 }}>
-              <span className="bold">{selected.size} selected</span>
+              <span className="bold">
+                {selected.size ? `${selected.size} selected` : "Select transactions"}
+              </span>
               <div className="grow" />
+              {/* Nothing picked yet, so there is nothing to do to it — the
+                  only button that means anything is the way out. */}
+              {selected.size ? <>
               <CategoryPicker
                 value=""
                 onChange={(id) => {
@@ -394,16 +405,27 @@ export default function Transactions() {
                 <Trash2 size={13} /> Delete
               </Btn>
               <Btn size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Btn>
+              </> : null}
+              <Btn size="sm" variant="ghost" onClick={() => { setPicking(false); setSelected(new Set()); }}>Done</Btn>
             </div>
           </Card>
         ) : null}
 
         <Card pad={false}>
           <div className="list-row tx-grid head">
-            <input
-              type="checkbox" className="cb" checked={allSelected}
-              onChange={() => setSelected(allSelected ? new Set() : new Set(shown.map((t) => t.id)))}
-            />
+            {picking ? (
+              <input
+                type="checkbox" className="cb" checked={allSelected} title="Select all"
+                onChange={() => setSelected(allSelected ? new Set() : new Set(shown.map((t) => t.id)))}
+              />
+            ) : (
+              <button
+                className="tx-pick" onClick={() => setPicking(true)}
+                title="Select multiple" aria-label="Select multiple"
+              >
+                <ListChecks size={14} />
+              </button>
+            )}
             <span />
             <span className="tiny faint">Merchant</span>
             <span className="tiny faint tx-account">Account</span>
@@ -427,7 +449,7 @@ export default function Transactions() {
                 {rows.map((t) => (
                   <Row
                     key={t.id} txn={t} selected={selected.has(t.id)}
-                    onToggle={() => toggle(t.id)} onEdit={() => setEditing(t)}
+                    onToggle={picking ? () => toggle(t.id) : undefined} onEdit={() => setEditing(t)}
                   />
                 ))}
               </div>

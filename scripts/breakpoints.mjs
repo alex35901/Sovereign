@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -138,6 +138,29 @@ try {
       await page.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
       await page.waitForTimeout(500);
 
+      // Multi-select is off by default, and the columns still have to line up
+      // with an empty first cell in every row.
+      const cells = await page.evaluate(() => {
+        const visible = (el) => [...el.children]
+          .filter((c) => getComputedStyle(c).display !== "none").length;
+        const row = document.querySelector(".list-row.tx-grid:not(.head)");
+        return {
+          head: visible(document.querySelector(".tx-grid.head")),
+          row: visible(row),
+          boxes: row.querySelectorAll("input.cb").length,
+        };
+      });
+      check(`${w}px — with multi-select off there are no checkboxes, and the columns still line up`,
+        cells.boxes === 0 && cells.head === cells.row && cells.head === cols.length,
+        `${cells.boxes} boxes, header ${cells.head}, row ${cells.row}, expected ${cols.length}`);
+
+      // Guarded: an unguarded locator call aborts the whole run, and a run that
+      // aborts prints no failures at all — which reads exactly like a pass.
+      if (!await tryStep(`${w}px — multi-select can be turned on`, async () => {
+        await page.locator(".tx-pick").click({ timeout: 5000 });
+        await page.waitForTimeout(250);
+      })) { await page.close(); continue; }
+
       const seen = await page.evaluate((fn) => {
         const named = new Function("el", `return (${fn})(el)`);
         const row = document.querySelector(".list-row.tx-grid:not(.head)");
@@ -169,6 +192,72 @@ try {
         `header ${head}, row ${cols.length}`);
       await page.close();
     }
+  }
+
+  if (want("tx-select")) {
+    // ── multi-select is asked for, not always on ──
+    const sel = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+    await sel.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await sel.waitForTimeout(600);
+
+    const off = await sel.evaluate(() => {
+      const head = document.querySelector(".tx-grid.head");
+      const btn = head.querySelector(".tx-pick");
+      const first = head.getBoundingClientRect();
+      return {
+        boxes: document.querySelectorAll(".list-row.tx-grid input.cb").length,
+        toggle: !!btn,
+        // "top left of the table" — in the first column, above the rows.
+        leftmost: btn ? Math.round(btn.getBoundingClientRect().left - first.left) : -1,
+        bar: !!document.querySelector(".btn"),
+      };
+    });
+    check("the list opens with no checkboxes on it", off.boxes === 0, `${off.boxes} boxes`);
+    check("and a toggle in the top left of the table instead",
+      off.toggle && off.leftmost >= 0 && off.leftmost < 40, `toggle at ${off.leftmost}px`);
+
+    const on = await tryStep("the toggle turns multi-select on", async () => {
+      await sel.locator(".tx-pick").click({ timeout: 5000 });
+      await sel.waitForTimeout(400);
+    });
+    if (on) {
+      const shown = await sel.evaluate(() => ({
+        rows: document.querySelectorAll(".list-row.tx-grid:not(.head) input.cb").length,
+        all: !!document.querySelector(".tx-grid.head input.cb"),
+        toggle: !!document.querySelector(".tx-pick"),
+        bar: /select transactions/i.test(document.body.innerText),
+      }));
+      check("every row gets its square", shown.rows > 5, `${shown.rows} squares`);
+      check("the header's own square selects them all", shown.all, String(shown.all));
+      check("and the toggle gives way to it", !shown.toggle, String(shown.toggle));
+      // Nothing is picked yet, so the bar offers the way out and nothing else.
+      check("with a bar saying what to do next", shown.bar, "no bar");
+
+      const picked = await tryStep("a row can be picked", async () => {
+        await sel.locator(".list-row.tx-grid:not(.head) input.cb").first().check({ timeout: 5000 });
+        await sel.waitForTimeout(400);
+      });
+      if (picked) {
+        const text = await sel.evaluate(() => document.body.innerText);
+        check("and the bar counts it and offers what to do with it",
+          /1 selected/.test(text) && /Categorize/.test(text) && /Mark reviewed/.test(text),
+          text.slice(0, 80));
+      }
+
+      const done = await tryStep("multi-select can be left again", async () => {
+        await sel.locator("button", { hasText: /^Done$/ }).first().click({ timeout: 5000 });
+        await sel.waitForTimeout(400);
+      });
+      if (done) {
+        const back = await sel.evaluate(() => ({
+          boxes: document.querySelectorAll(".list-row.tx-grid input.cb").length,
+          toggle: !!document.querySelector(".tx-pick"),
+        }));
+        check("which puts the squares away and the toggle back",
+          back.boxes === 0 && back.toggle, `${back.boxes} boxes, toggle ${back.toggle}`);
+      }
+    }
+    await sel.close();
   }
 
   if (want("tx-align")) {
@@ -1605,6 +1694,35 @@ try {
       // On a phone it is read one column at a time, scrolled sideways.
       check("on a phone the sankey scrolls sideways rather than squeezing",
         sank.scrolls > 60 && sank.overflow === "auto", `${sank.scrolls}px of overflow, overflow-x ${sank.overflow}`);
+      // Vertical room is what gets a band its figure: they are drawn in
+      // proportion, so a diagram that fits the fold labels only its biggest.
+      const tall = await rep.evaluate(() => {
+        const wrap = document.querySelector(".card .chart-wrap");
+        const bands = [...wrap.querySelectorAll("svg > g")].map((g) => {
+          const r = g.querySelector("rect").getBoundingClientRect();
+          return { col: Math.round(r.left), h: r.height, texts: g.querySelectorAll("text").length };
+        });
+        // A band's weight is its share of its own column, taken off the drawing
+        // rather than the figures, so bands too small to print one still count.
+        const totals = new Map();
+        for (const b of bands) totals.set(b.col, (totals.get(b.col) ?? 0) + b.h);
+        const weight = (b) => b.h / totals.get(b.col);
+        return {
+          height: Math.round(wrap.getBoundingClientRect().height),
+          bands: bands.length,
+          // A band under nine pixels gets no label at all, and one under
+          // twenty-six no figure — so height is what turns stripes into rows.
+          mute: bands.filter((b) => weight(b) >= 0.02 && b.texts < 1).length,
+          figureless: bands.filter((b) => weight(b) >= 0.08 && b.texts < 2).length,
+        };
+      });
+      check("the sankey takes the height its bands need",
+        tall.height >= tall.bands * 40, `${tall.height}px for ${tall.bands} bands`);
+      check("so a band worth 2% of its side is named rather than left a stripe",
+        tall.mute === 0, `${tall.mute} of ${tall.bands} unnamed`);
+      check("and one worth 8% carries its figure as well",
+        tall.figureless === 0, `${tall.figureless} of ${tall.bands} without a figure`);
+
       check("with a snap point per column",
         sank.snapAt.length === sank.columns.length
         && sank.snapAt.every((x, i) => i === 0 || x > sank.snapAt[i - 1]),
