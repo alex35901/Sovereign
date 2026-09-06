@@ -277,6 +277,17 @@ h3 { font-size: 14px; }
 .seg button { border: 0; background: none; padding: 5px 11px; border-radius: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 500; }
 .seg button.on { background: var(--surface-3); color: var(--text); font-weight: 600; }
 
+/* The spread variant: one row of equal separate buttons rather than a pill.
+   No wrapping — the options are meant to be read as one line of choices, so
+   they shrink together instead of dropping one onto a second row. */
+.seg-spread { display: flex; width: 100%; flex-wrap: nowrap; gap: 8px; background: none; border: 0; padding: 0; }
+.seg-spread button {
+  flex: 1 1 0; min-width: 0; padding: 9px 8px; border: 1px solid var(--line);
+  border-radius: var(--radius-sm); background: var(--surface); font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.seg-spread button.on { background: var(--surface-3); color: var(--text); border-color: var(--muted); font-weight: 600; }
+
 /* ── inputs ───────────────────────────────────────────────────────────── */
 .input, .select, textarea.input {
   background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
@@ -753,8 +764,14 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   border-radius: 2px; background: var(--text); box-shadow: 0 0 0 1.5px var(--surface);
 }
 
+/* The ring and its key are centred as a pair, and the ring alone once the key
+   wraps under it. The key does not grow, or it would fill the row and push the
+   ring back against the left edge. */
+.donut-wrap { justify-content: center; }
+.donut-key { flex: 0 1 320px; min-width: 220px; }
+
 /* ── reports ── */
-.report-controls .field { flex: 1 1 160px; min-width: 0; }
+.report-controls .field { flex: 1 1 0; min-width: 0; }
 .report-controls .field > span { font-size: 11.5px; color: var(--muted); font-weight: 500; }
 .report-sum { padding: 12px 0; border-bottom: 1px solid var(--line-soft); font-size: 14px; }
 .report-sum:last-child { border-bottom: 0; }
@@ -773,6 +790,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* A sankey's labels sit outside their bands, so the chart needs room at both
    ends rather than clipping the first and last word of every row. */
 .sankey { overflow: visible; }
+
+/* Laid out wider than the card it sits in: scroll sideways to the next
+   column. The snap targets are the columns' left edges, so a swipe settles on
+   a column and its labels rather than halfway between two. */
+.sankey-scroll { overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; }
+.sankey-snap { position: absolute; top: 0; bottom: 0; width: 1px; scroll-snap-align: start; pointer-events: none; }
 .sankey-label { font-size: 10.5px; }
 
 /* Two runs over one stretch: which line is which, under the chart. */

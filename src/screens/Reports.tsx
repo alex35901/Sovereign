@@ -48,7 +48,7 @@ export default function Reports() {
       <TopBar title="Reports" actions={<RangePicker value={range} onChange={setRange} />} />
       <div className="page stack">
         <Segmented
-          value={tab} onChange={setTab}
+          value={tab} onChange={setTab} spread
           options={[
             { value: "flow", label: "Cash Flow" },
             { value: "spending", label: "Spending" },
@@ -133,7 +133,15 @@ function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet
           buckets.length ? <FlowChart buckets={buckets} height={260} /> : <Empty title="Nothing in this period" />
         ) : (
           sankey.nodes.length > 1
-            ? <Sankey data={sankey} height={Math.max(320, sankey.nodes.length * 30)} />
+            ? (
+              <Sankey
+                data={sankey} height={Math.max(320, sankey.nodes.length * 30)}
+                /* Below this the three columns and their labels stop being
+                   readable, so the diagram keeps its size and the card
+                   scrolls sideways instead. */
+                minWidth={640}
+              />
+            )
             : <Empty title="Not enough to draw a flow" body="It needs both money coming in and money going out." />
         )}
       </Card>
@@ -182,7 +190,7 @@ function BreakdownCard({ title, side, from, to }: { title: string; side: Side; f
           <span className="num bold"><Money value={total} cents={false} /></span>
         </div>
         <Segmented
-          value={facet} onChange={setFacet}
+          value={facet} onChange={setFacet} spread
           options={[
             { value: "category", label: "Category" },
             { value: "group", label: "Group" },

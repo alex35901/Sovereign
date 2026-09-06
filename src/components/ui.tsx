@@ -69,11 +69,18 @@ export function Btn({ children, onClick, variant = "default", size, disabled, ti
   );
 }
 
-export function Segmented<T extends string>({ value, options, onChange }: {
+export function Segmented<T extends string>({ value, options, onChange, spread }: {
   value: T; options: { value: T; label: string }[]; onChange: (v: T) => void;
+  /**
+   * Draw the options as separate buttons sharing the width equally, rather
+   * than as one pill. A pill reads as "one setting, currently X"; separated
+   * buttons read as "these are your options", which is what a page-level
+   * choice like Cash Flow / Spending / Income actually is.
+   */
+  spread?: boolean;
 }) {
   return (
-    <div className="seg">
+    <div className={cx("seg", spread && "seg-spread")}>
       {options.map((o) => (
         <button key={o.value} className={cx(o.value === value && "on")} onClick={() => onChange(o.value)}>{o.label}</button>
       ))}

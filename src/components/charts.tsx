@@ -399,7 +399,11 @@ export function FlowChart({ buckets, height = 240, onPick }: {
   const mid = padT + innerH / 2;
   const y = (v: number) => mid - (v / hi) * (innerH / 2);
   const slot = innerW / buckets.length;
-  const barW = Math.max(4, Math.min(26, slot * 0.34));
+  // One bar per period rather than two side by side: income and spending are
+  // the same month's two halves, and reading them off one vertical line is
+  // what makes the shape of a month legible. It also buys back the width the
+  // second bar was using, which goes into the bar that is left.
+  const barW = Math.max(6, Math.min(38, slot * 0.62));
   const x = (i: number) => padL + slot * i + slot / 2;
   const ticks = rangeTicks(-hi, hi);
   const label = axisFormat(-hi, hi);
@@ -427,11 +431,11 @@ export function FlowChart({ buckets, height = 240, onPick }: {
           >
             <rect x={x(i) - slot / 2} y={padT} width={slot} height={innerH} fill="transparent" />
             <rect
-              x={x(i) - barW - 2} y={y(b.income)} width={barW} height={Math.max(1, mid - y(b.income))}
+              x={x(i) - barW / 2} y={y(b.income)} width={barW} height={Math.max(1, mid - y(b.income))}
               rx={3} fill={color("--pos")} opacity={hover === null || hover === i ? 0.85 : 0.4}
             />
             <rect
-              x={x(i) + 2} y={mid} width={barW} height={Math.max(1, y(-b.expense) - mid)}
+              x={x(i) - barW / 2} y={mid} width={barW} height={Math.max(1, y(-b.expense) - mid)}
               rx={3} fill={color("--neg")} opacity={hover === null || hover === i ? 0.85 : 0.4}
             />
           </g>
@@ -548,7 +552,7 @@ export function Donut({ slices, size = 170, thickness = 22, center }: {
   const c = 2 * Math.PI * r;
   let offset = 0;
   return (
-    <div className="row" style={{ gap: 18, flexWrap: "wrap" }}>
+    <div className="row donut-wrap" style={{ gap: 18, flexWrap: "wrap" }}>
       <div style={{ position: "relative", width: size, height: size, flex: "none" }}>
         <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
           {total === 0 ? (
@@ -578,7 +582,7 @@ export function Donut({ slices, size = 170, thickness = 22, center }: {
           ) : center}
         </div>
       </div>
-      <div className="col grow" style={{ gap: 7, minWidth: 150 }}>
+      <div className="col donut-key" style={{ gap: 7 }}>
         {slices.map((s, i) => (
           <div key={s.label} className="row" style={{ gap: 8 }} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
             <span className="dot" style={{ background: color(s.tone) }} />
@@ -615,8 +619,21 @@ function clip(text: string, px: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-export function Sankey({ data, height = 320 }: { data: SankeyInput; height?: number }) {
-  const [ref, w] = useWidth<HTMLDivElement>();
+export function Sankey({ data, height = 320, minWidth = 0 }: {
+  data: SankeyInput;
+  height?: number;
+  /**
+   * A floor on the width to lay out at, whatever the container measures.
+   *
+   * Three columns of labelled bands do not fit a phone, and squeezing them in
+   * gives three columns of nothing legible. Given a floor wider than the
+   * screen, the diagram is drawn at its comfortable size and the container
+   * scrolls sideways — one column at a time, which is how it is read anyway.
+   */
+  minWidth?: number;
+}) {
+  const [ref, measured] = useWidth<HTMLDivElement>();
+  const w = Math.max(measured, minWidth);
   const [hover, setHover] = useState<string | null>(null);
   const depths = [0, 1, 2];
   const nodeW = 12;
@@ -670,9 +687,19 @@ export function Sankey({ data, height = 320 }: { data: SankeyInput; height?: num
     );
   });
 
+  // Laid out wider than it was given: the container scrolls, and each column
+  // gets a snap point so a swipe lands on the next one rather than between two.
+  const scrolls = w > measured;
   return (
-    <div ref={ref} className="chart-wrap" style={{ height }}>
-      <svg width="100%" height={height} style={{ display: "block", overflow: "visible" }}>
+    <div ref={ref} className={scrolls ? "chart-wrap sankey-scroll" : "chart-wrap"} style={{ height }}>
+      <div style={{ position: "relative", width: w, height }}>
+      {scrolls ? depths.map((d) => (
+        <span
+          key={`snap${d}`} className="sankey-snap"
+          style={{ left: Math.max(0, labelW + (innerW - nodeW) * (d / 2) - (d === 2 ? 4 : labelW + 4)) }}
+        />
+      )) : null}
+      <svg width={w} height={height} style={{ display: "block", overflow: "visible" }}>
         {ribbons}
         {data.nodes.map((n) => {
           const p = pos.get(n.id)!;
@@ -701,6 +728,7 @@ export function Sankey({ data, height = 320 }: { data: SankeyInput; height?: num
           );
         })}
       </svg>
+      </div>
     </div>
   );
 }

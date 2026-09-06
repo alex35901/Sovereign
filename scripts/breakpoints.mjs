@@ -1471,6 +1471,27 @@ try {
       [...document.querySelectorAll(".page > .seg button")].map((b) => b.innerText.trim()));
     check("reports opens on three tabs", tabs.join(" / ") === "Cash Flow / Spending / Income", tabs.join(" / "));
 
+    // Separated buttons sharing the width equally, on one line — not a pill,
+    // and not three buttons of three different widths.
+    const strip = await rep.evaluate(() => {
+      const boxes = [...document.querySelectorAll(".page > .seg button")]
+        .map((b) => b.getBoundingClientRect());
+      const gaps = boxes.slice(1).map((b, i) => b.left - boxes[i].right);
+      return {
+        widths: boxes.map((b) => Math.round(b.width)),
+        tops: [...new Set(boxes.map((b) => Math.round(b.top)))],
+        gaps: gaps.map((g) => Math.round(g)),
+        wrap: Math.round(document.querySelector(".page > .seg").getBoundingClientRect().width),
+        span: Math.round(boxes[boxes.length - 1].right - boxes[0].left),
+      };
+    });
+    check("the tabs are equal separated buttons on one line",
+      strip.tops.length === 1 && Math.max(...strip.widths) - Math.min(...strip.widths) <= 2
+      && strip.gaps.every((g) => g >= 4),
+      `widths ${strip.widths.join("/")}, gaps ${strip.gaps.join("/")}, ${strip.tops.length} lines`);
+    check("and they are spread across the whole width",
+      strip.wrap - strip.span <= 2, `${strip.span} of ${strip.wrap}`);
+
     // Cash flow: bars with a real zero between them, and a savings line.
     const bars = await rep.evaluate(() => {
       const svg = document.querySelector(".card .chart-wrap svg");
@@ -1501,11 +1522,40 @@ try {
       `${bars.green} up, ${bars.red} down`);
     check("with what was saved drawn across them", bars.line >= 1, `${bars.line} lines`);
 
+    // The pair used to sit side by side. A month is one column now, which is
+    // also what buys the extra width each bar got.
+    const columns = await rep.evaluate(() => {
+      const svg = document.querySelector(".card .chart-wrap svg");
+      const at = (fill) => [...svg.querySelectorAll("rect")]
+        .filter((r) => getComputedStyle(r).fill === fill)
+        .map((r) => {
+          const b = r.getBoundingClientRect();
+          return { mid: Math.round((b.left + b.right) / 2), w: Math.round(b.width) };
+        });
+      const up = at("rgb(53, 196, 140)");
+      const down = at("rgb(242, 104, 94)");
+      return {
+        paired: down.filter((d) => up.some((u) => Math.abs(u.mid - d.mid) <= 1)).length,
+        down: down.length,
+        columns: new Set([...up, ...down].map((r) => r.mid)).size,
+        months: up.length,
+        width: Math.min(...[...up, ...down].map((r) => r.w)),
+      };
+    });
+    check("income and spending share one vertical line per period",
+      columns.down > 3 && columns.paired === columns.down && columns.columns === columns.months,
+      `${columns.paired}/${columns.down} paired, ${columns.columns} columns for ${columns.months} periods`);
+    check("and the bars are wide enough to read", columns.width >= 10, `${columns.width}px wide`);
+
     // The second control is the chart's own, and only its own.
     const readControls = () => rep.evaluate(() =>
       [...document.querySelectorAll(".report-controls .field")].map((f) => f.querySelector("span").innerText.trim()));
     check("bars are asked for a timeframe", (await readControls()).join(" / ") === "Chart / Timeframe",
       (await readControls()).join(" / "));
+    const oneLine = await rep.evaluate(() =>
+      new Set([...document.querySelectorAll(".report-controls .field")]
+        .map((f) => Math.round(f.getBoundingClientRect().top))).size);
+    check("and both dropdowns sit on the same line, even on a phone", oneLine === 1, `${oneLine} lines`);
 
     const yearly = await tryStep("the timeframe can be changed", async () => {
       await rep.locator(".report-controls select").nth(1).selectOption("yearly");
@@ -1529,21 +1579,54 @@ try {
         (await readControls()).join(" / ") === "Chart / Group by", (await readControls()).join(" / "));
       const sank = await rep.evaluate(() => {
         const wrap = document.querySelector(".card .chart-wrap");
-        const card = wrap.closest(".card").getBoundingClientRect();
+        // The diagram is laid out wider than the phone, so a label belongs
+        // inside the drawing, not inside the window it is read through.
+        const drawn = wrap.firstElementChild.getBoundingClientRect();
         const labels = [...wrap.querySelectorAll("text")];
         return {
           bands: wrap.querySelectorAll("path").length,
-          nodes: wrap.querySelectorAll("rect").length,
+          nodes: wrap.querySelectorAll("svg > g > rect").length,
           outside: labels.filter((t) => {
             const b = t.getBoundingClientRect();
-            return b.right > card.right - 1 || b.left < card.left + 1;
+            return b.right > drawn.right + 1 || b.left < drawn.left - 1;
           }).length,
+          scrolls: wrap.scrollWidth - wrap.clientWidth,
+          overflow: getComputedStyle(wrap).overflowX,
+          snapAt: [...wrap.querySelectorAll(".sankey-snap")]
+            .map((n) => Math.round(n.getBoundingClientRect().left - drawn.left)),
+          columns: [...new Set([...wrap.querySelectorAll("svg > g > rect")]
+            .map((r) => Math.round(r.getBoundingClientRect().left - drawn.left)))].sort((a, b) => a - b),
         };
       });
       check("the sankey draws a band per flow", sank.bands > 2 && sank.nodes > 2,
         `${sank.bands} bands, ${sank.nodes} nodes`);
       // The failure this replaces: category names ran off the side of the card.
-      check("and every label stays inside its card", sank.outside === 0, `${sank.outside} labels outside`);
+      check("and every label stays inside the drawing", sank.outside === 0, `${sank.outside} labels outside`);
+      // On a phone it is read one column at a time, scrolled sideways.
+      check("on a phone the sankey scrolls sideways rather than squeezing",
+        sank.scrolls > 60 && sank.overflow === "auto", `${sank.scrolls}px of overflow, overflow-x ${sank.overflow}`);
+      check("with a snap point per column",
+        sank.snapAt.length === sank.columns.length
+        && sank.snapAt.every((x, i) => i === 0 || x > sank.snapAt[i - 1]),
+        `snaps at ${sank.snapAt.join(", ")} for columns at ${sank.columns.join(", ")}`);
+      const swiped = await tryStep("a swipe lands on the next column", async () => {
+        await rep.evaluate((x) => {
+          document.querySelector(".card .chart-wrap").scrollLeft = x;
+        }, sank.snapAt[1]);
+        await rep.waitForTimeout(400);
+      });
+      if (swiped) {
+        const second = await rep.evaluate(() => {
+          const wrap = document.querySelector(".card .chart-wrap");
+          const box = wrap.getBoundingClientRect();
+          return [...wrap.querySelectorAll("svg > g")].filter((g) => {
+            const b = g.getBoundingClientRect();
+            return b.left >= box.left - 1 && b.right <= box.right + 1;
+          }).length;
+        });
+        check("and the column it lands on is whole", second > 0, `${second} bands fully in view`);
+        await rep.evaluate(() => { document.querySelector(".card .chart-wrap").scrollLeft = 0; });
+      }
       await rep.locator(".report-controls select").first().selectOption("bar");
       await rep.waitForTimeout(500);
     }
@@ -1558,7 +1641,7 @@ try {
         const money = (t) => Number((t.match(/-?[\d,]+(\.\d+)?/)?.[0] ?? "0").replace(/,/g, ""));
         const card = document.querySelector(".card");
         const centre = money(card.querySelector(".chart-wrap .num, .num").innerText);
-        const keys = [...card.querySelectorAll(".col.grow > .row")].map((r) => ({
+        const keys = [...card.querySelectorAll(".donut-key > .row")].map((r) => ({
           label: r.querySelector(".truncate").innerText.trim(),
           value: money(r.querySelector(".num").innerText),
         }));
@@ -1569,6 +1652,20 @@ try {
       check("and a long tail is folded into a labelled band rather than dropped",
         ring.keys.some((k) => /everything else/i.test(k.label)) || ring.keys.length < 8,
         ring.keys.map((k) => k.label).join(", "));
+
+      // The ring used to be pinned to the left edge by a key that grew to
+      // fill the rest of the row.
+      const centred = await rep.evaluate(() => {
+        const wrap = document.querySelector(".donut-wrap").getBoundingClientRect();
+        const ring = document.querySelector(".donut-wrap > div").getBoundingClientRect();
+        return {
+          left: Math.round(ring.left - wrap.left),
+          right: Math.round(wrap.right - ring.right),
+        };
+      });
+      check("the ring is centred in its card rather than pinned left",
+        centred.left > 4 && Math.abs(centred.left - centred.right) <= 3,
+        `${centred.left}px left, ${centred.right}px right`);
 
       const sums = await rep.evaluate(() =>
         [...document.querySelectorAll(".report-sum")].map((r) => r.innerText.replace(/\n/g, " ")));
@@ -1607,6 +1704,40 @@ try {
         /total income/i.test(text) && !/total spending/i.test(text), text.slice(0, 60));
     }
     await rep.close();
+
+    // The same three answers on a desktop, where there is width to waste.
+    const wide = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+    await wide.goto(`${BASE}/reports`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(900);
+    const wideStrip = await wide.evaluate(() => {
+      const boxes = [...document.querySelectorAll(".page > .seg button")].map((b) => b.getBoundingClientRect());
+      return {
+        widths: boxes.map((b) => Math.round(b.width)),
+        span: Math.round(boxes[boxes.length - 1].right - boxes[0].left),
+        wrap: Math.round(document.querySelector(".page > .seg").getBoundingClientRect().width),
+      };
+    });
+    check("the tabs stay equal and spread on a desktop too",
+      Math.max(...wideStrip.widths) - Math.min(...wideStrip.widths) <= 2
+      && wideStrip.wrap - wideStrip.span <= 2,
+      `widths ${wideStrip.widths.join("/")}, ${wideStrip.span} of ${wideStrip.wrap}`);
+    const wideRing = await tryStep("the spending tab opens on a desktop", async () => {
+      await wide.locator(".page > .seg button", { hasText: "Spending" }).click({ timeout: 5000 });
+      await wide.waitForTimeout(800);
+    });
+    if (wideRing) {
+      const box = await wide.evaluate(() => {
+        const wrap = document.querySelector(".donut-wrap").getBoundingClientRect();
+        const kids = [...document.querySelectorAll(".donut-wrap > *")].map((k) => k.getBoundingClientRect());
+        return {
+          left: Math.round(Math.min(...kids.map((k) => k.left)) - wrap.left),
+          right: Math.round(wrap.right - Math.max(...kids.map((k) => k.right))),
+        };
+      });
+      check("the ring and its key are centred as a pair on a desktop",
+        box.left > 8 && Math.abs(box.left - box.right) <= 3, `${box.left}px left, ${box.right}px right`);
+    }
+    await wide.close();
   }
 
 } finally {
