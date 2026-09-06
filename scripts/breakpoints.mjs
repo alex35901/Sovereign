@@ -642,27 +642,47 @@ try {
     // its own line, where space-between had nothing left to space and the
     // columns went hard left — 180px out of step with the rows they label.
 
-    /** One document with long group names and a month put over budget: both
-     *  cases are invisible in the demo data as it ships. */
+    /**
+     * One document with long group names and a month put over budget: both
+     * cases are invisible in the demo data as it ships.
+     *
+     * The factor is worked out from what the page itself reports rather than
+     * guessed at. A fixed fraction of the plan is a bet on how much of the
+     * month has been spent by the day the suite runs, and it is a bet that
+     * comes good most days and quietly stops testing anything on the rest —
+     * 35% held until the date rolled one day forward and month-to-date
+     * spending slipped under it.
+     */
     const budgetDoc = async () => {
       const seed = await browser.newContext();
       const p0 = await seed.newPage();
       await p0.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
       await p0.waitForTimeout(1200);
-      const raw = await p0.evaluate(() => localStorage.getItem("sovereign.db.v1"));
+      const read = await p0.evaluate(() => {
+        const money = (t) => Number((t.match(/-?[\d,]+(\.\d+)?/)?.[0] ?? "0").replace(/,/g, ""));
+        const cell = [...document.querySelectorAll(".budget-stats > *")]
+          .find((c) => /planned expenses/i.test(c.innerText));
+        return {
+          db: localStorage.getItem("sovereign.db.v1"),
+          planned: money(cell.querySelector(".num").innerText),
+          actual: money(cell.querySelector(".tiny").innerText),
+        };
+      });
       await seed.close();
-      const db = JSON.parse(raw);
+      const db = JSON.parse(read.db);
       const income = new Set(db.categories
         .filter((c) => db.groups.find((g) => g.id === c.groupId)?.kind === "income")
         .map((c) => c.id));
-      // Every month, not just one: the page opens on whichever month is
-      // current when the suite runs, and cutting the wrong one leaves the bar
-      // comfortably green and the test quietly measuring nothing.
+      // Aim the plan at 60% of what was actually spent, so the bar is
+      // decidedly over and the mark lands around three fifths along.
+      const factor = read.planned > 0 ? (read.actual * 0.6) / read.planned : 0.5;
       const cut = (plan) => Object.fromEntries(Object.entries(plan)
-        .map(([k, v]) => [k, income.has(k) ? v : Math.round(v * 0.35)]));
+        .map(([k, v]) => [k, income.has(k) ? v : Math.round(v * factor)]));
       return {
         ...db,
         groups: db.groups.map((g) => (g.kind === "income" ? g : { ...g, name: `${g.name} & Everything Else` })),
+        // Every month, not just one: the page opens on whichever month is
+        // current when the suite runs.
         budgets: Object.fromEntries(Object.entries(db.budgets).map(([m, plan]) => [m, cut(plan)])),
       };
     };
@@ -748,7 +768,9 @@ try {
     const spent = await seeded(doc, 1180);
     const bad = await bar(spent);
     check("past the plan the bar is red", bad.fill === "rgb(242, 104, 94)", bad.fill);
-    check("and the plan is marked where it fell", bad.marks === 1 && bad.at > 20 && bad.at < 99,
+    // Aimed at 60%, so anywhere near it proves the mark tracks the plan
+    // rather than sitting at a fixed spot.
+    check("and the plan is marked where it fell", bad.marks === 1 && bad.at > 45 && bad.at < 75,
       `${bad.marks} marks at ${bad.at}%`);
     await spent.close();
   }
@@ -836,6 +858,65 @@ try {
       const said = await acc.evaluate(() => document.querySelector(".nw-head").innerText);
       check("and says which period it is now reporting", /1 year/.test(said), said.replace(/\n/g, " | "));
     }
+
+    // ── dragging a finger along the line ──
+    //
+    // Everything the headline says has to follow the finger: the figure is
+    // the one on the day under it, and the change is measured from the start
+    // of the period to that day. A marker that moves while the figures above
+    // it stay put is the failure this is aimed at — it still looks alive.
+    const readHead = () => acc.evaluate(() => ({
+      total: document.querySelector(".nw-value").innerText.trim(),
+      head: document.querySelector(".nw-head").innerText.replace(/\n/g, " | ").trim(),
+      // The period on its own. Reading it out of the whole header and
+      // splitting on the dash catches the figures too, which move by design.
+      period: document.querySelector(".nw-head .faint")?.innerText.trim() ?? "",
+      dots: document.querySelectorAll(".nw-card .chart-wrap circle").length,
+    }));
+    const drag = (type, clientX, clientY, buttons) =>
+      acc.dispatchEvent(".nw-card .chart-wrap svg", type,
+        { pointerType: "touch", pointerId: 1, isPrimary: true, clientX, clientY, buttons });
+
+    const rest = await readHead();
+    const box = await acc.locator(".nw-card .chart-wrap").boundingBox();
+    const midY = box.y + box.height / 2;
+
+    const scrubbed = await tryStep("a finger can be put on the line", async () => {
+      await drag("pointerdown", box.x + box.width * 0.25, midY, 1);
+      await acc.waitForTimeout(200);
+    });
+    if (scrubbed) {
+      const early = await readHead();
+      check("a touch marks the day it landed on", early.dots === 1, `${early.dots} markers`);
+      check("and the headline figure becomes that day's", early.total !== rest.total,
+        `still ${early.total}`);
+      check("and the period becomes the stretch dragged out, not the whole one",
+        /\d{4}\s*[\u2013-]\s*\w/.test(early.period), early.period);
+
+      await drag("pointermove", box.x + box.width * 0.75, midY, 1);
+      await acc.waitForTimeout(200);
+      const late = await readHead();
+      check("dragging on moves the figure again",
+        late.total !== early.total, `${early.total} then ${late.total}`);
+      const startOf = (p) => p.split("\u2013")[0].trim();
+      const endOf = (p) => p.split("\u2013")[1]?.trim() ?? "";
+      check("and the window's end moves with it, while its start stays put",
+        startOf(late.period) === startOf(early.period) && endOf(late.period) !== endOf(early.period),
+        `${early.period} then ${late.period}`);
+
+      await drag("pointerup", box.x + box.width * 0.75, midY, 0);
+      await acc.waitForTimeout(300);
+      const after = await readHead();
+      check("and letting go gives the whole period back",
+        after.total === rest.total && after.dots === 0 && after.head === rest.head, after.head);
+    }
+
+    // A chart that swallows vertical drags is a chart you cannot scroll past.
+    const touch = await acc.evaluate(() =>
+      getComputedStyle(document.querySelector(".nw-card .chart-wrap svg")).touchAction);
+    check("the chart takes sideways drags without eating the page's scroll",
+      touch === "pan-y", touch);
+
     await acc.close();
   }
 

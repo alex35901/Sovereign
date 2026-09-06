@@ -5,9 +5,8 @@ import type { Account, AccountType, ISODate } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, sinceLabel, today } from "../lib/date";
-import type { AccountSlice } from "../lib/select";
 import {
-  ACCOUNT_TYPE_LABEL, accountSlices, balanceAt, earliestHistoryDate, trendTone,
+  ACCOUNT_TYPE_LABEL, accountSlices, balanceAt, earliestHistoryDate, moveBetween, trendTone,
 } from "../lib/select";
 import { AreaChart, Sparkline } from "../components/charts";
 import { Btn, Card, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Toggle, cx } from "../components/ui";
@@ -36,6 +35,9 @@ export default function Accounts() {
   const db = useDB();
   const [range, setRange] = useState<RangeKey>("1m");
   const [scope, setScope] = useState("net");
+  // Where a finger is resting on the chart, if one is. Null means the whole
+  // period, which is what the screen says when nobody is touching it.
+  const [at, setAt] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
 
   // The first day of the chosen period, or the first day there is any data —
@@ -64,6 +66,16 @@ export default function Accounts() {
     sub: dateLabel(dates[i], { year: true }),
   }));
   const tone = trendTone(current.series);
+
+  // Everything the headline says follows the finger: the figure is the one on
+  // the day under it, and the change is measured from the start of the period
+  // to that day rather than to today.
+  const here = at === null ? null : Math.min(at, current.series.length - 1);
+  const shownTotal = here === null ? current.total : current.series[here];
+  const move = moveBetween(current.series, here ?? undefined);
+  const window = here === null || !points.length
+    ? null
+    : `${points[0].sub} – ${points[here].sub}`;
 
   // Sparklines are drawn against a coarser sample than the headline chart:
   // two dozen points is all a 60px rule can show, and asking for 300 makes
@@ -106,13 +118,17 @@ export default function Accounts() {
             </div>
 
             <div className="nw-head">
-              <div className="nw-value num"><Money value={current.total} /></div>
-              <Delta slice={current} range={range} />
+              <div className="nw-value num"><Money value={shownTotal} /></div>
+              <Delta move={move} period={window ?? periodOf(range)} />
             </div>
 
             {/* Edge to edge, and no axis labels: every figure they would carry
-                is spelled out in words directly above them. */}
-            <AreaChart points={points} height={200} tone={tone} negativeTone={tone} bare />
+                is spelled out in words directly above them — and follows the
+                finger, which is the other reason they would be a second copy. */}
+            <AreaChart
+              points={points} height={200} tone={tone} negativeTone={tone} bare
+              onScrub={setAt}
+            />
 
             <div className="span-bar">
               {SPANS.map((r) => (
@@ -135,7 +151,7 @@ export default function Accounts() {
                 <span className="num bold" style={{ fontSize: 17 }}><Money value={g.total} /></span>
               </div>
               <div className="spread small">
-                <Delta slice={g} range={range} small />
+                <Delta move={{ change: g.change, pct: g.pct }} period={periodOf(range)} />
                 {g.share !== null ? (
                   <span className="faint">{pctLabel(g.share)} of {g.shareOf}</span>
                 ) : null}
@@ -174,22 +190,34 @@ function pctLabel(fraction: number): string {
   return `${p >= 10 ? Math.round(p) : Math.round(p * 10) / 10}%`;
 }
 
+/** What the period is called when nobody is pointing at a day in it. */
+const periodOf = (range: RangeKey): string => SPANS.find((s) => s.value === range)?.period ?? range;
+
 /**
- * How a slice moved over the period, in money and in proportion.
+ * How a figure moved, in money and in proportion, over a named stretch.
  *
  * Signed throughout, liabilities included: they are stored negative, so a card
- * paid down comes out positive and green without a special case. A slice that
+ * paid down comes out positive and green without a special case. A figure that
  * began at nothing has no proportion to report and simply doesn't.
  */
-function Delta({ slice, range, small }: { slice: AccountSlice; range: RangeKey; small?: boolean }) {
-  const period = SPANS.find((s) => s.value === range)?.period ?? range;
-  if (slice.change === 0) return <span className="muted">No change · {period}</span>;
-  const up = slice.change > 0;
+function Delta({ move, period }: { move: { change: number; pct: number | null }; period: string }) {
+  // Same shape as the moved case, period in the same place: a reader glancing
+  // at the line should not have to find it somewhere new because a figure
+  // happened to land on nought.
+  if (move.change === 0) {
+    return (
+      <span className="row" style={{ gap: 7 }}>
+        <span className="muted">No change</span>
+        <span className="faint">{period}</span>
+      </span>
+    );
+  }
+  const up = move.change > 0;
   return (
-    <span className={cx("row", small ? "tiny-gap" : undefined)} style={{ gap: 7 }}>
+    <span className="row" style={{ gap: 7 }}>
       <span className={up ? "pos" : "neg"}>
-        {up ? "\u2197" : "\u2198"} <Money value={slice.change} />
-        {slice.pct !== null ? ` (${pctLabel(slice.pct)})` : ""}
+        {up ? "\u2197" : "\u2198"} <Money value={move.change} />
+        {move.pct !== null ? ` (${pctLabel(move.pct)})` : ""}
       </span>
       <span className="faint">{period}</span>
     </span>

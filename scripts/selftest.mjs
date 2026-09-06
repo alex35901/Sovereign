@@ -76,7 +76,7 @@ await build({
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
-      export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices } from "./src/lib/select.ts";
+      export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
 
@@ -2336,6 +2336,29 @@ const slicer = (over) => {
 };
 const DAYS = ["2026-01-01", "2026-02-01", "2026-03-01"];
 const sliceOf = (db, key) => M.accountSlices(db, DAYS).find((s) => s.key === key);
+
+await test("dragging moves the window's end, never its start", () => {
+  const series = [100_00, 120_00, 90_00, 150_00];
+  // let go of it and you get the whole period
+  assert.deepEqual(M.moveBetween(series), { change: 50_00, pct: 0.5 });
+  // land on the third reading and the window is the first to the third
+  assert.deepEqual(M.moveBetween(series, 2), { change: -10_00, pct: -0.1 });
+  // land back on the start and there is nothing to report yet
+  assert.deepEqual(M.moveBetween(series, 0), { change: 0, pct: 0 });
+});
+
+await test("a finger past either end of the chart lands on the end it passed", () => {
+  const series = [100_00, 120_00, 90_00];
+  assert.deepEqual(M.moveBetween(series, -5), M.moveBetween(series, 0), "before the first day");
+  assert.deepEqual(M.moveBetween(series, 99), M.moveBetween(series, 2), "after the last");
+});
+
+await test("a series with nothing to compare reports no move at all", () => {
+  assert.deepEqual(M.moveBetween([]), { change: 0, pct: null });
+  assert.deepEqual(M.moveBetween([500_00]), { change: 0, pct: null });
+  assert.deepEqual(M.moveBetween([0, 250_00]), { change: 250_00, pct: null },
+    "and starting from nothing is a gain with no percentage to put on it");
+});
 
 await test("the whole picture comes first, then one slice per kind", () => {
   const slices = M.accountSlices(slicer(), DAYS);

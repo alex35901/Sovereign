@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { fmt0 } from "../lib/money";
 import { color } from "./ui";
@@ -69,7 +69,7 @@ export interface Point { label: string; value: number; sub?: string }
 
 export function AreaChart({
   points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
-  markLine, markLabel, bare = false,
+  markLine, markLabel, bare = false, onScrub,
 }: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
   /** A horizontal line to aim at — a goal's target, and where the line meets it. */
@@ -84,9 +84,23 @@ export function AreaChart({
    * reaching either edge.
    */
   bare?: boolean;
+  /**
+   * Which point is under the pointer, as it moves.
+   *
+   * For a chart whose readout lives outside it — a headline figure above that
+   * follows the finger. Supplying this also turns off the chart's own tooltip,
+   * since two readouts of the same point is one too many.
+   */
+  onScrub?: (index: number | null) => void;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+  // A touch only scrubs while it is held. A mouse scrubs on hover, which is
+  // what it has always done, so the two need telling apart.
+  const dragging = useRef(false);
+  const scrubRef = useRef(onScrub);
+  scrubRef.current = onScrub;
+  useEffect(() => { scrubRef.current?.(hover); }, [hover]);
   const raw = useId();
   const uid = raw.replace(/[^a-zA-Z0-9]/g, "");
   if (!points.length) return <div ref={ref} style={{ height }} />;
@@ -123,6 +137,12 @@ export function AreaChart({
   const y = (v: number) => padT + inset + plotH - ((v - lo) / (hi - lo)) * plotH;
 
   const zeroY = Math.max(padT, Math.min(padT + innerH, y(0)));
+  /** Which reading a screen position is nearest, clamped to the two ends. */
+  const indexAt = (clientX: number, el: Element) => {
+    const rel = clientX - el.getBoundingClientRect().left - padL;
+    const i = Math.round((rel / innerW) * (points.length - 1));
+    return Math.max(0, Math.min(points.length - 1, i));
+  };
   const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
   // Fill to the zero axis rather than the floor of the plot, so a negative
   // series paints the band between 0 and the balance instead of a thin sliver.
@@ -145,14 +165,29 @@ export function AreaChart({
   return (
     <div ref={ref} className="chart-wrap" style={{ height }}>
       <svg
-        width="100%" height={height} style={{ display: "block", overflow: bare ? "hidden" : "visible" }}
-        onMouseLeave={() => setHover(null)}
-        onMouseMove={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const rel = e.clientX - rect.left - padL;
-          const i = Math.round((rel / innerW) * (points.length - 1));
-          setHover(Math.max(0, Math.min(points.length - 1, i)));
+        width="100%" height={height}
+        style={{
+          display: "block",
+          overflow: bare ? "hidden" : "visible",
+          // Vertical drags still scroll the page; horizontal ones come here.
+          // touch-action:none would turn a 200px-tall chart into a strip of
+          // the screen that cannot be scrolled past.
+          touchAction: onScrub ? "pan-y" : undefined,
         }}
+        onPointerDown={(e) => {
+          if (!onScrub) return;
+          // Capture, or a finger that slides off the chart stops reporting
+          // half way through the gesture.
+          e.currentTarget.setPointerCapture(e.pointerId);
+          dragging.current = true;
+          setHover(indexAt(e.clientX, e.currentTarget));
+        }}
+        onPointerMove={(e) => {
+          if (e.pointerType === "mouse" || dragging.current) setHover(indexAt(e.clientX, e.currentTarget));
+        }}
+        onPointerUp={(e) => { dragging.current = false; if (e.pointerType !== "mouse") setHover(null); }}
+        onPointerCancel={() => { dragging.current = false; setHover(null); }}
+        onPointerLeave={() => { if (!dragging.current) setHover(null); }}
       >
         <defs>
           <linearGradient id={`up-${uid}`} gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={zeroY}>
@@ -216,16 +251,23 @@ export function AreaChart({
 
         {hover !== null ? (
           <g>
-            <line className="grid-line" x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + innerH} stroke={color("--line")} />
+            {/* The line a finger is following has to be findable under it: a
+                hairline in --line disappears against the fill it crosses. */}
+            <line
+              className="grid-line" x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + innerH}
+              stroke={color(onScrub ? tone : "--line")}
+              strokeWidth={onScrub ? 1.5 : 1}
+              opacity={onScrub ? 0.65 : 1}
+            />
             <circle
-              cx={x(hover)} cy={y(points[hover].value)} r={4}
+              cx={x(hover)} cy={y(points[hover].value)} r={onScrub ? 5.5 : 4}
               fill={color(points[hover].value < 0 ? negativeTone : tone)}
-              stroke={color("--surface")} strokeWidth={2}
+              stroke={color("--surface")} strokeWidth={onScrub ? 3 : 2}
             />
           </g>
         ) : null}
       </svg>
-      {hover !== null ? (
+      {hover !== null && !onScrub ? (
         <Tip x={x(hover)} y={y(points[hover].value)} width={w}>
           <div className="tiny muted">{points[hover].label}</div>
           <div className={`num bold ${points[hover].value < 0 ? "neg" : ""}`}>{fmt0(points[hover].value)}</div>

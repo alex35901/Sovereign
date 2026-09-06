@@ -156,6 +156,25 @@ export interface AccountSlice {
   shareOf: "assets" | "debt";
 }
 
+/**
+ * How a series moved from its first reading to a given one.
+ *
+ * Pulled out because the accounts screen asks it twice and the two answers
+ * have to agree: once for the period as a whole, and again for wherever a
+ * finger has come to rest on the chart. The window always starts where the
+ * period starts — dragging moves its end, not both of its ends.
+ */
+export function moveBetween(series: number[], endIndex?: number): { change: number; pct: number | null } {
+  if (series.length < 2) return { change: 0, pct: null };
+  const first = series[0];
+  const last = series.length - 1;
+  const i = endIndex === undefined ? last : Math.max(0, Math.min(last, endIndex));
+  const change = series[i] - first;
+  // Against the size of where it started, so a debt halved reads as +50%
+  // rather than as -50% off a negative denominator.
+  return { change, pct: first === 0 ? null : change / Math.abs(first) };
+}
+
 export function accountSlices(db: DB, dates: ISODate[]): AccountSlice[] {
   const visible = db.accounts.filter((a) => !a.hidden);
   // The base every share is measured against. Taken from the same accounts the
@@ -166,17 +185,12 @@ export function accountSlices(db: DB, dates: ISODate[]): AccountSlice[] {
 
   const build = (key: string, label: string, accounts: Account[], shared: boolean): AccountSlice => {
     const series = aggregateSeries(accounts, dates);
-    const first = series[0] ?? 0;
-    const change = series.length > 1 ? series[series.length - 1] - first : 0;
     const total = accounts.reduce((s, a) => s + a.balance, 0);
     const owed = total < 0;
     const base = owed ? debt : assets;
     return {
-      key, label, accounts, total, series, change,
-      // Against where it began, in size: a debt shrinking from -1,000 to -500
-      // has improved by half, and a minus sign on the denominator would call
-      // that minus fifty per cent.
-      pct: first === 0 ? null : change / Math.abs(first),
+      key, label, accounts, total, series,
+      ...moveBetween(series),
       share: shared && base > 0 ? Math.abs(total) / base : null,
       shareOf: owed ? "debt" : "assets",
     };
