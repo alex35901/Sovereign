@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, dashboard, merchants.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1459,6 +1459,154 @@ try {
       order.indexOf("/merchants") === order.indexOf("/reports") + 1,
       order.join(" "));
     await rail.close();
+  }
+
+  if (want("reports")) {
+    // ── the three report tabs ──
+    const rep = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await rep.goto(`${BASE}/reports`, { waitUntil: "networkidle" });
+    await rep.waitForTimeout(900);
+
+    const tabs = await rep.evaluate(() =>
+      [...document.querySelectorAll(".page > .seg button")].map((b) => b.innerText.trim()));
+    check("reports opens on three tabs", tabs.join(" / ") === "Cash Flow / Spending / Income", tabs.join(" / "));
+
+    // Cash flow: bars with a real zero between them, and a savings line.
+    const bars = await rep.evaluate(() => {
+      const svg = document.querySelector(".card .chart-wrap svg");
+      const rects = [...svg.querySelectorAll("rect")].filter((r) => r.getAttribute("fill") !== "transparent");
+      const green = rects.filter((r) => getComputedStyle(r).fill === "rgb(53, 196, 140)");
+      const red = rects.filter((r) => getComputedStyle(r).fill === "rgb(242, 104, 94)");
+      // The zero line the chart actually drew, not the middle of the svg: the
+      // plot is inset unevenly top and bottom, so those are seven pixels apart
+      // and the bars straddle the first of them.
+      const axis = [...svg.querySelectorAll("line")].find((l) => !l.classList.contains("grid-line"));
+      const mid = axis.getBoundingClientRect().top;
+      return {
+        green: green.length, red: red.length,
+        greenAbove: green.every((r) => r.getBoundingClientRect().bottom <= mid + 6),
+        redBelow: red.every((r) => r.getBoundingClientRect().top >= mid - 6),
+        // A path with stroke="none" still matches [stroke], so the line is
+        // counted by what it actually draws: a visible colour, a real width,
+        // and a run with a point per bucket rather than a stub.
+        line: [...svg.querySelectorAll("path")].filter((p) => {
+          const st = getComputedStyle(p);
+          return st.stroke !== "none" && parseFloat(st.strokeWidth) > 0
+            && (p.getAttribute("d") ?? "").split("L").length > 3;
+        }).length,
+      };
+    });
+    check("cash flow puts income above the line and spending below it",
+      bars.green > 3 && bars.red > 3 && bars.greenAbove && bars.redBelow,
+      `${bars.green} up, ${bars.red} down`);
+    check("with what was saved drawn across them", bars.line >= 1, `${bars.line} lines`);
+
+    // The second control is the chart's own, and only its own.
+    const readControls = () => rep.evaluate(() =>
+      [...document.querySelectorAll(".report-controls .field")].map((f) => f.querySelector("span").innerText.trim()));
+    check("bars are asked for a timeframe", (await readControls()).join(" / ") === "Chart / Timeframe",
+      (await readControls()).join(" / "));
+
+    const yearly = await tryStep("the timeframe can be changed", async () => {
+      await rep.locator(".report-controls select").nth(1).selectOption("yearly");
+      await rep.waitForTimeout(600);
+    });
+    if (yearly) {
+      const labels = await rep.evaluate(() =>
+        [...document.querySelectorAll(".card .chart-wrap .axis-text")].map((t) => t.textContent.trim())
+          .filter((t) => /^\d{4}$/.test(t)));
+      check("yearly buckets the bars into years", labels.length >= 1, labels.join(" "));
+      await rep.locator(".report-controls select").nth(1).selectOption("monthly");
+      await rep.waitForTimeout(500);
+    }
+
+    const drawn = await tryStep("the chart can be switched to a sankey", async () => {
+      await rep.locator(".report-controls select").first().selectOption("sankey");
+      await rep.waitForTimeout(700);
+    });
+    if (drawn) {
+      check("a sankey is asked how to group instead",
+        (await readControls()).join(" / ") === "Chart / Group by", (await readControls()).join(" / "));
+      const sank = await rep.evaluate(() => {
+        const wrap = document.querySelector(".card .chart-wrap");
+        const card = wrap.closest(".card").getBoundingClientRect();
+        const labels = [...wrap.querySelectorAll("text")];
+        return {
+          bands: wrap.querySelectorAll("path").length,
+          nodes: wrap.querySelectorAll("rect").length,
+          outside: labels.filter((t) => {
+            const b = t.getBoundingClientRect();
+            return b.right > card.right - 1 || b.left < card.left + 1;
+          }).length,
+        };
+      });
+      check("the sankey draws a band per flow", sank.bands > 2 && sank.nodes > 2,
+        `${sank.bands} bands, ${sank.nodes} nodes`);
+      // The failure this replaces: category names ran off the side of the card.
+      check("and every label stays inside its card", sank.outside === 0, `${sank.outside} labels outside`);
+      await rep.locator(".report-controls select").first().selectOption("bar");
+      await rep.waitForTimeout(500);
+    }
+
+    // Spending: a ring whose slices add up to the figure in the middle of it.
+    const onSpending = await tryStep("the spending tab opens", async () => {
+      await rep.locator(".page > .seg button", { hasText: "Spending" }).click({ timeout: 5000 });
+      await rep.waitForTimeout(800);
+    });
+    if (onSpending) {
+      const ring = await rep.evaluate(() => {
+        const money = (t) => Number((t.match(/-?[\d,]+(\.\d+)?/)?.[0] ?? "0").replace(/,/g, ""));
+        const card = document.querySelector(".card");
+        const centre = money(card.querySelector(".chart-wrap .num, .num").innerText);
+        const keys = [...card.querySelectorAll(".col.grow > .row")].map((r) => ({
+          label: r.querySelector(".truncate").innerText.trim(),
+          value: money(r.querySelector(".num").innerText),
+        }));
+        return { centre, keys, sum: keys.reduce((s, k) => s + k.value, 0) };
+      });
+      check("the ring's key adds up to the figure in the middle of it",
+        Math.abs(ring.sum - ring.centre) <= 1, `key ${ring.sum} against centre ${ring.centre}`);
+      check("and a long tail is folded into a labelled band rather than dropped",
+        ring.keys.some((k) => /everything else/i.test(k.label)) || ring.keys.length < 8,
+        ring.keys.map((k) => k.label).join(", "));
+
+      const sums = await rep.evaluate(() =>
+        [...document.querySelectorAll(".report-sum")].map((r) => r.innerText.replace(/\n/g, " ")));
+      check("the summary reports the four figures Monarch's does",
+        /total spending/i.test(sums.join(" ")) && /total transactions/i.test(sums.join(" "))
+        && /largest/i.test(sums.join(" ")) && /average/i.test(sums.join(" ")),
+        sums.join(" | "));
+
+      // Rows go where they say. A group has no page, so it does not pretend to.
+      const rows = await rep.evaluate(() =>
+        [...document.querySelectorAll(".report-row")].map((r) => ({ tag: r.tagName, href: r.getAttribute("href") })));
+      check("a category row leads to its own page",
+        rows.length > 0 && rows.every((r) => r.tag === "A" && /^\/categories\//.test(r.href ?? "")),
+        rows.slice(0, 3).map((r) => `${r.tag} ${r.href}`).join(", "));
+
+      const grouped = await tryStep("the breakdown can be cut by group", async () => {
+        await rep.locator(".dash-card-head .seg button", { hasText: "Group" }).first().click({ timeout: 5000 });
+        await rep.waitForTimeout(600);
+      });
+      if (grouped) {
+        const groupRows = await rep.evaluate(() =>
+          [...document.querySelectorAll(".report-row")].map((r) => r.tagName));
+        check("and a group row does not pretend to lead anywhere",
+          groupRows.length > 0 && groupRows.every((t) => t === "DIV"), groupRows.join(","));
+      }
+    }
+
+    // Income is the same screen, the other way up.
+    const onIncome = await tryStep("the income tab opens", async () => {
+      await rep.locator(".page > .seg button", { hasText: "Income" }).click({ timeout: 5000 });
+      await rep.waitForTimeout(800);
+    });
+    if (onIncome) {
+      const text = await rep.evaluate(() => document.body.innerText);
+      check("income reports income, not spending",
+        /total income/i.test(text) && !/total spending/i.test(text), text.slice(0, 60));
+    }
+    await rep.close();
   }
 
 } finally {

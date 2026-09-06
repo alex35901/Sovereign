@@ -748,48 +748,6 @@ export function goalProgress(db: DB, goalId: string): { saved: number; pct: numb
   return { saved, pct, monthsLeft };
 }
 
-/* ── sankey ───────────────────────────────────────────────────────────── */
-
-export interface SankeyNode { id: string; label: string; value: number; color: string; depth: number }
-export interface SankeyLink { source: string; target: string; value: number }
-
-/** Income categories → "Cash flow" → expense groups. */
-export function sankeyData(db: DB, from: ISODate, to: ISODate): { nodes: SankeyNode[]; links: SankeyLink[] } {
-  const incomes = categoryTotals(db, from, to, "income");
-  const expenses = categoryTotals(db, from, to, "expense");
-  const byGroup = new Map<string, number>();
-  for (const e of expenses) byGroup.set(e.category.groupId, (byGroup.get(e.category.groupId) ?? 0) + e.total);
-
-  const totalIn = incomes.reduce((s, i) => s + i.total, 0);
-  const totalOut = [...byGroup.values()].reduce((s, v) => s + v, 0);
-  const nodes: SankeyNode[] = [{ id: "hub", label: "Cash flow", value: totalIn, color: "--c3", depth: 1 }];
-  const links: SankeyLink[] = [];
-  for (const i of incomes.slice(0, 6)) {
-    nodes.push({ id: `in_${i.categoryId}`, label: i.category.name, value: i.total, color: i.category.color, depth: 0 });
-    links.push({ source: `in_${i.categoryId}`, target: "hub", value: i.total });
-  }
-  // anything under 4% of spending is folded into a single "Other" band so the
-  // labels on the right stay legible
-  let tail = 0;
-  for (const [gid, total] of [...byGroup.entries()].sort((a, b) => b[1] - a[1])) {
-    const g = db.groups.find((x) => x.id === gid);
-    if (!g) continue;
-    if (totalOut > 0 && total / totalOut < 0.04) { tail += total; continue; }
-    const color = db.categories.find((c) => c.groupId === gid)?.color ?? "--c1";
-    nodes.push({ id: `out_${gid}`, label: g.name, value: total, color, depth: 2 });
-    links.push({ source: "hub", target: `out_${gid}`, value: total });
-  }
-  if (tail > 0) {
-    nodes.push({ id: "out_tail", label: "Everything else", value: tail, color: "--c12", depth: 2 });
-    links.push({ source: "hub", target: "out_tail", value: tail });
-  }
-  if (totalIn > totalOut) {
-    nodes.push({ id: "out_saved", label: "Saved", value: totalIn - totalOut, color: "--c3", depth: 2 });
-    links.push({ source: "hub", target: "out_saved", value: totalIn - totalOut });
-  }
-  return { nodes, links };
-}
-
 /* ── misc ─────────────────────────────────────────────────────────────── */
 
 export function needsReviewCount(db: DB): number {

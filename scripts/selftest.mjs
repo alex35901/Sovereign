@@ -77,6 +77,7 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
+      export * as R from "./src/lib/reports.ts";
       export { spendPace, monthProgress, dueSoon, overPace, goalMoves } from "./src/lib/dashboard.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
@@ -2699,6 +2700,191 @@ await test("an account nobody connected is not a broken connection", () => {
   const imported = M.connectionOf(linked({ syncSource: "csv" }), broken, CONN_NOW);
   assert.equal(imported.state, "manual");
   assert.equal(imported.provider, "CSV import");
+});
+
+/* ── reports ──────────────────────────────────────────────────────────── */
+
+const reportDb = (txns) => ({
+  ...shopDb(txns),
+  groups: [
+    { id: "g_income", name: "Income", kind: "income", order: 0, color: "--c3" },
+    { id: "g_shop", name: "Shopping", kind: "expense", order: 1, color: "--c1" },
+    { id: "g_house", name: "Housing", kind: "expense", order: 2, color: "--c2" },
+    { id: "g_xfer", name: "Transfers", kind: "transfer", order: 3 },
+  ],
+});
+const R_FROM = "2026-01-01";
+const R_TO = "2026-12-31";
+
+await test("a report counts a line once, on the side its own sign puts it", () => {
+  // A refund sits in a spending category and is money coming back. Counting
+  // it as spending would overstate the very category it landed in.
+  const db = reportDb([
+    { date: "2026-03-01", amount: -100_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-03-02", amount: 30_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-03-03", amount: 5_000_00, merchant: "Payroll", categoryId: "c_pay" },
+  ]);
+  const spend = M.R.breakdown(db, R_FROM, R_TO, "expense", "category");
+  assert.deepEqual(spend.map((s) => [s.label, s.total]), [["Shopping", 100_00]]);
+  const income = M.R.breakdown(db, R_FROM, R_TO, "income", "category");
+  assert.deepEqual(income.map((s) => [s.label, s.total]), [["Paycheck", 5_000_00], ["Shopping", 30_00]],
+    "the refund is money in, in the category it came back to");
+});
+
+await test("transfers are on neither side of a report", () => {
+  const db = reportDb([
+    { date: "2026-03-01", amount: -100_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-03-02", amount: -3_000_00, merchant: "Wells Fargo", categoryId: "c_xfer" },
+    { date: "2026-03-03", amount: 3_000_00, merchant: "Wells Fargo", categoryId: "c_xfer" },
+  ]);
+  assert.equal(M.R.summarise(db, R_FROM, R_TO, "expense").total, 100_00);
+  assert.equal(M.R.summarise(db, R_FROM, R_TO, "income").total, 0);
+});
+
+await test("a report leaves out what the rest of the app leaves out", () => {
+  // Muted accounts and transactions hidden from reports. If reports counted
+  // them, every share on the page would be a share of a different whole from
+  // the one the budget and the dashboard use.
+  const db = {
+    ...reportDb([
+      { date: "2026-03-01", amount: -100_00, merchant: "Amazon", categoryId: "c_shop" },
+      { date: "2026-03-02", amount: -500_00, merchant: "Amazon", categoryId: "c_shop", hideFromReports: true },
+      { date: "2026-03-03", amount: -900_00, merchant: "Amazon", categoryId: "c_shop", accountId: "quiet" },
+    ]),
+    accounts: [
+      { id: "a", name: "A", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "quiet", name: "Q", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, hideTransactions: true, history: [], order: 1 },
+    ],
+  };
+  assert.equal(M.R.summarise(db, R_FROM, R_TO, "expense").total, 100_00);
+  assert.equal(M.R.summarise(db, R_FROM, R_TO, "expense").count, 1);
+  assert.deepEqual(M.R.breakdown(db, R_FROM, R_TO, "expense", "category").map((x) => x.total), [100_00]);
+});
+
+await test("a report can be cut by category, by group or by merchant", () => {
+  const db = reportDb([
+    { date: "2026-03-01", amount: -60_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-03-02", amount: -40_00, merchant: "Target", categoryId: "c_shop" },
+    { date: "2026-03-03", amount: -3_000_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+  ]);
+  assert.deepEqual(M.R.breakdown(db, R_FROM, R_TO, "expense", "category").map((s) => [s.label, s.total]),
+    [["Mortgage", 3_000_00], ["Shopping", 100_00]]);
+  assert.deepEqual(M.R.breakdown(db, R_FROM, R_TO, "expense", "group").map((s) => [s.label, s.total]),
+    [["Housing", 3_000_00], ["Shopping", 100_00]]);
+  assert.deepEqual(M.R.breakdown(db, R_FROM, R_TO, "expense", "merchant").map((s) => [s.label, s.total]),
+    [["Shellpoint", 3_000_00], ["Amazon", 60_00], ["Target", 40_00]]);
+});
+
+await test("a row leads somewhere, unless there is nowhere for it to lead", () => {
+  const db = reportDb([{ date: "2026-03-01", amount: -60_00, merchant: "Amazon", categoryId: "c_shop" }]);
+  assert.equal(M.R.breakdown(db, R_FROM, R_TO, "expense", "category")[0].to, "/categories/c_shop");
+  assert.equal(M.R.breakdown(db, R_FROM, R_TO, "expense", "merchant")[0].to, "/merchants/Amazon");
+  assert.equal(M.R.breakdown(db, R_FROM, R_TO, "expense", "group")[0].to, null,
+    "a group has no page, and a row that goes somewhere unrelated is worse than one that does nothing");
+});
+
+await test("the summary is of the same lines the breakdown is", () => {
+  const db = reportDb([
+    { date: "2026-03-01", amount: -60_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-03-02", amount: -40_00, merchant: "Target", categoryId: "c_shop" },
+    { date: "2026-03-03", amount: -3_000_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+  ]);
+  const s = M.R.summarise(db, R_FROM, R_TO, "expense");
+  assert.equal(s.total, 3_100_00);
+  assert.equal(s.count, 3);
+  assert.equal(s.largest, 3_000_00);
+  assert.equal(s.average, Math.round(3_100_00 / 3), "to the penny, because a third of a penny is not money");
+  const rows = M.R.breakdown(db, R_FROM, R_TO, "expense", "category");
+  assert.equal(rows.reduce((a, r) => a + r.total, 0), s.total, "the shares add up to the whole");
+});
+
+await test("a window with nothing in it summarises to nothing, not to a division by zero", () => {
+  const db = reportDb([{ date: "2020-03-01", amount: -60_00, merchant: "Amazon", categoryId: "c_shop" }]);
+  assert.deepEqual(M.R.summarise(db, R_FROM, R_TO, "expense"), { total: 0, count: 0, largest: 0, average: 0 });
+});
+
+await test("a split is reported under each of its parts", () => {
+  const db = reportDb([{
+    date: "2026-03-01", amount: -100_00, merchant: "Target", categoryId: "c_shop",
+    splits: [
+      { id: "s0", categoryId: "c_shop", amount: -70_00 },
+      { id: "s1", categoryId: "c_mortgage", amount: -30_00 },
+    ],
+  }]);
+  assert.deepEqual(M.R.breakdown(db, R_FROM, R_TO, "expense", "category").map((s) => [s.label, s.total]),
+    [["Shopping", 70_00], ["Mortgage", 30_00]]);
+  assert.equal(M.R.summarise(db, R_FROM, R_TO, "expense").count, 2, "two lines, not one transaction");
+});
+
+await test("years are the months added up, so the two grains cannot disagree", () => {
+  const perMonth = [
+    { month: "2025-11", income: 100, expense: 40 },
+    { month: "2025-12", income: 200, expense: 60 },
+    { month: "2026-01", income: 300, expense: 10 },
+  ];
+  assert.deepEqual(M.R.flowBuckets(perMonth, "monthly").map((b) => [b.key, b.net]),
+    [["2025-11", 60], ["2025-12", 140], ["2026-01", 290]]);
+  assert.deepEqual(M.R.flowBuckets(perMonth, "yearly").map((b) => [b.key, b.income, b.expense, b.net]),
+    [["2025", 300, 100, 200], ["2026", 300, 10, 290]]);
+});
+
+const flows = (m) => Object.fromEntries(m.links.map((l) => [`${l.source}->${l.target}`, l.value]));
+
+await test("the sankey pours every source into one hub and out the other side", () => {
+  const db = reportDb([
+    { date: "2026-03-01", amount: 5_000_00, merchant: "Payroll", categoryId: "c_pay" },
+    { date: "2026-03-02", amount: -3_000_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+    { date: "2026-03-03", amount: -1_000_00, merchant: "Amazon", categoryId: "c_shop" },
+  ]);
+  const m = M.R.sankeyData(db, R_FROM, R_TO, "group");
+  assert.deepEqual(flows(m), {
+    "in_g_income->hub": 5_000_00,
+    "hub->out_g_house": 3_000_00,
+    "hub->out_g_shop": 1_000_00,
+    "hub->out_saved": 1_000_00,
+  }, "what was not spent is a band of its own");
+  // the hub does not leak: everything in comes out again
+  const into = m.links.filter((l) => l.target === "hub").reduce((s, l) => s + l.value, 0);
+  const outOf = m.links.filter((l) => l.source === "hub").reduce((s, l) => s + l.value, 0);
+  assert.equal(into, 5_000_00);
+  assert.equal(outOf, 5_000_00);
+});
+
+await test("the sankey can be cut the same ways the lists can", () => {
+  const db = reportDb([
+    { date: "2026-03-01", amount: 5_000_00, merchant: "Payroll", categoryId: "c_pay" },
+    { date: "2026-03-02", amount: -2_500_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+    { date: "2026-03-03", amount: -2_500_00, merchant: "Amazon", categoryId: "c_shop" },
+  ]);
+  const byCat = M.R.sankeyData(db, R_FROM, R_TO, "category").nodes.filter((n) => n.depth === 2).map((n) => n.label);
+  assert.deepEqual(byCat.sort(), ["Mortgage", "Shopping"]);
+  const byMerchant = M.R.sankeyData(db, R_FROM, R_TO, "merchant").nodes.filter((n) => n.depth === 2).map((n) => n.label);
+  assert.deepEqual(byMerchant.sort(), ["Amazon", "Shellpoint"]);
+});
+
+await test("a period that overspent has no surplus to draw", () => {
+  // The overspend came from savings this picture does not cover. Inventing a
+  // fourth incoming band would be drawing money that did not arrive.
+  const db = reportDb([
+    { date: "2026-03-01", amount: 1_000_00, merchant: "Payroll", categoryId: "c_pay" },
+    { date: "2026-03-02", amount: -3_000_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+  ]);
+  const m = M.R.sankeyData(db, R_FROM, R_TO, "group");
+  assert.ok(!m.nodes.some((n) => n.id === "out_saved"));
+  assert.equal(flows(m)["hub->out_g_house"], 3_000_00,
+    "the outgoing side is simply wider, which is the honest shape of it");
+});
+
+await test("bands too thin to read are folded into one", () => {
+  // Forty categories at two pixels each is a fringe, not a diagram, and the
+  // labels stop being readable long before the bands do.
+  const txns = [{ date: "2026-03-01", amount: 10_000_00, merchant: "Payroll", categoryId: "c_pay" },
+    { date: "2026-03-02", amount: -9_800_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+    { date: "2026-03-03", amount: -200_00, merchant: "Amazon", categoryId: "c_shop" }];
+  const m = M.R.sankeyData(reportDb(txns), R_FROM, R_TO, "group");
+  const out = m.nodes.filter((n) => n.depth === 2).map((n) => [n.label, n.value]);
+  assert.deepEqual(out, [["Housing", 9_800_00], ["Everything else", 200_00]],
+    "2% of the outgoings is below the threshold and joins the tail");
 });
 
 /* ── the accounts screen's slices ─────────────────────────────────────── */

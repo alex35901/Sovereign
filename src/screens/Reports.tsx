@@ -1,32 +1,32 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { ChevronRight } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { lastMonths, monthEnd, monthLabel, monthOf, monthStart } from "../lib/date";
 import { fmt0 } from "../lib/money";
-import { categoryKind, cashFlowSeries, categoryTotals, lines, merchantTotals, netWorthSeries } from "../lib/select";
-import { AreaChart, BarChart, Donut, HBars, Sparkline } from "../components/charts";
-import { Card, CardHead, Empty, Money, Segmented } from "../components/ui";
+import { cashFlowSeries } from "../lib/select";
+import { breakdown, flowBuckets, sankeyData, summarise } from "../lib/reports";
+import type { Facet, Grain, Side, Slice } from "../lib/reports";
+import { Donut, FlowChart, Sankey } from "../components/charts";
+import { Card, CardHead, Empty, Money, Segmented, SelectInput, color, cx } from "../components/ui";
 import { RangePicker } from "../components/pickers";
 import type { RangeKey } from "../lib/range";
 import { rangeMonths } from "../lib/range";
 
-type Tab = "spending" | "income" | "savings" | "networth";
-type GroupBy = "category" | "group" | "merchant" | "account";
+type Tab = "flow" | "spending" | "income";
+type Shape = "bar" | "sankey";
 
-/** Where a breakdown row leads. A group has no page of its own, so it filters. */
-function destination(groupBy: GroupBy, key: string): string {
-  if (groupBy === "category") return `/categories/${key}`;
-  if (groupBy === "merchant") return `/merchants/${encodeURIComponent(key)}`;
-  if (groupBy === "account") return `/accounts/${key}`;
-  return `/transactions`;
-}
+/** How many rows the legend shows before it has to be asked for the rest. */
+const LEGEND = 6;
 
 export default function Reports() {
   const db = useDB();
-  const [tab, setTab] = useState<Tab>("spending");
-  const [range, setRange] = useState<RangeKey>("6m");
-  const [groupBy, setGroupBy] = useState<GroupBy>("category");
+  const [tab, setTab] = useState<Tab>("flow");
+  const [range, setRange] = useState<RangeKey>("1y");
+  const [shape, setShape] = useState<Shape>("bar");
+  const [grain, setGrain] = useState<Grain>("monthly");
+  const [facet, setFacet] = useState<Facet>("category");
 
   const earliestMonth = useMemo(() => {
     const dates = db.transactions.map((t) => t.date);
@@ -41,223 +41,284 @@ export default function Reports() {
   }, [range, earliestMonth]);
   const from = monthStart(months[0]);
   const to = monthEnd(months[months.length - 1]);
-
-  const flow = useMemo(() => cashFlowSeries(db, months), [db, months]);
-  const netWorth = useMemo(() => netWorthSeries(db, months), [db, months]);
-
-  /** Rows for the active tab, with a per-month series for the sparkline column. */
-  const rows = useMemo(() => {
-    const wantIncome = tab === "income";
-    if (groupBy === "merchant") {
-      return merchantTotals(db, from, to, 25).map((m) => ({
-        key: m.merchant, label: m.merchant, tone: "--c1", icon: undefined as string | undefined,
-        total: m.total, count: m.count,
-        series: months.map((mo) =>
-          db.transactions
-            .filter((t) => t.merchant === m.merchant && monthOf(t.date) === mo && t.amount < 0)
-            .reduce((s, t) => s + -t.amount, 0)),
-      }));
-    }
-    if (groupBy === "account") {
-      return db.accounts.filter((a) => !a.hidden).map((a) => {
-        const txns = db.transactions.filter(
-          (t) => t.accountId === a.id && t.date >= from && t.date <= to && !t.hideFromReports &&
-            categoryKind(db, t.categoryId) !== "transfer" && (wantIncome ? t.amount > 0 : t.amount < 0));
-        return {
-          key: a.id, label: a.name, tone: "--c2", icon: undefined as string | undefined,
-          total: txns.reduce((s, t) => s + Math.abs(t.amount), 0), count: txns.length,
-          series: months.map((mo) =>
-            txns.filter((t) => monthOf(t.date) === mo).reduce((s, t) => s + Math.abs(t.amount), 0)),
-        };
-      }).filter((r) => r.total > 0).sort((a, b) => b.total - a.total);
-    }
-    const cats = categoryTotals(db, from, to, wantIncome ? "income" : "expense");
-    if (groupBy === "group") {
-      const byGroup = new Map<string, { total: number; count: number; tone: string }>();
-      for (const c of cats) {
-        const cur = byGroup.get(c.category.groupId) ?? { total: 0, count: 0, tone: c.category.color };
-        cur.total += c.total;
-        cur.count += c.count;
-        byGroup.set(c.category.groupId, cur);
-      }
-      return [...byGroup.entries()].map(([gid, v]) => {
-        const catIds = new Set(db.categories.filter((c) => c.groupId === gid).map((c) => c.id));
-        return {
-          key: gid, label: db.groups.find((g) => g.id === gid)?.name ?? gid, tone: v.tone,
-          icon: undefined as string | undefined, total: v.total, count: v.count,
-          series: months.map((mo) =>
-            db.transactions
-              .filter((t) => monthOf(t.date) === mo && !t.hideFromReports)
-              .flatMap(lines)
-              .filter((l) => catIds.has(l.categoryId) && (wantIncome ? l.amount > 0 : l.amount < 0))
-              .reduce((s, l) => s + Math.abs(l.amount), 0)),
-        };
-      }).sort((a, b) => b.total - a.total);
-    }
-    return cats.map((c) => ({
-      key: c.categoryId, label: c.category.name, tone: c.category.color, icon: c.category.icon,
-      total: c.total, count: c.count,
-      series: months.map((mo) =>
-        db.transactions
-          .filter((t) => monthOf(t.date) === mo && !t.hideFromReports)
-          .flatMap(lines)
-          .filter((l) => l.categoryId === c.categoryId)
-          .reduce((s, l) => s + Math.abs(l.amount), 0)),
-    }));
-  }, [db, tab, groupBy, from, to, months]);
-
-  const total = rows.reduce((s, r) => s + r.total, 0);
+  const span = `${monthLabel(months[0])} — ${monthLabel(months[months.length - 1])}`;
 
   return (
     <>
-      <TopBar
-        title="Reports"
-        actions={<RangePicker value={range} onChange={setRange} />}
-      />
+      <TopBar title="Reports" actions={<RangePicker value={range} onChange={setRange} />} />
       <div className="page stack">
-        <div className="row wrap" style={{ gap: 10 }}>
-          <Segmented
-            value={tab} onChange={setTab}
-            options={[
-              { value: "spending", label: "Spending" },
-              { value: "income", label: "Income" },
-              { value: "savings", label: "Savings" },
-              { value: "networth", label: "Net worth" },
-            ]}
+        <Segmented
+          value={tab} onChange={setTab}
+          options={[
+            { value: "flow", label: "Cash Flow" },
+            { value: "spending", label: "Spending" },
+            { value: "income", label: "Income" },
+          ]}
+        />
+
+        {tab === "flow" ? (
+          <FlowTab
+            from={from} to={to} months={months} span={span}
+            shape={shape} onShape={setShape}
+            grain={grain} onGrain={setGrain}
+            facet={facet} onFacet={setFacet}
           />
-          {tab === "spending" || tab === "income" ? (
-            <Segmented
-              value={groupBy} onChange={setGroupBy}
-              options={[
-                { value: "category", label: "Category" },
-                { value: "group", label: "Group" },
-                { value: "merchant", label: "Merchant" },
-                { value: "account", label: "Account" },
-              ]}
-            />
-          ) : null}
-          <div className="grow" />
-          <span className="small muted">
-            {monthLabel(months[0], true)} — {monthLabel(months[months.length - 1], true)} · total{" "}
-            <b className="num"><Money value={total} cents={false} /></b>
-          </span>
-        </div>
-
-        {tab === "networth" ? (
-          <Card>
-            <CardHead title="Net worth" sub="Assets minus liabilities, month by month" />
-            <AreaChart points={netWorth.map((p) => ({ label: monthLabel(p.month, true), value: p.net }))} height={280} />
-            <div className="divider" />
-            <div className="grid g2">
-              <div>
-                <span className="section-title">Assets</span>
-                <AreaChart points={netWorth.map((p) => ({ label: monthLabel(p.month, true), value: p.assets }))} height={150} tone="--c3" />
-              </div>
-              <div>
-                <span className="section-title">Liabilities</span>
-                <AreaChart points={netWorth.map((p) => ({ label: monthLabel(p.month, true), value: p.liabilities }))} height={150} tone="--c9" />
-              </div>
-            </div>
-          </Card>
-        ) : tab === "savings" ? (
-          <Card>
-            <CardHead title="Saved each month" sub="Income minus spending, transfers excluded" />
-            <BarChart
-              height={280}
-              groups={flow.map((f) => ({
-                label: monthLabel(f.month, true),
-                bars: [{ key: "Saved", value: f.net, tone: f.net >= 0 ? "--c3" : "--c9" }],
-              }))}
-            />
-            <div className="divider" />
-            <div className="row wrap" style={{ gap: 28 }}>
-              <div className="col">
-                <span className="tile-label">Best month</span>
-                <span className="num bold">
-                  <Money value={Math.max(...flow.map((f) => f.net))} cents={false} />
-                </span>
-              </div>
-              <div className="col">
-                <span className="tile-label">Worst month</span>
-                <span className="num bold">
-                  <Money value={Math.min(...flow.map((f) => f.net))} cents={false} />
-                </span>
-              </div>
-              <div className="col">
-                <span className="tile-label">Average</span>
-                <span className="num bold">
-                  <Money value={Math.round(flow.reduce((s, f) => s + f.net, 0) / Math.max(1, flow.length))} cents={false} />
-                </span>
-              </div>
-              <div className="col">
-                <span className="tile-label">Months in the black</span>
-                <span className="num bold">{flow.filter((f) => f.net > 0).length} / {flow.length}</span>
-              </div>
-            </div>
-          </Card>
         ) : (
-          <div className="grid g-2-1">
-            <Card pad={false}>
-              <CardHead flush title={tab === "income" ? "Income" : "Spending"} sub={`by ${groupBy}`} />
-              {rows.length ? (
-                <div style={{ overflowX: "auto" }}>
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>{groupBy}</th>
-                      <th className="right">Total</th>
-                      <th className="right">Avg / mo</th>
-                      <th className="right">Share</th>
-                      <th style={{ width: 100 }}>Trend</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r) => (
-                      <tr key={r.key}>
-                        <td>
-                          {/* Each row goes to that thing's own page. Merchant and
-                              account used to land on the unfiltered transaction
-                              list, which answered nothing about the row clicked. */}
-                          <Link to={destination(groupBy, r.key)} className="row cat-open" style={{ gap: 7 }}>
-                            {r.icon ? <span>{r.icon}</span> : <span className="dot" style={{ background: `var(${r.tone})` }} />}
-                            <span className="truncate">{r.label}</span>
-                            <span className="tiny faint">{r.count}</span>
-                          </Link>
-                        </td>
-                        <td className="right num bold"><Money value={r.total} cents={false} /></td>
-                        <td className="right num muted"><Money value={Math.round(r.total / months.length)} cents={false} /></td>
-                        <td className="right num muted">{total ? ((r.total / total) * 100).toFixed(1) : "0.0"}%</td>
-                        <td><Sparkline values={r.series} tone={r.tone} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                </div>
-              ) : <Empty title="Nothing to report in this range" />}
-            </Card>
-
-            <div className="stack">
-              <Card>
-                <CardHead title="Breakdown" />
-                {rows.length ? (
-                  <Donut
-                    size={160}
-                    slices={rows.slice(0, 7).map((r) => ({ label: r.label, value: r.total, tone: r.tone }))}
-                    center={<div className="col" style={{ gap: 0 }}>
-                      <span className="tiny muted">Total</span>
-                      <span className="bold num">{fmt0(total, { compact: true })}</span>
-                    </div>}
-                  />
-                ) : <Empty title="No data" />}
-              </Card>
-              <Card>
-                <CardHead title="Biggest movers" sub="Largest lines in range" />
-                <HBars rows={rows.slice(0, 8).map((r) => ({ label: r.label, value: r.total, tone: r.tone, icon: r.icon }))} />
-              </Card>
-            </div>
-          </div>
+          <SideTab side={tab === "income" ? "income" : "expense"} from={from} to={to} span={span} />
         )}
       </div>
+    </>
+  );
+}
+
+/* ── cash flow ────────────────────────────────────────────────────────── */
+
+function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet, onFacet }: {
+  from: string; to: string; months: string[]; span: string;
+  shape: Shape; onShape: (s: Shape) => void;
+  grain: Grain; onGrain: (g: Grain) => void;
+  facet: Facet; onFacet: (f: Facet) => void;
+}) {
+  const db = useDB();
+  const flow = useMemo(() => cashFlowSeries(db, months), [db, months]);
+  const buckets = useMemo(
+    () => flowBuckets(flow, grain).map((b) => ({
+      ...b, label: grain === "monthly" ? monthLabel(b.key, true) : b.key,
+    })),
+    [flow, grain],
+  );
+  const sankey = useMemo(() => sankeyData(db, from, to, facet), [db, from, to, facet]);
+
+  const income = flow.reduce((s, f) => s + f.income, 0);
+  const expense = flow.reduce((s, f) => s + f.expense, 0);
+
+  return (
+    <>
+      <Card>
+        <div className="row wrap report-controls" style={{ gap: 12, marginBottom: 14 }}>
+          <label className="field">
+            <span>Chart</span>
+            <SelectInput
+              value={shape} onChange={(v) => onShape(v as Shape)}
+              options={[{ value: "bar", label: "Bar" }, { value: "sankey", label: "Sankey" }]}
+            />
+          </label>
+          {/* Each chart takes one further question, and only its own: a grain
+              means nothing to a sankey, and a grouping means nothing to bars
+              already bucketed by time. */}
+          {shape === "bar" ? (
+            <label className="field">
+              <span>Timeframe</span>
+              <SelectInput
+                value={grain} onChange={(v) => onGrain(v as Grain)}
+                options={[{ value: "monthly", label: "Monthly" }, { value: "yearly", label: "Yearly" }]}
+              />
+            </label>
+          ) : (
+            <label className="field">
+              <span>Group by</span>
+              <SelectInput
+                value={facet} onChange={(v) => onFacet(v as Facet)}
+                options={[
+                  { value: "category", label: "Category" },
+                  { value: "group", label: "Category group" },
+                  { value: "merchant", label: "Merchant" },
+                ]}
+              />
+            </label>
+          )}
+        </div>
+
+        {shape === "bar" ? (
+          buckets.length ? <FlowChart buckets={buckets} height={260} /> : <Empty title="Nothing in this period" />
+        ) : (
+          sankey.nodes.length > 1
+            ? <Sankey data={sankey} height={Math.max(320, sankey.nodes.length * 30)} />
+            : <Empty title="Not enough to draw a flow" body="It needs both money coming in and money going out." />
+        )}
+      </Card>
+
+      <Card>
+        <CardHead title="Summary" sub={span} />
+        <div className="col" style={{ gap: 0 }}>
+          <SumRow label="Total income" value={income} tone="pos" />
+          <SumRow label="Total expenses" value={expense} tone="neg" />
+          <SumRow label="Savings" value={income - expense} tone={income - expense >= 0 ? "pos" : "neg"} />
+        </div>
+      </Card>
+
+      <BreakdownCard title="Income" side="income" from={from} to={to} />
+      <BreakdownCard title="Expenses" side="expense" from={from} to={to} />
+    </>
+  );
+}
+
+function SumRow({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="spread report-sum">
+      <span>{label}</span>
+      <span className={cx("num bold", tone)}><Money value={value} /></span>
+    </div>
+  );
+}
+
+/**
+ * One side of the ledger, ranked, with the bar behind each row showing its
+ * share of the whole — which is the comparison the figure alone cannot make.
+ */
+function BreakdownCard({ title, side, from, to }: { title: string; side: Side; from: string; to: string }) {
+  const db = useDB();
+  const [facet, setFacet] = useState<Facet>("category");
+  const [all, setAll] = useState(false);
+  const rows = useMemo(() => breakdown(db, from, to, side, facet), [db, from, to, side, facet]);
+  const total = rows.reduce((s, r) => s + r.total, 0);
+  const shown = all ? rows : rows.slice(0, 6);
+
+  return (
+    <Card pad={false}>
+      <div className="dash-card-head">
+        <div className="spread">
+          <h2>{title}</h2>
+          <span className="num bold"><Money value={total} cents={false} /></span>
+        </div>
+        <Segmented
+          value={facet} onChange={setFacet}
+          options={[
+            { value: "category", label: "Category" },
+            { value: "group", label: "Group" },
+            { value: "merchant", label: "Merchant" },
+          ]}
+        />
+      </div>
+      {shown.map((r) => <Row key={r.key} row={r} total={total} side={side} />)}
+      {!rows.length ? <Empty title={`No ${side === "income" ? "income" : "spending"} in this period`} /> : null}
+      {rows.length > 6 ? (
+        <div style={{ padding: 12 }}>
+          <button className="btn view-all" onClick={() => setAll((v) => !v)}>
+            {all ? "Show fewer" : `Show all ${rows.length}`}
+          </button>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function Row({ row, total, side }: { row: Slice; total: number; side: Side }) {
+  const share = total > 0 ? row.total / total : 0;
+  const body = (
+    <>
+      {/* The share, drawn behind the row rather than beside it, so the name
+          and the figure keep the full width they need. */}
+      <span
+        className="report-fill"
+        style={{ width: `${share * 100}%`, background: color(side === "income" ? "--pos-soft" : "--neg-soft") }}
+      />
+      <span className="report-row-body">
+        {row.icon ? <span style={{ fontSize: 15 }}>{row.icon}</span> : <span className="dot" style={{ background: color(row.tone) }} />}
+        <span className="grow truncate" style={{ fontWeight: 500 }}>{row.label}</span>
+        <span className="num bold"><Money value={row.total} cents={false} /></span>
+        <span className="tiny faint report-share">{fmtShare(share)}</span>
+        {row.to ? <ChevronRight size={14} className="faint" /> : <span style={{ width: 14 }} />}
+      </span>
+    </>
+  );
+  return row.to
+    ? <Link to={row.to} className="report-row click">{body}</Link>
+    : <div className="report-row">{body}</div>;
+}
+
+const fmtShare = (share: number): string => {
+  const p = share * 100;
+  if (p > 0 && p < 0.1) return "<0.1%";
+  return `${p >= 10 ? Math.round(p) : Math.round(p * 10) / 10}%`;
+};
+
+/* ── spending and income ──────────────────────────────────────────────── */
+
+function SideTab({ side, from, to, span }: { side: Side; from: string; to: string; span: string }) {
+  const db = useDB();
+  const [facet, setFacet] = useState<Facet>("category");
+  const [all, setAll] = useState(false);
+  const rows = useMemo(() => breakdown(db, from, to, side, facet), [db, from, to, side, facet]);
+  const sum = useMemo(() => summarise(db, from, to, side), [db, from, to, side]);
+
+  /**
+   * The ring and its key, with the long tail folded into one band.
+   *
+   * Folded rather than dropped: thirty categories is a fringe of hairlines and
+   * a key nobody reads, but a ring whose slices do not add up to the figure in
+   * the middle of it is worse than either. The fold is labelled, so the money
+   * is still on the chart and still accounted for.
+   */
+  const slices = useMemo(() => {
+    if (all || rows.length <= LEGEND + 1) {
+      return rows.map((r) => ({ label: r.label, value: r.total, tone: r.tone }));
+    }
+    const head = rows.slice(0, LEGEND);
+    const tail = rows.slice(LEGEND).reduce((s, r) => s + r.total, 0);
+    return [
+      ...head.map((r) => ({ label: r.label, value: r.total, tone: r.tone })),
+      { label: `Everything else (${rows.length - LEGEND})`, value: tail, tone: "--c12" },
+    ];
+  }, [rows, all]);
+
+  return (
+    <>
+      <Card>
+        <div className="row wrap report-controls" style={{ gap: 12, marginBottom: 14 }}>
+          <label className="field">
+            <span>Display by</span>
+            <SelectInput
+              value={facet} onChange={(v) => setFacet(v as Facet)}
+              options={[
+                { value: "category", label: "Category" },
+                { value: "group", label: "Category group" },
+                { value: "merchant", label: "Merchant" },
+              ]}
+            />
+          </label>
+        </div>
+
+        {rows.length ? (
+          <>
+            <Donut size={210} slices={slices} center={
+              <div className="col" style={{ gap: 0, alignItems: "center" }}>
+                <span className="num bold" style={{ fontSize: 20 }}><Money value={sum.total} cents={false} /></span>
+                <span className="tiny muted">Total</span>
+              </div>
+            } />
+            {rows.length > LEGEND ? (
+              <button className="btn btn-ghost report-more" onClick={() => setAll((v) => !v)}>
+                {all ? "Show fewer" : `Show all ${rows.length}`}
+              </button>
+            ) : null}
+          </>
+        ) : <Empty title={`No ${side === "income" ? "income" : "spending"} in this period`} />}
+      </Card>
+
+      <Card>
+        <CardHead title="Summary" sub={span} />
+        <div className="col" style={{ gap: 0 }}>
+          <SumRow
+            label={side === "income" ? "Total income" : "Total spending"}
+            value={sum.total} tone={side === "income" ? "pos" : "neg"}
+          />
+          <div className="spread report-sum">
+            <span>Total transactions</span>
+            <span className="num bold">{sum.count.toLocaleString()}</span>
+          </div>
+          <div className="spread report-sum">
+            <span>Largest transaction</span>
+            <span className="num bold">{fmt0(sum.largest)}</span>
+          </div>
+          <div className="spread report-sum">
+            <span>Average transaction</span>
+            <span className="num bold">{fmt0(sum.average)}</span>
+          </div>
+        </div>
+      </Card>
+
+      <BreakdownCard title={side === "income" ? "Income" : "Expenses"} side={side} from={from} to={to} />
     </>
   );
 }

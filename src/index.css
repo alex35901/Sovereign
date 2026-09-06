@@ -753,6 +753,28 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   border-radius: 2px; background: var(--text); box-shadow: 0 0 0 1.5px var(--surface);
 }
 
+/* ── reports ── */
+.report-controls .field { flex: 1 1 160px; min-width: 0; }
+.report-controls .field > span { font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.report-sum { padding: 12px 0; border-bottom: 1px solid var(--line-soft); font-size: 14px; }
+.report-sum:last-child { border-bottom: 0; }
+
+/* A ranked row, with its share of the whole drawn behind it rather than
+   beside it, so the name and the figure keep the width they need. */
+.report-row { position: relative; display: block; border-bottom: 1px solid var(--line-soft); text-decoration: none; color: inherit; }
+.report-row:last-of-type { border-bottom: 0; }
+.report-row.click:hover .report-row-body { background: var(--surface-2); }
+.report-fill { position: absolute; inset: 0 auto 0 0; border-radius: 0 6px 6px 0; }
+.report-row-body { position: relative; display: flex; align-items: center; gap: 10px; padding: 11px 16px; }
+.report-share { width: 44px; text-align: right; flex: none; }
+
+.report-more { width: 100%; justify-content: center; margin-top: 12px; color: var(--accent); }
+
+/* A sankey's labels sit outside their bands, so the chart needs room at both
+   ends rather than clipping the first and last word of every row. */
+.sankey { overflow: visible; }
+.sankey-label { font-size: 10.5px; }
+
 /* Two runs over one stretch: which line is which, under the chart. */
 .cmp-key { justify-content: center; gap: 18px; color: var(--muted); padding-top: 4px; }
 .cmp-swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }

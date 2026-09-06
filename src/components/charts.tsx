@@ -372,6 +372,91 @@ export function CompareChart({ current, previous, height = 210, span, tone = "--
   );
 }
 
+/**
+ * Income above the line, spending below it, and what was left drawn across.
+ *
+ * One axis with a real zero on it, rather than two rows of bars side by side:
+ * the question a cash-flow chart answers is whether the green outweighs the
+ * red, and that is a thing you see at a glance only when they are measured
+ * against the same nought.
+ */
+export function FlowChart({ buckets, height = 240, onPick }: {
+  buckets: { key: string; label: string; income: number; expense: number; net: number }[];
+  height?: number;
+  onPick?: (key: string) => void;
+}) {
+  const [ref, w] = useWidth<HTMLDivElement>();
+  const [hover, setHover] = useState<number | null>(null);
+  if (!buckets.length) return <div ref={ref} style={{ height }} />;
+
+  const padL = 52;
+  const padR = 10;
+  const padT = 12;
+  const padB = 26;
+  const innerW = Math.max(40, w - padL - padR);
+  const innerH = height - padT - padB;
+  const hi = Math.max(1, ...buckets.map((b) => b.income), ...buckets.map((b) => b.expense), ...buckets.map((b) => Math.abs(b.net)));
+  const mid = padT + innerH / 2;
+  const y = (v: number) => mid - (v / hi) * (innerH / 2);
+  const slot = innerW / buckets.length;
+  const barW = Math.max(4, Math.min(26, slot * 0.34));
+  const x = (i: number) => padL + slot * i + slot / 2;
+  const ticks = rangeTicks(-hi, hi);
+  const label = axisFormat(-hi, hi);
+  const net = buckets.map((b, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(b.net).toFixed(1)}`).join(" ");
+  // Every label would collide on a year of months, so they thin out.
+  const every = Math.max(1, Math.ceil(buckets.length / Math.max(2, Math.floor(innerW / 46))));
+
+  return (
+    <div ref={ref} className="chart-wrap" style={{ height }}>
+      <svg width="100%" height={height} style={{ display: "block", overflow: "visible" }} onMouseLeave={() => setHover(null)}>
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line className="grid-line" x1={padL} x2={padL + innerW} y1={y(t)} y2={y(t)} />
+            <text className="axis-text" x={padL - 8} y={y(t) + 3.5} textAnchor="end">{label(Math.abs(t))}</text>
+          </g>
+        ))}
+        <line x1={padL} x2={padL + innerW} y1={mid} y2={mid} stroke={color("--line")} strokeWidth={1} />
+
+        {buckets.map((b, i) => (
+          <g
+            key={b.key}
+            onMouseEnter={() => setHover(i)}
+            onClick={onPick ? () => onPick(b.key) : undefined}
+            style={onPick ? { cursor: "pointer" } : undefined}
+          >
+            <rect x={x(i) - slot / 2} y={padT} width={slot} height={innerH} fill="transparent" />
+            <rect
+              x={x(i) - barW - 2} y={y(b.income)} width={barW} height={Math.max(1, mid - y(b.income))}
+              rx={3} fill={color("--pos")} opacity={hover === null || hover === i ? 0.85 : 0.4}
+            />
+            <rect
+              x={x(i) + 2} y={mid} width={barW} height={Math.max(1, y(-b.expense) - mid)}
+              rx={3} fill={color("--neg")} opacity={hover === null || hover === i ? 0.85 : 0.4}
+            />
+          </g>
+        ))}
+
+        {/* What was left, across the top of the bars it came from. */}
+        <path d={net} fill="none" stroke={color("--text")} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        {buckets.map((b, i) => <circle key={b.key} cx={x(i)} cy={y(b.net)} r={2.5} fill={color("--text")} />)}
+
+        {buckets.map((b, i) => (i % every ? null : (
+          <text key={b.key} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">{b.label}</text>
+        )))}
+      </svg>
+      {hover !== null ? (
+        <Tip x={x(hover)} y={padT} width={w}>
+          <div className="tiny muted">{buckets[hover].label}</div>
+          <div className="tiny pos">In {fmt0(buckets[hover].income)}</div>
+          <div className="tiny neg">Out {fmt0(buckets[hover].expense)}</div>
+          <div className="tiny bold">Saved {fmt0(buckets[hover].net)}</div>
+        </Tip>
+      ) : null}
+    </div>
+  );
+}
+
 /* ── bars ─────────────────────────────────────────────────────────────── */
 
 export interface BarGroup { label: string; bars: { key: string; value: number; tone: string }[]; }
@@ -516,14 +601,31 @@ export interface SankeyInput {
   links: { source: string; target: string; value: number }[];
 }
 
+/**
+ * A label cut to the room it has, in an ellipsis.
+ *
+ * SVG text neither wraps nor truncates, so a long category name simply runs
+ * off the side of the card — which is what "Mortgage Payment" did the moment
+ * the sankey could be cut by category rather than only by group. Measured in
+ * characters against an average width, which is close enough for a label whose
+ * job is to be recognised rather than read.
+ */
+function clip(text: string, px: number): string {
+  const max = Math.max(4, Math.floor(px / 6.2));
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
 export function Sankey({ data, height = 320 }: { data: SankeyInput; height?: number }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<string | null>(null);
   const depths = [0, 1, 2];
   const nodeW = 12;
   const padY = 8;
-  const labelW = 120;
-  const innerW = Math.max(200, w - labelW * 2);
+  // The gutters give way before the diagram does. Fixing them at 120px and
+  // then forcing a minimum width on what was left pushed the right-hand
+  // column past the edge of its own card on a phone, and its labels with it.
+  const labelW = Math.max(44, Math.min(120, (w - 120) / 2));
+  const innerW = Math.max(60, w - labelW * 2);
   if (!data.nodes.length) return <div ref={ref} style={{ height }} />;
 
   const byDepth = depths.map((d) => data.nodes.filter((n) => n.depth === d));
@@ -584,7 +686,7 @@ export function Sankey({ data, height = 320 }: { data: SankeyInput; height?: num
                   y={p.y + p.h / 2 + (p.h >= 26 ? -2 : 4)}
                   textAnchor={rightSide ? "start" : "end"} fill={color("--muted")} style={{ fontSize: 11.5 }}
                 >
-                  {n.label}
+                  {clip(n.label, labelW - 10)}
                 </text>
               ) : null}
               {p.h >= 26 ? (
