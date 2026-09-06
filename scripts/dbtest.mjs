@@ -890,7 +890,11 @@ await test("the job stamps its own run, so a cron that stops is visible", async 
   const body = JSON.parse(r.text);
   assert.equal(r.status, 200);
   assert.equal(body.ran, false, "nothing was connected, so nothing was pulled");
-  assert.match(body.reason, /isn't connected/);
+  // Neither provider is connected, and the reason has to say so about both:
+  // "SimpleFIN isn't connected" stopped being the whole truth once Plaid
+  // started running on the same schedule.
+  assert.match(body.reason, /No bank is connected/);
+  assert.equal(body.plaid, undefined, "no Plaid items means nothing to report about Plaid");
 
   const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
   assert.ok(after.settings.usage.vercel.at, "but the run itself must be on the record");
@@ -942,6 +946,141 @@ await test("a browser without the key cannot overwrite the encrypted document", 
   const after = JSON.parse((await asServer(undefined, "GET")).text);
   assert.deepEqual(after.doc, before.doc, "and the envelope must be untouched");
   assert.equal(after.version, before.version);
+});
+
+await test("the scheduled job pulls Plaid into the stored document too", async () => {
+  // The whole point of putting it on the same schedule: a browser that never
+  // opens still ends the day with both providers' figures in the document.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  process.env.PLAID_CLIENT_ID = "cid";
+  process.env.PLAID_SECRET = "sec";
+  process.env.PLAID_ENV = "sandbox";
+  delete process.env.SIMPLEFIN_ACCESS_URL;
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  const base = M.emptyDB();
+  const seeded = {
+    ...base,
+    settings: {
+      ...base.settings,
+      plaidItems: [{
+        accessToken: "access-sandbox-1", itemId: "item-1",
+        institution: "Third National", kind: "bank", addedAt: "2026-01-01T00:00:00.000Z",
+      }],
+    },
+  };
+  await asServer({ doc: seeded, baseVersion: 0 }, "PUT");
+
+  const r = await withFetch(async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/accounts/get") {
+      return new Response(JSON.stringify({
+        accounts: [{
+          account_id: "pa1", name: "Everyday", type: "depository", subtype: "checking",
+          balances: { current: 1234.56, iso_currency_code: "USD" },
+        }],
+      }));
+    }
+    if (path === "/transactions/get") {
+      return new Response(JSON.stringify({
+        transactions: JSON.parse(init.body).options.offset ? [] : [{
+          transaction_id: "pt1", account_id: "pa1", date: "2026-09-01",
+          amount: 12.34, name: "TARGET 3026", merchant_name: "Target", pending: false,
+        }],
+        total_transactions: 1,
+      }));
+    }
+    return new Response(JSON.stringify({ error_message: "unexpected" }), { status: 400 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.21" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(r.status, 200);
+  assert.equal(body.ran, true);
+  assert.equal(body.plaid.items, 1);
+  assert.equal(body.transactionsAdded, 1, "the run's total, not one provider's");
+  assert.deepEqual(body.errors, []);
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
+  assert.equal(after.transactions.length, 1);
+  assert.equal(after.transactions[0].amount, -1234);
+  assert.equal(after.transactions[0].importKey, "pl:pt1");
+  assert.equal(after.accounts[0].syncSource, "plaid");
+  assert.ok(after.settings.plaidItems[0].lastSyncAt, "and the item is stamped for the next window");
+  assert.equal(after.settings.plaidItems[0].accessToken, "access-sandbox-1", "the credential survives the write");
+
+  delete process.env.PLAID_CLIENT_ID;
+  delete process.env.PLAID_SECRET;
+});
+
+await test("an encrypted document gets its Plaid pull queued, not merged", async () => {
+  // The job cannot open the envelope, so the pull is sealed to the document's
+  // own public key and left for the next browser. Nothing here can read it back.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  process.env.PLAID_CLIENT_ID = "cid";
+  process.env.PLAID_SECRET = "sec";
+  process.env.PLAID_ACCESS_TOKENS = "access-sandbox-1 access-sandbox-2";
+  delete process.env.SIMPLEFIN_ACCESS_URL;
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  const at = await unlockCheap(null);
+  const env = await C.encryptDocument(M.emptyDB(), at);
+  await asServer({ doc: env, baseVersion: 0 }, "PUT");
+
+  const seen = [];
+  const r = await withFetch(async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    const body = JSON.parse(init.body);
+    if (body.access_token) seen.push(body.access_token);
+    if (path === "/item/get") return new Response(JSON.stringify({ item: { institution_id: "ins_1" } }));
+    if (path === "/institutions/get_by_id") return new Response(JSON.stringify({ institution: { name: "Third National" } }));
+    if (path === "/accounts/get") {
+      return new Response(JSON.stringify({
+        accounts: [{
+          account_id: `pa-${body.access_token}`, name: "Everyday", type: "depository", subtype: "checking",
+          balances: { current: 10, iso_currency_code: "USD" },
+        }],
+      }));
+    }
+    if (path === "/transactions/get") return new Response(JSON.stringify({ transactions: [], total_transactions: 0 }));
+    if (path === "/investments/holdings/get") {
+      return new Response(JSON.stringify({
+        holdings: [{ account_id: `pa-${body.access_token}`, security_id: "s1", quantity: 4, cost_basis: 400, institution_price: 150 }],
+        securities: [{ security_id: "s1", ticker_symbol: "VTI", name: "Vanguard", type: "etf", close_price: 150 }],
+      }));
+    }
+    return new Response(JSON.stringify({ error_message: "unexpected" }), { status: 400 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.22" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(body.encrypted, true);
+  assert.equal(body.queued.length, 2, "one queued pull per token");
+  assert.ok(seen.includes("access-sandbox-1") && seen.includes("access-sandbox-2"));
+  // The document itself must be exactly as it was: a merge over an envelope
+  // would destroy it.
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.deepEqual(after.doc, env);
+
+  // And what was queued is tagged with the provider that fetched it, or the
+  // browser would merge a Plaid pull under SimpleFIN's prefix.
+  const rows = await M.readQueue();
+  assert.equal(rows.length, 2);
+  const opened = JSON.parse(await C.openFrom(at.priv, rows[0]));
+  assert.equal(opened.source, "plaid");
+  assert.equal(opened.accounts[0].institution, "Third National", "asked Plaid who it was, since the document could not say");
+  // A bare token does not say whether it is an investment item, so holdings
+  // are always asked for; an item that has none simply answers with none.
+  assert.equal(opened.holdings.length, 1, "positions have to be queued too, or they never arrive");
+  assert.equal(opened.holdings[0].ticker, "VTI");
+  assert.ok(seen.length >= 4, "each token was asked for its accounts and its holdings");
+  assert.equal(r.text.includes("access-sandbox-1"), false, "no credential may appear in the response");
+
+  delete process.env.PLAID_ACCESS_TOKENS;
+  delete process.env.PLAID_CLIENT_ID;
+  delete process.env.PLAID_SECRET;
 });
 
 /* ── results, always last so every test above is reported ─────────────── */

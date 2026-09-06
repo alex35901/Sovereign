@@ -47,7 +47,7 @@ interface PlaidSecurity {
   close_price?: number | null;
 }
 
-interface SyncResponse {
+export interface SyncResponse {
   accounts: PlaidAccount[];
   transactions: PlaidTransaction[];
   holdings: PlaidHolding[];
@@ -173,7 +173,21 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
     endDate: new Date().toISOString().slice(0, 10),
     withHoldings: item.kind === "investment",
   });
+  return toPlaidPayload(raw, item);
+}
 
+/** What an item contributes to every account it owns: its name and its mark. */
+export interface ItemMark { institution: string; logo?: string; domain?: string }
+
+/**
+ * Plaid's shapes, turned into this app's.
+ *
+ * Pure, and separate from the fetch above, because the scheduled sync pulls the
+ * same response from inside a serverless function rather than through the
+ * browser proxy — and two copies of this mapping would be two sign conventions
+ * waiting to disagree.
+ */
+export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload {
   const today = new Date().toISOString().slice(0, 10);
   const accounts: RemoteAccount[] = (raw.accounts ?? []).map((a) => {
     const magnitude = cents(a.balances.current);

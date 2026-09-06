@@ -2,7 +2,7 @@ import type { DB } from "../../types.js";
 import type { QueuedPull } from "../cloud.js";
 import { ackQueued, push, queued } from "../cloud.js";
 import { vault } from "../vault.js";
-import type { SyncPayload } from "./types.js";
+import type { QueuedPayload } from "./types.js";
 import { openFrom } from "../crypto.js";
 import { mergeSync } from "./merge.js";
 import { noteRun } from "../usage.js";
@@ -27,6 +27,8 @@ export interface Drained {
   transactionsAdded: number;
   accountsUpdated: number;
   accountsAdded: number;
+  /** Positions refreshed, which only a Plaid pull carries. */
+  holdingsUpdated: number;
   /**
    * Rows that would not open. Left in place rather than deleted: they cost a
    * failed decrypt per poll and expire on their own, which is a better trade
@@ -37,7 +39,7 @@ export interface Drained {
 
 export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): Promise<Drained> {
   const out: Drained = {
-    db, ids: [], transactionsAdded: 0, accountsUpdated: 0, accountsAdded: 0, unreadable: 0,
+    db, ids: [], transactionsAdded: 0, accountsUpdated: 0, accountsAdded: 0, holdingsUpdated: 0, unreadable: 0,
   };
 
   // A queued pull is the scheduled job's signature: on an encrypted document
@@ -46,19 +48,20 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
   if (rows.length) out.db = { ...out.db, settings: { ...out.db.settings, usage: noteRun(out.db.settings.usage, "vercel", "month", {}) } };
 
   for (const row of [...rows].sort((a, b) => a.id - b.id)) {
-    let payload: SyncPayload;
+    let payload: QueuedPayload;
     try {
-      payload = JSON.parse(await openFrom(priv, row)) as SyncPayload;
+      payload = JSON.parse(await openFrom(priv, row)) as QueuedPayload;
     } catch {
       out.unreadable += 1;
       continue;
     }
-    const merged = mergeSync(out.db, payload, "simplefin");
+    const merged = mergeSync(out.db, payload, payload.source === "plaid" ? "plaid" : "simplefin");
     out.db = merged.db;
     out.ids.push(row.id);
     out.transactionsAdded += merged.transactionsAdded;
     out.accountsUpdated += merged.accountsUpdated;
     out.accountsAdded += merged.accountsAdded;
+    out.holdingsUpdated += merged.holdingsUpdated;
   }
   return out;
 }
@@ -72,6 +75,7 @@ export function drainSummary(d: Drained): string | null {
   }
   const accounts = d.accountsAdded + d.accountsUpdated;
   if (accounts) bits.push(`${accounts} account${accounts === 1 ? "" : "s"}`);
+  if (d.holdingsUpdated) bits.push(`${d.holdingsUpdated} holding${d.holdingsUpdated === 1 ? "" : "s"}`);
   if (!bits.length) return null;
   return `${bits.join(", ")} from the overnight sync.`;
 }

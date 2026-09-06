@@ -34,6 +34,19 @@ export interface SyncPayload {
   fetchedAt: string;
 }
 
+/**
+ * A pull left in the queue for an encrypted document.
+ *
+ * The scheduled job cannot merge into an envelope, so it seals each pull to the
+ * document's public key and a browser applies it later. The source rides along
+ * because the merge needs it: a Plaid transaction and a SimpleFIN one are
+ * de-duplicated under different prefixes, and a Plaid pull merged as SimpleFIN
+ * would import every transaction a second time. Rows written before this field
+ * existed have no source, and are SimpleFIN — the only provider the job pulled
+ * then.
+ */
+export type QueuedPayload = SyncPayload & { source?: "simplefin" | "plaid" };
+
 export interface SyncAdapter {
   id: "simplefin" | "plaid" | "teller";
   label: string;

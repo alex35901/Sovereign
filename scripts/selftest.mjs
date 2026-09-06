@@ -57,12 +57,14 @@ await build({
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
       export { default as dbHandler } from "./api/db.ts";
-      export { default as cronHandler } from "./api/cron/sync.ts";
+      export { default as cronHandler, refreshPlaid } from "./api/cron/sync.ts";
+      export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE } from "./api/_plaid.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { findConnection } from "./api/_store.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
-      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution } from "./src/lib/sync/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
+      export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -3520,6 +3522,275 @@ await test("keys that work nowhere are reported as matching neither", async () =
     withFetch(async () => new Response(JSON.stringify({ error_code: "INVALID_API_KEYS", error_message: "raw" }), { status: 400 }),
       () => invokePlaid({ action: "diagnose" })));
   assert.equal(JSON.parse(r.text).worksIn, null);
+});
+
+
+/* ── plaid on the overnight schedule ──────────────────────────────────── */
+
+/** Plaid's own shapes, only as far as the mapping reads them. */
+const plaidAccount = (over = {}) => ({
+  account_id: "pa1", name: "Everyday", official_name: "", mask: "1234",
+  type: "depository", subtype: "checking",
+  balances: { current: 1234.56, iso_currency_code: "USD" },
+  ...over,
+});
+const plaidTxn = (over = {}) => ({
+  transaction_id: "pt1", account_id: "pa1", date: "2026-09-01",
+  amount: 12.34, name: "TARGET 3026", merchant_name: "Target", pending: false,
+  ...over,
+});
+
+/**
+ * A stand-in for Plaid's HTTP, answering by endpoint. Records what it was
+ * asked so the paging can be inspected.
+ */
+function plaidServer({ accounts = [plaidAccount()], transactions = [], holdings = null, fail = {} } = {}) {
+  const calls = [];
+  const impl = async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    const body = JSON.parse(init.body);
+    calls.push({ path, body });
+    const bad = fail[path];
+    if (bad) return new Response(JSON.stringify({ error_code: bad.code ?? "X", error_message: bad.message ?? "no" }), { status: bad.status ?? 400 });
+    if (path === "/item/get") return new Response(JSON.stringify({ item: { institution_id: "ins_1" } }));
+    if (path === "/institutions/get_by_id") {
+      return new Response(JSON.stringify({ institution: { name: "Third National", url: "https://www.third.com/" } }));
+    }
+    if (path === "/accounts/get") return new Response(JSON.stringify({ accounts }));
+    if (path === "/transactions/get") {
+      const offset = body.options.offset;
+      return new Response(JSON.stringify({
+        transactions: transactions.slice(offset, offset + body.options.count),
+        total_transactions: transactions.length,
+      }));
+    }
+    if (path === "/investments/holdings/get") {
+      if (!holdings) return new Response(JSON.stringify({ error_code: "NO_INVESTMENT_ACCOUNTS" }), { status: 400 });
+      return new Response(JSON.stringify(holdings));
+    }
+    return new Response(JSON.stringify({ error_message: "unexpected" }), { status: 400 });
+  };
+  return { impl, calls };
+}
+
+const withPlaidItems = (items) => {
+  const db = M.emptyDB();
+  return { ...db, settings: { ...db.settings, plaidItems: items } };
+};
+const item = (over = {}) => ({
+  accessToken: "access-sandbox-1", itemId: "item-1", institution: "Third National",
+  kind: "bank", addedAt: "2026-01-01T00:00:00.000Z", ...over,
+});
+const FUTURE = () => Date.now() + 60_000;
+
+await test("the overnight run pulls Plaid as well as SimpleFIN", async () => {
+  const server = plaidServer({ transactions: [plaidTxn()] });
+  const out = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+
+  assert.equal(out.items, 1);
+  assert.equal(out.transactions, 1);
+  assert.equal(out.accountsAdded, 1);
+  assert.equal(out.ran, true);
+  assert.deepEqual(out.errors, []);
+  // and it landed in the document, with this app's sign convention
+  const [txn] = out.db.transactions;
+  assert.equal(txn.merchant, "Target");
+  assert.equal(txn.amount, -1234, "money leaving is positive at Plaid and negative here");
+  assert.equal(txn.importKey, "pl:pt1", "de-duplicated under Plaid's own prefix");
+  assert.equal(out.db.accounts[0].balance, 123456);
+  assert.equal(out.db.accounts[0].syncSource, "plaid");
+});
+
+await test("a second overnight run adds nothing the first already took", async () => {
+  const server = plaidServer({ transactions: [plaidTxn()] });
+  const once = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+  const twice = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(once.db, FUTURE())));
+  assert.equal(twice.transactions, 0);
+  assert.equal(twice.accountsAdded, 0);
+  assert.equal(twice.db.transactions.length, 1);
+  assert.equal(twice.ran, false, "a run that changed nothing should not claim it did");
+});
+
+await test("the run stamps the item it pulled, and only that one", async () => {
+  const server = plaidServer({ transactions: [plaidTxn()] });
+  const two = [item(), item({ itemId: "item-2", accessToken: "access-sandbox-2", institution: "Second" })];
+  const out = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(withPlaidItems(two), FUTURE())));
+  const stamped = out.db.settings.plaidItems;
+  assert.equal(stamped.length, 2);
+  assert.ok(stamped.every((i) => i.lastSyncAt), "both were pulled, so both are stamped");
+  assert.equal(stamped[0].accessToken, "access-sandbox-1", "the tokens must survive the merge");
+  assert.equal(stamped[1].accessToken, "access-sandbox-2");
+});
+
+await test("one bank's expired login does not cost the others their sync", async () => {
+  const good = plaidServer({ transactions: [plaidTxn()] });
+  const impl = async (url, init) => {
+    if (JSON.parse(init.body).access_token === "dead") {
+      return new Response(JSON.stringify({ error_code: "ITEM_LOGIN_REQUIRED", error_message: "no" }), { status: 400 });
+    }
+    return good.impl(url, init);
+  };
+  const items = [item({ itemId: "dead", accessToken: "dead", institution: "Broken Bank" }), item()];
+  const out = await withEnv(creds, () => withFetch(impl, () => M.refreshPlaid(withPlaidItems(items), FUTURE())));
+
+  assert.equal(out.items, 1, "the healthy item still landed");
+  assert.equal(out.transactions, 1);
+  assert.equal(out.errors.length, 1);
+  assert.match(out.errors[0], /^Broken Bank: /, "the error names the bank it belongs to");
+  assert.match(out.errors[0], /re-authenticating/);
+  // The integrations table is where a background failure is visible at all.
+  assert.match(out.db.settings.usage.plaid.error, /Broken Bank/);
+});
+
+await test("a run out of time leaves the rest for tomorrow rather than dying mid-write", async () => {
+  const server = plaidServer({ transactions: [plaidTxn()] });
+  const items = [item(), item({ itemId: "item-2", accessToken: "a2", institution: "Second" })];
+  const out = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(withPlaidItems(items), Date.now() - 1)));
+  assert.equal(out.items, 0);
+  assert.equal(out.skipped, 2);
+  assert.equal(server.calls.length, 0, "nothing should be started past the deadline");
+  assert.match(out.errors[0], /ran out of time/);
+});
+
+await test("Plaid connected in the document but not on the server is said out loud", async () => {
+  const out = await withEnv({ PLAID_CLIENT_ID: "", PLAID_SECRET: "" }, () =>
+    withFetch(async () => { throw new Error("nothing should be fetched"); },
+      () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+  assert.equal(out.ran, false);
+  assert.match(out.errors[0], /PLAID_CLIENT_ID and PLAID_SECRET/);
+  assert.match(out.db.settings.usage.plaid.error, /PLAID_CLIENT_ID/);
+});
+
+await test("no Plaid connections means no Plaid calls at all", async () => {
+  const out = await withEnv(creds, () =>
+    withFetch(async () => { throw new Error("nothing should be fetched"); },
+      () => M.refreshPlaid(M.emptyDB(), FUTURE())));
+  assert.equal(out.ran, false);
+  assert.equal(out.items, 0);
+  assert.deepEqual(out.errors, []);
+  assert.equal(out.db.settings.usage, undefined, "an idle provider should not stamp the meter");
+});
+
+await test("the window Plaid is asked for is the one the browser would ask for", async () => {
+  const server = plaidServer();
+  const db = withPlaidItems([item()]);
+  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-01T00:00:00.000Z" } };
+  await withEnv(creds, () => withFetch(server.impl, () => M.refreshPlaid(recent, FUTURE())));
+  const asked = server.calls.find((c) => c.path === "/transactions/get");
+  assert.equal(asked.body.start_date, M.syncWindowStart(recent), "one window, shared with the hands-on sync");
+  assert.ok(asked.body.end_date >= asked.body.start_date);
+});
+
+await test("only an investment item is charged an investments call", async () => {
+  const bank = plaidServer();
+  await withEnv(creds, () => withFetch(bank.impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+  assert.equal(bank.calls.some((c) => c.path === "/investments/holdings/get"), false);
+
+  const inv = plaidServer({
+    holdings: {
+      holdings: [{ account_id: "pa1", security_id: "s1", quantity: 4, cost_basis: 400, institution_price: 150 }],
+      securities: [{ security_id: "s1", ticker_symbol: "VTI", name: "Vanguard", type: "etf", close_price: 150 }],
+    },
+  });
+  const out = await withEnv(creds, () =>
+    withFetch(inv.impl, () => M.refreshPlaid(withPlaidItems([item({ kind: "investment" })]), FUTURE())));
+  assert.equal(inv.calls.some((c) => c.path === "/investments/holdings/get"), true);
+  assert.equal(out.holdings, 1);
+  const [held] = out.db.holdings;
+  assert.equal(held.ticker, "VTI");
+  assert.equal(held.costBasis, 10000, "Plaid's total cost basis is stored per share");
+});
+
+await test("the overnight pull reads a long window to the end of it", async () => {
+  const many = Array.from({ length: 1100 }, (_, i) => plaidTxn({ transaction_id: `pt${i}`, date: "2026-08-01" }));
+  const server = plaidServer({ transactions: many });
+  const out = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+  const pages = server.calls.filter((c) => c.path === "/transactions/get");
+  assert.equal(pages.length, 3, "1100 rows is three pages of 500");
+  assert.deepEqual(pages.map((p) => p.body.options.offset), [0, 500, 1000]);
+  assert.equal(out.transactions, 1100, "and every one of them lands");
+  assert.deepEqual(out.errors, [], "a window read to the end of has nothing to warn about");
+});
+
+await test("a window that cannot be read to the end of says so rather than losing weeks quietly", async () => {
+  const impl = async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/accounts/get") return new Response(JSON.stringify({ accounts: [plaidAccount()] }));
+    if (path === "/transactions/get") {
+      const offset = JSON.parse(init.body).options.offset;
+      return new Response(JSON.stringify({
+        transactions: Array.from({ length: 500 }, (_, i) => plaidTxn({ transaction_id: `p${offset + i}` })),
+        total_transactions: 999_999,
+      }));
+    }
+    return new Response(JSON.stringify({}), { status: 400 });
+  };
+  const out = await withEnv(creds, () =>
+    withFetch(impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+  assert.equal(out.transactions, M.PLAID_MAX_PAGES * M.PLAID_PAGE_SIZE, "the ceiling holds");
+  assert.match(out.errors[0], /Third National: /);
+  assert.match(out.errors[0], /999999 transactions in this window/);
+});
+
+await test("an investment-only item has no transactions, which is not a failure", async () => {
+  const server = plaidServer({ fail: { "/transactions/get": { status: 400, code: "PRODUCTS_NOT_SUPPORTED" } } });
+  const out = await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
+  assert.deepEqual(out.errors, []);
+  assert.equal(out.accountsAdded, 1, "the accounts still land");
+  assert.equal(out.transactions, 0);
+});
+
+await test("a queued overnight pull is merged under the provider that fetched it", async () => {
+  // The queue is an encrypted document's only path in: the job seals each pull
+  // to the document's public key and a browser opens it later. The source rides
+  // along with the payload because the merge needs it — a Plaid pull merged as
+  // SimpleFIN would import every transaction a second time under the wrong
+  // prefix, and then again under the right one on the next hands-on sync.
+  const payload = {
+    accounts: [{
+      syncId: "pa1", name: "Everyday", institution: "Third National", balance: 123456,
+      currency: "USD", type: "checking", balanceDate: "2026-09-01",
+    }],
+    transactions: [{
+      syncId: "pt1", accountSyncId: "pa1", date: "2026-09-01", amount: -1234,
+      description: "TARGET 3026", pending: false,
+    }],
+    errors: [], fetchedAt: "2026-09-01T09:00:00.000Z",
+  };
+
+  const at = await M.C.newKeypair();
+  const row = async (body, id) => ({ id, createdAt: "2026-09-01T09:00:00.000Z", ...await M.C.sealTo(at.pub, JSON.stringify(body)) });
+
+  const plaid = await M.applyQueue(M.emptyDB(), [await row({ ...payload, source: "plaid" }, 1)], at.priv);
+  assert.equal(plaid.transactionsAdded, 1);
+  assert.equal(plaid.db.transactions[0].importKey, "pl:pt1");
+  assert.equal(plaid.db.accounts[0].syncSource, "plaid");
+
+  // A row written before the tag existed is SimpleFIN, which is all the job
+  // pulled then — so an old queue still drains the way it always did.
+  const old = await M.applyQueue(M.emptyDB(), [await row(payload, 1)], at.priv);
+  assert.equal(old.db.transactions[0].importKey, "sf:pt1");
+
+  // And the same pull under both names really would double it, which is what
+  // the tag is for.
+  const both = await M.applyQueue(plaid.db, [await row(payload, 2)], at.priv);
+  assert.equal(both.db.transactions.length, 2);
+});
+
+await test("what the overnight queue says it did counts holdings too", async () => {
+  const none = M.drainSummary({ ids: [], transactionsAdded: 0, accountsAdded: 0, accountsUpdated: 0, holdingsUpdated: 0 });
+  assert.equal(none, null, "an empty drain has nothing to say");
+  const said = M.drainSummary({ ids: [1], transactionsAdded: 2, accountsAdded: 1, accountsUpdated: 1, holdingsUpdated: 3 });
+  assert.match(said, /2 new transactions/);
+  assert.match(said, /2 accounts/);
+  assert.match(said, /3 holdings/, "a Plaid pull brings positions, and they were going unmentioned");
 });
 
 /* ── colour belongs to the group ──────────────────────────────────────── */

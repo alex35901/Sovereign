@@ -33,18 +33,57 @@ import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/u
  */
 function AccessUrl() {
   const db = useDB();
-  const { notify } = useStore();
-  const [shown, setShown] = useState(false);
-  const field = useRef<HTMLInputElement>(null);
   const url = db.settings.simplefinAccessUrl;
 
   if (!url) {
     return (
       <div className="tiny faint">
-        SimpleFIN isn’t connected, so the scheduled job has nothing to pull yet. Connect it above first.
+        SimpleFIN isn’t connected, so the scheduled job has nothing to pull from it. Connect it above first.
       </div>
     );
   }
+  return (
+    <SecretBox
+      name="SIMPLEFIN_ACCESS_URL" value={url} said="Access URL copied."
+      note="This is a live credential to your bank feed. Anyone holding it can read the same data SimpleFIN
+            sends here, so treat it like a password."
+    />
+  );
+}
+
+/**
+ * The same, for Plaid.
+ *
+ * One variable holding every item's access token, space-separated, because the
+ * job pulls them all and Vercel's environment is a flat list of strings rather
+ * than somewhere to keep a list.
+ */
+function PlaidTokens() {
+  const db = useDB();
+  const items = db.settings.plaidItems ?? [];
+  if (!items.length) return null;
+  return (
+    <SecretBox
+      name="PLAID_ACCESS_TOKENS" value={items.map((i) => i.accessToken).join(" ")} said="Access tokens copied."
+      note={`One token per connection — ${items.map((i) => i.institution).join(", ")}. Each is a live credential to
+             that bank, so treat them like passwords. Connect another bank and this value changes: paste it again.`}
+    />
+  );
+}
+
+/**
+ * A credential from inside the document, shown so it can be copied into Vercel.
+ *
+ * The document is the only place these exist in readable form, which makes this
+ * the only place they can be got from — and they are live credentials to a bank
+ * feed, so they stay hidden until asked for.
+ */
+function SecretBox({ name, value, said, note }: {
+  name: string; value: string; said: string; note: string;
+}) {
+  const { notify } = useStore();
+  const [shown, setShown] = useState(false);
+  const field = useRef<HTMLInputElement>(null);
 
   /**
    * Copy, with somewhere to fall back to.
@@ -62,10 +101,10 @@ function AccessUrl() {
 
     try {
       await Promise.race([
-        navigator.clipboard.writeText(url),
+        navigator.clipboard.writeText(value),
         new Promise((_, reject) => setTimeout(() => reject(new Error("no answer")), 1500)),
       ]);
-      notify("Access URL copied. Paste it into Vercel as SIMPLEFIN_ACCESS_URL.");
+      notify(`${said} Paste it into Vercel as ${name}.`);
     } catch {
       notify("Selected it for you — press Ctrl/Cmd+C to copy.");
     }
@@ -73,11 +112,11 @@ function AccessUrl() {
 
   return (
     <div className="col" style={{ gap: 6, marginTop: 8 }}>
-      <div className="tiny faint">Value for SIMPLEFIN_ACCESS_URL</div>
+      <div className="tiny faint">Value for {name}</div>
       <div className="row wrap" style={{ gap: 8 }}>
         <input
           ref={field}
-          className="input" readOnly value={shown ? url : "•".repeat(44)}
+          className="input" readOnly value={shown ? value : "•".repeat(44)}
           onFocus={(e) => e.currentTarget.select()}
           style={{ maxWidth: 380, fontFamily: "var(--mono, monospace)", fontSize: 12 }}
         />
@@ -86,10 +125,7 @@ function AccessUrl() {
         </Btn>
         <Btn onClick={() => void copy()}><Copy size={14} /> Copy</Btn>
       </div>
-      <div className="tiny faint" style={{ maxWidth: 560 }}>
-        This is a live credential to your bank feed. Anyone holding it can read the same data SimpleFIN
-        sends here, so treat it like a password.
-      </div>
+      <div className="tiny faint" style={{ maxWidth: 560 }}>{note}</div>
     </div>
   );
 }
@@ -159,6 +195,13 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
             detail={e.simplefinUrlSet
               ? "is set — the 9am pull can reach SimpleFIN."
               : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
+          />
+          <Row
+            ok={e.plaidTokensSet}
+            label="PLAID_ACCESS_TOKENS in Vercel"
+            detail={e.plaidTokensSet
+              ? "is set — the 9am pull can reach Plaid too."
+              : "is not set. Plaid connections will not be pulled overnight until it is."}
           />
           <Row
             ok={e.cronSecretSet}
@@ -397,12 +440,13 @@ export function EncryptionCard(){
             <span className="small">
               <b>The overnight sync still runs.</b> It cannot read the document, so it encrypts each pull to
               this installation&rsquo;s public key and leaves it in a queue. Whichever browser opens the app
-              next merges it in — that is the only place it can be read. For that to work, the SimpleFIN
-              access URL has to live in Vercel as <b>SIMPLEFIN_ACCESS_URL</b>, since the job can no longer
-              find it inside the document.
+              next merges it in — that is the only place it can be read. For that to work, the credentials
+              have to live in Vercel as <b>SIMPLEFIN_ACCESS_URL</b> and <b>PLAID_ACCESS_TOKENS</b>, since the
+              job can no longer find them inside the document.
             </span>
           </div>
           <AccessUrl />
+          <PlaidTokens />
           <Readiness unlocked />
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={backup}><Download size={14} /> Download a plain backup</Btn>
@@ -673,11 +717,13 @@ function SetupFlow({ busy, onBackup, onSeal }: {
       <div className="setting-row">
         <span className="small">
           <b>One thing to do afterwards.</b> Once the document is sealed the scheduled 9am sync can no
-          longer read the SimpleFIN access URL out of it. Put the value below into Vercel as
-          <b> SIMPLEFIN_ACCESS_URL</b> and redeploy, or the overnight pull stops until you do.
+          longer read the bank credentials out of it. Put the values below into Vercel as
+          <b> SIMPLEFIN_ACCESS_URL</b> and <b>PLAID_ACCESS_TOKENS</b> and redeploy, or the overnight pull
+          stops until you do.
         </span>
       </div>
       <AccessUrl />
+      <PlaidTokens />
     </div>
   );
 }

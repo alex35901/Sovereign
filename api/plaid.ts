@@ -1,29 +1,20 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { PlaidEnv } from "./_plaid.js";
+import { PlaidError, fetchItemRaw, identifyItem, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
 
 /**
  * Server-side proxy for Plaid.
  *
  * Unlike SimpleFIN and RentCast, Plaid's credentials must never reach the
  * browser: client_id and secret authorise every request for every item, so they
- * live in environment variables here. The per-item access token is held by the
- * client and passed back in, the same as the SimpleFIN access URL.
+ * live in environment variables and are read in _plaid.ts, which this shares
+ * with the scheduled sync. The per-item access token is held by the client and
+ * passed back in, the same as the SimpleFIN access URL.
  *
  * Signature note: Vercel invokes the default export as (req, res). A Web-style
  * handler is called the same way and silently never responds.
  */
 export const config = { runtime: "nodejs", maxDuration: 60 };
-
-const UPSTREAM_TIMEOUT_MS = 25_000;
-
-/** Plaid's own maximum for one page of /transactions/get. */
-const PAGE_SIZE = 500;
-
-/**
- * Ten thousand transactions in one window, which is years of a busy account.
- * A ceiling rather than a limit: it exists so a provider that keeps saying
- * "there are more" cannot hold this function open until it is killed.
- */
-const MAX_PAGES = 20;
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 type ApiResponse = ServerResponse;
@@ -35,9 +26,6 @@ interface InstitutionBody { action: "institution"; accessToken: string }
 interface SyncBody { action: "sync"; accessToken: string; startDate: string; endDate: string; withHoldings?: boolean }
 type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | SyncBody;
 
-const CHECK_POINTER = " Press “Check configuration” below to see which one Plaid is refusing.";
-type PlaidEnv = "sandbox" | "production";
-const env = (): PlaidEnv => (process.env.PLAID_ENV === "sandbox" ? "sandbox" : "production");
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
   const send = (status: number, data: unknown) => {
@@ -48,11 +36,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
   if (req.method !== "POST") return send(405, { error: "POST only" });
 
-  const rawClientId = process.env.PLAID_CLIENT_ID ?? "";
-  const rawSecret = process.env.PLAID_SECRET ?? "";
-  const clientId = rawClientId.trim();
-  const secret = rawSecret.trim();
-  if (!clientId || !secret) {
+  const creds = plaidCreds();
+  if (!creds) {
     return send(503, {
       error: "Plaid isn't configured. Add PLAID_CLIENT_ID and PLAID_SECRET as environment variables in your Vercel project, then redeploy.",
       configured: false,
@@ -67,25 +52,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     return send(400, { error: "Malformed JSON body" });
   }
 
-  const call = async (path: string, payload: Record<string, unknown>, on: PlaidEnv = env()) => {
-    const upstream = await fetch(`https://${on}.plaid.com${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ client_id: clientId, secret, ...payload }),
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-    const text = await upstream.text();
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new PlaidError(502, `Plaid returned something that wasn't JSON (${upstream.status}).`);
-    }
-    if (!upstream.ok) {
-      throw new PlaidError(upstream.status, describe(parsed), typeof parsed.error_code === "string" ? parsed.error_code : "");
-    }
-    return parsed;
-  };
+  const call = (path: string, payload: Record<string, unknown>, on: PlaidEnv = plaidEnv()) =>
+    plaidCall(creds, path, payload, on);
 
   try {
     if (body.action === "diagnose") {
@@ -101,7 +69,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
             return { ok: false, error: err instanceof Error ? err.message : "unknown failure" };
           });
 
-      const here = env();
+      const here = plaidEnv();
       const there: PlaidEnv = here === "production" ? "sandbox" : "production";
       const probe = await tryEnv(here);
       // If the keys are refused, the useful question is which environment they
@@ -112,8 +80,8 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       return send(200, {
         environment: here,
         envVarSet: Boolean(process.env.PLAID_ENV),
-        clientId: { length: clientId.length, trimmed: rawClientId !== clientId },
-        secret: { length: secret.length, trimmed: rawSecret !== secret },
+        clientId: { length: creds.clientId.length, trimmed: creds.rawClientId !== creds.clientId },
+        secret: { length: creds.secret.length, trimmed: creds.rawSecret !== creds.secret },
         probe,
         worksIn,
       });
@@ -128,36 +96,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         country_codes: ["US"],
         language: "en",
       });
-      return send(200, { linkToken: data.link_token, environment: env() });
+      return send(200, { linkToken: data.link_token, environment: plaidEnv() });
     }
 
-    /**
-     * Who an access token belongs to, and their mark. Neither endpoint is
-     * billed per call, so this is safe to ask again for an item connected
-     * before the app knew to keep the answer.
-     */
-    const identify = async (accessToken: string) => {
-      const item = await call("/item/get", { access_token: accessToken }).catch(() => null);
-      const institutionId = (item?.item as { institution_id?: string } | undefined)?.institution_id;
-      let institution = "Connected account";
-      let logo: string | undefined;
-      let domain: string | undefined;
-      if (institutionId) {
-        const inst = await call("/institutions/get_by_id", {
-          institution_id: institutionId,
-          country_codes: ["US"],
-          // Plaid withholds the logo, colour and website unless asked.
-          options: { include_optional_metadata: true },
-        }).catch(() => null);
-        const found = inst?.institution as { name?: string; logo?: string; url?: string } | undefined;
-        institution = found?.name ?? institution;
-        // Base64 PNG straight from Plaid, so no third party ever sees which
-        // institutions these are.
-        if (found?.logo) logo = `data:image/png;base64,${found.logo}`;
-        if (found?.url) domain = hostOf(found.url);
-      }
-      return { institution, logo, domain };
-    };
+    const identify = (accessToken: string) => identifyItem(creds, accessToken);
 
     if (body.action === "exchange") {
       if (!body.publicToken) return send(400, { error: "No public token supplied." });
@@ -173,57 +115,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
     if (body.action === "sync") {
       if (!body.accessToken) return send(400, { error: "No access token supplied." });
-      const accounts = await call("/accounts/get", { access_token: body.accessToken });
-
-      // Paged, because /transactions/get is paginated and one page is not the
-      // answer. It returns at most 500 at a time, newest first, and says in
-      // total_transactions how many there really are — so asking once for 500
-      // and stopping silently discarded everything older than the newest 500 in
-      // the window. A busy account loses whole weeks that way and says nothing.
-      const page = (offset: number) => call("/transactions/get", {
-        access_token: body.accessToken,
-        start_date: body.startDate,
-        end_date: body.endDate,
-        options: { count: PAGE_SIZE, offset },
+      const raw = await fetchItemRaw(creds, {
+        accessToken: body.accessToken,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        withHoldings: body.withHoldings,
       });
-
-      let rows: unknown[] = [];
-      let total = 0;
-      let pages = 0;
-      try {
-        for (;;) {
-          const got = await page(rows.length) as { transactions?: unknown[]; total_transactions?: number };
-          const batch = got.transactions ?? [];
-          total = typeof got.total_transactions === "number" ? got.total_transactions : rows.length + batch.length;
-          rows = rows.concat(batch);
-          pages += 1;
-          // A page that comes back short or empty is the end of it, whatever
-          // the total claims — without that this loops on a provider that
-          // disagrees with itself.
-          if (batch.length < PAGE_SIZE || rows.length >= total || pages >= MAX_PAGES) break;
-        }
-      } catch (err: unknown) {
-        // an investment-only item has no transactions product; that isn't fatal
-        if (!(err instanceof PlaidError && err.status === 400)) throw err;
-        rows = [];
-        total = 0;
-      }
-
-      let holdings: Record<string, unknown> = { holdings: [], securities: [] };
-      if (body.withHoldings) {
-        holdings = await call("/investments/holdings/get", { access_token: body.accessToken })
-          .catch(() => ({ holdings: [], securities: [] }));
-      }
-
       return send(200, {
-        accounts: accounts.accounts,
-        transactions: rows,
+        accounts: raw.accounts,
+        transactions: raw.transactions,
         // Said out loud rather than left to be noticed: a window this app
         // could not read to the end of is a window with transactions missing.
-        total,
-        truncated: rows.length < total,
-        holdings: holdings.holdings ?? [],
-        securities: holdings.securities ?? [],
+        total: raw.total,
+        truncated: raw.truncated,
+        holdings: raw.holdings,
+        securities: raw.securities,
       });
     }
 
@@ -237,34 +143,4 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         : err instanceof Error ? err.message : "Upstream request failed",
     });
   }
-}
-
-class PlaidError extends Error {
-  constructor(public status: number, message: string, public code = "") {
-    super(message);
-    this.name = "PlaidError";
-  }
-}
-
-/** "https://www.chase.com/" → "chase.com" */
-function hostOf(url: string): string | undefined {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return undefined;
-  }
-}
-
-/** Plaid's error bodies are structured; turn them into one readable line. */
-function describe(body: Record<string, unknown>): string {
-  const code = typeof body.error_code === "string" ? body.error_code : "";
-  const message = typeof body.error_message === "string" ? body.error_message : "Plaid rejected the request.";
-  if (code === "INVALID_API_KEYS") {
-    return "Plaid rejected the credentials. The usual cause is a secret from the wrong environment: Plaid issues a separate secret for Sandbox and for Production, and this app talks to Production unless PLAID_ENV says otherwise." + CHECK_POINTER;
-  }
-  if (code === "ITEM_LOGIN_REQUIRED") return "This connection needs re-authenticating at the bank. Reconnect it below.";
-  if (code === "PRODUCTS_NOT_SUPPORTED") return "That institution doesn't offer this data through Plaid. Try connecting it as the other account type.";
-  if (code === "NO_INVESTMENT_ACCOUNTS") return "Plaid found no investment accounts on that login.";
-  if (code === "RATE_LIMIT_EXCEEDED") return "Plaid is rate-limiting this request. Wait a minute and try again.";
-  return code ? `${message} (${code})` : message;
 }

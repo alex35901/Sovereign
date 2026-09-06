@@ -4,6 +4,12 @@ import { mergeSync, syncWindowStart } from "../../src/lib/sync/merge.js";
 import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
 import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
 import { fetchAccountsText } from "../_simplefin.js";
+import { fetchItemRaw, identifyItem, plaidCreds } from "../_plaid.js";
+import type { QueuedPayload } from "../../src/lib/sync/types.js";
+import { toPlaidPayload } from "../../src/lib/sync/plaid.js";
+import type { SyncResponse } from "../../src/lib/sync/plaid.js";
+import type { PlaidCreds } from "../_plaid.js";
+import type { PlaidItemRef } from "../../src/types.js";
 import { fetchQuotes } from "../_prices.js";
 import { applyQuotes, pricesDue, tickersOf, toQuoteMap } from "../../src/lib/prices.js";
 import { noteRun } from "../../src/lib/usage.js";
@@ -23,7 +29,18 @@ import { callerKey, clearFailures, lockedFor, noteFailure, readAttempt, waitMess
 /** A slow bridge plus a large merge needs more than the default 10 seconds. */
 export const config = { runtime: "nodejs", maxDuration: 60 };
 
+/**
+ * When to stop starting another bank.
+ *
+ * The function is killed at 60 seconds with nothing written, so a fifth Plaid
+ * item that would run past the end costs the four before it their whole pull.
+ * Whatever has landed by here is written and the rest is named as skipped —
+ * tomorrow's run picks them up, and the merge is idempotent either way.
+ */
+const BUDGET_MS = 45_000;
+
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const deadline = Date.now() + BUDGET_MS;
   const send = (status: number, data: unknown) => {
     res.statusCode = status;
     res.setHeader("content-type", "application/json");
@@ -81,27 +98,71 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // can read it back afterwards.
     if (isEnvelope(stored.doc)) {
       const accessUrl = (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim();
-      if (!accessUrl) {
+      const tokens = plaidTokens();
+      if (!accessUrl && !tokens.length) {
         return send(200, {
           ran: false,
-          reason: "This document is encrypted, so the scheduled pull needs its own copy of the SimpleFIN "
-            + "access URL. Add SIMPLEFIN_ACCESS_URL to the Vercel environment variables — Settings shows the value.",
+          reason: "This document is encrypted, so the scheduled pull cannot read the credentials inside it and "
+            + "needs its own copy. Add SIMPLEFIN_ACCESS_URL, or PLAID_ACCESS_TOKENS for Plaid connections, to the "
+            + "Vercel environment variables — Settings shows the values.",
         });
       }
-      const since = new Date(Date.now() - 45 * 24 * 60 * 60_000).toISOString().slice(0, 10);
-      const raw = await fetchAccountsText(accessUrl, startOfDayUnix(since));
-      const payload = toPayload(JSON.parse(raw) as BridgeResponse);
-      const id = await queuePull(await sealTo(stored.doc.pub, JSON.stringify(payload)));
-      const trimmed = await trimQueue();
 
+      const pub = stored.doc.pub;
+      const since = new Date(Date.now() - 45 * 24 * 60 * 60_000).toISOString().slice(0, 10);
+      const ids: number[] = [];
+      const errors: string[] = [];
+      let accounts = 0;
+      let transactions = 0;
+
+      // Sealed to the public key the envelope carries and left for the next
+      // browser to open. Nothing this job holds can read any of it back.
+      const queue = async (payload: QueuedPayload) => {
+        ids.push(await queuePull(await sealTo(pub, JSON.stringify(payload))));
+        accounts += payload.accounts.length;
+        transactions += payload.transactions.length;
+        errors.push(...payload.errors);
+      };
+
+      if (accessUrl) {
+        const raw = await fetchAccountsText(accessUrl, startOfDayUnix(since));
+        await queue({ ...toPayload(JSON.parse(raw) as BridgeResponse), source: "simplefin" });
+      }
+
+      // Plaid the same way, one queued pull per item. The tokens have to come
+      // from the environment for the same reason SimpleFIN's URL does: they
+      // live in a document this job cannot read.
+      const creds = tokens.length ? plaidCreds() : null;
+      if (tokens.length && !creds) {
+        errors.push("PLAID_ACCESS_TOKENS is set but PLAID_CLIENT_ID and PLAID_SECRET are not.");
+      }
+      let skipped = 0;
+      for (const accessToken of creds ? tokens : []) {
+        if (Date.now() > deadline) { skipped += 1; continue; }
+        try {
+          // The kind is not knowable from a bare token, so holdings are always
+          // asked for; an item without the investments product simply answers
+          // with none.
+          const mark = await identifyItem(creds!, accessToken);
+          await queue({
+            ...await pullItem(creds!, { ...mark, accessToken, kind: "investment" }, since),
+            source: "plaid",
+          });
+        } catch (err) {
+          errors.push(err instanceof Error ? err.message : "A Plaid pull failed.");
+        }
+      }
+      if (skipped) errors.push(`${skipped} Plaid connection${skipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
+
+      const trimmed = await trimQueue();
       return send(200, {
-        ran: true,
+        ran: ids.length > 0,
         encrypted: true,
-        queued: id,
+        queued: ids,
         trimmed,
-        accounts: payload.accounts.length,
-        transactions: payload.transactions.length,
-        errors: payload.errors,
+        accounts,
+        transactions,
+        errors,
       });
     }
 
@@ -138,6 +199,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       next = meter(next, "simplefin", "ever", { error: bankError ?? banks?.errors[0] });
     }
 
+    // Plaid, item by item, on the same schedule and into the same merge. It
+    // runs after SimpleFIN rather than beside it because the two can hold the
+    // same account, and the later write should be the one with the later
+    // window — not whichever promise happened to settle second.
+    const plaid = await refreshPlaid(next, deadline);
+    next = plaid.db;
+
     // Prices ride along with the balances, so a morning glance at the app has
     // both moved together rather than one of them a day behind the other.
     const priced = await refreshPrices(next);
@@ -146,7 +214,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // What actually happened, and separately whether the document moved at all:
     // a run that only recorded a failed provider still has something to save,
     // and is still a run that did nothing worth reporting as success.
-    const ran = Boolean(banks) || priced.ran;
+    const ran = Boolean(banks) || plaid.ran || priced.ran;
 
     // Read-then-write with no version guard: this job is the only writer on its
     // schedule, and a browser that saves mid-run will simply win with its own
@@ -158,20 +226,144 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       ran,
       reason: ran
         ? undefined
-        : (priced.error ?? bankError ?? "SimpleFIN isn't connected and there was nothing to price."),
+        : (priced.error ?? bankError ?? plaid.errors[0]
+          ?? "No bank is connected and there was nothing to price."),
       version: write?.stored?.version,
-      transactionsAdded: banks?.transactions ?? 0,
-      accountsUpdated: banks?.updated ?? 0,
-      accountsAdded: banks?.added ?? 0,
+      // Both providers land in the same document, so the totals are the run's
+      // rather than one provider's — with the split underneath for a morning
+      // when only one of them answered.
+      transactionsAdded: (banks?.transactions ?? 0) + plaid.transactions,
+      accountsUpdated: (banks?.updated ?? 0) + plaid.accountsUpdated,
+      accountsAdded: (banks?.added ?? 0) + plaid.accountsAdded,
+      simplefin: banks ? { ...banks, error: bankError ?? undefined } : undefined,
+      plaid: plaid.items || plaid.errors.length
+        ? {
+          items: plaid.items,
+          transactions: plaid.transactions,
+          accountsAdded: plaid.accountsAdded,
+          accountsUpdated: plaid.accountsUpdated,
+          holdings: plaid.holdings,
+          skipped: plaid.skipped,
+          errors: plaid.errors,
+        }
+        : undefined,
       pricesUpdated: priced.updated,
       pricesMissed: priced.misses,
       priceError: priced.error,
       error: bankError ?? undefined,
-      errors: banks?.errors ?? [],
+      errors: [...(banks?.errors ?? []), ...plaid.errors],
     });
   } catch (err) {
     return send(502, { ran: false, error: err instanceof Error ? err.message : "The scheduled sync failed." });
   }
+}
+
+/**
+ * Access tokens for a document this job cannot read.
+ *
+ * Comma-, space- or newline-separated, so pasting a column out of a notes file
+ * works as well as a single line. Never logged and never returned: each one
+ * authorises every read of one person's bank.
+ */
+function plaidTokens(): string[] {
+  return (process.env.PLAID_ACCESS_TOKENS ?? "")
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The Plaid half of the scheduled run.
+ *
+ * One item at a time, and an item that fails does not stop the rest: a login
+ * that has expired at one bank should not cost the other four their sync. The
+ * window is the same one the browser uses, so the overnight pull and a pull
+ * you ask for by hand cover the same days.
+ *
+ * The institution's mark is left alone here. Filling it in is the browser's
+ * job — it is a nicety, it costs two more calls per item, and this run has a
+ * deadline to keep.
+ */
+export async function refreshPlaid(db: DB, deadline: number): Promise<{
+  db: DB;
+  /** Anything actually landed. */
+  ran: boolean;
+  /** Items pulled, which is not the same as items connected. */
+  items: number;
+  transactions: number;
+  accountsAdded: number;
+  accountsUpdated: number;
+  holdings: number;
+  /** Items left for tomorrow because the run was out of time. */
+  skipped: number;
+  errors: string[];
+}> {
+  const idle = {
+    db, ran: false, items: 0, transactions: 0,
+    accountsAdded: 0, accountsUpdated: 0, holdings: 0, skipped: 0, errors: [] as string[],
+  };
+
+  const items = db.settings?.plaidItems ?? [];
+  if (!items.length) return idle;
+
+  const creds = plaidCreds();
+  if (!creds) {
+    return {
+      ...idle,
+      db: meter(db, "plaid", "ever", {
+        error: "Plaid is connected in this document but the deployment has no PLAID_CLIENT_ID and PLAID_SECRET.",
+      }),
+      errors: ["Plaid isn't configured on the server: add PLAID_CLIENT_ID and PLAID_SECRET to the Vercel environment variables."],
+    };
+  }
+
+  const out = { ...idle, db };
+  for (const item of items) {
+    if (Date.now() > deadline) {
+      out.skipped += 1;
+      continue;
+    }
+    try {
+      const payload = await pullItem(creds, item, syncWindowStart(out.db));
+      const merged = mergeSync(out.db, payload, "plaid");
+      const stamped = (merged.db.settings.plaidItems ?? []).map((i) =>
+        i.itemId === item.itemId ? { ...i, lastSyncAt: payload.fetchedAt } : i);
+      out.db = { ...merged.db, settings: { ...merged.db.settings, plaidItems: stamped } };
+      out.items += 1;
+      out.transactions += merged.transactionsAdded;
+      out.accountsAdded += merged.accountsAdded;
+      out.accountsUpdated += merged.accountsUpdated;
+      out.holdings += merged.holdingsUpdated;
+      out.errors.push(...payload.errors.map((e) => `${item.institution}: ${e}`));
+    } catch (err) {
+      out.errors.push(`${item.institution}: ${err instanceof Error ? err.message : "the sync failed"}`);
+    }
+  }
+  if (out.skipped) {
+    out.errors.push(`${out.skipped} more connection${out.skipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
+  }
+
+  out.ran = out.transactions > 0 || out.accountsAdded > 0 || out.holdings > 0;
+  // Recorded once for the run rather than once per item, or the last bank to
+  // succeed would clear the expired login of the first and the integrations
+  // table would call the whole thing healthy.
+  out.db = meter(out.db, "plaid", "ever", { error: out.errors[0] });
+  return out;
+}
+
+/** One item's raw response, mapped the same way the browser maps it. */
+async function pullItem(
+  creds: PlaidCreds,
+  item: Pick<PlaidItemRef, "accessToken" | "kind" | "institution" | "logo" | "domain">,
+  since: string,
+) {
+  const raw = await fetchItemRaw(creds, {
+    accessToken: item.accessToken,
+    startDate: since,
+    endDate: new Date().toISOString().slice(0, 10),
+    withHoldings: item.kind === "investment",
+  });
+  return toPlaidPayload(raw as unknown as SyncResponse, item);
 }
 
 /**
