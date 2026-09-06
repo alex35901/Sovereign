@@ -23,6 +23,7 @@ import Rules from "./screens/Rules";
 import Categories from "./screens/Categories";
 import CategoryDetail from "./screens/CategoryDetail";
 import MerchantDetail from "./screens/MerchantDetail";
+import Merchants from "./screens/Merchants";
 import Tags from "./screens/Tags";
 
 export default function App() {
@@ -52,6 +53,7 @@ export default function App() {
           <Route path="/rules" element={<Rules />} />
           <Route path="/categories" element={<Categories />} />
           <Route path="/categories/:id" element={<CategoryDetail />} />
+          <Route path="/merchants" element={<Merchants />} />
           <Route path="/merchants/:name" element={<MerchantDetail />} />
           <Route path="/tags" element={<Tags />} />
           <Route path="/settings" element={<Settings />} />

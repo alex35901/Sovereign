@@ -1,6 +1,5 @@
 import type { SyncCadence } from "./lib/sync/schedule.js";
 import type { Usage } from "./lib/usage.js";
-import type { CreditReading } from "./lib/credit.js";
 /** All money is integer cents. Outflows are negative, inflows positive. */
 export type ID = string;
 export type ISODate = string; // YYYY-MM-DD
@@ -324,12 +323,6 @@ export interface DB {
    * here is paid for on every sync.
    */
   hopper?: HopperExchange[];
-  /**
-   * Dated credit-score readings. Optional: no provider writes these yet, and
-   * a budget that has never had one should not carry an empty array through
-   * every sync for the sake of a card it is not using.
-   */
-  credit?: CreditReading[];
   settings: Settings;
 }
 

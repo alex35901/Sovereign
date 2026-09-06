@@ -969,6 +969,32 @@ export function merchantIndex(db: DB): Map<string, { name: string; count: number
   return out;
 }
 
+export interface MerchantRow { key: string; name: string; count: number; total: number }
+
+/**
+ * Every merchant, busiest first, for the screen that lists them.
+ *
+ * Counted from every transaction, including ones in muted accounts: this is a
+ * directory of who you have dealt with, not a report of what you spent, and a
+ * merchant vanishing from the list because it was last seen on a hidden card
+ * would be a directory with holes in it.
+ *
+ * Ties break on the name, so the order never depends on how the transactions
+ * happen to be stored — the same reason merchantIndex picks its spelling that
+ * way.
+ */
+export function merchantRows(db: DB): MerchantRow[] {
+  const totals = new Map<string, number>();
+  for (const t of db.transactions) {
+    const key = merchantKey(t.merchant);
+    if (!key) continue;
+    totals.set(key, (totals.get(key) ?? 0) + t.amount);
+  }
+  return [...merchantIndex(db)]
+    .map(([key, { name, count }]) => ({ key, name, count, total: totals.get(key) ?? 0 }))
+    .sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
 /** Everything bought from one merchant between two dates, both ends inclusive. */
 export function merchantActivity(db: DB, name: string, from: ISODate, to: ISODate): Activity {
   const key = merchantKey(name);

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   ArrowLeftRight, ChartPie, Filter, Landmark, LayoutDashboard, LineChart, MessagesSquare, MoreHorizontal,
-  Repeat, Settings as SettingsIcon, Shapes, Tag, Target, TrendingUp, Wallet,
+  Repeat, Settings as SettingsIcon, Shapes, Store, Tag, Target, TrendingUp, Wallet,
 } from "lucide-react";
 import { useDB } from "../store";
 import { needsReviewCount, netWorthNow } from "../lib/select";
@@ -15,6 +15,7 @@ export const NAV = [
   { to: "/transactions", label: "Transactions", Icon: ArrowLeftRight },
   { to: "/cash-flow", label: "Cash Flow", Icon: TrendingUp },
   { to: "/reports", label: "Reports", Icon: ChartPie },
+  { to: "/merchants", label: "Merchants", Icon: Store },
 ];
 export const NAV_PLAN = [
   { to: "/budget", label: "Budget", Icon: Wallet },

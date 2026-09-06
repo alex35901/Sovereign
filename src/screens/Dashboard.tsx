@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Plus, TrendingDown, TrendingUp } from "lucide-react";
-import { useDB, useStore } from "../store";
+import { ArrowRight, TrendingDown, TrendingUp } from "lucide-react";
+import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import {
   dateLabel, daysInMonth, monthLabel, relativeDay, thisMonth, today,
@@ -10,12 +10,9 @@ import {
   aggregateSeries, budgetSummary, earliestHistoryDate, netWorthAt, portfolioSummary, trendTone,
 } from "../lib/select";
 import { dueSoon, goalMoves, monthProgress, overPace, spendPace } from "../lib/dashboard";
-import { CREDIT_MAX, CREDIT_MIN, CREDIT_BANDS, WHOEVER, creditPeople, creditSummary } from "../lib/credit";
-import { AreaChart, CompareChart } from "../components/charts";
+import { CompareChart } from "../components/charts";
 import { BalanceChart } from "../components/BalanceChart";
-import {
-  Btn, Card, CardHead, Empty, Field, Modal, Money, Progress, SelectInput, TextInput, cx, color,
-} from "../components/ui";
+import { Btn, Card, CardHead, Empty, Money, Progress, cx, color } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
@@ -49,7 +46,6 @@ export default function Dashboard() {
         <NetWorthCard range={range} onRange={setRange} />
         <SpendingCard />
         <BudgetCard month={month} />
-        <CreditCard />
         <RecurringCard />
         <GoalsCard />
         <InvestmentCard />
@@ -197,138 +193,6 @@ function BudgetCard({ month }: { month: string }) {
       ) : (
         <Empty title="No budget set for this month" action={<Link to="/budget"><Btn>Set one up</Btn></Link>} />
       )}
-    </Card>
-  );
-}
-
-/* ── credit score ─────────────────────────────────────────────────────── */
-
-function CreditCard() {
-  const db = useDB();
-  const { actions } = useStore();
-  const people = useMemo(() => creditPeople(db), [db]);
-  // Whose score is on the card. Defaults to whoever has one on file, which
-  // for a budget with a single person is the only answer there is.
-  const [who, setWho] = useState<string>(WHOEVER);
-  const shown = people.includes(who) ? who : people[0] ?? WHOEVER;
-  const c = useMemo(() => creditSummary(db, shown), [db, shown]);
-  const [adding, setAdding] = useState(false);
-  const [date, setDate] = useState(today());
-  const [score, setScore] = useState(0);
-  const [addWho, setAddWho] = useState(WHOEVER);
-
-  return (
-    <Card>
-      <CardHead
-        title="Credit score"
-        sub={c.latest ? `Last recorded ${dateLabel(c.latest.date, { year: true })}` : "No readings yet"}
-        right={
-          <span className="row" style={{ gap: 8 }}>
-            {/* Only once there is more than one: a household of one should
-                not be asked to pick itself out of a list of itself. */}
-            {people.length > 1 ? (
-              <SelectInput
-                style={{ width: "auto" }} value={shown} onChange={setWho}
-                options={people.map((p) => ({ value: p, label: p }))}
-              />
-            ) : null}
-            <Btn size="sm" onClick={() => { setAddWho(shown); setAdding(true); }}>
-              <Plus size={13} /> Add reading
-            </Btn>
-          </span>
-        }
-      />
-      {c.latest && c.band ? (
-        <>
-          <div className="row wrap" style={{ gap: 14, alignItems: "baseline", marginBottom: 12 }}>
-            <span className="num" style={{ fontSize: 38, fontWeight: 650, color: color(c.band.tone) }}>
-              {c.latest.score}
-            </span>
-            <span className="tag" style={{ background: "var(--surface-3)", color: color(c.band.tone) }}>{c.band.label}</span>
-            {c.change !== 0 ? (
-              <span className={c.change > 0 ? "pos small" : "neg small"}>
-                {c.change > 0 ? "+" : ""}{c.change} points
-              </span>
-            ) : <span className="small faint">No change</span>}
-            {c.latest.source ? <span className="tiny faint">via {c.latest.source}</span> : null}
-          </div>
-
-          {/* The bands, in order, with where this score sits along them. */}
-          <div className="credit-scale">
-            {[...CREDIT_BANDS].reverse().map((b) => (
-              <i key={b.label} style={{ background: color(b.tone) }} title={`${b.label}, from ${b.from}`} />
-            ))}
-            <span className="credit-pin" style={{ left: `${c.position * 100}%` }} />
-          </div>
-          <div className="spread tiny faint" style={{ marginTop: 4 }}>
-            <span>{CREDIT_MIN}</span><span>{CREDIT_MAX}</span>
-          </div>
-
-          {c.readings.length > 1 ? (
-            <div style={{ marginTop: 10 }}>
-              <AreaChart
-                height={150} tone={c.band.tone} negativeTone={c.band.tone}
-                format={(v) => String(Math.round(v))}
-                points={c.readings.map((r) => ({
-                  label: dateLabel(r.date), value: r.score, sub: dateLabel(r.date, { year: true }),
-                }))}
-              />
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <Empty
-          title="No credit score recorded"
-          body="Nothing here reads a bureau yet. Add a score by hand and the history is kept — a provider, when there is one, writes to the same place."
-          action={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={14} /> Add a reading</Btn>}
-        />
-      )}
-
-      {adding ? (
-        <Modal
-          title="Add a credit score" onClose={() => setAdding(false)}
-          footer={
-            <>
-              <div className="grow" />
-              <Btn onClick={() => setAdding(false)}>Cancel</Btn>
-              <Btn
-                variant="primary"
-                disabled={score < CREDIT_MIN || score > CREDIT_MAX}
-                onClick={() => { actions.setCreditScore(date, score, addWho.trim() || WHOEVER); setAdding(false); }}
-              >
-                Save
-              </Btn>
-            </>
-          }
-        >
-          <div className="row" style={{ gap: 12 }}>
-            <Field label="Whose" hint="A name, so a household can keep two apart">
-              <TextInput value={addWho} onChange={setAddWho} placeholder={WHOEVER} />
-            </Field>
-            <Field label="As of"><TextInput type="date" value={date} onChange={setDate} /></Field>
-            <Field label="Score" hint={`${CREDIT_MIN}–${CREDIT_MAX}`}>
-              <input
-                className="input num" type="number" min={CREDIT_MIN} max={CREDIT_MAX} autoFocus
-                value={score || ""} onChange={(e) => setScore(Number(e.target.value))}
-              />
-            </Field>
-          </div>
-          {c.readings.length ? (
-            <div className="col" style={{ gap: 0 }}>
-              <span className="small muted" style={{ marginBottom: 6 }}>Recorded so far</span>
-              {[...c.readings].reverse().slice(0, 8).map((r) => (
-                <div key={r.date} className="spread balance-point">
-                  <span className="small muted">{dateLabel(r.date, { year: true })}</span>
-                  <span className="row" style={{ gap: 10 }}>
-                    <span className="num bold">{r.score}</span>
-                    <button className="btn btn-ghost btn-sm" onClick={() => actions.forgetCreditScore(r.date, shown)}>Remove</button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </Modal>
-      ) : null}
     </Card>
   );
 }

@@ -41,7 +41,7 @@ await build({
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
-      export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime } from "./src/lib/select.ts";
+      export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
       export * as PP from "./src/lib/passphrase.ts";
@@ -78,7 +78,6 @@ await build({
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
       export { spendPace, monthProgress, dueSoon, overPace, goalMoves } from "./src/lib/dashboard.ts";
-      export { creditSummary, recordCredit, bandOf, CREDIT_BANDS, creditPeople, WHOEVER } from "./src/lib/credit.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
@@ -2333,6 +2332,69 @@ const dashDb = (txns, over = {}) => ({
   settings: {}, ...over,
 });
 
+/* ── the merchants directory ──────────────────────────────────────────── */
+
+await test("merchants are listed busiest first, with what they came to", () => {
+  // Named so that busiest-first and alphabetical disagree: with Amazon,
+  // Kroger, Payroll in that order the two orderings coincide, and a sort that
+  // had quietly become alphabetical would have passed.
+  // Two of the three Zeds agree on a spelling, so which is shown is decided
+  // rather than tied — the tie-break is its own test below.
+  const db = dashDb([
+    { date: "2026-09-01", amount: -10_00, merchant: "Zed Market" },
+    { date: "2026-09-02", amount: -20_00, merchant: "Zed Market" },
+    { date: "2026-09-03", amount: -30_00, merchant: "ZED MARKET" },
+    { date: "2026-09-01", amount: -5_00, merchant: "Kroger" },
+    { date: "2026-09-02", amount: -6_00, merchant: "Kroger" },
+    { date: "2026-09-04", amount: 900_00, merchant: "Aardvark Payroll" },
+  ]);
+  const rows = M.merchantRows(db);
+  assert.deepEqual(rows.map((r) => [r.name, r.count]),
+    [["Zed Market", 3], ["Kroger", 2], ["Aardvark Payroll", 1]]);
+  assert.equal(rows[0].total, -60_00, "spellings are one merchant, and their money adds up as one");
+  assert.equal(rows[2].total, 900_00, "money in stays positive");
+});
+
+await test("the busiest spelling is the one shown", () => {
+  const db = dashDb([
+    { date: "2026-09-01", amount: -1_00, merchant: "STARBUCKS" },
+    { date: "2026-09-02", amount: -1_00, merchant: "Starbucks" },
+    { date: "2026-09-03", amount: -1_00, merchant: "Starbucks" },
+  ]);
+  assert.equal(M.merchantRows(db)[0].name, "Starbucks");
+});
+
+await test("merchants with the same count are ordered by name, not by storage", () => {
+  const forward = M.merchantRows(dashDb([
+    { date: "2026-09-01", amount: -1_00, merchant: "Zed" },
+    { date: "2026-09-02", amount: -1_00, merchant: "Acme" },
+  ]));
+  const backward = M.merchantRows(dashDb([
+    { date: "2026-09-01", amount: -1_00, merchant: "Acme" },
+    { date: "2026-09-02", amount: -1_00, merchant: "Zed" },
+  ]));
+  assert.deepEqual(forward.map((r) => r.name), ["Acme", "Zed"]);
+  assert.deepEqual(backward.map((r) => r.name), ["Acme", "Zed"]);
+});
+
+await test("a merchant last seen on a muted account is still in the directory", () => {
+  // This is a list of who you have dealt with, not a report of what you
+  // spent, and a directory with holes in it is worse than one that is broad.
+  const db = dashDb([
+    { date: "2026-09-01", amount: -10_00, merchant: "Quiet Co", accountId: "hidden" },
+  ], {
+    accounts: [
+      { id: "a", name: "A", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "hidden", name: "H", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, hideTransactions: true, history: [], order: 1 },
+    ],
+  });
+  const rows = M.merchantRows(db);
+  assert.deepEqual(rows.map((r) => r.name), ["Quiet Co"]);
+  // Its money too, or the row would be there with nothing behind it.
+  assert.equal(rows[0].total, -10_00);
+  assert.equal(rows[0].count, 1);
+});
+
 await test("spending is counted from the first of the month, day by day", () => {
   const db = dashDb([
     { date: "2026-09-02", amount: -10_00 },
@@ -2468,84 +2530,6 @@ await test("an archived goal is off the dashboard", () => {
     ],
   };
   assert.deepEqual(M.goalMoves(db, "2026-09-06").goals.map((g) => g.goal.id), ["a"]);
-});
-
-/* ── credit scores ────────────────────────────────────────────────────── */
-
-await test("a household keeps its scores apart", () => {
-  let db = M.recordCredit({}, { date: "2026-08-01", score: 800 });
-  db = M.recordCredit(db, { date: "2026-08-01", score: 700, who: "Sam" });
-  db = M.recordCredit(db, { date: "2026-09-01", score: 810 });
-  assert.deepEqual(M.creditPeople(db), ["You", "Sam"], "in the order they first appear");
-  assert.equal(M.creditSummary(db, "You").latest.score, 810);
-  assert.equal(M.creditSummary(db, "Sam").latest.score, 700);
-  assert.equal(M.creditSummary(db, "You").change, 10, "and each is compared only with itself");
-  assert.equal(M.creditSummary(db, "Sam").change, 0);
-});
-
-await test("two people on the same day are two readings, not one replacing the other", () => {
-  let db = M.recordCredit({}, { date: "2026-09-01", score: 800 });
-  db = M.recordCredit(db, { date: "2026-09-01", score: 700, who: "Sam" });
-  assert.equal(db.credit.length, 2);
-  // but the same person on the same day still replaces
-  db = M.recordCredit(db, { date: "2026-09-01", score: 705, who: "Sam" });
-  assert.equal(db.credit.length, 2);
-  assert.equal(M.creditSummary(db, "Sam").latest.score, 705);
-});
-
-await test("readings recorded before anyone was named belong to whoever set it up", () => {
-  const db = { credit: [{ date: "2026-09-01", score: 800 }] };
-  assert.deepEqual(M.creditPeople(db), [M.WHOEVER]);
-  assert.equal(M.creditSummary(db, M.WHOEVER).latest.score, 800);
-});
-
-
-await test("a score is placed in its band and on the scale", () => {
-  assert.equal(M.bandOf(819).label, "Excellent");
-  assert.equal(M.bandOf(800).label, "Excellent", "the boundary belongs to the band above it");
-  assert.equal(M.bandOf(799).label, "Very good");
-  assert.equal(M.bandOf(300).label, "Poor");
-  assert.equal(M.bandOf(0).label, "Poor", "and a score off the bottom is still poor, not undefined");
-});
-
-await test("the newest reading leads, and is compared with the one before it", () => {
-  const db = { credit: [
-    { date: "2026-07-01", score: 800 },
-    { date: "2026-09-01", score: 819 },
-    { date: "2026-08-01", score: 816 },
-  ] };
-  const c = M.creditSummary(db);
-  assert.deepEqual(c.readings.map((r) => r.date), ["2026-07-01", "2026-08-01", "2026-09-01"],
-    "sorted, because a chart drawn from an unsorted array zigzags for the wrong reason");
-  assert.equal(c.latest.score, 819);
-  assert.equal(c.change, 3, "against August, not against the first one recorded");
-  assert.equal(c.band.label, "Excellent");
-  assert.equal(Math.round(c.position * 1000) / 1000, Math.round(((819 - 300) / 550) * 1000) / 1000);
-});
-
-await test("a budget with no scores says nothing rather than nought", () => {
-  const c = M.creditSummary({});
-  assert.equal(c.latest, undefined);
-  assert.equal(c.band, undefined, "no band, rather than 'Poor' for a score nobody has given");
-  assert.deepEqual(c.readings, []);
-});
-
-await test("one reading has nothing to be compared with", () => {
-  const c = M.creditSummary({ credit: [{ date: "2026-09-01", score: 700 }] });
-  assert.equal(c.change, 0);
-  assert.equal(c.band.label, "Good");
-});
-
-await test("a second reading for the same day replaces the first", () => {
-  // A provider polled twice in an afternoon must not put two points a pixel
-  // apart, and a correction should replace the mistake rather than sit by it.
-  let db = M.recordCredit({}, { date: "2026-09-01", score: 700 });
-  db = M.recordCredit(db, { date: "2026-09-02", score: 705 });
-  db = M.recordCredit(db, { date: "2026-09-01", score: 710 });
-  assert.deepEqual(db.credit, [
-    { date: "2026-09-01", score: 710 },
-    { date: "2026-09-02", score: 705 },
-  ]);
 });
 
 /* ── whether an account is still being fed ────────────────────────────── */

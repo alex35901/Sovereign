@@ -11,7 +11,6 @@ import type { ParsedRule } from "./lib/rules-import";
 import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
 import { applyToFuture, setPlannedOn } from "./lib/select";
-import { recordCredit, whoOf, WHOEVER } from "./lib/credit";
 import { squashHistory } from "./lib/history";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
@@ -209,9 +208,6 @@ export interface Actions {
   setAccountBalance: (id: ID, balance: number) => void;
   importBalanceHistory: (id: ID, points: { date: string; balance: number }[], mode: "merge" | "replace") => void;
   setBalanceAt: (id: ID, date: string, balance: number) => void;
-  /** Records a credit-score reading, replacing any held for that day. */
-  setCreditScore: (date: string, score: number, who?: string, source?: string) => void;
-  forgetCreditScore: (date: string, who?: string) => void;
   deleteBalancePoint: (id: ID, date: string) => void;
   deleteAccount: (id: ID) => void;
   closeAccount: (id: ID) => void;
@@ -346,17 +342,6 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
           return { ...a, history, balance: newest ? newest.balance : a.balance };
         }),
       }), `import ${points.length} balance point${points.length === 1 ? "" : "s"}`),
-    setCreditScore: (date, score, who, source) =>
-      apply(
-        (db) => recordCredit(db, { date, score, ...(who ? { who } : {}), ...(source ? { source } : {}) }),
-        "record credit score",
-      ),
-    forgetCreditScore: (date, who) =>
-      apply(
-        (db) => ({ ...db, credit: (db.credit ?? []).filter((r) => !(r.date === date && whoOf(r) === (who ?? WHOEVER))) }),
-        "remove credit score",
-      ),
-
     setBalanceAt: (id, date, balance) =>
       apply((db) => ({
         ...db,

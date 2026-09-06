@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, dashboard.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, dashboard, merchants.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1218,11 +1218,13 @@ try {
     // Lower-cased on both sides: the net worth card's name is a tile label,
     // which CSS puts in capitals, and the test is about which cards are there
     // rather than about how they are typeset.
-    check("the dashboard is the seven cards, in that order",
-      cards.join(" / ").toLowerCase() === "net worth / spending / budget / credit score / recurring / goals / investments",
+    check("the dashboard is the six cards, in that order",
+      cards.join(" / ").toLowerCase() === "net worth / spending / budget / recurring / goals / investments",
       cards.join(" / "));
-    check("and recent transactions is not one of them",
-      !/recent transactions/i.test(await dash.evaluate(() => document.body.innerText)));
+    const body = await dash.evaluate(() => document.body.innerText);
+    check("and recent transactions is not one of them", !/recent transactions/i.test(body));
+    check("nor credit score, which was taken out for want of an API to feed it",
+      !/credit score/i.test(body));
 
     // Net worth: the same scrubbable chart as everywhere else.
     const nw = await dash.evaluate(() => ({
@@ -1338,68 +1340,88 @@ try {
     check("recurring says what is still due and lists what is coming",
       /still due this month/.test(rec.head) && rec.rows > 0, `${rec.head} — ${rec.rows} rows`);
 
-    // Credit: nothing is wired to a bureau, so the card has to say so rather
-    // than show a zero, and a reading typed in has to stick.
-    const credit = await dash.evaluate(() => {
-      const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
-      return { text: card.innerText.replace(/\n/g, " | "), zero: /\b0\b/.test(card.innerText) };
-    });
-    check("with no readings the credit card says so rather than showing a nought",
-      /no credit score recorded/i.test(credit.text), credit.text.slice(0, 100));
-
-    const added = await tryStep("a credit score can be recorded by hand", async () => {
-      await dash.locator(".card", { hasText: "Credit score" }).locator("button", { hasText: "Add a reading" }).first().click({ timeout: 5000 });
-      await dash.locator(".modal").waitFor({ timeout: 5000 });
-      await dash.locator('.modal input[type="number"]').fill("742");
-      await dash.locator(".modal-foot button", { hasText: "Save" }).click({ timeout: 5000 });
-      await dash.waitForTimeout(600);
-    });
-    if (added) {
-      const after = await dash.evaluate(() => {
-        const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
-        return card.innerText.replace(/\n/g, " | ");
-      });
-      check("and it comes back with its band", /742/.test(after) && /very good/i.test(after), after.slice(0, 120));
-
-      // Two readings make a chart, and a chart of scores must not be labelled
-      // in money: the money formatter rounds 742 to "$0" and 819 to "$0" too.
-      await dash.locator(".card", { hasText: "Credit score" }).locator("button", { hasText: "Add reading" }).first().click();
-      await dash.locator(".modal").waitFor();
-      await dash.locator('.modal input[type="date"]').fill("2026-01-15");
-      await dash.locator('.modal input[type="number"]').fill("690");
-      await dash.locator(".modal-foot button", { hasText: "Save" }).click();
-      await dash.waitForTimeout(600);
-      const axis = await dash.evaluate(() => {
-        const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
-        return [...card.querySelectorAll(".chart-wrap .axis-text")].map((t) => t.textContent.trim());
-      });
-      const scores = axis.filter((t) => /^\d{3}$/.test(t));
-      check("and its chart is labelled in scores, not in dollars",
-        axis.length > 0 && scores.length >= 2 && !axis.some((t) => t.includes("$")),
-        axis.join(" "));
-    }
-    // Two people, two histories: a household's scores must not be drawn as
-    // one line, and the picker only appears once there is a choice to make.
-    const second = await tryStep("a second person's score can be recorded", async () => {
-      await dash.locator(".card", { hasText: "Credit score" }).locator("button", { hasText: "Add reading" }).first().click({ timeout: 5000 });
-      await dash.locator(".modal").waitFor({ timeout: 5000 });
-      await dash.locator('.modal input[type="text"]').first().fill("Sam");
-      await dash.locator('.modal input[type="number"]').fill("610");
-      await dash.locator(".modal-foot button", { hasText: "Save" }).click({ timeout: 5000 });
-      await dash.waitForTimeout(600);
-    });
-    if (second) {
-      const who = await dash.evaluate(() => {
-        const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
-        const sel = card.querySelector("select");
-        return { options: sel ? [...sel.options].map((o) => o.text) : [], text: card.innerText.replace(/\n/g, " | ") };
-      });
-      check("a second person brings out a picker naming both",
-        who.options.join(" / ") === "You / Sam", who.options.join(" / ") || "no picker");
-      check("and the card still shows one person's score, not both averaged",
-        /742/.test(who.text) && !/610/.test(who.text), who.text.slice(0, 120));
-    }
     await dash.close();
+  }
+
+  if (want("merchants")) {
+    // ── the merchants directory ──
+    const mer = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await mer.goto(`${BASE}/merchants`, { waitUntil: "networkidle" });
+    await mer.waitForTimeout(800);
+
+    const read = () => mer.evaluate(() => ({
+      rows: [...document.querySelectorAll(".list-row")].map((r) => ({
+        name: r.querySelector(".truncate")?.innerText.trim() ?? "",
+        count: Number((r.innerText.match(/([\d,]+) transaction/)?.[1] ?? "0").replace(/,/g, "")),
+        href: r.getAttribute("href"),
+      })),
+      summary: document.querySelector(".card .spread")?.innerText.replace(/\n/g, " | ") ?? "",
+    }));
+
+    const first = await read();
+    check("every merchant is listed", first.rows.length > 5, `${first.rows.length} rows`);
+    check("busiest first", first.rows.every((r, i) => i === 0 || r.count <= first.rows[i - 1].count),
+      first.rows.slice(0, 4).map((r) => `${r.name} ${r.count}`).join(", "));
+    check("each says how many transactions it has",
+      first.rows.every((r) => r.count > 0), "a row with no count");
+    check("and how many there are in all", /merchants/.test(first.summary) && /transactions in all/.test(first.summary),
+      first.summary);
+
+    // A row goes to that merchant's own page — the drill-down that already
+    // exists, not a second one.
+    const opened = await tryStep("a merchant can be opened", async () => {
+      await mer.locator(".list-row").first().click({ timeout: 5000 });
+      await mer.waitForTimeout(700);
+    });
+    if (opened) {
+      const where = new URL(mer.url()).pathname;
+      check("which is the merchant drill-down, not a new screen",
+        where.startsWith("/merchants/") && decodeURIComponent(where.slice(11)) === first.rows[0].name,
+        `${where} for ${first.rows[0].name}`);
+      check("and the drill-down carries its way back",
+        (await mer.evaluate(() => document.querySelector(".topbar-back")?.getAttribute("href") ?? "")) === "/transactions");
+      await mer.goBack();
+      await mer.waitForTimeout(600);
+    }
+
+    // Searching narrows it without changing what the rows mean.
+    const searched = await tryStep("merchants can be searched", async () => {
+      await mer.locator(".search input").fill(first.rows[0].name.slice(0, 4));
+      await mer.waitForTimeout(500);
+    });
+    if (searched) {
+      const after = await read();
+      check("searching narrows the list to what matches",
+        after.rows.length > 0 && after.rows.length < first.rows.length
+        && after.rows.every((r) => r.name.toLowerCase().includes(first.rows[0].name.slice(0, 4).toLowerCase())),
+        `${after.rows.length} of ${first.rows.length}`);
+    }
+
+    // And it can be asked the other question instead.
+    await mer.locator(".search input").fill("");
+    await mer.waitForTimeout(400);
+    const resorted = await tryStep("it can be sorted by what was spent", async () => {
+      await mer.locator(".seg button", { hasText: "Most spent" }).click({ timeout: 5000 });
+      await mer.waitForTimeout(500);
+    });
+    if (resorted) {
+      const spent = await read();
+      check("sorting by spending puts the biggest outgoing first",
+        spent.rows[0].name !== first.rows[0].name || first.rows.length < 2,
+        `still ${spent.rows[0].name}`);
+    }
+    await mer.close();
+
+    // It has to be reachable, on both shapes of screen.
+    const rail = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rail.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await rail.waitForTimeout(600);
+    const order = await rail.evaluate(() =>
+      [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
+    check("Merchants sits after Reports in the rail",
+      order.indexOf("/merchants") === order.indexOf("/reports") + 1,
+      order.join(" "));
+    await rail.close();
   }
 
 } finally {
