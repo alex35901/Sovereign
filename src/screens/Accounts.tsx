@@ -6,38 +6,20 @@ import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, sinceLabel, today } from "../lib/date";
 import {
-  ACCOUNT_TYPE_LABEL, accountSlices, balanceAt, earliestHistoryDate, moveBetween, trendTone,
+  ACCOUNT_TYPE_LABEL, accountSlices, balanceAt, earliestHistoryDate, trendTone,
 } from "../lib/select";
-import { AreaChart, Sparkline } from "../components/charts";
+import { Sparkline } from "../components/charts";
+import { BalanceChart, Delta, pctLabel, periodOf } from "../components/BalanceChart";
 import { Btn, Card, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Toggle, cx } from "../components/ui";
 import { HiddenToggle } from "./AccountControls";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
-/**
- * The periods the chart offers, in the order a phone shows them.
- *
- * Two names each: the button is abbreviated because six of them share one
- * line, and the sentence under the headline is not, because "$25,460 (3%) 1M
- * period" is a button label read aloud rather than a sentence.
- */
-const SPANS: { value: RangeKey; label: string; period: string }[] = [
-  { value: "1m", label: "1M", period: "1 month" },
-  { value: "3m", label: "3M", period: "3 months" },
-  { value: "6m", label: "6M", period: "6 months" },
-  { value: "ytd", label: "YTD", period: "year to date" },
-  { value: "1y", label: "1Y", period: "1 year" },
-  { value: "all", label: "ALL", period: "all time" },
-];
-
 export default function Accounts() {
   const db = useDB();
   const [range, setRange] = useState<RangeKey>("1m");
   const [scope, setScope] = useState("net");
-  // Where a finger is resting on the chart, if one is. Null means the whole
-  // period, which is what the screen says when nobody is touching it.
-  const [at, setAt] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
 
   // The first day of the chosen period, or the first day there is any data —
@@ -65,17 +47,6 @@ export default function Accounts() {
     value,
     sub: dateLabel(dates[i], { year: true }),
   }));
-  const tone = trendTone(current.series);
-
-  // Everything the headline says follows the finger: the figure is the one on
-  // the day under it, and the change is measured from the start of the period
-  // to that day rather than to today.
-  const here = at === null ? null : Math.min(at, current.series.length - 1);
-  const shownTotal = here === null ? current.total : current.series[here];
-  const move = moveBetween(current.series, here ?? undefined);
-  const window = here === null || !points.length
-    ? null
-    : `${points[0].sub} – ${points[here].sub}`;
 
   // Sparklines are drawn against a coarser sample than the headline chart:
   // two dozen points is all a 60px rule can show, and asking for 300 makes
@@ -102,44 +73,26 @@ export default function Accounts() {
       <div className="page stack">
         {db.accounts.length ? (
           <Card pad={false} className="nw-card">
-            {/* Scrolls sideways rather than wrapping: the kinds are a single
-                ordered run, and a second line of them reads as a second,
-                lesser row of options. */}
-            <div className="scope-bar" ref={bar} role="tablist" aria-label="What to show">
-              {slices.map((s) => (
-                <button
-                  key={s.key} role="tab" aria-selected={s.key === current.key}
-                  className={cx("scope-pill", s.key === current.key && "on")}
-                  onClick={() => setScope(s.key)}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="nw-head">
-              <div className="nw-value num"><Money value={shownTotal} /></div>
-              <Delta move={move} period={window ?? periodOf(range)} />
-            </div>
-
-            {/* Edge to edge, and no axis labels: every figure they would carry
-                is spelled out in words directly above them — and follows the
-                finger, which is the other reason they would be a second copy. */}
-            <AreaChart
-              points={points} height={200} tone={tone} negativeTone={tone} bare
-              onScrub={setAt}
+            <BalanceChart
+              total={current.total} series={current.series} points={points}
+              tone={trendTone(current.series)} range={range} onRange={setRange}
+              above={
+                /* Scrolls sideways rather than wrapping: the kinds are a
+                   single ordered run, and a second line of them reads as a
+                   second, lesser row of options. */
+                <div className="scope-bar" ref={bar} role="tablist" aria-label="What to show">
+                  {slices.map((s) => (
+                    <button
+                      key={s.key} role="tab" aria-selected={s.key === current.key}
+                      className={cx("scope-pill", s.key === current.key && "on")}
+                      onClick={() => setScope(s.key)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              }
             />
-
-            <div className="span-bar">
-              {SPANS.map((r) => (
-                <button
-                  key={r.value} className={cx("span-pill", r.value === range && "on")}
-                  onClick={() => setRange(r.value)}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
           </Card>
         ) : null}
 
@@ -180,47 +133,6 @@ export default function Accounts() {
       </div>
       {adding ? <AccountModal onClose={() => setAdding(false)} /> : null}
     </>
-  );
-}
-
-/** "2.5%", and "<0.1%" rather than a rounded-away nothing. */
-function pctLabel(fraction: number): string {
-  const p = Math.abs(fraction) * 100;
-  if (p > 0 && p < 0.1) return "<0.1%";
-  return `${p >= 10 ? Math.round(p) : Math.round(p * 10) / 10}%`;
-}
-
-/** What the period is called when nobody is pointing at a day in it. */
-const periodOf = (range: RangeKey): string => SPANS.find((s) => s.value === range)?.period ?? range;
-
-/**
- * How a figure moved, in money and in proportion, over a named stretch.
- *
- * Signed throughout, liabilities included: they are stored negative, so a card
- * paid down comes out positive and green without a special case. A figure that
- * began at nothing has no proportion to report and simply doesn't.
- */
-function Delta({ move, period }: { move: { change: number; pct: number | null }; period: string }) {
-  // Same shape as the moved case, period in the same place: a reader glancing
-  // at the line should not have to find it somewhere new because a figure
-  // happened to land on nought.
-  if (move.change === 0) {
-    return (
-      <span className="row" style={{ gap: 7 }}>
-        <span className="muted">No change</span>
-        <span className="faint">{period}</span>
-      </span>
-    );
-  }
-  const up = move.change > 0;
-  return (
-    <span className="row" style={{ gap: 7 }}>
-      <span className={up ? "pos" : "neg"}>
-        {up ? "\u2197" : "\u2198"} <Money value={move.change} />
-        {move.pct !== null ? ` (${pctLabel(move.pct)})` : ""}
-      </span>
-      <span className="faint">{period}</span>
-    </span>
   );
 }
 

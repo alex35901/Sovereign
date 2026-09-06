@@ -698,6 +698,13 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .span-pill:hover { color: var(--text); }
 .span-pill.on { background: var(--surface-3); color: var(--text); }
 
+/* The way on from a preview list, sitting where the list runs out. */
+.view-all { width: 100%; justify-content: center; text-decoration: none; font-weight: 600; }
+
+/* A card dropped whole into a flush dialog is already inside one, so it drops
+   its own frame rather than drawing a second box a pixel inside the first. */
+.modal-body.flush > .card { border: 0; border-radius: 0; background: none; }
+
 /* The group's own header: name and total on one line, how it moved and what
    share of the whole it is on the next. */
 .acct-group-head {
@@ -816,7 +823,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
      "Transactions" down to "Tra…". The primary button drops its label, which
      is the difference between two rows of chrome and three. */
   .topbar { padding: 10px 14px; flex-wrap: wrap; row-gap: 8px; }
-  .topbar h1 { flex: 1 0 auto; max-width: 100%; }
+  /* Shrinkable, so a long account name is truncated rather than pushing the
+     bar's own buttons onto a second row beneath it. */
+  /* Basis 0, not auto: with auto the heading claims its full text width
+     before anything shrinks, so a long account name pushes the bar's own
+     buttons onto a second row instead of being truncated. */
+  .topbar h1 { flex: 1 1 0; min-width: 0; max-width: 100%; }
   .topbar-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
   .topbar-actions .btn-label { display: none; }
   /* A card's title and its own buttons overflow on a couple of cards too. */
@@ -850,6 +862,9 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .card-head.bgroup-head { padding-left: 12px; padding-right: 12px; }
   .budget-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
   .list-row { gap: 8px; padding: 10px 12px; }
+  /* On a phone the merchant and the amount are the row; a category chip
+     between them clips the name to two words and a full stop. */
+  .acct-txn-cat { display: none; }
 
   /* ── accounts ──
      An 88px sparkline is unreadable on a phone and costs the account name the

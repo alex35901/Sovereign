@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -918,6 +918,97 @@ try {
       touch === "pan-y", touch);
 
     await acc.close();
+  }
+
+  if (want("account-page")) {
+    // ── one account's own page ──
+    //
+    // The same headline chart as the Accounts screen, and the same behaviour,
+    // because it is the same component — which is the point of testing it
+    // here too: a shared component is only shared until one of its callers
+    // stops passing something.
+    const one = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await one.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await one.waitForTimeout(800);
+
+    const shape = await one.evaluate(() => ({
+      label: document.querySelector(".nw-head .tile-label")?.innerText.trim() ?? "",
+      spans: [...document.querySelectorAll(".span-pill")].map((b) => b.innerText.trim()),
+      chart: document.querySelectorAll(".nw-card .chart-wrap").length,
+      axis: document.querySelectorAll(".nw-card .axis-text").length,
+      // the things that used to sit between the chart and the transactions
+      updateBox: /update balance/i.test(document.body.innerText),
+      visibility: /where this account counts/i.test(document.body.innerText),
+      onPage: /change any value, or add a date/i.test(document.body.innerText),
+    }));
+    check("an account leads with its balance over a chart", shape.chart === 1 && shape.label === "CURRENT BALANCE",
+      `${shape.chart} charts, labelled "${shape.label}"`);
+    check("with the same six periods under it",
+      shape.spans.join(" ") === "1M 3M 6M YTD 1Y ALL", shape.spans.join(" "));
+    check("and no axis labels, as on the accounts screen", shape.axis === 0, `${shape.axis}`);
+    check("the update-balance box is gone", shape.updateBox === false);
+    check("and visibility and balance history are off the page",
+      shape.visibility === false && shape.onPage === false);
+
+    // Transactions follow, with the way on to all of them at the end.
+    const list = await one.evaluate(() => ({
+      head: document.querySelectorAll(".card-head h2, .card-head .card-title").length,
+      rows: document.querySelectorAll(".list-row").length,
+      viewAll: document.querySelector(".view-all")?.getAttribute("href") ?? "",
+    }));
+    check("then the recent transactions, with a way through to the rest",
+      list.rows > 3 && /^\/transactions\?account=/.test(list.viewAll),
+      `${list.rows} rows, on to "${list.viewAll}"`);
+
+    // Dragging works here too, and moves this account's own figure.
+    const readOne = () => one.evaluate(() => ({
+      total: document.querySelector(".nw-value").innerText.trim(),
+      period: document.querySelector(".nw-head .faint")?.innerText.trim() ?? "",
+    }));
+    const rest = await readOne();
+    const box = await one.locator(".nw-card .chart-wrap").boundingBox();
+    const midY = box.y + box.height / 2;
+    const held = await tryStep("the account's chart takes a finger", async () => {
+      await one.dispatchEvent(".nw-card .chart-wrap svg", "pointerdown",
+        { pointerType: "touch", pointerId: 1, isPrimary: true, clientX: box.x + box.width * 0.3, clientY: midY, buttons: 1 });
+      await one.waitForTimeout(250);
+    });
+    if (held) {
+      const on = await readOne();
+      check("and the balance shown follows it", on.total !== rest.total, `still ${on.total}`);
+      check("as does the stretch it reports", /\d{4}\s*[\u2013-]\s*\w/.test(on.period), on.period);
+      await one.dispatchEvent(".nw-card .chart-wrap svg", "pointerup",
+        { pointerType: "touch", pointerId: 1, isPrimary: true, clientX: box.x + box.width * 0.3, clientY: midY, buttons: 0 });
+      await one.waitForTimeout(250);
+    }
+
+    // What was on the page is now behind the one button.
+    const opened = await tryStep("the more menu opens", async () => {
+      await one.locator('button[title="More"]').click({ timeout: 5000 });
+      await one.waitForTimeout(350);
+    });
+    if (opened) {
+      const items = await one.evaluate(() =>
+        [...document.querySelectorAll(".menu button")].map((b) => b.innerText.trim()));
+      for (const wanted of ["Edit account details", "Edit balance history", "Visibility and actions"]) {
+        check(`the menu carries "${wanted}"`, items.some((t) => t === wanted), items.join(" | "));
+      }
+
+      const dialog = await tryStep("balance history opens as a dialog", async () => {
+        await one.locator(".menu button", { hasText: "Edit balance history" }).click({ timeout: 5000 });
+        await one.locator(".modal").waitFor({ timeout: 5000 });
+        await one.waitForTimeout(300);
+      });
+      if (dialog) {
+        const titles = await one.evaluate(() =>
+          [...document.querySelectorAll(".modal h2, .modal .card-title")]
+            .map((h) => h.innerText.trim()).filter((t) => /edit balance history/i.test(t)).length);
+        check("and says its name once, not twice", titles === 1, `${titles} copies of the title`);
+        check("and can still add and change points",
+          await one.locator(".modal", { hasText: "Add a balance" }).count() === 1);
+      }
+    }
+    await one.close();
   }
 
 } finally {

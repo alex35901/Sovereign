@@ -16,7 +16,11 @@ const PREVIEW = 8;
  * a keyboard. Any point can also be corrected here: a synced balance that
  * arrived wrong, or a typo in an imported file.
  */
-export function BalancePointsCard({ account }: { account: Account }) {
+export function BalancePointsCard({ account, heading = true }: {
+  account: Account;
+  /** Off inside a dialog that already carries the same words in its own bar. */
+  heading?: boolean;
+}) {
   const { actions, notify } = useStore();
   const [date, setDate] = useState(today());
   const [amount, setAmount] = useState(0);
@@ -49,11 +53,20 @@ export function BalancePointsCard({ account }: { account: Account }) {
 
   return (
     <Card>
-      <CardHead
-        title="Edit balance history"
-        sub={`${account.history.length} point${account.history.length === 1 ? "" : "s"} · change any value, or add a date`}
-        right={<Btn onClick={() => setOpen((o) => !o)}><Plus size={14} /> Add a balance</Btn>}
-      />
+      {heading ? (
+        <CardHead
+          title="Edit balance history"
+          sub={`${account.history.length} point${account.history.length === 1 ? "" : "s"} · change any value, or add a date`}
+          right={<Btn onClick={() => setOpen((o) => !o)}><Plus size={14} /> Add a balance</Btn>}
+        />
+      ) : (
+        <div className="spread wrap" style={{ gap: 10, marginBottom: 14 }}>
+          <span className="small muted">
+            {account.history.length} point{account.history.length === 1 ? "" : "s"} · change any value, or add a date
+          </span>
+          <Btn onClick={() => setOpen((o) => !o)}><Plus size={14} /> Add a balance</Btn>
+        </div>
+      )}
 
       {open ? (
         <div className="row wrap" style={{ gap: 12, alignItems: "flex-end", marginBottom: 14 }}>
