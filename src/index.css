@@ -698,6 +698,14 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .span-pill:hover { color: var(--text); }
 .span-pill.on { background: var(--surface-3); color: var(--text); }
 
+/* ── connection status ── */
+.conn-icon { display: inline-flex; color: var(--faint); }
+.conn-detail { padding: 0 16px 14px; }
+/* Amber: a connection falling behind is neither working nor broken, and
+   painting it red would put it beside the ones that need doing something
+   about today. */
+.warn { color: var(--c5); }
+
 /* The way on from a preview list, sitting where the list runs out. */
 .view-all { width: 100%; justify-content: center; text-decoration: none; font-weight: 600; }
 

@@ -20,6 +20,7 @@ import { VehicleValueCard } from "./VehicleValueCard";
 import { BalanceImportModal } from "./BalanceImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
 import { AccountControls } from "./AccountControls";
+import { ConnectionCard } from "./ConnectionCard";
 import { TransactionModal } from "./TransactionModal";
 import type { Transaction } from "../types";
 
@@ -164,6 +165,7 @@ export default function AccountDetail() {
             <Empty title="No transactions on this account" />
           )}
         </Card>
+        <ConnectionCard account={account} />
       </div>
 
       {editing ? <AccountModal account={account} onClose={() => setEditing(false)} /> : null}

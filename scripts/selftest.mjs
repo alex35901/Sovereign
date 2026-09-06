@@ -76,6 +76,7 @@ await build({
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
+      export { connectionOf, MISSES } from "./src/lib/connection.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
@@ -2316,6 +2317,83 @@ await test("a group's series is the sum of its accounts on each day", () => {
   // balances carry forward, and an account contributes nothing before it exists
   assert.deepEqual(M.aggregateSeries([a, b], dates), [1000, 1500, 3500]);
   assert.deepEqual(M.aggregateSeries([], dates), [0, 0, 0]);
+});
+
+/* ── whether an account is still being fed ────────────────────────────── */
+
+const CONN_NOW = Date.parse("2026-09-06T12:00:00Z");
+const ago = (hours) => new Date(CONN_NOW - hours * 3_600_000).toISOString();
+const linked = (over) => ({
+  ...acct("chk", [{ date: "2026-09-01", balance: 1_000_00 }]),
+  syncSource: "plaid", lastSyncedAt: ago(2), ...over,
+});
+const withUsage = (usage, cadence) => ({
+  accounts: [], goals: [], categories: [], groups: [], transactions: [], tags: [], budgets: {},
+  settings: { usage, syncCadence: cadence ?? "daily" },
+});
+
+await test("a connection that is keeping up says so", () => {
+  const c = M.connectionOf(linked(), withUsage({}), CONN_NOW);
+  assert.equal(c.state, "connected");
+  assert.equal(c.status, "Institution connected");
+  assert.equal(c.provider, "Plaid");
+});
+
+await test("the provider's own error is the account's status", () => {
+  // It is the whole institution that is broken, not this one account, and the
+  // health column in Settings reads the same field.
+  const db = withUsage({ plaid: { period: "", count: 1, error: "Wells Fargo: login required" } });
+  const c = M.connectionOf(linked(), db, CONN_NOW);
+  assert.equal(c.state, "attention");
+  assert.equal(c.status, "Needs attention");
+  assert.equal(c.detail, "Wells Fargo: login required", "and it says what to go and do");
+});
+
+await test("a connection falling behind its own schedule is flagged", () => {
+  // Three missed runs, not a fixed number of days: a weekly budget is not in
+  // trouble on day two, and an hourly one is in trouble long before day three.
+  const daily = withUsage({}, "daily");
+  assert.equal(M.connectionOf(linked({ lastSyncedAt: ago(2 * 24) }), daily, CONN_NOW).state, "connected",
+    "two days into a daily sync is a laptop that was shut, not a fault");
+  assert.equal(M.connectionOf(linked({ lastSyncedAt: ago(4 * 24) }), daily, CONN_NOW).state, "stale");
+  assert.equal(M.connectionOf(linked({ lastSyncedAt: ago(4 * 24) }), daily, CONN_NOW).status, "Not updating");
+
+  const weekly = withUsage({}, "weekly");
+  assert.equal(M.connectionOf(linked({ lastSyncedAt: ago(4 * 24) }), weekly, CONN_NOW).state, "connected",
+    "the same four days is well inside a weekly schedule");
+  assert.equal(M.connectionOf(linked({ lastSyncedAt: ago(30 * 24) }), weekly, CONN_NOW).state, "stale");
+});
+
+await test("a cadence with no schedule can only be faulted by its provider", () => {
+  // "Off" and "when the app opens" have no clock to be behind.
+  for (const cadence of ["off", "open"]) {
+    const db = withUsage({}, cadence);
+    assert.equal(M.connectionOf(linked({ lastSyncedAt: ago(90 * 24) }), db, CONN_NOW).state, "connected",
+      `${cadence} has nothing to be late for`);
+    const broken = withUsage({ plaid: { period: "", count: 1, error: "it broke" } }, cadence);
+    assert.equal(M.connectionOf(linked(), broken, CONN_NOW).state, "attention", `${cadence} still reports a real error`);
+  }
+});
+
+await test("a connection that has never delivered is waiting, not late", () => {
+  const c = M.connectionOf(linked({ lastSyncedAt: undefined }), withUsage({}), CONN_NOW);
+  assert.equal(c.state, "stale");
+  assert.equal(c.status, "Waiting for its first update");
+  assert.equal(c.lastAt, undefined);
+});
+
+await test("an account nobody connected is not a broken connection", () => {
+  // The one that matters: a hand-kept account has no provider to fail, and
+  // telling someone it needs attention is inventing a fault to go and fix.
+  const broken = withUsage({ plaid: { period: "", count: 1, error: "it broke" } });
+  const byHand = M.connectionOf(linked({ syncSource: undefined, lastSyncedAt: undefined }), broken, CONN_NOW);
+  assert.equal(byHand.state, "manual");
+  assert.equal(byHand.status, "Kept up to date by hand");
+  assert.equal(byHand.provider, "Entered by hand");
+
+  const imported = M.connectionOf(linked({ syncSource: "csv" }), broken, CONN_NOW);
+  assert.equal(imported.state, "manual");
+  assert.equal(imported.provider, "CSV import");
 });
 
 /* ── the accounts screen's slices ─────────────────────────────────────── */

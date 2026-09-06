@@ -1009,6 +1009,101 @@ try {
       }
     }
     await one.close();
+
+    // ── the connection status card ──
+    //
+    // A balance that stopped arriving three weeks ago looks exactly like an
+    // account nobody has spent from, right up until it matters. Seeded,
+    // because the demo data is all hand-kept and would only ever exercise the
+    // one state that cannot go wrong.
+    const seedConn = await browser.newContext();
+    const cp = await seedConn.newPage();
+    await cp.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
+    await cp.waitForTimeout(1200);
+    const baseDoc = JSON.parse(await cp.evaluate(() => localStorage.getItem("sovereign.db.v1")));
+    await seedConn.close();
+
+    const iso = (hoursAgo) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
+    const connDoc = {
+      ...baseDoc,
+      settings: {
+        ...baseDoc.settings, syncCadence: "daily",
+        usage: { ...(baseDoc.settings.usage ?? {}), plaid: { period: "", count: 3, error: "Wells Fargo: login required" } },
+      },
+      accounts: baseDoc.accounts.map((a, i) =>
+        i === 0 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(2) }
+        : i === 1 ? { ...a, syncSource: "simplefin", lastSyncedAt: iso(2) }
+        : i === 2 ? { ...a, syncSource: "simplefin", lastSyncedAt: iso(24 * 9) }
+        : { ...a, syncSource: undefined, lastSyncedAt: undefined }),
+    };
+
+    const connPage = async (index) => {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
+      await ctx.addInitScript((d) => {
+        if (!localStorage.getItem("sovereign.db.v1")) localStorage.setItem("sovereign.db.v1", d);
+      }, JSON.stringify(connDoc));
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/accounts/${connDoc.accounts[index].id}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(600);
+      return page;
+    };
+    const readConn = (page) => page.evaluate(() => {
+      const cards = [...document.querySelectorAll(".card")];
+      const card = cards.find((c) => /connection status/i.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!card) return null;
+      const rows = [...card.querySelectorAll(".drow")].map((r) => [
+        r.querySelector(".drow-label").innerText.trim(),
+        r.querySelector(".drow-val").innerText.trim(),
+      ]);
+      return {
+        labels: rows.map(([l]) => l),
+        values: Object.fromEntries(rows),
+        detail: card.querySelector(".conn-detail")?.innerText.trim() ?? "",
+        last: cards.indexOf(card) === cards.length - 1,
+        text: card.innerText.replace(/\n/g, " | "),
+      };
+    });
+
+    const broke = await connPage(0);
+    const attention = await readConn(broke);
+    check("every account ends with its connection status",
+      attention !== null && attention.last === true, "not the last card on the page");
+    check("which says when it last updated, how it is, and who supplies it",
+      attention !== null && attention.labels.join(" / ") === "Last update / Status / Data provider",
+      attention?.labels.join(" / "));
+    check("a provider that is failing shows up as needing attention",
+      /needs attention/i.test(attention?.values.Status ?? ""), attention?.values.Status);
+    check("and says out loud what to go and do about it",
+      /login required/i.test(attention?.detail ?? ""), attention?.detail || "nothing said");
+    await broke.close();
+
+    const fine = await connPage(1);
+    const connected = await readConn(fine);
+    check("an account whose provider is fine reads as connected",
+      /institution connected/i.test(connected?.values.Status ?? ""), connected?.values.Status);
+    check("and names the provider behind it",
+      connected?.values["Data provider"] === "SimpleFIN", connected?.values["Data provider"]);
+    // Seeded two hours ago, so the row has to report roughly that — a label
+    // with nothing behind it would otherwise pass every check above.
+    check("and how long ago the balance actually arrived",
+      /^[12]h ago/.test(connected?.values["Last update"] ?? ""), connected?.values["Last update"]);
+    await fine.close();
+
+    const late = await connPage(2);
+    const stale = await readConn(late);
+    check("one that has fallen behind its schedule says so, without crying broken",
+      /not updating/i.test(stale?.values.Status ?? "") && !/attention/i.test(stale?.values.Status ?? ""),
+      stale?.values.Status);
+    await late.close();
+
+    // The one that matters: a hand-kept account has no provider to fail, so a
+    // broken provider elsewhere must not paint it as broken too.
+    const byHand = await connPage(3);
+    const manual = await readConn(byHand);
+    check("an account nobody connected is not reported as a broken connection",
+      /by hand/i.test(manual?.values.Status ?? "") && !/attention/i.test(manual?.text ?? ""),
+      manual?.text);
+    await byHand.close();
   }
 
 } finally {
