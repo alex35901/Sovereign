@@ -203,8 +203,7 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
             />
             {period.entries.length ? (
               <>
-                <div className="list-row tx-grid head">
-                  <span />
+                <div className="list-row tx-grid head tx-nopick">
                   <span />
                   <span className="tiny faint">Merchant</span>
                   <span className="tiny faint tx-account">Account</span>
@@ -213,7 +212,7 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
                 </div>
                 {period.entries.slice(0, limit).map((e) => (
                   <div key={e.txn.id}>
-                    <div className="date-head tx-grid">
+                    <div className="date-head tx-grid tx-nopick">
                       <span className="date-head-label">{dateLabel(e.txn.date, { weekday: true, year: true })}</span>
                       <span className="num tx-amount"><Money value={e.amount} colored /></span>
                     </div>

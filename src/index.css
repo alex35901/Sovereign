@@ -376,6 +376,11 @@ table.tbl { width: 100%; border-collapse: collapse; }
   gap: 12px;
   align-items: center;
 }
+/* Multi-select off: the checkbox column goes rather than standing empty, and
+   everything shifts left into the room it was holding. Every row of the list
+   carries this together — header, date heads and transactions — or the columns
+   stop describing each other. */
+.tx-grid.tx-nopick { grid-template-columns: 32px minmax(0, 34rem) 64px minmax(200px, 1fr) 118px; }
 .tx-grid.head { padding: 9px 16px; background: var(--surface-2); }
 /* The day's total sits in the amount column, over the figures it totals. The
    date takes every column before it. */
@@ -910,6 +915,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
      costs no information, since the account is named on the sub-line below
      the merchant from here down. */
   .tx-grid { grid-template-columns: 16px 28px minmax(0, 1fr) max-content 118px; gap: 8px; }
+  .tx-grid.tx-nopick { grid-template-columns: 28px minmax(0, 1fr) max-content 118px; }
   .tx-account { display: none; }
   .tx-sub-account { display: inline; }
 }
@@ -967,6 +973,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
      header stops being sticky because the topbar's height is no longer fixed,
      so anything pinned under it would sit at the wrong offset. */
   .tx-grid { grid-template-columns: 15px 30px minmax(0, 1fr) max-content; gap: 9px; }
+  .tx-grid.tx-nopick { grid-template-columns: 30px minmax(0, 1fr) max-content; }
   .tx-category { display: none; }
   .tx-mark .avatar:not(.tx-cat-mark) { display: none; }
   .tx-mark .tx-cat-mark { display: grid; font-size: 15px; }

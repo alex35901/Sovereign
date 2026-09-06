@@ -412,13 +412,18 @@ export default function Transactions() {
         ) : null}
 
         <Card pad={false}>
-          <div className="list-row tx-grid head">
+          <div className={cx("list-row tx-grid head", !picking && "tx-nopick")}>
             {picking ? (
-              <input
-                type="checkbox" className="cb" checked={allSelected} title="Select all"
-                onChange={() => setSelected(allSelected ? new Set() : new Set(shown.map((t) => t.id)))}
-              />
+              <>
+                <input
+                  type="checkbox" className="cb" checked={allSelected} title="Select all"
+                  onChange={() => setSelected(allSelected ? new Set() : new Set(shown.map((t) => t.id)))}
+                />
+                <span />
+              </>
             ) : (
+              // With the column gone there is nowhere to stand but the mark's
+              // own, which is still the top left of the table.
               <button
                 className="tx-pick" onClick={() => setPicking(true)}
                 title="Select multiple" aria-label="Select multiple"
@@ -426,7 +431,6 @@ export default function Transactions() {
                 <ListChecks size={14} />
               </button>
             )}
-            <span />
             <span className="tiny faint">Merchant</span>
             <span className="tiny faint tx-account">Account</span>
             <span className="tiny faint tx-category">Category</span>
@@ -437,7 +441,7 @@ export default function Transactions() {
             const day = budgetedSum(db, rows, budgeted);
             return (
               <div key={date}>
-                <div className="date-head tx-grid">
+                <div className={cx("date-head tx-grid", !picking && "tx-nopick")}>
                   <span className="date-head-label">{dateLabel(date, { weekday: true, year: true })}</span>
                   <span className="num tx-amount tx-day-total">
                     {/* A day of nothing but transfers has no budgeted total to
@@ -557,8 +561,10 @@ function PeriodFilter({ db, value, onChange }: {
  * One transaction, as it appears in a list.
  *
  * Shared with the category drill-down, which wants the same row without the
- * multi-select: omit `onToggle` and the checkbox column stays empty rather than
- * the grid shifting under it, so the two lists line up column for column.
+ * multi-select: omit `onToggle` and the checkbox column goes altogether, so
+ * nothing is indented past a gap held open for a control that isn't there. The
+ * lists that hold these rows carry `tx-nopick` on their own header and date
+ * rows to match.
  *
  * `amount` overrides what is shown, for a list built from splits — a $300
  * purchase split three ways contributes $40 to the category being read, and
@@ -574,8 +580,11 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
   const split = (txn.splits?.length ?? 0) > 0;
 
   return (
-    <div className={cx("list-row tx-grid", selected && "sel")} style={selected ? { background: "var(--accent-soft)" } : undefined}>
-      {onToggle ? <input type="checkbox" className="cb" checked={selected} onChange={onToggle} /> : <span />}
+    <div
+      className={cx("list-row tx-grid", !onToggle && "tx-nopick", selected && "sel")}
+      style={selected ? { background: "var(--accent-soft)" } : undefined}
+    >
+      {onToggle ? <input type="checkbox" className="cb" checked={selected} onChange={onToggle} /> : null}
       <span className="tx-mark">
         <MerchantAvatar name={txn.merchant} />
         <span
@@ -590,6 +599,13 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
       <div className="col" style={{ gap: 1, cursor: "pointer", minWidth: 0 }} onClick={onEdit}>
         <span className="row" style={{ gap: 6 }}>
           <span className="truncate" style={{ fontWeight: 500 }}>{txn.merchant}</span>
+          {/* What the row says about itself comes first, hard against the name.
+              The arrow holds its width while invisible so the line does not
+              jump when the pointer arrives, and that reserved space reads as a
+              gap — so it is held at the end of the line, past the badges,
+              rather than between the name and them. */}
+          {txn.pending ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>Pending</span> : null}
+          {!txn.reviewed ? <span className="dot" style={{ background: "var(--accent)" }} title="Needs review" /> : null}
           {/* Inline rather than pinned like the category's: this column is
               left-aligned, so nothing shifts when it appears. */}
           <Link
@@ -599,8 +615,6 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           >
             <ArrowRight size={13} />
           </Link>
-          {txn.pending ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>Pending</span> : null}
-          {!txn.reviewed ? <span className="dot" style={{ background: "var(--accent)" }} title="Needs review" /> : null}
         </span>
         <span className="row tiny faint" style={{ gap: 5, minWidth: 0 }}>
           <span className="truncate">

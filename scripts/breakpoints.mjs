@@ -138,21 +138,30 @@ try {
       await page.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
       await page.waitForTimeout(500);
 
-      // Multi-select is off by default, and the columns still have to line up
-      // with an empty first cell in every row.
-      const cells = await page.evaluate(() => {
+      // Multi-select is off by default, and its column is gone rather than
+      // standing empty — one fewer cell in every row of the list, and the
+      // merchant's mark hard against the left of the card.
+      const measure = () => page.evaluate(() => {
         const visible = (el) => [...el.children]
           .filter((c) => getComputedStyle(c).display !== "none").length;
         const row = document.querySelector(".list-row.tx-grid:not(.head)");
+        const head = document.querySelector(".tx-grid.head");
+        const tracks = (el) => getComputedStyle(el).gridTemplateColumns.split(" ").length;
         return {
-          head: visible(document.querySelector(".tx-grid.head")),
+          head: visible(head),
           row: visible(row),
-          boxes: row.querySelectorAll("input.cb").length,
+          boxes: document.querySelectorAll(".list-row.tx-grid input.cb").length,
+          // The column itself, not just what stands in it: a template that
+          // still reserves the track has moved the blank space, not closed it.
+          tracks: tracks(row),
+          sameTracks: tracks(head) === tracks(row),
         };
       });
-      check(`${w}px — with multi-select off there are no checkboxes, and the columns still line up`,
-        cells.boxes === 0 && cells.head === cells.row && cells.head === cols.length,
-        `${cells.boxes} boxes, header ${cells.head}, row ${cells.row}, expected ${cols.length}`);
+      const off = await measure();
+      check(`${w}px — with multi-select off the checkbox column is gone, not blank`,
+        off.boxes === 0 && off.head === off.row && off.head === cols.length - 1
+        && off.tracks === cols.length - 1 && off.sameTracks,
+        `${off.boxes} boxes, header ${off.head}, row ${off.row}, ${off.tracks} tracks, expected ${cols.length - 1}`);
 
       // Guarded: an unguarded locator call aborts the whole run, and a run that
       // aborts prints no failures at all — which reads exactly like a pass.
@@ -185,11 +194,14 @@ try {
 
       // the header has to line up with the body, or the labels describe the
       // wrong columns — which is invisible until you read one
-      const head = await page.evaluate(() =>
-        [...document.querySelectorAll(".tx-grid.head")[0].children]
-          .filter((el) => getComputedStyle(el).display !== "none").length);
-      check(`${w}px — the header has as many cells as the row`, head === cols.length,
-        `header ${head}, row ${cols.length}`);
+      const on = await measure();
+      check(`${w}px — the header has as many cells as the row`, on.head === cols.length,
+        `header ${on.head}, row ${cols.length}`);
+      // And the room the column takes when it is on is room the rest of the
+      // list gets back when it is off — one whole track's worth of it.
+      check(`${w}px — turning it off gives the column's room back`,
+        on.tracks === off.tracks + 1 && on.sameTracks,
+        `${off.tracks} tracks off, ${on.tracks} on`);
       await page.close();
     }
   }
@@ -257,6 +269,25 @@ try {
           back.boxes === 0 && back.toggle, `${back.boxes} boxes, toggle ${back.toggle}`);
       }
     }
+    // The drill-down carries the same rows without any multi-select at all, so
+    // its own header and date rows have to drop the column too — a list whose
+    // header is one column wider than its rows labels them all wrong.
+    const drill = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+    await drill.goto(`${BASE}/categories/c_mortgage`, { waitUntil: "networkidle" });
+    await drill.waitForTimeout(900);
+    const lined = await drill.evaluate(() => {
+      const visible = (el) => [...el.children]
+        .filter((c) => getComputedStyle(c).display !== "none").length;
+      const head = document.querySelector(".tx-grid.head");
+      const row = document.querySelector(".list-row.tx-grid:not(.head)");
+      if (!head || !row) return null;
+      const cols = (el) => getComputedStyle(el).gridTemplateColumns;
+      return { head: visible(head), row: visible(row), same: cols(head) === cols(row), boxes: row.querySelectorAll("input.cb").length };
+    });
+    check("the drill-down's list drops the column as well",
+      lined !== null && lined.boxes === 0 && lined.head === lined.row && lined.same,
+      lined === null ? "no list found" : `header ${lined.head}, row ${lined.row}, same grid ${lined.same}`);
+    await drill.close();
     await sel.close();
   }
 
@@ -302,6 +333,54 @@ try {
     }
     check("1440px — every category pill is the same width",
       aligned.pillWidths.length === 1, `saw widths ${aligned.pillWidths.join(", ")}`);
+
+    // What a row says about itself — Pending, and the needs-review dot — sits
+    // against the merchant's name. The failure this replaces: the merchant's
+    // hover arrow holds its 28px while invisible, and holding it between the
+    // name and the badges left them adrift in the middle of the column.
+    const badges = await wide.evaluate(() => {
+      const textRight = (el) => {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        const b = r.getBoundingClientRect();
+        return b.width ? b.right : el.getBoundingClientRect().right;
+      };
+      const out = [];
+      for (const row of document.querySelectorAll(".list-row.tx-grid:not(.head)")) {
+        const line = row.querySelector(".col > .row");
+        if (!line) continue;
+        const name = line.querySelector(".truncate");
+        const badge = line.querySelector(".tag, .dot");
+        if (!name || !badge) continue;
+        out.push({
+          gap: Math.round(badge.getBoundingClientRect().left - textRight(name)),
+          at: Math.round(badge.getBoundingClientRect().left),
+        });
+      }
+      return out;
+    });
+    check("1440px — a row's badges sit against its merchant name",
+      badges.length > 3 && badges.every((b) => b.gap <= 10),
+      `${badges.length} rows, widest gap ${Math.max(...badges.map((b) => b.gap), 0)}px`);
+
+    // And the arrow, which appears on hover, must not push them along when it
+    // does — the space it reserves is why it sits after them.
+    const steady = await tryStep("1440px — hovering a row reveals its arrow", async () => {
+      await wide.locator(".list-row.tx-grid:not(.head)").first().hover({ timeout: 5000 });
+      await wide.waitForTimeout(300);
+    });
+    if (steady) {
+      const after = await wide.evaluate(() => {
+        const line = document.querySelector(".list-row.tx-grid:not(.head) .col > .row");
+        return {
+          at: Math.round(line.querySelector(".tag, .dot").getBoundingClientRect().left),
+          arrow: getComputedStyle(line.querySelector(".tx-merchant-open")).opacity,
+        };
+      });
+      check("1440px — without shifting the badges it sits after",
+        after.arrow === "1" && Math.abs(after.at - badges[0].at) <= 1,
+        `arrow opacity ${after.arrow}, badge ${badges[0].at} then ${after.at}`);
+    }
     await wide.close();
   }
 
