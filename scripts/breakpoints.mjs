@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1104,6 +1104,106 @@ try {
       /by hand/i.test(manual?.values.Status ?? "") && !/attention/i.test(manual?.text ?? ""),
       manual?.text);
     await byHand.close();
+  }
+
+  if (want("tx-filters")) {
+    // ── the filters, behind the funnel ──
+    //
+    // Six controls used to run across the top of the page: two rows on a
+    // laptop, four on a phone, and almost always set to "any". They are one
+    // button now, and the risk of that move is a filter that is reachable but
+    // no longer does anything — so each one is opened and used.
+    const fp = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await fp.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await fp.waitForTimeout(800);
+
+    const bar = await fp.evaluate(() => {
+      const row = document.querySelector(".filter-bar");
+      const search = row.querySelector(".search").getBoundingClientRect();
+      const toggle = row.querySelector(".filter-toggle")?.getBoundingClientRect();
+      return {
+        controls: row.querySelectorAll("select, .btn:not(.filter-toggle)").length,
+        lines: new Set([...row.children].map((c) => Math.round(c.getBoundingClientRect().top))).size,
+        rightOfSearch: toggle ? toggle.left >= search.right - 1 : false,
+        toggle: Boolean(toggle),
+      };
+    });
+    check("the search row is the search and one funnel beside it",
+      bar.toggle && bar.controls === 0, `${bar.controls} other controls still on the row`);
+    check("the funnel sits at the far end of the search box", bar.rightOfSearch === true);
+    check("and they share one line", bar.lines === 1, `${bar.lines} lines`);
+
+    const counted = () => fp.evaluate(() => {
+      const t = document.querySelector(".spread.small .muted")?.innerText ?? "";
+      return Number((t.match(/[\d,]+/)?.[0] ?? "0").replace(/,/g, ""));
+    });
+    const badge = () => fp.evaluate(() =>
+      document.querySelector(".filter-count")?.innerText.trim() ?? "");
+
+    check("nothing is filtered to begin with", (await badge()) === "", await badge());
+    const before = await counted();
+
+    const open = await tryStep("the funnel opens the filters", async () => {
+      await fp.locator(".filter-toggle").click({ timeout: 5000 });
+      await fp.locator(".filter-panel").waitFor({ timeout: 5000 });
+      await fp.waitForTimeout(300);
+    });
+    if (open) {
+      const fields = await fp.evaluate(() =>
+        [...document.querySelectorAll(".filter-panel .field > label")].map((l) => l.innerText.trim()));
+      check("every filter is in the panel, each with its own name",
+        fields.join(" / ") === "Show / Account / Category / Date / Tag", fields.join(" / "));
+
+      // All of them have to be reachable without scrolling one out of sight.
+      const fits = await fp.evaluate(() => {
+        const panel = document.querySelector(".filter-panel");
+        const last = panel.querySelector(".field:last-of-type");
+        return last.getBoundingClientRect().bottom <= panel.getBoundingClientRect().bottom + 1;
+      });
+      check("and the last of them is not scrolled out of the panel", fits === true);
+
+      // Using one narrows the list and the funnel says how many are on.
+      await fp.locator(".filter-panel select").first().selectOption("income");
+      await fp.waitForTimeout(400);
+      const afterOne = await counted();
+      check("choosing a filter narrows the list", afterOne < before, `${before} then ${afterOne}`);
+      check("and the funnel carries how many are on", (await badge()) === "1", await badge());
+
+      await fp.locator(".filter-panel select").nth(1).selectOption({ index: 1 });
+      await fp.waitForTimeout(400);
+      check("a second filter counts as two", (await badge()) === "2", await badge());
+      check("and narrows it further", (await counted()) < afterOne);
+
+      // Between-dates puts two date fields in the panel rather than off it.
+      const dateSelect = fp.locator(".filter-panel .field", { hasText: "Date" }).locator("select").first();
+      await dateSelect.selectOption("between");
+      await fp.waitForTimeout(400);
+      const bounds = await fp.evaluate(() => {
+        const panel = document.querySelector(".filter-panel");
+        const dates = [...panel.querySelectorAll('input[type="date"]')];
+        const r = panel.getBoundingClientRect();
+        return {
+          n: dates.length,
+          inside: dates.every((d) => {
+            const b = d.getBoundingClientRect();
+            return b.left >= r.left - 1 && b.right <= r.right + 1;
+          }),
+        };
+      });
+      check("between-dates gives two bounds, both inside the panel",
+        bounds.n === 2 && bounds.inside === true, `${bounds.n} bounds, inside: ${bounds.inside}`);
+
+      const cleared = await tryStep("everything can be cleared at once", async () => {
+        await fp.locator(".filter-panel button", { hasText: "Clear all" }).click({ timeout: 5000 });
+        await fp.waitForTimeout(500);
+      });
+      if (cleared) {
+        check("clearing puts the whole list back", (await counted()) === before,
+          `${await counted()} of ${before}`);
+        check("and takes the count off the funnel", (await badge()) === "", await badge());
+      }
+    }
+    await fp.close();
   }
 
 } finally {

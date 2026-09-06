@@ -292,6 +292,33 @@ h3 { font-size: 14px; }
 .search { position: relative; display: flex; align-items: center; }
 .search svg { position: absolute; left: 9px; color: var(--faint); pointer-events: none; }
 .search .input { padding-left: 30px; }
+/* The funnel at the end of the search box. It sits at the same height as the
+   field and carries how many filters are on, because "filtered" is not the
+   useful part — how much of the list is being kept from you is. */
+.filter-toggle { position: relative; flex: none; padding: 8px; border-radius: var(--radius-sm); }
+.filter-toggle.on { border-color: var(--accent); color: var(--accent); }
+.filter-count {
+  position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px;
+  display: grid; place-items: center; border-radius: 99px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 10px; font-weight: 700; line-height: 1;
+}
+/* Inside the panel each control is a field on its own line, so they stop
+   competing for width and can say what they are.
+
+   Qualified with .menu, not written as a bare class: .menu sets padding and a
+   height cap of its own and sits further down this file, so a single-class
+   override loses to it on source order however carefully it is written. */
+.menu.filter-panel {
+  padding: 12px;
+  /* Six labelled fields do not fit a menu's 320px, and a panel that scrolls
+     its own last filter out of sight is a panel with a filter nobody uses. */
+  max-height: min(70vh, 520px);
+}
+.filter-panel .select, .filter-panel .input { width: 100%; max-width: none; }
+.filter-panel .filter-pick { width: 100%; justify-content: flex-start; }
+.filter-panel .date-bound { flex: 1 1 0; min-width: 0; }
+
 .filter-bar .select { width: auto; flex: 0 0 auto; min-width: 132px; max-width: 200px; }
 /* The two ends of a between-dates filter. A native date input sizes itself to
    its own locale's format and comes out well over 200px on some browsers,

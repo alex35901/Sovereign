@@ -13,7 +13,7 @@ import { accountOptions, budgetedCategoryIds, budgetedSum } from "../lib/select"
 import type { BudgetedSum } from "../lib/select";
 import { fmt } from "../lib/money";
 import { download } from "../lib/storage";
-import { Btn, Card, Empty, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
+import { Btn, Card, Empty, Field, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import type { DateFilter } from "../lib/date-filter";
 import { ALL, FILTER_KINDS, PARAM_KEYS, bounds, fromParams, isNarrowed, toParams } from "../lib/date-filter";
@@ -253,47 +253,90 @@ export default function Transactions() {
       />
       <div className="page stack">
         <Card>
-          <div className="row wrap filter-bar" style={{ gap: 8 }}>
-            <div className="search grow" style={{ minWidth: 200 }}>
+          {/* One line: the search, and everything else behind the funnel at the
+              end of it. Six controls strung across the top of the page took
+              two rows on a laptop and four on a phone, and were mostly set to
+              "any" — a permanent cost for an occasional act. */}
+          <div className="row filter-bar" style={{ gap: 8 }}>
+            <div className="search grow" style={{ minWidth: 0 }}>
               <Search size={14} />
               <TextInput value={q} onChange={setQ} placeholder="Search merchants, notes, statements" />
             </div>
-            <SelectInput
-              value={preset} onChange={(v) => setPreset(v as Preset)}
-              options={[
-                { value: "all", label: "All" },
-                { value: "unreviewed", label: "Needs review" },
-                { value: "uncategorized", label: "Uncategorized" },
-                { value: "expense", label: "Expenses" },
-                { value: "income", label: "Income" },
-                { value: "hidden", label: "Hidden" },
-              ]}
-            />
-            <SelectInput
-              value={accountId} onChange={pickAccount} placeholder="All accounts"
-              options={accountOptions(db.accounts.filter((a) => !a.hidden))}
-            />
-            <CategoryPicker
-              value={categoryId} onChange={pickCategory} clearLabel="Any category"
-              trigger={(cat, open) => (
-                <button className="btn" onClick={open} style={{ maxWidth: 190 }}>
-                  <span>{cat ? cat.icon : "🏷"}</span>
-                  <span className="truncate">{cat ? cat.name : "Any category"}</span>
+            <Popover
+              align="right" width={300} className="filter-panel"
+              trigger={(open) => (
+                <button
+                  className={cx("btn btn-icon filter-toggle", filterCount > 0 && "on")}
+                  onClick={open} title="Filters" aria-label={`Filters${filterCount ? ` (${filterCount} on)` : ""}`}
+                >
+                  <Filter size={16} />
+                  {/* The count, not a dot: "filtered" is not the useful part —
+                      how much of the list is being hidden from you is. */}
+                  {filterCount ? <span className="filter-count">{filterCount}</span> : null}
                 </button>
               )}
-            />
-            <PeriodFilter db={db} value={period} onChange={setPeriod} />
-            {db.tags.length ? (
-              <SelectInput
-                value={tagId} onChange={setTagId} placeholder="Any tag"
-                options={db.tags.map((t) => ({ value: t.id, label: t.name }))}
-              />
-            ) : null}
-            {filterCount ? (
-              <Btn variant="ghost" onClick={clearFilters}><X size={14} /> Clear</Btn>
-            ) : (
-              <span className="row tiny faint" style={{ gap: 4 }}><Filter size={13} /> No filters</span>
-            )}
+            >
+              {(close) => (
+                <div className="col" style={{ gap: 12 }}>
+                  <div className="spread">
+                    <span style={{ fontWeight: 600 }}>Filters</span>
+                    {filterCount ? (
+                      <Btn size="sm" variant="ghost" onClick={() => { clearFilters(); close(); }}>
+                        <X size={13} /> Clear all
+                      </Btn>
+                    ) : null}
+                  </div>
+
+                  <Field label="Show">
+                    <SelectInput
+                      value={preset} onChange={(v) => setPreset(v as Preset)}
+                      options={[
+                        { value: "all", label: "Everything" },
+                        { value: "unreviewed", label: "Needs review" },
+                        { value: "uncategorized", label: "Uncategorized" },
+                        { value: "expense", label: "Expenses" },
+                        { value: "income", label: "Income" },
+                        { value: "hidden", label: "Hidden from reports" },
+                      ]}
+                    />
+                  </Field>
+
+                  <Field label="Account">
+                    <SelectInput
+                      value={accountId} onChange={pickAccount} placeholder="All accounts"
+                      options={accountOptions(db.accounts.filter((a) => !a.hidden))}
+                    />
+                  </Field>
+
+                  <Field label="Category">
+                    <CategoryPicker
+                      value={categoryId} onChange={pickCategory} clearLabel="Any category"
+                      trigger={(cat, open) => (
+                        <button className="btn filter-pick" onClick={open}>
+                          <span>{cat ? cat.icon : "🏷"}</span>
+                          <span className="truncate grow">{cat ? cat.name : "Any category"}</span>
+                        </button>
+                      )}
+                    />
+                  </Field>
+
+                  <Field label="Date">
+                    <div className="col" style={{ gap: 8 }}>
+                      <PeriodFilter db={db} value={period} onChange={setPeriod} />
+                    </div>
+                  </Field>
+
+                  {db.tags.length ? (
+                    <Field label="Tag">
+                      <SelectInput
+                        value={tagId} onChange={setTagId} placeholder="Any tag"
+                        options={db.tags.map((t) => ({ value: t.id, label: t.name }))}
+                      />
+                    </Field>
+                  ) : null}
+                </div>
+              )}
+            </Popover>
           </div>
           <div className="divider" />
           <div className="spread small">
