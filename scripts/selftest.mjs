@@ -77,8 +77,8 @@ await build({
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
-      export { spendPace, monthProgress, dueSoon } from "./src/lib/dashboard.ts";
-      export { creditSummary, recordCredit, bandOf, CREDIT_BANDS } from "./src/lib/credit.ts";
+      export { spendPace, monthProgress, dueSoon, overPace, goalMoves } from "./src/lib/dashboard.ts";
+      export { creditSummary, recordCredit, bandOf, CREDIT_BANDS, creditPeople, WHOEVER } from "./src/lib/credit.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
@@ -2406,7 +2406,99 @@ await test("what is still to come out counts only what is left, and only bills",
   assert.deepEqual(d.items.map((r) => r.id), ["r1", "r3", "r4"], "but everything ahead is still listed");
 });
 
+await test("spending ahead of the calendar is over its pace, not merely under way", () => {
+  // Half the plan gone on the second is a different thing from half gone on
+  // the fifteenth, and only the first is worth colouring red.
+  assert.equal(M.overPace(1_000_00, 500_00, 0.5), false, "half spent, half the month gone");
+  assert.equal(M.overPace(1_000_00, 501_00, 0.5), true);
+  assert.equal(M.overPace(1_000_00, 500_00, 0.1), true, "half spent three days in");
+  assert.equal(M.overPace(1_000_00, 990_00, 1), false, "under the plan on the last day is not over it");
+  assert.equal(M.overPace(1_000_00, 1_100_00, 1), true, "and past the plan is past its pace too");
+  assert.equal(M.overPace(0, 10_00, 0.5), true, "anything spent is over a plan of nothing");
+  assert.equal(M.overPace(0, 0, 0.5), false);
+});
+
+await test("a goal's month is measured at two dates, never against the live figure", () => {
+  // The live balance can be ahead of the last dated point in its history, and
+  // pairing the two would report that gap as a month's growth.
+  const acct = {
+    id: "sav", name: "S", institution: "I", type: "savings", order: 0,
+    includeInNetWorth: true, hidden: false, goalAccount: true,
+    balance: 12_000_00,
+    history: [{ date: "2026-09-01", balance: 10_000_00 }, { date: "2026-09-06", balance: 11_000_00 }],
+  };
+  const db = {
+    accounts: [acct], transactions: [], categories: [], groups: [], tags: [], budgets: {},
+    recurring: [], rules: [], holdings: [], settings: {},
+    goals: [{
+      id: "g", name: "Rental", emoji: "\u{1F3E0}", targetAmount: 20_000_00, accountIds: [],
+      allocations: { sav: 20_000_00 }, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
+    }],
+  };
+  const m = M.goalMoves(db, "2026-09-06");
+  assert.equal(m.goals.length, 1);
+  assert.equal(m.goals[0].change, 1_000_00, "10,000 on the 1st to 11,000 on the 6th");
+  assert.equal(m.goals[0].pct, 0.1);
+  assert.equal(m.change, 1_000_00);
+  // and the headline figure is the live one, matching every other screen
+  assert.equal(m.goals[0].saved, 12_000_00);
+});
+
+await test("a goal that started the month at nothing has no percentage", () => {
+  const db = {
+    accounts: [], transactions: [], categories: [], groups: [], tags: [], budgets: {},
+    recurring: [], rules: [], holdings: [], settings: {},
+    goals: [{
+      id: "g", name: "New", emoji: "\u2728", targetAmount: 1_000_00, accountIds: [],
+      allocations: {}, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
+    }],
+  };
+  const m = M.goalMoves(db, "2026-09-06");
+  assert.equal(m.goals[0].change, 0);
+  assert.equal(m.goals[0].pct, null);
+});
+
+await test("an archived goal is off the dashboard", () => {
+  const db = {
+    accounts: [], transactions: [], categories: [], groups: [], tags: [], budgets: {},
+    recurring: [], rules: [], holdings: [], settings: {},
+    goals: [
+      { id: "a", name: "Live", emoji: "\u2728", targetAmount: 100, accountIds: [], allocations: {}, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false },
+      { id: "b", name: "Done with", emoji: "\u2728", targetAmount: 100, accountIds: [], allocations: {}, startingAmount: 0, monthlyContribution: 0, priority: 1, archived: true },
+    ],
+  };
+  assert.deepEqual(M.goalMoves(db, "2026-09-06").goals.map((g) => g.goal.id), ["a"]);
+});
+
 /* ── credit scores ────────────────────────────────────────────────────── */
+
+await test("a household keeps its scores apart", () => {
+  let db = M.recordCredit({}, { date: "2026-08-01", score: 800 });
+  db = M.recordCredit(db, { date: "2026-08-01", score: 700, who: "Sam" });
+  db = M.recordCredit(db, { date: "2026-09-01", score: 810 });
+  assert.deepEqual(M.creditPeople(db), ["You", "Sam"], "in the order they first appear");
+  assert.equal(M.creditSummary(db, "You").latest.score, 810);
+  assert.equal(M.creditSummary(db, "Sam").latest.score, 700);
+  assert.equal(M.creditSummary(db, "You").change, 10, "and each is compared only with itself");
+  assert.equal(M.creditSummary(db, "Sam").change, 0);
+});
+
+await test("two people on the same day are two readings, not one replacing the other", () => {
+  let db = M.recordCredit({}, { date: "2026-09-01", score: 800 });
+  db = M.recordCredit(db, { date: "2026-09-01", score: 700, who: "Sam" });
+  assert.equal(db.credit.length, 2);
+  // but the same person on the same day still replaces
+  db = M.recordCredit(db, { date: "2026-09-01", score: 705, who: "Sam" });
+  assert.equal(db.credit.length, 2);
+  assert.equal(M.creditSummary(db, "Sam").latest.score, 705);
+});
+
+await test("readings recorded before anyone was named belong to whoever set it up", () => {
+  const db = { credit: [{ date: "2026-09-01", score: 800 }] };
+  assert.deepEqual(M.creditPeople(db), [M.WHOEVER]);
+  assert.equal(M.creditSummary(db, M.WHOEVER).latest.score, 800);
+});
+
 
 await test("a score is placed in its band and on the scale", () => {
   assert.equal(M.bandOf(819).label, "Excellent");

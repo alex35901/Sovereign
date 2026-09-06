@@ -1,4 +1,5 @@
-import type { Account, DB, Goal, ID } from "../types.js";
+import type { Account, DB, Goal, ID, ISODate } from "../types.js";
+import { balanceAt } from "./select.js";
 
 /**
  * Which real money is behind each goal.
@@ -143,6 +144,33 @@ export function goalSaved(db: DB, goalId: ID): number {
   for (const f of funding(db).accounts) {
     total += Math.min(claimOn(goal, f.account.id), f.balance);
     if (f.account.autoGoalId === goalId) total += f.auto;
+  }
+  return total;
+}
+
+/**
+ * What a goal held on a given day.
+ *
+ * The same arithmetic as `goalSaved`, against the balances as they stood then
+ * rather than as they stand now. Allocations themselves are not historical —
+ * there is one set of them and it is current — so this answers "what would
+ * this goal have been worth on that day, split the way it is split today",
+ * which is the question a month-to-date change is actually asking.
+ *
+ * Use it for both ends of a comparison, never mixed with `goalSaved`: a live
+ * balance can be ahead of the last dated point in its history, and pairing the
+ * two would report that gap as a month's growth.
+ */
+export function goalSavedAt(db: DB, goalId: ID, date: ISODate): number {
+  const goal = db.goals.find((g) => g.id === goalId);
+  if (!goal) return 0;
+  let total = goal.startingAmount;
+  for (const account of goalAccounts(db)) {
+    const balance = Math.max(0, balanceAt(account, date));
+    const claimed = claimedFrom(db, account.id);
+    total += Math.min(claimOn(goal, account.id), balance);
+    // Whatever an account swept to this goal has left over, as it was then.
+    if (account.autoGoalId === goalId) total += balance - Math.min(claimed, balance);
   }
   return total;
 }

@@ -9,12 +9,12 @@ import {
 import {
   aggregateSeries, budgetSummary, earliestHistoryDate, netWorthAt, portfolioSummary, trendTone,
 } from "../lib/select";
-import { dueSoon, monthProgress, spendPace } from "../lib/dashboard";
-import { CREDIT_MAX, CREDIT_MIN, CREDIT_BANDS, creditSummary } from "../lib/credit";
+import { dueSoon, goalMoves, monthProgress, overPace, spendPace } from "../lib/dashboard";
+import { CREDIT_MAX, CREDIT_MIN, CREDIT_BANDS, WHOEVER, creditPeople, creditSummary } from "../lib/credit";
 import { AreaChart, CompareChart } from "../components/charts";
 import { BalanceChart } from "../components/BalanceChart";
 import {
-  Btn, Card, CardHead, Empty, Field, Modal, Money, Progress, TextInput, cx, color,
+  Btn, Card, CardHead, Empty, Field, Modal, Money, Progress, SelectInput, TextInput, cx, color,
 } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
 import type { RangeKey } from "../lib/range";
@@ -51,6 +51,7 @@ export default function Dashboard() {
         <BudgetCard month={month} />
         <CreditCard />
         <RecurringCard />
+        <GoalsCard />
         <InvestmentCard />
       </div>
     </>
@@ -141,10 +142,17 @@ function SpendingCard() {
 /* ── budget ───────────────────────────────────────────────────────────── */
 
 /** One side of the month's plan, with today's place in it marked. */
-function BudgetLine({ label, planned, actual, doneWord, tone }: {
-  label: string; planned: number; actual: number; doneWord: string; tone: string;
+function BudgetLine({ label, planned, actual, doneWord, pace }: {
+  label: string; planned: number; actual: number; doneWord: string;
+  /** Whether being ahead of the calendar is bad news. True for spending. */
+  pace?: boolean;
 }) {
   const remaining = planned - actual;
+  const progress = monthProgress(thisMonth());
+  // Red once more has gone than the month has used up — which is what the
+  // mark is for. Income is left green whatever it does: being behind on money
+  // coming in is not the same kind of news as being ahead on money going out.
+  const hot = pace === true && overPace(planned, actual, progress);
   return (
     <div className="col" style={{ gap: 6 }}>
       <div className="spread small">
@@ -155,9 +163,9 @@ function BudgetLine({ label, planned, actual, doneWord, tone }: {
           ahead of the calendar or behind it" rather than only "how much is
           left" — which is the question a plan spread over a month invites. */}
       <Progress
-        value={actual} max={Math.max(planned, actual, 1)} color={tone}
-        over={planned > 0 && actual > planned}
-        mark={Math.max(planned, actual, 1) * monthProgress(thisMonth())}
+        value={actual} max={Math.max(planned, actual, 1)} color="--pos"
+        over={hot}
+        mark={Math.max(planned, actual, 1) * progress}
         markTitle="Where today falls in the month"
       />
       <div className="spread small">
@@ -179,12 +187,12 @@ function BudgetCard({ month }: { month: string }) {
     <Card>
       <CardHead
         title="Budget" sub={`${monthLabel(month)} · day ${day} of ${daysInMonth(month)}`}
-        right={<Link to="/budget" className="link small">Open <ArrowRight size={12} /></Link>}
+        right={<Link to="/budget" className="link small">Budget <ArrowRight size={12} /></Link>}
       />
       {b.plannedIncome || b.plannedExpense ? (
         <div className="col" style={{ gap: 18 }}>
-          <BudgetLine label="Income" planned={b.plannedIncome} actual={b.actualIncome} doneWord="earned" tone="--pos" />
-          <BudgetLine label="Expenses" planned={b.plannedExpense} actual={b.actualExpense} doneWord="spent" tone="--pos" />
+          <BudgetLine label="Income" planned={b.plannedIncome} actual={b.actualIncome} doneWord="earned" />
+          <BudgetLine label="Expenses" planned={b.plannedExpense} actual={b.actualExpense} doneWord="spent" pace />
         </div>
       ) : (
         <Empty title="No budget set for this month" action={<Link to="/budget"><Btn>Set one up</Btn></Link>} />
@@ -198,17 +206,37 @@ function BudgetCard({ month }: { month: string }) {
 function CreditCard() {
   const db = useDB();
   const { actions } = useStore();
-  const c = useMemo(() => creditSummary(db), [db]);
+  const people = useMemo(() => creditPeople(db), [db]);
+  // Whose score is on the card. Defaults to whoever has one on file, which
+  // for a budget with a single person is the only answer there is.
+  const [who, setWho] = useState<string>(WHOEVER);
+  const shown = people.includes(who) ? who : people[0] ?? WHOEVER;
+  const c = useMemo(() => creditSummary(db, shown), [db, shown]);
   const [adding, setAdding] = useState(false);
   const [date, setDate] = useState(today());
   const [score, setScore] = useState(0);
+  const [addWho, setAddWho] = useState(WHOEVER);
 
   return (
     <Card>
       <CardHead
         title="Credit score"
         sub={c.latest ? `Last recorded ${dateLabel(c.latest.date, { year: true })}` : "No readings yet"}
-        right={<Btn size="sm" onClick={() => setAdding(true)}><Plus size={13} /> Add reading</Btn>}
+        right={
+          <span className="row" style={{ gap: 8 }}>
+            {/* Only once there is more than one: a household of one should
+                not be asked to pick itself out of a list of itself. */}
+            {people.length > 1 ? (
+              <SelectInput
+                style={{ width: "auto" }} value={shown} onChange={setWho}
+                options={people.map((p) => ({ value: p, label: p }))}
+              />
+            ) : null}
+            <Btn size="sm" onClick={() => { setAddWho(shown); setAdding(true); }}>
+              <Plus size={13} /> Add reading
+            </Btn>
+          </span>
+        }
       />
       {c.latest && c.band ? (
         <>
@@ -266,7 +294,7 @@ function CreditCard() {
               <Btn
                 variant="primary"
                 disabled={score < CREDIT_MIN || score > CREDIT_MAX}
-                onClick={() => { actions.setCreditScore(date, score); setAdding(false); }}
+                onClick={() => { actions.setCreditScore(date, score, addWho.trim() || WHOEVER); setAdding(false); }}
               >
                 Save
               </Btn>
@@ -274,6 +302,9 @@ function CreditCard() {
           }
         >
           <div className="row" style={{ gap: 12 }}>
+            <Field label="Whose" hint="A name, so a household can keep two apart">
+              <TextInput value={addWho} onChange={setAddWho} placeholder={WHOEVER} />
+            </Field>
             <Field label="As of"><TextInput type="date" value={date} onChange={setDate} /></Field>
             <Field label="Score" hint={`${CREDIT_MIN}–${CREDIT_MAX}`}>
               <input
@@ -290,7 +321,7 @@ function CreditCard() {
                   <span className="small muted">{dateLabel(r.date, { year: true })}</span>
                   <span className="row" style={{ gap: 10 }}>
                     <span className="num bold">{r.score}</span>
-                    <button className="btn btn-ghost btn-sm" onClick={() => actions.forgetCreditScore(r.date)}>Remove</button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => actions.forgetCreditScore(r.date, shown)}>Remove</button>
                   </span>
                 </div>
               ))}
@@ -341,6 +372,77 @@ const CADENCE_WORD: Record<string, string> = {
   quarterly: "quarter", semiannual: "6 months", yearly: "year",
 };
 const cadenceWord = (c: string): string => CADENCE_WORD[c] ?? c;
+
+/* ── goals ────────────────────────────────────────────────────────────── */
+
+/** What each outlook is called on a card, and what colour its bar wears. */
+const GOAL_STATE: Record<string, { label: string; tone: string; badge: boolean }> = {
+  reached: { label: "Completed", tone: "--pos", badge: true },
+  ahead: { label: "Ahead", tone: "--pos", badge: true },
+  "on track": { label: "On track", tone: "--pos", badge: true },
+  behind: { label: "At risk", tone: "--c5", badge: true },
+  stalled: { label: "At risk", tone: "--c5", badge: true },
+  "no date": { label: "No target date", tone: "--pos", badge: false },
+  "no plan": { label: "No plan yet", tone: "--muted", badge: false },
+};
+
+function GoalsCard() {
+  const db = useDB();
+  const moves = useMemo(() => goalMoves(db), [db]);
+  if (!moves.goals.length) return null;
+  const up = moves.change >= 0;
+
+  return (
+    <Card pad={false}>
+      <div className="dash-card-head">
+        <div className="spread">
+          <h2>Goals</h2>
+          <Link to="/goals" className="link small">Goals <ArrowRight size={12} /></Link>
+        </div>
+        <span className="small row" style={{ gap: 7 }}>
+          <span className={up ? "pos" : "neg"}>
+            {up ? "↗" : "↘"} <Money value={moves.change} />
+            {moves.pct ? ` (${Math.round(moves.pct * 10000) / 100}%)` : ""}
+          </span>
+          <span className="faint">this month</span>
+        </span>
+      </div>
+      {moves.goals.map((m) => {
+        const state = GOAL_STATE[m.status] ?? GOAL_STATE["no plan"];
+        return (
+          <Link key={m.goal.id} to={`/goals/${m.goal.id}`} className="goal-row">
+            <span className="goal-mark">{m.goal.emoji}</span>
+            <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
+              <div className="spread">
+                <span className="truncate" style={{ fontWeight: 600 }}>{m.goal.name}</span>
+                <span className="num bold"><Money value={m.saved} /></span>
+              </div>
+              <div className="spread small">
+                {state.badge ? (
+                  <span className="tag" style={{ background: "var(--surface-3)", color: color(state.tone) }}>
+                    {state.label}
+                  </span>
+                ) : <span className="faint">{state.label}</span>}
+                {m.change === 0 ? (
+                  <span className="muted num"><Money value={0} /></span>
+                ) : (
+                  <span className={m.change > 0 ? "pos" : "neg"}>
+                    {m.change > 0 ? "↗" : "↘"} <Money value={m.change} />
+                    {m.pct !== null ? ` (${Math.round(m.pct * 10000) / 100}%)` : ""}
+                  </span>
+                )}
+              </div>
+              {/* Tinted by how it is going, not by how full it is: a bar that
+                  is only ever green says nothing about whether the goal
+                  arrives on time, which is the question a target date asks. */}
+              <Progress value={m.saved} max={m.goal.targetAmount || m.saved || 1} color={state.tone} />
+            </div>
+          </Link>
+        );
+      })}
+    </Card>
+  );
+}
 
 /* ── investments ──────────────────────────────────────────────────────── */
 

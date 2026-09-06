@@ -21,9 +21,22 @@ import type { DB, ISODate } from "../types.js";
 export interface CreditReading {
   date: ISODate;
   score: number;
+  /**
+   * Whose score it is.
+   *
+   * A household has more than one, and two people's scores on one chart is
+   * two different stories drawn as one. Left off on readings recorded before
+   * there was anyone to name, which is what `WHOEVER` stands in for.
+   */
+  who?: string;
   /** Where it came from — a bureau's name, or left off when typed in. */
   source?: string;
 }
+
+/** What an unnamed reading is filed under, so one person needs no setup. */
+export const WHOEVER = "You";
+
+export const whoOf = (r: CreditReading): string => r.who?.trim() || WHOEVER;
 
 export const CREDIT_MIN = 300;
 export const CREDIT_MAX = 850;
@@ -59,8 +72,25 @@ export interface CreditSummary {
  * order, or be typed in for a month already past, and a chart drawn from an
  * unsorted array is a chart that zigzags for reasons that are not the score's.
  */
-export function creditSummary(db: DB): CreditSummary {
-  const readings = [...(db.credit ?? [])].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+/**
+ * Everyone with a score on file, in the order they first appear.
+ *
+ * Not sorted alphabetically: whoever set the budget up is the one who will
+ * look at it most, and they are the one whose reading went in first.
+ */
+export function creditPeople(db: DB): string[] {
+  const out: string[] = [];
+  for (const r of db.credit ?? []) {
+    const who = whoOf(r);
+    if (!out.includes(who)) out.push(who);
+  }
+  return out;
+}
+
+export function creditSummary(db: DB, who?: string): CreditSummary {
+  const all = db.credit ?? [];
+  const mine = who === undefined ? all : all.filter((r) => whoOf(r) === who);
+  const readings = [...mine].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const latest = readings[readings.length - 1];
   const previous = readings[readings.length - 2];
   if (!latest) return { readings, change: 0, position: 0 };
@@ -81,7 +111,10 @@ export function creditSummary(db: DB): CreditSummary {
  * a mistake should replace the mistake rather than sit beside it.
  */
 export function recordCredit(db: DB, reading: CreditReading): DB {
-  const rest = (db.credit ?? []).filter((r) => r.date !== reading.date);
+  // Per person, per day: two people's scores on the same date are two
+  // readings, and replacing one with the other would lose a person.
+  const who = whoOf(reading);
+  const rest = (db.credit ?? []).filter((r) => !(r.date === reading.date && whoOf(r) === who));
   return {
     ...db,
     credit: [...rest, reading].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)),

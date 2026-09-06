@@ -1218,8 +1218,8 @@ try {
     // Lower-cased on both sides: the net worth card's name is a tile label,
     // which CSS puts in capitals, and the test is about which cards are there
     // rather than about how they are typeset.
-    check("the dashboard is the six cards, in that order",
-      cards.join(" / ").toLowerCase() === "net worth / spending / budget / credit score / recurring / investments",
+    check("the dashboard is the seven cards, in that order",
+      cards.join(" / ").toLowerCase() === "net worth / spending / budget / credit score / recurring / goals / investments",
       cards.join(" / "));
     check("and recent transactions is not one of them",
       !/recent transactions/i.test(await dash.evaluate(() => document.body.innerText)));
@@ -1271,9 +1271,64 @@ try {
     check("the budget bar marks where today falls in the month",
       budget.at !== null && Math.abs(budget.at - budget.want) < 0.04,
       `mark at ${budget.at === null ? "nowhere" : Math.round(budget.at * 100)}%, today is ${Math.round(budget.want * 100)}% through`);
+    // Red once spending is ahead of the calendar, not only once it is past the
+    // plan outright — which is the whole reason the mark is there.
+    const pace = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Budget/.test(c.querySelector("h2")?.innerText ?? ""));
+      const lines = [...card.querySelectorAll(".col > .col")];
+      const read = (el) => {
+        const bar = el.querySelector(".bar");
+        const b = bar.getBoundingClientRect();
+        const fill = bar.querySelector("i").getBoundingClientRect();
+        const mk = bar.querySelector(".bar-mark");
+        return {
+          label: el.querySelector("span").innerText.trim(),
+          red: getComputedStyle(bar.querySelector("i")).backgroundColor === "rgb(242, 104, 94)",
+          past: mk ? fill.right > mk.getBoundingClientRect().left : fill.width / b.width > 0.5,
+        };
+      };
+      return lines.map(read);
+    });
+    const expenses = pace.find((l) => /expenses/i.test(l.label));
+    check("expenses past the mark are red, not green",
+      expenses !== undefined && expenses.red === expenses.past,
+      `expenses ${expenses?.past ? "past" : "short of"} the mark and ${expenses?.red ? "red" : "green"}`);
+    const income = pace.find((l) => /income/i.test(l.label));
+    check("income stays green whatever it does, because behind on it is not the same news",
+      income !== undefined && income.red === false);
+
+    check("the budget card's link says where it goes",
+      (await dash.evaluate(() => {
+        const card = [...document.querySelectorAll(".card")].find((c) => /^Budget/.test(c.querySelector("h2")?.innerText ?? ""));
+        return card.querySelector("a.link")?.innerText.trim() ?? "";
+      })) === "Budget");
+
     check("and reports income and expenses against their plans",
       /planned/.test(budget.rows) && /earned/.test(budget.rows) && /spent/.test(budget.rows),
       budget.rows.slice(0, 120));
+
+    // Goals: every live one, with how it moved this month.
+    const goals = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Goals/.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!card) return null;
+      return {
+        head: card.querySelector(".dash-card-head").innerText.replace(/\n/g, " | "),
+        rows: [...card.querySelectorAll(".goal-row")].map((r) => ({
+          text: r.innerText.replace(/\n/g, " | "),
+          href: r.getAttribute("href"),
+          bars: r.querySelectorAll(".bar").length,
+        })),
+      };
+    });
+    check("goals lists every live goal, each with a bar and a way into it",
+      goals !== null && goals.rows.length > 1
+      && goals.rows.every((r) => r.bars === 1 && /^\/goals\//.test(r.href ?? "")),
+      goals === null ? "no goals card" : `${goals.rows.length} rows`);
+    check("and totals how they moved this month",
+      /this month/.test(goals?.head ?? ""), goals?.head);
+    check("with a standing on each — ahead, at risk, or no target date",
+      goals !== null && goals.rows.every((r) => /ahead|at risk|on track|completed|no target date|no plan/i.test(r.text)),
+      goals?.rows.map((r) => r.text.slice(0, 40)).join(" / "));
 
     // Recurring: what is still ahead, and what it comes to.
     const rec = await dash.evaluate(() => {
@@ -1322,6 +1377,27 @@ try {
       check("and its chart is labelled in scores, not in dollars",
         axis.length > 0 && scores.length >= 2 && !axis.some((t) => t.includes("$")),
         axis.join(" "));
+    }
+    // Two people, two histories: a household's scores must not be drawn as
+    // one line, and the picker only appears once there is a choice to make.
+    const second = await tryStep("a second person's score can be recorded", async () => {
+      await dash.locator(".card", { hasText: "Credit score" }).locator("button", { hasText: "Add reading" }).first().click({ timeout: 5000 });
+      await dash.locator(".modal").waitFor({ timeout: 5000 });
+      await dash.locator('.modal input[type="text"]').first().fill("Sam");
+      await dash.locator('.modal input[type="number"]').fill("610");
+      await dash.locator(".modal-foot button", { hasText: "Save" }).click({ timeout: 5000 });
+      await dash.waitForTimeout(600);
+    });
+    if (second) {
+      const who = await dash.evaluate(() => {
+        const card = [...document.querySelectorAll(".card")].find((c) => /^Credit score/.test(c.querySelector("h2")?.innerText ?? ""));
+        const sel = card.querySelector("select");
+        return { options: sel ? [...sel.options].map((o) => o.text) : [], text: card.innerText.replace(/\n/g, " | ") };
+      });
+      check("a second person brings out a picker naming both",
+        who.options.join(" / ") === "You / Sam", who.options.join(" / ") || "no picker");
+      check("and the card still shows one person's score, not both averaged",
+        /742/.test(who.text) && !/610/.test(who.text), who.text.slice(0, 120));
     }
     await dash.close();
   }

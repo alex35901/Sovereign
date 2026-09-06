@@ -730,6 +730,19 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .dash-card-head { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
 .dash-card-head h2 { font-size: 16px; }
 
+/* A goal on the dashboard: its mark, then name, figures and bar stacked
+   beside it, so the three lines share one left edge. */
+.goal-row {
+  display: flex; gap: 12px; align-items: flex-start; padding: 13px 16px;
+  border-bottom: 1px solid var(--line-soft); text-decoration: none; color: inherit;
+}
+.goal-row:last-child { border-bottom: 0; }
+.goal-row:hover { background: var(--surface-2); }
+.goal-mark {
+  width: 38px; height: 38px; flex: none; border-radius: 10px; display: grid;
+  place-items: center; font-size: 18px; background: var(--surface-3);
+}
+
 /* The five bands laid end to end, with a pin where the score falls. */
 .credit-scale { position: relative; display: flex; gap: 3px; height: 8px; }
 .credit-scale > i { flex: 1 1 0; border-radius: 99px; display: block; }

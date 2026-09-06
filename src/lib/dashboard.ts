@@ -1,6 +1,8 @@
-import type { DB, ISODate, MonthKey, Recurring } from "../types.js";
+import type { DB, Goal, ISODate, MonthKey, Recurring } from "../types.js";
 import { addMonths, daysInMonth, monthEnd, monthOf, monthStart, today } from "./date.js";
 import { mutedAccountIds, counts, recurringList } from "./select.js";
+import { goalOutlook, goalSaved, goalSavedAt } from "./goal-funding.js";
+import type { GoalStatus } from "./goal-funding.js";
 
 /**
  * The figures the dashboard puts side by side.
@@ -88,6 +90,63 @@ export function monthProgress(month: MonthKey, now: ISODate = today()): number {
   if (monthOf(now) < month) return 0;
   if (monthOf(now) > month) return 1;
   return Number(now.slice(8, 10)) / daysInMonth(month);
+}
+
+/**
+ * Spending is ahead of the calendar, not merely under way.
+ *
+ * A plan is spread across a month, so half of it gone on the second is a
+ * different situation from half of it gone on the fifteenth, and only the
+ * first is worth colouring red. Being over the plan outright is caught by the
+ * same rule: the month is never more than fully elapsed, so anything past the
+ * plan is also past the plan's pace.
+ */
+export function overPace(planned: number, actual: number, progress: number): boolean {
+  if (planned <= 0) return actual > 0;
+  return actual > planned * progress;
+}
+
+/* ── goals ────────────────────────────────────────────────────────────── */
+
+export interface GoalMove {
+  goal: Goal;
+  /** What it is worth now, as the goals screen reports it. */
+  saved: number;
+  /** How that moved since the first of the month. */
+  change: number;
+  pct: number | null;
+  status: GoalStatus;
+}
+
+/**
+ * Every goal, and how it moved this month.
+ *
+ * Both ends of the change are valued the same way, at two dates, rather than
+ * comparing a dated figure with the live one — see goalSavedAt. The headline
+ * figure is the live one, because that is what every other screen shows for a
+ * goal and a dashboard disagreeing with the page it links to is worse than a
+ * dashboard that is a few pounds behind.
+ */
+export function goalMoves(db: DB, now: ISODate = today()): { goals: GoalMove[]; change: number; pct: number } {
+  const start = monthStart(monthOf(now));
+  const goals = db.goals
+    .filter((g) => !g.archived)
+    .sort((a, b) => a.priority - b.priority)
+    .map((g): GoalMove => {
+      const then = goalSavedAt(db, g.id, start);
+      const nowValue = goalSavedAt(db, g.id, now);
+      const change = nowValue - then;
+      return {
+        goal: g,
+        saved: goalSaved(db, g.id),
+        change,
+        pct: then === 0 ? null : change / Math.abs(then),
+        status: goalOutlook(db, g.id).status,
+      };
+    });
+  const change = goals.reduce((s, g) => s + g.change, 0);
+  const before = goals.reduce((s, g) => s + (goalSavedAt(db, g.goal.id, start)), 0);
+  return { goals, change, pct: before === 0 ? 0 : change / Math.abs(before) };
 }
 
 /* ── what is still to come out ────────────────────────────────────────── */
