@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, Search } from "lucide-react";
+import { ChevronRight, Filter, Search, X } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { merchantRows } from "../lib/select";
-import { Card, Empty, Money, TextInput, cx } from "../components/ui";
+import { Btn, Card, Empty, Field, Money, Popover, SelectInput, TextInput, cx } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
 
 /** How many to draw before the list has to be asked for more. */
@@ -15,8 +15,18 @@ export default function Merchants() {
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(PAGE);
   const [by, setBy] = useState<"count" | "total">("count");
+  const [scope, setScope] = useState<"spending" | "all">("spending");
+  const [groupId, setGroupId] = useState("");
 
-  const rows = useMemo(() => merchantRows(db), [db]);
+  const rows = useMemo(
+    () => merchantRows(db, { scope, groupId: groupId || undefined }),
+    [db, scope, groupId],
+  );
+  const groups = useMemo(
+    () => db.groups.filter((g) => g.kind === "expense").sort((a, b) => a.order - b.order),
+    [db.groups],
+  );
+  const narrowed = (scope === "all" ? 1 : 0) + (groupId ? 1 : 0);
   const shown = useMemo(() => {
     const needle = q.toLowerCase().trim();
     const matched = needle ? rows.filter((r) => r.key.includes(needle)) : rows;
@@ -38,16 +48,67 @@ export default function Merchants() {
       />
       <div className="page stack">
         <Card>
-          <div className="search">
-            <Search size={14} />
-            <TextInput value={q} onChange={setQ} placeholder="Search merchants" />
+          <div className="row filter-bar" style={{ gap: 8 }}>
+            <div className="search grow" style={{ minWidth: 0 }}>
+              <Search size={14} />
+              <TextInput value={q} onChange={setQ} placeholder="Search merchants" />
+            </div>
+            <Popover
+              align="right" width={290} className="filter-panel"
+              trigger={(open) => (
+                <button
+                  className={cx("btn btn-icon filter-toggle", narrowed > 0 && "on")}
+                  onClick={open} title="Filters" aria-label="Filters"
+                >
+                  <Filter size={16} />
+                  {narrowed ? <span className="filter-count">{narrowed}</span> : null}
+                </button>
+              )}
+            >
+              {(close) => (
+                <div className="col" style={{ gap: 12 }}>
+                  <div className="spread">
+                    <span style={{ fontWeight: 600 }}>Filters</span>
+                    {narrowed ? (
+                      <Btn size="sm" variant="ghost" onClick={() => { setScope("spending"); setGroupId(""); close(); }}>
+                        <X size={13} /> Clear all
+                      </Btn>
+                    ) : null}
+                  </div>
+                  <Field
+                    label="Count"
+                    hint="Transfers, card payments and income are not decisions made at a merchant"
+                  >
+                    <SelectInput
+                      value={scope} onChange={(v) => setScope(v as "spending" | "all")}
+                      options={[
+                        { value: "spending", label: "Spending only" },
+                        { value: "all", label: "Every transaction" },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Category group">
+                    <SelectInput
+                      value={groupId} onChange={setGroupId} placeholder="All groups"
+                      options={groups.map((g) => ({ value: g.id, label: g.name }))}
+                    />
+                  </Field>
+                </div>
+              )}
+            </Popover>
           </div>
           <div className="spread small muted" style={{ marginTop: 10 }}>
             <span>
               {shown.length.toLocaleString()} merchant{shown.length === 1 ? "" : "s"}
               {q ? ` matching "${q}"` : ""}
             </span>
-            <span>{rows.reduce((s, r) => s + r.count, 0).toLocaleString()} transactions in all</span>
+            {/* Says what is being counted, because a list that quietly leaves
+                the mortgage out should say that it has. */}
+            <span>
+              {rows.reduce((s, r) => s + r.count, 0).toLocaleString()}
+              {scope === "spending" ? " purchases" : " transactions"}
+              {groupId ? ` in ${groups.find((g) => g.id === groupId)?.name ?? "that group"}` : ""}
+            </span>
           </div>
         </Card>
 
@@ -69,8 +130,11 @@ export default function Merchants() {
           ))}
           {!shown.length ? (
             <Empty
-              title={q ? `Nothing matching "${q}"` : "No merchants yet"}
-              body={q ? undefined : "They appear as soon as there are transactions to draw them from."}
+              title={q ? `Nothing matching "${q}"` : "No spending yet"}
+              body={
+                q ? undefined
+                  : "Only money spent at a merchant is counted — transfers, card payments and income are left out. Change that under the filter."
+              }
             />
           ) : null}
           {shown.length > limit ? (

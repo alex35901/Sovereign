@@ -1356,16 +1356,28 @@ try {
         href: r.getAttribute("href"),
       })),
       summary: document.querySelector(".card .spread")?.innerText.replace(/\n/g, " | ") ?? "",
+      // The list is paged at 60, so its length says nothing about how many
+      // merchants there are; the summary line is the figure to compare.
+      merchants: Number((document.querySelector(".card .spread")?.innerText.match(/([\d,]+) merchant/)?.[1] ?? "0").replace(/,/g, "")),
     }));
 
     const first = await read();
     check("every merchant is listed", first.rows.length > 5, `${first.rows.length} rows`);
+
+    // The point of the screen: it counts spending, so the things you pay
+    // whatever you do are not competing with the things you choose.
+    check("and it counts purchases, saying so",
+      /purchases/.test(first.summary) && !/transactions in all/.test(first.summary), first.summary);
+    const spendingNames = first.rows.map((r) => r.name.toLowerCase());
+    check("payroll and card payments are not merchants you shopped at",
+      !spendingNames.some((n) => /payroll|payment thank you/.test(n)),
+      spendingNames.slice(0, 8).join(", "));
     check("busiest first", first.rows.every((r, i) => i === 0 || r.count <= first.rows[i - 1].count),
       first.rows.slice(0, 4).map((r) => `${r.name} ${r.count}`).join(", "));
     check("each says how many transactions it has",
       first.rows.every((r) => r.count > 0), "a row with no count");
-    check("and how many there are in all", /merchants/.test(first.summary) && /transactions in all/.test(first.summary),
-      first.summary);
+    check("and how many there are in all",
+      /merchants/.test(first.summary) && /[\d,]+ purchases/.test(first.summary), first.summary);
 
     // A row goes to that merchant's own page — the drill-down that already
     // exists, not a second one.
@@ -1395,6 +1407,31 @@ try {
         after.rows.length > 0 && after.rows.length < first.rows.length
         && after.rows.every((r) => r.name.toLowerCase().includes(first.rows[0].name.slice(0, 4).toLowerCase())),
         `${after.rows.length} of ${first.rows.length}`);
+    }
+
+    // But nothing is hidden for good: the whole list is still one filter away.
+    // The search from the step above has to come off first, or this compares
+    // a widened list of one merchant against an unfiltered list of sixty.
+    const widened = await tryStep("the filter can widen it to everything", async () => {
+      await mer.locator(".search input").fill("");
+      await mer.waitForTimeout(300);
+      await mer.locator(".filter-toggle").click({ timeout: 5000 });
+      await mer.locator(".filter-panel").waitFor({ timeout: 5000 });
+      await mer.locator(".filter-panel select").first().selectOption("all");
+      await mer.waitForTimeout(500);
+    });
+    if (widened) {
+      const all = await read();
+      check("widening brings back what spending left out",
+        all.merchants > first.merchants
+        && all.rows.some((r) => /payroll|payment thank you/i.test(r.name)),
+        `${all.merchants} merchants against ${first.merchants}`);
+      check("and the funnel says one filter is on",
+        (await mer.evaluate(() => document.querySelector(".filter-count")?.innerText.trim() ?? "")) === "1");
+      await mer.locator(".filter-panel select").first().selectOption("spending");
+      await mer.waitForTimeout(400);
+      await mer.keyboard.press("Escape");
+      await mer.waitForTimeout(300);
     }
 
     // And it can be asked the other question instead.

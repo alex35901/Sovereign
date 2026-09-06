@@ -2334,6 +2334,97 @@ const dashDb = (txns, over = {}) => ({
 
 /* ── the merchants directory ──────────────────────────────────────────── */
 
+/** A document with a real taxonomy behind it, so kinds mean something. */
+const shopDb = (txns) => {
+  const groups = [
+    { id: "g_income", name: "Income", kind: "income", order: 0 },
+    { id: "g_shop", name: "Shopping", kind: "expense", order: 1 },
+    { id: "g_house", name: "Housing", kind: "expense", order: 2 },
+    { id: "g_xfer", name: "Transfers", kind: "transfer", order: 3 },
+  ];
+  const categories = [
+    { id: "c_pay", groupId: "g_income", name: "Paycheck", icon: "", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+    { id: "c_shop", groupId: "g_shop", name: "Shopping", icon: "", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+    { id: "c_mortgage", groupId: "g_house", name: "Mortgage", icon: "", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+    { id: "c_xfer", groupId: "g_xfer", name: "Transfer", icon: "", color: "--c1", excludeFromBudget: true, rollover: false, order: 0 },
+    { id: "c_adjust", groupId: "g_shop", name: "Balance Adjustment", icon: "", color: "--c1", excludeFromBudget: true, rollover: false, order: 1 },
+  ];
+  return { ...dashDb(txns), groups, categories };
+};
+
+await test("merchants counts spending, not everything money did", () => {
+  // The point of the screen: a mortgage payment, a card payment and a
+  // transfer to savings are all money leaving, and none is a decision made at
+  // a merchant. Seeing the mortgage on top says nothing you can act on and
+  // pushes down the figure you can.
+  const db = shopDb([
+    { date: "2026-09-01", amount: -40_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-09-02", amount: -60_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-09-03", amount: -2_800_00, merchant: "Wells Fargo", categoryId: "c_xfer" },
+    { date: "2026-09-04", amount: -1_200_00, merchant: "Capital One", categoryId: "c_xfer" },
+    { date: "2026-09-05", amount: 5_000_00, merchant: "Aperture Payroll", categoryId: "c_pay" },
+    { date: "2026-09-06", amount: 900_00, merchant: "Brokerage Activity", categoryId: "c_adjust" },
+  ]);
+  assert.deepEqual(M.merchantRows(db).map((r) => r.name), ["Amazon"],
+    "transfers, card payments, income and adjustments are not merchants you shopped at");
+  assert.equal(M.merchantRows(db)[0].total, -100_00);
+});
+
+await test("a refund at a merchant you shop at does not count as a visit", () => {
+  // Only outgoings: money coming back is not a decision to spend, and
+  // counting it would inflate how often a shop was used.
+  const db = shopDb([
+    { date: "2026-09-01", amount: -40_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-09-02", amount: 15_00, merchant: "Amazon", categoryId: "c_shop" },
+  ]);
+  const rows = M.merchantRows(db);
+  assert.equal(rows[0].count, 1);
+  assert.equal(rows[0].total, -40_00);
+});
+
+await test("everything can still be asked for", () => {
+  const db = shopDb([
+    { date: "2026-09-01", amount: -40_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-09-03", amount: -2_800_00, merchant: "Wells Fargo", categoryId: "c_xfer" },
+  ]);
+  assert.deepEqual(M.merchantRows(db, { scope: "all" }).map((r) => r.name), ["Amazon", "Wells Fargo"]);
+});
+
+await test("one group at a time, when only part of the spending is in question", () => {
+  const db = shopDb([
+    { date: "2026-09-01", amount: -40_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-09-02", amount: -50_00, merchant: "Amazon", categoryId: "c_shop" },
+    { date: "2026-09-03", amount: -3_000_00, merchant: "Shellpoint", categoryId: "c_mortgage" },
+  ]);
+  assert.deepEqual(M.merchantRows(db).map((r) => r.name), ["Amazon", "Shellpoint"],
+    "a mortgage in a real expense category is spending, and stays");
+  assert.deepEqual(M.merchantRows(db, { groupId: "g_shop" }).map((r) => r.name), ["Amazon"]);
+  assert.deepEqual(M.merchantRows(db, { groupId: "g_house" }).map((r) => r.name), ["Shellpoint"]);
+});
+
+await test("a split shop is counted under each part, not wholly under the first", () => {
+  const db = shopDb([{
+    date: "2026-09-01", amount: -100_00, merchant: "Target", categoryId: "c_shop",
+    splits: [
+      { id: "s0", categoryId: "c_shop", amount: -70_00 },
+      { id: "s1", categoryId: "c_xfer", amount: -30_00 },
+    ],
+  }]);
+  const rows = M.merchantRows(db);
+  assert.equal(rows[0].count, 1, "the transfer half is not a shopping trip");
+  assert.equal(rows[0].total, -70_00, "and its money is not shopping either");
+});
+
+await test("the spelling shown is the commonest among the lines that survived", () => {
+  const db = shopDb([
+    { date: "2026-09-01", amount: -1_00, merchant: "TARGET", categoryId: "c_xfer" },
+    { date: "2026-09-02", amount: -1_00, merchant: "TARGET", categoryId: "c_xfer" },
+    { date: "2026-09-03", amount: -1_00, merchant: "Target", categoryId: "c_shop" },
+  ]);
+  assert.equal(M.merchantRows(db)[0].name, "Target",
+    "the two transfers do not get to name a shop they were filtered out of");
+});
+
 await test("merchants are listed busiest first, with what they came to", () => {
   // Named so that busiest-first and alphabetical disagree: with Amazon,
   // Kroger, Payroll in that order the two orderings coincide, and a sort that
@@ -2348,7 +2439,7 @@ await test("merchants are listed busiest first, with what they came to", () => {
     { date: "2026-09-02", amount: -6_00, merchant: "Kroger" },
     { date: "2026-09-04", amount: 900_00, merchant: "Aardvark Payroll" },
   ]);
-  const rows = M.merchantRows(db);
+  const rows = M.merchantRows(db, { scope: "all" });
   assert.deepEqual(rows.map((r) => [r.name, r.count]),
     [["Zed Market", 3], ["Kroger", 2], ["Aardvark Payroll", 1]]);
   assert.equal(rows[0].total, -60_00, "spellings are one merchant, and their money adds up as one");
@@ -2361,18 +2452,19 @@ await test("the busiest spelling is the one shown", () => {
     { date: "2026-09-02", amount: -1_00, merchant: "Starbucks" },
     { date: "2026-09-03", amount: -1_00, merchant: "Starbucks" },
   ]);
-  assert.equal(M.merchantRows(db)[0].name, "Starbucks");
+  assert.equal(M.merchantRows(db, { scope: "all" })[0].name, "Starbucks");
 });
 
 await test("merchants with the same count are ordered by name, not by storage", () => {
+  const all = { scope: "all" };
   const forward = M.merchantRows(dashDb([
     { date: "2026-09-01", amount: -1_00, merchant: "Zed" },
     { date: "2026-09-02", amount: -1_00, merchant: "Acme" },
-  ]));
+  ]), all);
   const backward = M.merchantRows(dashDb([
     { date: "2026-09-01", amount: -1_00, merchant: "Acme" },
     { date: "2026-09-02", amount: -1_00, merchant: "Zed" },
-  ]));
+  ]), all);
   assert.deepEqual(forward.map((r) => r.name), ["Acme", "Zed"]);
   assert.deepEqual(backward.map((r) => r.name), ["Acme", "Zed"]);
 });
@@ -2388,7 +2480,7 @@ await test("a merchant last seen on a muted account is still in the directory", 
       { id: "hidden", name: "H", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, hideTransactions: true, history: [], order: 1 },
     ],
   });
-  const rows = M.merchantRows(db);
+  const rows = M.merchantRows(db, { scope: "all" });
   assert.deepEqual(rows.map((r) => r.name), ["Quiet Co"]);
   // Its money too, or the row would be there with nothing behind it.
   assert.equal(rows[0].total, -10_00);
@@ -6049,16 +6141,29 @@ await test("two generated phrases are not the same phrase", () => {
 
 await test("the words come up evenly rather than favouring the front of the list", () => {
   // Taking a random byte modulo the list length is the usual way to get this
-  // subtly wrong. With 4096 draws over 256 words the expected count is 16, and
-  // a modulo bias on a shorter list would show up as a lopsided tail.
+  // subtly wrong, and a lopsided tail is how it shows.
+  //
+  // The sample size is chosen so the bounds mean something. Draws land in a
+  // word by chance, so each count is Poisson: at 4096 draws over 256 words the
+  // expected count is 16 and its spread is 4, which puts the old floor of 2 a
+  // little over three deviations out — and with 256 words being watched, one
+  // of them fell through it about once every 250 runs. Measured, not guessed:
+  // 12 failures in 3000 simulated runs.
+  //
+  // At 25,600 draws the expectation is 100 and the spread 10, so a floor of 40
+  // and a ceiling of 160 are six deviations away. That is roughly one false
+  // failure in two million runs, while a real bias — which would shift whole
+  // stretches of the list, not one word — still trips it easily.
+  const DRAWS = 25_600;
   const counts = new Map();
-  for (let i = 0; i < 4096; i++) {
+  for (let i = 0; i < DRAWS; i++) {
     const w = M.PP.generate(1);
     counts.set(w, (counts.get(w) ?? 0) + 1);
   }
   const values = [...counts.values()];
-  assert.ok(Math.min(...values) > 2, `some word came up only ${Math.min(...values)} times`);
-  assert.ok(Math.max(...values) < 45, `some word came up ${Math.max(...values)} times`);
+  assert.equal(counts.size, 256, `only ${counts.size} of the 256 words ever came up`);
+  assert.ok(Math.min(...values) > 40, `some word came up only ${Math.min(...values)} times`);
+  assert.ok(Math.max(...values) < 160, `some word came up ${Math.max(...values)} times`);
 });
 
 await test("the confirmation matches on what will actually be sealed", () => {

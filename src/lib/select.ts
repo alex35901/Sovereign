@@ -971,27 +971,70 @@ export function merchantIndex(db: DB): Map<string, { name: string; count: number
 
 export interface MerchantRow { key: string; name: string; count: number; total: number }
 
+export interface MerchantScope {
+  /**
+   * "spending" — money you chose to hand to someone, which is the only kind
+   * this list can help with. "all" — every line, for looking something up.
+   */
+  scope?: "spending" | "all";
+  /** Narrow to one category group, when only part of the spending is in question. */
+  groupId?: string;
+}
+
 /**
  * Every merchant, busiest first, for the screen that lists them.
  *
- * Counted from every transaction, including ones in muted accounts: this is a
- * directory of who you have dealt with, not a report of what you spent, and a
- * merchant vanishing from the list because it was last seen on a hidden card
- * would be a directory with holes in it.
+ * Spending only, by default, and that is the whole point of the screen. A
+ * mortgage payment, a card payment and a transfer to savings are all money
+ * leaving an account, but none of them is a decision you make at a merchant:
+ * seeing the mortgage at the top of the list tells you nothing you can act on,
+ * and it pushes down the Amazon figure that you can. So a line counts here
+ * only if it is an outgoing in a category that is neither a transfer nor an
+ * income category nor excluded from the budget — which is exactly the set the
+ * budget already works from.
+ *
+ * Counted line by line, so a split shop is counted under the parts you split
+ * it into rather than wholly under the first of them.
+ *
+ * Muted accounts are counted. This is a directory of who you have dealt with,
+ * not a report of what you spent, and a merchant missing because it was last
+ * seen on a hidden card is a directory with holes in it.
  *
  * Ties break on the name, so the order never depends on how the transactions
- * happen to be stored — the same reason merchantIndex picks its spelling that
- * way.
+ * happen to be stored — the same reason merchantIndex picks its spelling.
  */
-export function merchantRows(db: DB): MerchantRow[] {
-  const totals = new Map<string, number>();
+export function merchantRows(db: DB, opts: MerchantScope = {}): MerchantRow[] {
+  const { scope = "spending", groupId } = opts;
+  const budgeted = budgetedCategoryIds(db);
+  const groupOf = new Map(db.categories.map((c) => [c.id, c.groupId]));
+
+  const tally = new Map<string, { name: string; count: number; total: number; forms: Map<string, number> }>();
   for (const t of db.transactions) {
     const key = merchantKey(t.merchant);
     if (!key) continue;
-    totals.set(key, (totals.get(key) ?? 0) + t.amount);
+    for (const l of lines(t)) {
+      if (groupId && groupOf.get(l.categoryId) !== groupId) continue;
+      if (scope === "spending" && !(l.amount < 0 && budgeted.has(l.categoryId))) continue;
+      const row = tally.get(key) ?? { name: "", count: 0, total: 0, forms: new Map<string, number>() };
+      row.count += 1;
+      row.total += l.amount;
+      row.forms.set(t.merchant, (row.forms.get(t.merchant) ?? 0) + 1);
+      tally.set(key, row);
+    }
   }
-  return [...merchantIndex(db)]
-    .map(([key, { name, count }]) => ({ key, name, count, total: totals.get(key) ?? 0 }))
+
+  return [...tally.entries()]
+    .map(([key, row]) => {
+      // The most common spelling, ties broken on the spelling itself — the
+      // same rule as merchantIndex, applied to the lines that survived the
+      // filter rather than to every line the merchant ever had.
+      let name = "";
+      let most = 0;
+      for (const [form, n] of row.forms) {
+        if (n > most || (n === most && form < name)) { name = form; most = n; }
+      }
+      return { key, name, count: row.count, total: row.total };
+    })
     .sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
