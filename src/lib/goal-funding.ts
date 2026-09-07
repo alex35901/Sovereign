@@ -24,52 +24,19 @@ import { balanceAt } from "./select.js";
 export interface AccountFunding {
   account: Account;
   balance: number;
-  /** Given to goals by hand. */
+  /** Given to goals by hand, after trimming to what the balance can back. */
   allocated: number;
   /** Swept to this account's own goal, if it has one. */
   auto: number;
   /**
-   * Arrived and not yet given a job — or, below zero, promised and not there.
+   * Arrived and not yet given a job.
    *
-   * Signed on purpose. Minus two hundred dollars available is not a
-   * contradiction to be tidied away: it is two hundred dollars of goals the
-   * balance does not cover, and the shortfall is the number worth acting on.
-   * Clamping it at zero made the one account that needed attention look
-   * exactly like every account that simply had nothing spare.
-   *
-   * It goes below zero wherever the goals claim more than the balance holds,
-   * however many of them are doing the claiming. See `over`.
+   * Never below zero any more, because a claim can no longer outrun the
+   * balance behind it: see `effectiveClaims`. A balance that falls takes the
+   * allocations down with it, so what is left to hand out is simply what is
+   * left.
    */
   available: number;
-  /**
-   * The same figure with the shortfall left out: what could actually be
-   * handed to a goal this moment, which is never less than nothing.
-   *
-   * Only for arithmetic — allocation ceilings — never for display. A screen
-   * showing this instead of `available` is the bug described above.
-   */
-  free: number;
-  /**
-   * Allocated beyond what is in the account.
-   *
-   * This used to be raised only when two or more goals claimed the account,
-   * on the reasoning that a lone claim tracking a falling balance was nobody's
-   * mistake and not worth nagging about — the goal already reports what is
-   * really there, so saying "you are $500 over" was asking someone to go and
-   * correct arithmetic.
-   *
-   * That was wrong, and wrong in the way that matters: an account allocated in
-   * full and then spent down showed a shortfall of nothing. The money had gone
-   * somewhere and the goal was still promised it, which is exactly the moment
-   * to say so — the fix is to lower the goal, and nobody can lower a goal they
-   * cannot see is over.
-   *
-   * So it is the plain shortfall now, whoever is claiming. The one case still
-   * absorbed is an account swept to its own goal (`autoGoalId`), where there
-   * is genuinely nothing to decide: the leftovers are that goal's by
-   * definition, so they cannot exceed themselves.
-   */
-  over: number;
 }
 
 export interface Funding {
@@ -78,11 +45,8 @@ export interface Funding {
   pooled: number;
   allocated: number;
   auto: number;
-  /** The headline: what has arrived and is still unassigned, shortfall and all. */
+  /** The headline: what has arrived and is still unassigned. */
   available: number;
-  /** The same, floored at nothing. */
-  free: number;
-  over: number;
 }
 
 /** The accounts whose money is on the table, in the order they are shown. */
@@ -90,8 +54,63 @@ export function goalAccounts(db: DB): Account[] {
   return db.accounts.filter((a) => a.goalAccount && !a.closedAt);
 }
 
-/** What each goal has claimed from one account. */
+/**
+ * What one goal has claimed from one account, as stored.
+ *
+ * A promise rather than a holding: a balance can fall below what was promised,
+ * and what the goal actually has then is `backedClaims`. Nothing but the
+ * allocation dialog should be reading this one.
+ */
 export const claimOn = (goal: Goal, accountId: ID): number => goal.allocations?.[accountId] ?? 0;
+
+/**
+ * What each goal really holds of one account, once the balance has fallen
+ * below what was promised.
+ *
+ * An account allocated in full and then spent down used to report the
+ * difference as a shortfall for someone to go and correct by hand. That was
+ * the wrong job to give a person: the money has gone, the goals cannot have
+ * it, and every screen already showed the smaller, true figure. All the
+ * shortfall did was sit there, permanently red, on a number nobody could
+ * reach — an account with nothing spare offers no room to allocate, so there
+ * was no way to take back what was no longer there.
+ *
+ * So the claims are trimmed to fit instead, least important first: the goal at
+ * the top of the list is the one the money was meant for most, and the one at
+ * the bottom is the one that gives it up.
+ *
+ * Trimmed, not rewritten. The allocations on the goals are left exactly as
+ * they were, so a balance that comes back brings the claims back with it — the
+ * money returned to the same account and it was always meant for the same
+ * goals. Writing the cut in would have made a transfer in flight look like a
+ * decision somebody made.
+ */
+export function backedClaims(db: DB, accountId: ID, balance: number): Map<ID, number> {
+  const live = db.goals.filter((g) => !g.archived && claimOn(g, accountId) > 0);
+  const held = new Map<ID, number>(live.map((g) => [g.id, claimOn(g, accountId)]));
+
+  // Not clamped at zero: an overdrawn account trims every claim to nothing,
+  // which is what subtracting a negative already does — the loop below runs
+  // out of claims long before it runs out of shortfall. Callers pass a floored
+  // balance anyway; a clamp here would be a branch no input can reach.
+  let over = live.reduce((s, g) => s + claimOn(g, accountId), 0) - balance;
+  if (over <= 0) return held;
+
+  // Highest priority number is the least important goal. Ties keep the order
+  // the goals are stored in, so the same balance always trims the same way.
+  for (const g of [...live].sort((a, b) => b.priority - a.priority)) {
+    if (over <= 0) break;
+    const cut = Math.min(held.get(g.id)!, over);
+    held.set(g.id, held.get(g.id)! - cut);
+    over -= cut;
+  }
+  return held;
+}
+
+/** What one goal really holds of one account, balance and rivals accounted for. */
+export function backedClaim(db: DB, goalId: ID, accountId: ID, balance: number): number {
+  return backedClaims(db, accountId, balance).get(goalId) ?? 0;
+}
 
 /** Everything claimed from one account, across every goal. */
 export function claimedFrom(db: DB, accountId: ID): number {
@@ -107,17 +126,14 @@ export function funding(db: DB): Funding {
   const accounts = goalAccounts(db).map((account): AccountFunding => {
     // A goal account holding a negative balance is not money to allocate.
     const balance = Math.max(0, account.balance);
-    const claimed = claimedFrom(db, account.id);
-    const allocated = Math.min(claimed, balance);
-    const over = Math.max(0, claimed - balance);
+    // Trimmed to fit, so this can never be more than the balance and the
+    // spare below can never come out negative.
+    const allocated = [...backedClaims(db, account.id, balance).values()].reduce((s, v) => s + v, 0);
     const spare = balance - allocated;
     // An account with a goal of its own has no spare: whatever is not spoken
     // for is already this goal's, which is the entire point of setting one.
     const auto = account.autoGoalId ? spare : 0;
-    const free = spare - auto;
-    // Never both: an account can only be over-assigned once its spare is
-    // gone, so the two are one signed figure written as two.
-    return { account, balance, allocated, auto, available: free - over, free, over };
+    return { account, balance, allocated, auto, available: spare - auto };
   });
 
   return {
@@ -126,8 +142,6 @@ export function funding(db: DB): Funding {
     allocated: accounts.reduce((s, a) => s + a.allocated, 0),
     auto: accounts.reduce((s, a) => s + a.auto, 0),
     available: accounts.reduce((s, a) => s + a.available, 0),
-    free: accounts.reduce((s, a) => s + a.free, 0),
-    over: accounts.reduce((s, a) => s + a.over, 0),
   };
 }
 
@@ -142,7 +156,7 @@ export function goalSaved(db: DB, goalId: ID): number {
   if (!goal) return 0;
   let total = goal.startingAmount;
   for (const f of funding(db).accounts) {
-    total += Math.min(claimOn(goal, f.account.id), f.balance);
+    total += backedClaim(db, goalId, f.account.id, f.balance);
     if (f.account.autoGoalId === goalId) total += f.auto;
   }
   return total;
@@ -167,10 +181,12 @@ export function goalSavedAt(db: DB, goalId: ID, date: ISODate): number {
   let total = goal.startingAmount;
   for (const account of goalAccounts(db)) {
     const balance = Math.max(0, balanceAt(account, date));
-    const claimed = claimedFrom(db, account.id);
-    total += Math.min(claimOn(goal, account.id), balance);
+    const claims = backedClaims(db, account.id, balance);
+    total += claims.get(goalId) ?? 0;
     // Whatever an account swept to this goal has left over, as it was then.
-    if (account.autoGoalId === goalId) total += balance - Math.min(claimed, balance);
+    if (account.autoGoalId === goalId) {
+      total += balance - [...claims.values()].reduce((s, v) => s + v, 0);
+    }
   }
   return total;
 }
@@ -181,7 +197,7 @@ export function goalSources(db: DB, goalId: ID): { account: Account; amount: num
   if (!goal) return [];
   const out: { account: Account; amount: number; auto: boolean }[] = [];
   for (const f of funding(db).accounts) {
-    const claim = Math.min(claimOn(goal, f.account.id), f.balance);
+    const claim = backedClaim(db, goalId, f.account.id, f.balance);
     const auto = f.account.autoGoalId === goalId ? f.auto : 0;
     if (claim + auto > 0) out.push({ account: f.account, amount: claim + auto, auto: auto > 0 && claim === 0 });
   }
@@ -199,10 +215,9 @@ export function ceilingFor(db: DB, goalId: ID, accountId: ID): number {
   const goal = db.goals.find((g) => g.id === goalId);
   const f = funding(db).accounts.find((x) => x.account.id === accountId);
   if (!goal || !f) return 0;
-  // `free`, not `available`: a shortfall elsewhere in the account must not
-  // drag this goal's ceiling below what it already holds, or the dialog would
-  // refuse to let it be dragged back down.
-  return f.free + Math.min(claimOn(goal, accountId), f.balance);
+  // What is spare, plus what this goal already holds — so the field can be
+  // dragged down as well as up without having to release the money first.
+  return f.available + backedClaim(db, goalId, accountId, f.balance);
 }
 
 /**

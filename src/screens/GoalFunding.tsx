@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, ChevronRight, Info, Settings2, Sparkles, TriangleAlert, Wallet } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, Settings2, Sparkles, Wallet } from "lucide-react";
 import type { Account, Goal } from "../types";
 import { useDB, useStore } from "../store";
 import { canValue } from "../lib/property";
-import { ceilingFor, claimOn, funding } from "../lib/goal-funding";
+import { backedClaim, ceilingFor, funding } from "../lib/goal-funding";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { Btn, Card, Modal, Money, MoneyInput, SelectInput, Toggle } from "../components/ui";
 import { accountOptions } from "../lib/select";
@@ -62,8 +62,6 @@ export function GoalFunding() {
             borderBottom: "1px solid var(--line-soft)",
           }}
         >
-          {/* Below zero is a real reading, not an error state: it is the size
-              of the cut the goals need before the balances can cover them. */}
           <span className={`tile-value ${tone(f.available)}`}>
             <Money value={f.available} />
           </span>
@@ -71,27 +69,12 @@ export function GoalFunding() {
             Available for goals
             <span title={
               `${db.accounts.filter((a) => a.goalAccount).length} accounts hold ${fmtish(f.pooled)} between them. `
-              + (f.available < 0
-                ? `${fmtish(f.allocated + f.auto + f.over)} is assigned to goals — ${fmtish(f.over)} more than those balances hold.`
-                : `${fmtish(f.allocated + f.auto)} is assigned to goals; the rest has arrived and has not been given a job.`)
+              + `${fmtish(f.allocated + f.auto)} is assigned to goals; the rest has arrived and has not been given a job.`
             }>
               <Info size={13} />
             </span>
           </span>
         </div>
-
-        {f.over > 0 ? (
-          <div className="setting-row" style={{ margin: 12, borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
-            <span className="small row" style={{ gap: 8, alignItems: "flex-start" }}>
-              <TriangleAlert size={15} className="neg" style={{ flex: "none", marginTop: 2 }} />
-              <span>
-                <b><Money value={f.over} /> is assigned to goals that the accounts no longer hold.</b>{" "}
-                A balance has fallen since it was allocated. The goals below report what is really there;
-                open the account to put the figures back in step.
-              </span>
-            </span>
-          </div>
-        ) : null}
 
         <div style={{ maxHeight: 420, overflowY: "auto" }}>
           {f.accounts.map((row) => {
@@ -105,8 +88,6 @@ export function GoalFunding() {
                   {expanded ? <ChevronDown size={14} className="faint" /> : <ChevronRight size={14} className="faint" />}
                   <InstitutionLogo account={row.account} size={26} round />
                   <span className="grow truncate" style={{ fontWeight: 500 }}>{row.account.name}</span>
-                  {/* No "$200 over" tag beside it any more: the figure is
-                      signed, so the tag was the same news twice. */}
                   <span className={`num ${tone(row.available)}`}>
                     {row.available > 0 ? <>+<Money value={row.available} /></> : <Money value={row.available} />}
                   </span>
@@ -124,7 +105,7 @@ export function GoalFunding() {
                     </div>
 
                     {goals.map((g) => {
-                      const held = Math.min(claimOn(g, row.account.id), row.balance)
+                      const held = backedClaim(db, g.id, row.account.id, row.balance)
                         + (row.account.autoGoalId === g.id ? row.auto : 0);
                       if (!held) return null;
                       return (
@@ -144,13 +125,6 @@ export function GoalFunding() {
                       );
                     })}
 
-                    {row.over > 0 ? (
-                      <div className="spread small neg" style={{ marginLeft: 6 }}>
-                        <span>Assigned beyond the balance</span>
-                        <span className="num"><Money value={row.over} /></span>
-                      </div>
-                    ) : null}
-
                     <div className="divider" style={{ margin: "2px 0" }} />
                     <div className="spread small">
                       <span style={{ fontWeight: 500 }}>Available</span>
@@ -168,7 +142,7 @@ export function GoalFunding() {
         <div className="col" style={{ gap: 8, padding: 12, borderTop: "1px solid var(--line-soft)" }}>
           <Btn
             variant="primary"
-            disabled={!goals.length || (f.free <= 0 && f.allocated <= 0)}
+            disabled={!goals.length || (f.available <= 0 && f.allocated <= 0)}
             onClick={() => setAllocating(
               // The account that needs a decision comes first, then one with
               // money to hand out. Opening on a settled account when another
@@ -325,7 +299,11 @@ function AllocateModal({ account, onClose }: { account: Account; onClose: () => 
 function AllocationRow({ goal, accountId }: { goal: Goal; accountId: string }) {
   const db = useDB();
   const { actions } = useStore();
-  const held = claimOn(goal, accountId);
+  const balance = Math.max(0, db.accounts.find((a) => a.id === accountId)?.balance ?? 0);
+  // What the goal really holds, not what it was once promised: a field showing
+  // a figure the account cannot back would be asking to be corrected by hand,
+  // which is the whole thing this stopped doing.
+  const held = backedClaim(db, goal.id, accountId, balance);
   const ceiling = ceilingFor(db, goal.id, accountId);
 
   return (

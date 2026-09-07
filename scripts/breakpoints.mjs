@@ -671,6 +671,73 @@ try {
     check("while the one at the foot of the card stays",
       buttons.some((t) => /^allocate funds$/i.test(t)), buttons.join(" | "));
     await gone.close();
+
+    // ── an account allocated in full, then spent down ──
+    //
+    // Seeded rather than clicked: the demo data is hand-kept and would only
+    // ever show the one state that cannot go wrong. This is the reported case
+    // — every penny of an account promised to a goal, and then the balance
+    // falls — which used to leave a permanent red figure on a screen with no
+    // control that could clear it.
+    const seedCtx = await browser.newContext();
+    const seedPage = await seedCtx.newPage();
+    await seedPage.goto(`${BASE}/goals`, { waitUntil: "networkidle" });
+    await seedPage.waitForTimeout(1200);
+    const doc = JSON.parse(await seedPage.evaluate(() => localStorage.getItem("sovereign.db.v1")));
+    await seedCtx.close();
+
+    const target = doc.accounts.find((a) => a.goalAccount) ?? doc.accounts[0];
+    const goal = doc.goals.find((g) => !g.archived);
+    const overDoc = {
+      ...doc,
+      accounts: doc.accounts.map((a) => (a.id === target.id ? { ...a, balance: 10_475_10 } : a)),
+      goals: doc.goals.map((g) => (g.id === goal.id
+        ? { ...g, allocations: { ...(g.allocations ?? {}), [target.id]: 11_807_92 } }
+        : g)),
+    };
+
+    const overCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await overCtx.addInitScript((d) => {
+      if (!localStorage.getItem("sovereign.db.v1")) localStorage.setItem("sovereign.db.v1", d);
+    }, JSON.stringify(overDoc));
+    const over = await overCtx.newPage();
+    await over.goto(`${BASE}/goals`, { waitUntil: "networkidle" });
+    await over.waitForTimeout(900);
+
+    // Currency first, then the number: the app writes a negative as "-$1,332.82",
+    // so matching digits straight off the string finds "1,332.82" and loses the
+    // sign — which is how this check first passed against a build that still
+    // showed the shortfall.
+    const money = (t) => Number(t.replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+
+    // Read off the account's own expanded panel, not the headline: the
+    // headline adds every goal account up, so a shortfall on one is covered by
+    // spare money on another — which is how the first version of this check
+    // passed against a build with the trimming taken out.
+    const panel = await over.evaluate((name) => {
+      const row = [...document.querySelectorAll(".list-row")]
+        .find((r) => r.querySelector(".truncate")?.innerText.trim() === name);
+      if (!row) return null;
+      row.click();
+      return new Promise((r) => setTimeout(() => r(
+        [...document.querySelectorAll(".spread.small")].map((e) => e.innerText.replace(/\n/g, " ").trim()),
+      ), 500));
+    }, target.name);
+
+    const line = (re) => panel?.find((l) => re.test(l)) ?? null;
+    const balanceLine = line(/^Account balance/i);
+    const availableLine = line(/^Available/i);
+    const goalLine = panel?.find((l) => !/^(Account balance|Available)/i.test(l) && /\$/.test(l)) ?? null;
+
+    check("an account spent below what its goals were promised shows no negative to chase",
+      availableLine !== null && money(availableLine) >= 0,
+      availableLine === null ? `no Available line — saw ${panel?.join(" | ") ?? "no panel"}` : availableLine);
+    check("the balance it reports is the one the account really holds",
+      balanceLine?.includes("10,475.10") ?? false, balanceLine ?? "missing");
+    check("and the goal behind it holds exactly that, not what it was promised",
+      goalLine !== null && goalLine.includes("10,475.10") && !goalLine.includes("11,807.92"),
+      goalLine ?? `no goal line — saw ${panel?.join(" | ") ?? "no panel"}`);
+    await overCtx.close();
   }
 
   if (want("detail")) {

@@ -115,9 +115,10 @@ CHROME_PATH=/path/to/chrome node scripts/breakpoints.mjs
 CHROME_PATH=... node scripts/breakpoints.mjs --only=detail   # one section, ~7s
 ```
 
-Sections: `tx-columns`, `tx-align`, `category-arrow`, `overflow`,
+Sections: `tx-columns`, `tx-select`, `tx-align`, `category-arrow`, `overflow`,
 `phone-account`, `phone-nav`, `nested-menu`, `drilldown-back`,
-`drilldown-scroll`, `goals`, `detail`. **`--only` is for the iteration loop;
+`drilldown-scroll`, `goals`, `detail`, `budget`, `accounts`, `account-page`,
+`tx-filters`, `dashboard`, `merchants`, `reports`. **`--only` is for the iteration loop;
 the verdict always comes from a full run.** A filtered run prints what it
 skipped so it cannot be mistaken for a full one.
 
@@ -190,9 +191,13 @@ icon service.
 - `src/lib/select.ts` — derived figures: balances, net worth, budget rows, cash
   flow, activity. Nothing is stored twice; it is worked out from the document
   as it is now.
-- `src/lib/goal-funding.ts` — the goal/account allocation model. `available` is
-  signed (negative means over-assigned); `free` is the floored version and
-  exists only for allocation ceilings. Never show `free`.
+- `src/lib/goal-funding.ts` — the goal/account allocation model. A goal's
+  stored allocation is a *promise*; what it actually holds is `backedClaims`,
+  which trims the promises to fit the balance, least important goal first.
+  Nothing is written back, so a balance that recovers restores the claims.
+  `available` is therefore never negative, and the goals on one account can
+  never hold more between them than the account does. Read `claimOn` only in
+  the allocation dialog.
 - `src/lib/sync/` — provider sync, merge, and the save schedule.
 - `src/lib/history.ts` — balance-history compression.
 - `src/lib/hopper/` — the in-browser agent loop; its tools are read-only.
