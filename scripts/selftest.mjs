@@ -5910,7 +5910,29 @@ await test("new money in an auto account counts without anyone doing anything", 
   assert.equal(M.GF.funding(after).available, 1_000_00, "and it never shows up as needing a decision");
 });
 
-await test("new money in a shared account is flagged rather than absorbed", () => {
+await test("an account pointed at a goal follows the balance both ways", () => {
+  // The difference between "allocate by hand" and "all of it → X". A hand
+  // allocation is a figure, so it tracks a falling balance down and stops at
+  // what was asked for on the way up. An account pointed at a goal is not a
+  // figure at all — it is the account — so it moves in both directions for
+  // ever, which is what the dropdown in "Edit goal accounts" is choosing.
+  const hand = M.GF.allocate(funded(), "emg", "sav", 1_000_00);
+  const rich = { ...hand, accounts: hand.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 1_500_00 } : a)) };
+  assert.equal(M.GF.goalSaved(rich, "emg"), 1_000_00, "a hand allocation stops at the figure it was given");
+  assert.equal(M.GF.funding(rich).accounts.find((a) => a.account.id === "sav").available, 500_00);
+
+  // The same account, pointed at the goal instead. The old hand allocation is
+  // left sitting on it, because switching the dropdown does not clear it —
+  // and it must not change the answer.
+  const swept = { ...rich, accounts: rich.accounts.map((a) => (a.id === "sav" ? { ...a, autoGoalId: "emg" } : a)) };
+  assert.equal(M.GF.goalSaved(swept, "emg"), 1_500_00, "new money lands in the goal by itself");
+  assert.equal(M.GF.funding(swept).accounts.find((a) => a.account.id === "sav").available, 0, "and nothing is left to decide");
+
+  const poorer = { ...swept, accounts: swept.accounts.map((a) => (a.id === "sav" ? { ...a, balance: 800_00 } : a)) };
+  assert.equal(M.GF.goalSaved(poorer, "emg"), 800_00, "and it follows the balance down past the old figure too");
+});
+
+await test("new money in an account allocated by hand is flagged rather than absorbed", () => {
   let db = funded();
   db = M.GF.allocate(db, "emg", "sav", 1_000_00);
   assert.equal(M.GF.funding(db).available, 500_00);
