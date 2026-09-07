@@ -35,7 +35,7 @@ export function ActivityLog({ txn }: { txn: Transaction }) {
                 </span>
                 <div className="col" style={{ gap: 1, minWidth: 0 }}>
                   <span style={{ fontWeight: 600 }}>{eventTitle(e)}</span>
-                  <span className="tiny faint">{eventWhen(e.at)} — {eventDetail(e)}</span>
+                  <span className="tiny faint">{eventWhen(e.at)}. {eventDetail(e)}</span>
                 </div>
               </div>
             ))}

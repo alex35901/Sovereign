@@ -63,7 +63,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
     return send(504, {
       error: timedOut
-        ? "SimpleFIN didn't respond within 15 seconds. It may be busy — try again in a minute."
+        ? "SimpleFIN didn't respond within 15 seconds. It may be busy. Try again in a minute."
         : err instanceof Error ? err.message : "Upstream request failed",
     });
   }

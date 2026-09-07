@@ -38,8 +38,8 @@ export function GoalFunding() {
           <div className="col" style={{ gap: 10 }}>
             <span className="row" style={{ gap: 8 }}><Wallet size={16} className="muted" /> <b>No accounts are backing your goals yet.</b></span>
             <div className="small muted" style={{ maxWidth: 620 }}>
-              Say which accounts hold money set aside — a savings account, an ISA, the retirement
-              accounts — and their balances become the pool your goals are funded from. Everything else
+              Say which accounts hold money set aside, a savings account, an ISA, the retirement
+              accounts, and their balances become the pool your goals are funded from. Everything else
               stays out of it, because &ldquo;available for goals&rdquo; means nothing if it includes the rent.
             </div>
             <div className="row">

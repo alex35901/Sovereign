@@ -90,7 +90,7 @@ export const MIN = 12;
 export interface Strength { ok: boolean; note: string }
 
 export function strength(p: string): Strength {
-  if (p.length < MIN) return { ok: false, note: `At least ${MIN} characters — this one is ${p.length}.` };
+  if (p.length < MIN) return { ok: false, note: `At least ${MIN} characters, this one is ${p.length}.` };
   const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^a-zA-Z0-9]/].filter((r) => r.test(p)).length;
   if (p.length < 20 && classes < 3) {
     return { ok: true, note: "Workable, but a longer phrase of several words would be much stronger." };

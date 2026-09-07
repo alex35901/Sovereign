@@ -143,7 +143,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "category_detail",
     description:
-      "One category month by month, with its average — for questions about a trend or whether "
+      "One category month by month, with its average, for questions about a trend or whether "
       + "a month was unusual. Get the id from spending_by_category.",
     input_schema: {
       type: "object",
@@ -171,7 +171,7 @@ export const TOOLS: ToolSpec[] = [
     name: "search_transactions",
     description:
       "Individual transactions, newest first, filtered and capped. Use it to answer 'what was "
-      + "that charge' or to list what made up a total — not to add things up, which the other tools do.",
+      + "that charge' or to list what made up a total, not to add things up, which the other tools do.",
     input_schema: {
       type: "object",
       properties: {
@@ -295,7 +295,7 @@ export const TOOLS: ToolSpec[] = [
     name: "goals",
     description:
       "Every goal with what is saved, what is left, what is going in monthly, and when it lands "
-      + "at that rate — including whether that beats its target date.",
+      + "at that rate, including whether that beats its target date.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
     run: (db) => db.goals.filter((g) => !g.archived).map((g) => {
       const o = goalOutlook(db, g.id);

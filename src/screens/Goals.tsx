@@ -95,7 +95,7 @@ export default function Goals() {
                   <div className="col">
                     <span className="tile-label">Funded by</span>
                     <span className="num bold">
-                      {o.status === "reached" ? "Now" : o.projected ? monthLabel(o.projected) : "—"}
+                      {o.status === "reached" ? "Now" : o.projected ? monthLabel(o.projected) : "-"}
                     </span>
                   </div>
                   {o.growth > 0 ? (
@@ -119,12 +119,12 @@ export default function Goals() {
                 })()}
                 {o.status === "behind" && o.projected ? (
                   <div className="tiny neg" style={{ marginTop: 8 }}>
-                    Behind pace — arrives {monthLabel(o.projected)}, past the {dateLabel(g.targetDate!)} target.
+                    Behind pace, arrives {monthLabel(o.projected)}, past the {dateLabel(g.targetDate!)} target.
                     Raise the monthly amount to {fmt0(o.needed ?? 0)}, or move the date.
                   </div>
                 ) : o.status === "stalled" ? (
                   <div className="tiny neg" style={{ marginTop: 8 }}>
-                    At this rate it never gets there — the amount going in, or the growth assumed, has to change.
+                    At this rate it never gets there, the amount going in, or the growth assumed, has to change.
                   </div>
                 ) : null}
               </Card>
@@ -206,14 +206,14 @@ export function GoalModal({ goal, onClose }: { goal?: Goal; onClose: () => void 
       </div>
       <Field
         label="Assumed annual growth"
-        hint="Zero for money sitting in cash. For anything invested, a projection without it is badly wrong by the time a goal is decades out — and the right number is a judgement about where the money is, so it is yours."
+        hint="Zero for money sitting in cash. For anything invested, a projection without it is badly wrong by the time a goal is decades out, and the right number is a judgement about where the money is, so it is yours."
       >
         <PercentInput value={growthRate} onChange={setGrowth} />
       </Field>
       <div className="setting-row">
         <span className="small">
           <b>Money is assigned to a goal, not tracked by it.</b> Nominate the accounts that hold money set
-          aside under &ldquo;Edit goal accounts&rdquo; on this page, then allocate from them — one account can
+          aside under &ldquo;Edit goal accounts&rdquo; on this page, then allocate from them, one account can
           back several goals, and each holds only its own share.
         </span>
       </div>

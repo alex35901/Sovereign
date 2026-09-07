@@ -245,7 +245,7 @@ function RecurringModal({ item, onClose }: { item: RecurringItem; onClose: () =>
         <Field label="Category"><CategoryPicker value={categoryId} onChange={setCategoryId} /></Field>
       </div>
       <span className={cx("tiny", "faint")}>
-        {item.detected ? "This was detected automatically — saving turns it into a manual entry you control." : "Manually added."}
+        {item.detected ? "This was detected automatically. Saving turns it into a manual entry you control." : "Manually added."}
       </span>
     </Modal>
   );

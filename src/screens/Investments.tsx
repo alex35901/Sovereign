@@ -131,7 +131,7 @@ export default function Investments() {
                             <td className="right num bold"><Money value={val} cents={false} /></td>
                             <td className={cx("right num", gain >= 0 ? "pos" : "neg")}>
                               <Money value={gain} cents={false} sign={gain >= 0} />
-                              <div className="tiny">{cost ? fmtPct((gain / cost) * 100) : "—"}</div>
+                              <div className="tiny">{cost ? fmtPct((gain / cost) * 100) : "-"}</div>
                             </td>
                             <td className="right">
                               <Btn size="sm" variant="ghost" onClick={() => setEditing(h)}>Edit</Btn>
@@ -145,7 +145,7 @@ export default function Investments() {
               ) : (
                 <div style={{ padding: 16 }}>
                   <span className="small faint">
-                    No positions recorded — the account balance of <Money value={a.balance} cents={false} /> still counts toward net worth.
+                    No positions recorded. The account balance of <Money value={a.balance} cents={false} /> still counts toward net worth.
                   </span>
                 </div>
               )}
@@ -232,12 +232,12 @@ function PricesCard() {
       <span className="small muted">
         {tickers.length
           ? <>{tickers.length} symbol{tickers.length === 1 ? "" : "s"} priced{" "}
-            {last ? <>&mdash; last checked {dateLabel(last.slice(0, 10), { year: true })}</> : "— not checked yet"}.</>
+            {last ? <>, last checked {dateLabel(last.slice(0, 10), { year: true })}</> : ", not checked yet"}.</>
           : <>No holdings carry a ticker yet, so there is nothing to price.</>}
       </span>
       {misses?.length ? (
         <div className="tiny faint" style={{ marginTop: 8 }}>
-          No quote for {misses.join(", ")} — those keep the price entered on the holding.
+          No quote for {misses.join(", ")}. Those keep the price entered on the holding.
         </div>
       ) : null}
       {error ? <div className="small neg" style={{ marginTop: 8 }}>{error}</div> : null}

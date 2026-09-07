@@ -99,7 +99,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         configured: false,
         error: conn.unusable
           ? `${conn.unusable.name} is a ${conn.unusable.scheme}: URL, which isn't a Postgres connection this app can open. Neon and Supabase give a postgres:// URL; Prisma Postgres gives an accelerate URL, which won't work here.`
-          : "No database yet. Add one in Vercel under Storage, then redeploy — it sets DATABASE_URL for you.",
+          : "No database yet. Add one in Vercel under Storage, then redeploy. That sets DATABASE_URL for you.",
       });
     }
 

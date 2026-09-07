@@ -133,7 +133,7 @@ export default function Merchants() {
               title={q ? `Nothing matching "${q}"` : "No spending yet"}
               body={
                 q ? undefined
-                  : "Only money spent at a merchant is counted — transfers, card payments and income are left out. Change that under the filter."
+                  : "Only money spent at a merchant is counted. Transfers, card payments and income are left out. Change that under the filter."
               }
             />
           ) : null}

@@ -140,7 +140,7 @@ function BudgetCard({ categoryId, period, excluded }: {
           {!alignsToMonths(period.grain) ? (
             <div className="tiny faint">
               Budgets are set by the month, so this is {months.length === 1 ? "the whole month" : "the whole span"} around
-              the {period.grain} above — not a slice of it.
+              the {period.grain} above, not a slice of it.
             </div>
           ) : null}
         </div>

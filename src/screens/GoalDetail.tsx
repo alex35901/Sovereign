@@ -90,7 +90,7 @@ export default function GoalDetail() {
           />
           <Tile
             label="Reached"
-            value={outlook.projected ? monthLabel(outlook.projected, true) : "—"}
+            value={outlook.projected ? monthLabel(outlook.projected, true) : "-"}
             sub={outlook.slack !== null
               ? <span className={outlook.slack >= 0 ? "pos" : "neg"}>
                   {Math.abs(outlook.slack)} month{Math.abs(outlook.slack) === 1 ? "" : "s"}{" "}
@@ -107,7 +107,7 @@ export default function GoalDetail() {
               ? "Set a monthly amount or a target date to see where this is heading"
               : outlook.growth
                 ? `What is saved now and the monthly amount, growing at ${outlook.growth}% a year`
-                : "What is saved now, plus the monthly amount — no growth assumed, so anything invested will beat this"}
+                : "What is saved now, plus the monthly amount, no growth assumed, so anything invested will beat this"}
           />
           {projection.length ? (
             <>
@@ -209,7 +209,7 @@ function GrowthSplit({ projection, rate, onEdit }: {
           and <Money value={growth} cents={false} /> is the assumed {rate}% growth.
         </span>
       ) : (
-        <span>No growth assumed — every penny on this line is money put in.</span>
+        <span>No growth assumed, every penny on this line is money put in.</span>
       )}
       <button type="button" className="btn btn-ghost btn-sm" onClick={onEdit}>
         {rate ? "Change the rate" : "Assume a rate"}
@@ -256,10 +256,10 @@ function StatusPill({ status }: { status: GoalStatus }) {
 function whenLine(o: ReturnType<typeof goalOutlook>): string {
   if (o.status === "reached") return "Fully funded";
   if (o.status === "stalled") {
-    return "At this rate it never gets there — the amount going in, or the growth assumed, has to change";
+    return "At this rate it never gets there, the amount going in, or the growth assumed, has to change";
   }
   if (!o.projected) {
-    return o.targetMonth ? `Due ${monthLabel(o.targetMonth)} — nothing going in yet` : "No monthly amount set";
+    return o.targetMonth ? `Due ${monthLabel(o.targetMonth)}, nothing going in yet` : "No monthly amount set";
   }
   const when = monthLabel(o.projected);
   if (o.slack === null) return `${when} at the current rate`;
@@ -306,7 +306,7 @@ function Activity({ goalId }: { goalId: string }) {
       )) : (
         <div style={{ padding: 16 }}>
           <span className="small faint">
-            No balance history on the accounts behind this goal yet — it appears as they sync.
+            No balance history on the accounts behind this goal yet, it appears as they sync.
           </span>
         </div>
       )}

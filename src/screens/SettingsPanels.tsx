@@ -115,7 +115,7 @@ function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => v
           ))}
         </div>
         <span className="tiny faint">
-          Every category in this group wears it — {members.length} of them
+          Every category in this group wears it. {members.length} of them
           {members.length ? `, including ${members.slice(0, 3).map((m) => m.name).join(", ")}` : ""}.
         </span>
       </div>
@@ -127,12 +127,12 @@ function GroupModal({ group, onClose }: { group: CategoryGroup; onClose: () => v
       {isTransfer ? (
         <div className="small muted">
           This is the transfers group. Its categories are deliberately kept out of budgets and cash
-          flow, so its type can't be changed — rename it freely.
+          flow, so its type can't be changed, rename it freely.
         </div>
       ) : (
         <Field
           label="Type"
-          hint={members.length ? `${members.length} categories move with it — income and expenses are treated differently everywhere` : undefined}
+          hint={members.length ? `${members.length} categories move with it, income and expenses are treated differently everywhere` : undefined}
         >
           <SelectInput
             value={kind} onChange={setKind}
@@ -210,7 +210,7 @@ export function CategoryModal({ category, groupId, onClose }: { category?: Categ
         <>
           <div className="divider" />
           <div className="col" style={{ gap: 8 }}>
-            <span className="small muted">Delete — move its transactions to:</span>
+            <span className="small muted">Delete, move its transactions to:</span>
             <div className="row" style={{ gap: 8 }}>
               <CategoryPicker value={reassignTo} onChange={setReassign} />
               <ConfirmButton
@@ -229,7 +229,7 @@ export function CategoryModal({ category, groupId, onClose }: { category?: Categ
  * Picking a colour by looking at it.
  *
  * It was a dropdown of "Color 1" through "Color 12", which is a list of names
- * for things that have no names — you had to pick one, save it, and look at
+ * for things that have no names, you had to pick one, save it, and look at
  * the result to find out what you had chosen. A swatch is the colour.
  */
 export function ColorSwatches({ value, onChange }: { value: string; onChange: (tone: string) => void }) {
@@ -254,7 +254,7 @@ export function ColorSwatches({ value, onChange }: { value: string; onChange: (t
   );
 }
 
-/** Name, colour, add — shared by the page and the button in its action bar. */
+/** Name, colour, add, shared by the page and the button in its action bar. */
 export function NewTagForm({ onDone }: { onDone?: () => void }) {
   const { actions } = useStore();
   const [name, setName] = useState("");
@@ -271,7 +271,7 @@ export function NewTagForm({ onDone }: { onDone?: () => void }) {
     <div className="col" style={{ gap: 10, minWidth: 240, maxWidth: 320 }}>
       <TextInput value={name} onChange={setName} placeholder="New tag name" />
       <div className="col" style={{ gap: 6 }}>
-        <span className="tiny faint">Colour — {TONE_NAMES[color] ?? color}</span>
+        <span className="tiny faint">Colour. {TONE_NAMES[color] ?? color}</span>
         <ColorSwatches value={color} onChange={setColor} />
       </div>
       <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -303,7 +303,7 @@ export function TagsPanel() {
   const { actions } = useStore();
   return (
     <Card>
-      <CardHead title="Tags" sub="Cross-cutting labels — reimbursable, tax deductible, shared" />
+      <CardHead title="Tags" sub="Cross-cutting labels, reimbursable, tax deductible, shared" />
       <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
         {db.tags.map((t) => (
           <span key={t.id} className="row" style={{ gap: 4 }}>
@@ -312,7 +312,7 @@ export function TagsPanel() {
           </span>
         ))}
         {!db.tags.length ? (
-          <span className="small faint">No tags yet — the button at the top of the page makes one.</span>
+          <span className="small faint">No tags yet, the button at the top of the page makes one.</span>
         ) : null}
       </div>
     </Card>
@@ -357,7 +357,7 @@ export function RulesPanel({ adding, onAddingDone }: { adding: boolean; onAdding
     <Card pad={false}>
       <CardHead
         flush title="Rules"
-        sub={`${enabled.length} of ${db.rules.length} on — applied to every imported or synced transaction, in order`}
+        sub={`${enabled.length} of ${db.rules.length} on, applied to every imported or synced transaction, in order`}
       />
       {db.rules.map((r) => (
         <div key={r.id} className="list-row">
@@ -522,7 +522,7 @@ export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: Rul
                 ))}
               </div>
             ) : (
-              <span className="tiny faint">No tags yet — create them under Configuration → Tags.</span>
+              <span className="tiny faint">No tags yet, create them under Configuration → Tags.</span>
             )}
           </Field>
           <div className="col" style={{ gap: 8 }}>

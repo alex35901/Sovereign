@@ -198,6 +198,12 @@ icon service.
   `available` is therefore never negative, and the goals on one account can
   never hold more between them than the account does. Read `claimOn` only in
   the allocation dialog.
+**No em dashes in user-facing text.** Not in strings, JSX, titles, aria-labels
+or `index.html`; comments are exempt. Use a colon when the second half explains
+the first, a full stop when it is a new thought, a comma for an aside, and
+parentheses for a list of examples. A test in `scripts/selftest.mjs` strips the
+comments and fails on any that come back.
+
 - `src/lib/notifications.ts` — what the app would tell you if you had not been
   looking. Every notice is derived from the document; only *which have been
   read* is stored, and the id encodes what was true (`budget:2026-09:c_x:over25`)

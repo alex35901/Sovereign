@@ -124,7 +124,7 @@ export function BalancePointsCard({ account, heading = true }: {
           ) : null}
         </div>
       ) : (
-        <span className="small faint">No points yet — add one above, or import a CSV.</span>
+        <span className="small faint">No points yet. Add one above, or import a CSV.</span>
       )}
     </Card>
   );

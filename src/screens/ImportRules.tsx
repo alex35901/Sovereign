@@ -71,7 +71,7 @@ export function ImportRules() {
     <Card>
       <CardHead
         title="Import rules from Monarch"
-        sub="Paste the exported rules — one per line"
+        sub="Paste the exported rules, one per line"
       />
 
       <div className="col" style={{ gap: 12 }}>
@@ -127,8 +127,7 @@ export function ImportRules() {
               <div className="setting-row">
                 <span className="small">
                   <b>{newTags.length} new tag{newTags.length === 1 ? "" : "s"} will be created:</b>{" "}
-                  {newTags.join(", ")}. Tags are just labels, so these are made as part of the import —
-                  unlike a category, which carries a budget and has to be set up deliberately.
+                  {newTags.join(", ")}. Tags are just labels, so these are made as part of the import. A category carries a budget and has to be set up deliberately, so those are not.
                 </span>
               </div>
             ) : null}
@@ -137,7 +136,7 @@ export function ImportRules() {
               <div className="setting-row" style={{ borderColor: "var(--neg)", background: "var(--neg-soft)" }}>
                 <span className="small">
                   <b>No category here is called:</b> {parsed.unknownCategories.join(", ")}.{" "}
-                  Create them under Categories first and paste again, or those rules will be left out — a
+                  Create them under Categories first and paste again, or those rules will be left out, a
                   rule pointing at no category would match transactions and then do nothing to them.
                 </span>
               </div>
@@ -192,7 +191,7 @@ export function ImportRules() {
                             {cat.icon} {cat.name}
                           </span>
                         ) : (
-                          <span className="chip neg">{r.categoryName} — not found</span>
+                          <span className="chip neg">{r.categoryName}, not found</span>
                         )}
                         {dup ? <span className="tiny faint" style={{ flex: "none" }}>already here</span> : null}
                       </div>
@@ -212,7 +211,7 @@ export function ImportRules() {
             <div className="tiny faint" style={{ maxWidth: 640, marginTop: -6 }}>
               {backfill
                 ? `Off by default because it is the bigger action: every one of your ${db.transactions.length.toLocaleString()} transactions will be re-categorised where a rule matches, and marked reviewed. One undo takes it all back.`
-                : "Left off, these apply only to transactions that arrive from here on — which is what Monarch's rules were doing."}
+                : "Left off, these apply only to transactions that arrive from here on, which is what Monarch's rules were doing."}
             </div>
 
             <div className="row wrap" style={{ gap: 8 }}>

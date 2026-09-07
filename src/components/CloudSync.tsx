@@ -88,7 +88,7 @@ export function CloudSync() {
           stashConflict(latest.current);
           install(remote.doc);
           setCloudState({ version: remote.version, dirty: false });
-          act.current.notify(`${remote.updatedBy} changed this budget first. That copy is now loaded; yours was set aside — see Settings.`);
+          act.current.notify(`${remote.updatedBy} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
         }
       }
       // Anything else stays marked unsent, and the next poll tries again.
@@ -139,7 +139,7 @@ export function CloudSync() {
           // Both moved. Keep the newer shared copy, but don't throw this
           // browser's unsent work away — Settings can hand it back.
           stashConflict(latest.current);
-          act.current.notify(`Loaded a newer copy saved by ${remote.updatedBy}. This device's unsent changes were set aside — see Settings.`);
+          act.current.notify(`Loaded a newer copy saved by ${remote.updatedBy}. This device's unsent changes were set aside, see Settings.`);
         }
         install(remote.doc);
         setCloudState({ version: remote.version, dirty: false });

@@ -46,7 +46,7 @@ function Diagnosis({ check }: { check: CloudDiagnosis }) {
     ok: Boolean(check.variable),
     text: check.variable
       ? `Connection string found in ${check.variable}`
-      : "No connection string — add a database in Vercel under Storage, then redeploy",
+      : "No connection string. Add a database in Vercel under Storage, then redeploy",
   });
   if (check.host) {
     lines.push({ ok: true, text: `Points at ${check.host}${check.database ? ` / ${check.database}` : ""}, TLS ${check.ssl ? "on" : "off"}` });
@@ -67,9 +67,9 @@ function Diagnosis({ check }: { check: CloudDiagnosis }) {
   }
 
   const advice = !check.driver.ok
-    ? "That is a packaging problem in the deployment rather than anything to do with your database — send me this line."
+    ? "That is a packaging problem in the deployment rather than anything to do with your database. Send me this line."
     : !check.variable
-    ? "Vercel sets this when you create the database — the deployment has to be redeployed afterwards for it to appear."
+    ? "Vercel sets this when you create the database. The deployment has to be redeployed afterwards for it to appear."
     : !check.connect.ok
       ? "The usual causes: the database was created after this deployment was built, so redeploy; the project is paused or asleep on a free plan; or the connection string was pasted by hand and is missing part of the password."
       : !check.table.ok
@@ -152,7 +152,7 @@ export function CloudCard() {
       if (err instanceof LockedError) {
         setEntry("");
         setError(null);
-        notify("Connected. This budget is encrypted — enter its passphrase under Encryption to open it.");
+        notify("Connected. This budget is encrypted: enter its passphrase under Encryption to open it.");
       } else {
         setPassphrase("");
         setError(err instanceof Error ? err.message : "Could not connect.");
@@ -213,7 +213,7 @@ export function CloudCard() {
       } catch (probeErr) {
         setError(
           `${err instanceof Error ? err.message : "The sync endpoint failed."} ` +
-          `An endpoint with no imports at all also failed, so this isn't about the database — ` +
+          `An endpoint with no imports at all also failed, so this isn't about the database. ` +
           `no function in this deployment is running. ${probeErr instanceof Error ? probeErr.message : ""}`,
         );
       }
@@ -236,7 +236,7 @@ export function CloudCard() {
     <Card>
       <CardHead
         title="Sync across devices"
-        sub="Keep one budget, open it from any browser — and let the schedule run without one"
+        sub="Keep one budget, open it from any browser, and let the schedule run without one"
         right={on ? (
           <Btn onClick={() => void pushNow()} disabled={busy !== null}>
             <RefreshCw size={14} style={busy === "push" ? { animation: "spin 1s linear infinite" } : undefined} />
@@ -252,7 +252,7 @@ export function CloudCard() {
             {!checked ? "Checking…"
               : remote
                 ? `Cloud copy is version ${remote.version}, saved ${remote.updatedAt ? new Date(remote.updatedAt).toLocaleString() : "recently"} by ${remote.updatedBy ?? "a browser"}.`
-                : "Nothing stored yet — press Save now."}
+                : "Nothing stored yet. Press Save now."}
           </span>
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={() => void pullNow()} disabled={busy !== null}>
@@ -278,8 +278,8 @@ export function CloudCard() {
                 {halt === "locked"
                   ? "Too many wrong passphrases were sent from this network, so the server has shut it out for a while. Wait for the time it gave, then enter the passphrase again."
                   : halt === "encrypted"
-                    ? "This budget is encrypted and this browser has no key for it. Enter the encryption passphrase under Encryption below — the sync passphrase is fine."
-                    : "The server refused the passphrase this browser had — the usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
+                    ? "This budget is encrypted and this browser has no key for it. Enter the encryption passphrase under Encryption below; the sync passphrase will not open it."
+                    : "The server refused the passphrase this browser had. The usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
                 Nothing has been lost: this browser's copy is intact and will upload once it reconnects.
               </span>
             </div>
@@ -300,7 +300,7 @@ export function CloudCard() {
             The passphrase is whatever you set as <b>SYNC_PASSPHRASE</b> in Vercel. The first browser to
             connect uploads what it has; every browser after that downloads it. Nothing is uploaded until
             you connect.{" "}
-            <b>This is not the encryption passphrase</b> under Encryption below — that one is set in the
+            <b>This is not the encryption passphrase</b> under Encryption below. That one is set in the
             browser, is never sent here, and changing this one has no effect on it.
           </div>
         </div>
@@ -339,19 +339,19 @@ export function CloudCard() {
 
       <div className="divider" />
       <details>
-        <summary className="small muted" style={{ cursor: "pointer" }}>Setup — a database and a passphrase</summary>
+        <summary className="small muted" style={{ cursor: "pointer" }}>Setup: a database and a passphrase</summary>
         <ol className="small muted" style={{ margin: "10px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 5 }}>
           <li>
             In Vercel, open your project → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b>. The free tier is
             ample and it sets <code>DATABASE_URL</code> for you. Supabase works too; avoid <b>Prisma Postgres</b>,
             whose URL is an accelerate proxy rather than a Postgres connection.
           </li>
-          <li>Under Settings → Environment Variables, add <b>SYNC_PASSPHRASE</b> — any phrase you'll remember. This is what the box above asks for.</li>
+          <li>Under Settings → Environment Variables, add <b>SYNC_PASSPHRASE</b>, any phrase you'll remember. This is what the box above asks for.</li>
           <li>Add <b>CRON_SECRET</b> as well, any long random string. Vercel sends it to the scheduled job so nobody else can trigger it.</li>
           <li>Redeploy, then come back and connect. Do the same on your phone and laptop.</li>
         </ol>
         <div className="tiny faint" style={{ marginTop: 8 }}>
-          The scheduled pull runs once a day at 9am UTC — Vercel's Hobby plan allows one daily cron. Because
+          The scheduled pull runs once a day at 9am UTC. Vercel's Hobby plan allows one daily cron. Because
           the budget now lives in the database rather than this browser, that pull happens whether or not
           anything is open, and every device sees the result.
         </div>

@@ -89,7 +89,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   try {
     const stored = await readDoc();
-    if (!stored) return send(200, { ran: false, reason: "Nothing saved yet — open the app once to seed it." });
+    if (!stored) return send(200, { ran: false, reason: "Nothing saved yet. Open the app once to seed it." });
 
     // An encrypted document cannot be merged into here, and must not be
     // touched: writing a merge over an envelope would destroy it. Instead the
@@ -104,7 +104,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           ran: false,
           reason: "This document is encrypted, so the scheduled pull cannot read the credentials inside it and "
             + "needs its own copy. Add SIMPLEFIN_ACCESS_URL, or PLAID_ACCESS_TOKENS for Plaid connections, to the "
-            + "Vercel environment variables — Settings shows the values.",
+            + "Vercel environment variables. Settings shows the values.",
         });
       }
 

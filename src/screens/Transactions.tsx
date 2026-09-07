@@ -625,7 +625,7 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
               >
                 {account.name}
               </Link>
-            ) : <span className="tx-sub-account">—</span>}
+            ) : <span className="tx-sub-account">-</span>}
             {txn.notes ? `${txn.notes}` : ""}
             {split ? ` · split ${txn.splits!.length} ways` : ""}
             {!txn.notes && !split ? "" : ""}
@@ -644,7 +644,7 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           <InstitutionLogo account={account} size={26} round />
         </Link>
       ) : (
-        <span className="tiny truncate tx-account">—</span>
+        <span className="tiny truncate tx-account">-</span>
       )}
       <div className="row tx-category" style={{ gap: 4, minWidth: 0 }}>
         {split ? (

@@ -185,7 +185,7 @@ export default function Settings() {
             <div className="col" style={{ gap: 12 }}>
               <ol className="small muted" style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
                 <li>Create an account at <b>bridge.simplefin.org</b> and connect your banks there ($15/yr, up to 25 institutions).</li>
-                <li>Generate a <b>setup token</b> — a long base64 string. It can only be claimed once.</li>
+                <li>Generate a <b>setup token</b>, a long base64 string. It can only be claimed once.</li>
                 <li>Paste it below. The token is exchanged for a durable access URL that stays in this browser.</li>
               </ol>
               <div className="row wrap" style={{ gap: 8 }}>
@@ -197,7 +197,7 @@ export default function Settings() {
                 </Btn>
               </div>
               <span className="tiny faint">
-                Requires the bundled <code>/api/simplefin</code> function to be running — it forwards the request server-side,
+                Requires the bundled <code>/api/simplefin</code> function to be running, it forwards the request server-side,
                 because the bridge sends no CORS headers. Works on Vercel, or locally with <code>vercel dev</code>.
               </span>
             </div>
@@ -212,7 +212,7 @@ export default function Settings() {
                 <span className="small muted" style={{ maxWidth: 520 }}>
                   <b>{db.settings.deletedAccountKeys!.length} deleted account
                   {db.settings.deletedAccountKeys!.length === 1 ? " is" : "s are"} ignored on sync.</b>{" "}
-                  Forgetting them lets the provider offer them again on the next pull — the way back
+                  Forgetting them lets the provider offer them again on the next pull, the way back
                   from a delete you didn't mean.
                 </span>
                 <Btn onClick={() => { actions.forgetDeletedAccounts(); notify("Deleted accounts forgotten. They can return on the next sync."); }}>
@@ -239,7 +239,7 @@ export default function Settings() {
             <span className="tiny faint" style={{ maxWidth: 620 }}>
               Both are fetched by <code>/api/icon</code> on your behalf, so the icon services see
               your deployment rather than your browser. Merchant logos are looked up only for the
-              {" "}{BRAND_COUNT} brands on a built-in list — nothing off a statement is sent anywhere
+              {" "}{BRAND_COUNT} brands on a built-in list, nothing off a statement is sent anywhere
               to find out what it is, so a name it doesn&rsquo;t recognise keeps its letter. Plaid&rsquo;s
               own logos never leave this app at all. Turn either off to use initials and ask nobody.
             </span>
@@ -255,7 +255,7 @@ export default function Settings() {
         <Card>
           <CardHead
             title="Import transactions"
-            sub="Monarch, Mint, YNAB or any bank CSV — columns are mapped on screen and duplicates are skipped"
+            sub="Monarch, Mint, YNAB or any bank CSV. Columns are mapped on screen and duplicates are skipped"
             right={<Btn variant="primary" onClick={() => setImporting(true)}><Upload size={14} /> Import CSV</Btn>}
           />
         </Card>
@@ -265,7 +265,7 @@ export default function Settings() {
           <CardHead title="Danger zone" />
           <div className="row wrap" style={{ gap: 10 }}>
             <ConfirmButton
-              label="Reload demo data" confirmLabel="Click again — this replaces everything"
+              label="Reload demo data" confirmLabel="Click again, this replaces everything"
               onConfirm={() => { actions.resetDemo(); notify("Demo data reloaded."); }}
               variant="default"
             />
@@ -312,7 +312,7 @@ function SyncSchedule() {
 
       <span className="tiny faint" style={{ maxWidth: 520 }}>
         {cadence === "off"
-          ? "Nothing will pull on its own while the app is open — the 9am job still runs."
+          ? "Nothing will pull on its own while the app is open. The 9am job still runs."
           : due
             ? `Next pull ${untilLabel(due, Date.now())}, the next time the app is open.`
             : "The next pull runs as soon as the app is open."}

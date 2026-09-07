@@ -30,7 +30,7 @@
   --c9: #e8724a; --c10: #7a8ae8; --c11: #c9a227; --c12: #6fb3a0;
   /* The one neutral. Shared by both themes like the rest of the palette,
      so it is picked to read on the light surface and the dark one rather
-     than being ideal on either — it is what a group wears to say "this is
+     than being ideal on either, it is what a group wears to say "this is
      not spending", which is most of what anyone wants grey for. */
   --c13: #7c8797;
 }
@@ -47,7 +47,7 @@
   --faint: #8595a8;
   /* The same hue taken down until it can carry small text on white: 4.4:1,
      where the orange it replaces managed 3.4:1. An accent this bright cannot
-     be used unchanged here — orange is a high-luminance hue, and every brand
+     be used unchanged here, orange is a high-luminance hue, and every brand
      with one runs into the same wall. */
   --accent: #cd5213;
   --accent-ink: #ffffff;
@@ -117,7 +117,7 @@ h3 { font-size: 14px; }
  * A rail that opens on hover.
  *
  * Taken out of flow and given the page a matching margin instead, so opening it
- * slides over the content rather than shoving it sideways — a layout that
+ * slides over the content rather than shoving it sideways, a layout that
  * reflowed every time the pointer crossed the edge would be unusable.
  */
 .sidebar {
@@ -127,7 +127,7 @@ h3 { font-size: 14px; }
   transition: width 160ms ease, box-shadow 160ms ease;
 }
 /* Hover opens it; so does keyboard focus, but not the focus a mouse click
-   leaves behind — that kept it open until you clicked somewhere else. */
+   leaves behind, that kept it open until you clicked somewhere else. */
 .sidebar:hover, .sidebar:has(:focus-visible) { width: var(--sidebar-w); box-shadow: var(--shadow); }
 .main { margin-left: var(--rail-w); }
 
@@ -181,7 +181,7 @@ h3 { font-size: 14px; }
   width: 100%; text-align: left;
 }
 /* The label keeps its space while the rail is closed, and an svg is a
-   shrinkable flex item — without this the icons squash to 11px wide. */
+   shrinkable flex item, without this the icons squash to 11px wide. */
 .nav-item svg, .brand-mark { flex: none; }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
@@ -269,7 +269,7 @@ h3 { font-size: 14px; }
 .btn-danger:hover { background: var(--neg-soft); filter: brightness(1.15); }
 .btn-sm { padding: 4px 9px; font-size: 12px; border-radius: 7px; }
 .btn-icon { padding: 6px; border-radius: 7px; }
-/* Wraps rather than overflowing: five options — Daily through Yearly — come
+/* Wraps rather than overflowing: five options. Daily through Yearly, come
    to 326px of pills, wider than a 320px phone. Anything that already fits
    on one line is unaffected. */
 .seg { display: inline-flex; flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; gap: 2px; }
@@ -277,7 +277,7 @@ h3 { font-size: 14px; }
 .seg button.on { background: var(--surface-3); color: var(--text); font-weight: 600; }
 
 /* The spread variant: one row of equal separate buttons rather than a pill.
-   No wrapping — the options are meant to be read as one line of choices, so
+   No wrapping, the options are meant to be read as one line of choices, so
    they shrink together instead of dropping one onto a second row. */
 .seg-spread { display: flex; width: 100%; flex-wrap: nowrap; gap: 8px; background: none; border: 0; padding: 0; }
 .seg-spread button {
@@ -304,7 +304,7 @@ h3 { font-size: 14px; }
 .search .input { padding-left: 30px; }
 /* The funnel at the end of the search box. It sits at the same height as the
    field and carries how many filters are on, because "filtered" is not the
-   useful part — how much of the list is being kept from you is. */
+   useful part, how much of the list is being kept from you is. */
 .filter-toggle { position: relative; flex: none; padding: 8px; border-radius: var(--radius-sm); }
 .filter-toggle.on { border-color: var(--accent); color: var(--accent); }
 .filter-count {
@@ -339,7 +339,7 @@ h3 { font-size: 14px; }
 .switch.on { background: var(--accent); border-color: var(--accent); }
 .switch.on::after { transform: translateX(14px); background: #fff; }
 /* The way into multi-select, standing in the header's checkbox column. Drawn
-   no wider than that column, but its hit area spills either side — 16px is a
+   no wider than that column, but its hit area spills either side. 16px is a
    target you miss. */
 .tx-pick {
   border: 0; background: none; width: 16px; margin: -8px; padding: 8px;
@@ -367,7 +367,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
    than across a canyon of empty space on a wide screen */
 .tx-grid {
   display: grid;
-  /* The category column's minimum clears the 150px chip on both sides — the
+  /* The category column's minimum clears the 150px chip on both sides, the
      chip is centred, so the "view category" arrow pinned at the right edge
      needs its 22px free on the left of the chip as well, or it sits on top of
      the chip at exactly the widths where the column stops growing. */
@@ -377,7 +377,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
 }
 /* Multi-select off: the checkbox column goes rather than standing empty, and
    everything shifts left into the room it was holding. Every row of the list
-   carries this together — header, date heads and transactions — or the columns
+   carries this together, header, date heads and transactions, or the columns
    stop describing each other. */
 .tx-grid.tx-nopick { grid-template-columns: 32px minmax(0, 34rem) 64px minmax(200px, 1fr) 118px; }
 .tx-grid.head { padding: 9px 16px; background: var(--surface-2); }
@@ -402,7 +402,7 @@ a.cat-open { cursor: pointer; }
 .period-title { letter-spacing: -0.01em; }
 a.cat-open:hover { color: var(--accent); text-decoration: underline; }
 /* The little arrows that open a row's category or its merchant. Same look,
-   two placements, and two class names — the checks in scripts/breakpoints.mjs
+   two placements, and two class names, the checks in scripts/breakpoints.mjs
    have to be able to ask about one without finding the other. */
 .tx-open {
   width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
@@ -537,7 +537,7 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
   overflow-wrap: anywhere;
 }
 .explain-body { white-space: pre-wrap; font-size: 14px; line-height: 1.55; }
-/* Everything that is not one of those lines — splits, the activity log. */
+/* Everything that is not one of those lines, splits, the activity log. */
 .drow-block { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); }
 .drow-block:last-child { border-bottom: 0; }
 /* ── the More sheet ──
@@ -644,7 +644,7 @@ svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 .menu.budget-menu { padding: 0; max-height: none; overflow: visible; }
 .budget-panel { padding: 12px; }
 .budget-amount { width: 100%; justify-content: center; font-variant-numeric: tabular-nums; }
-/* what's left reads as a figure, not a field — but it is still a button */
+/* what's left reads as a figure, not a field, but it is still a button */
 /* Remaining reads as a pill: green in hand, red overspent, quiet at zero. */
 .budget-amount.remaining {
   border-color: transparent; font-weight: 600; border-radius: 999px;
@@ -674,7 +674,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .bcol-left { width: 100px; }
 /* margin-left:auto, not the card head's space-between: once a long group name
    pushes these onto a second line, space-between has nothing to space and the
-   columns go hard left — 180px out of step with the rows they label. */
+   columns go hard left. 180px out of step with the rows they label. */
 .budget-head { align-items: flex-end; gap: 12px; margin-left: auto; }
 /* And the head's own padding tracks .list-row's rather than the card's, at
    every width, because that padding is the other half of the same alignment. */
@@ -697,7 +697,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .balance-point:last-of-type { border-bottom: 0; }
 
 /* Fixed columns on the accounts page, so a group's sparkline and total sit
-   directly above the accounts beneath it. The slots are always present — a
+   directly above the accounts beneath it. The slots are always present, a
    sparkline rendered only when there's enough history shifted every row
    without one out of line. */
 .acct-spark { width: 88px; flex: none; }
@@ -924,8 +924,8 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 /* ── Integrations ──
    Seven columns of numbers is a table on a desktop and a scroll-sideways
-   puzzle on a phone, where the two columns worth reading — how much of the
-   allowance is left, and whether it works — end up furthest off screen. So
+   puzzle on a phone, where the two columns worth reading, how much of the
+   allowance is left, and whether it works, end up furthest off screen. So
    the same rows render twice and the breakpoint picks one. */
 .int-cards { display: none; }
 
@@ -962,7 +962,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* ── responsive ───────────────────────────────────────────────────────────
  *
  * Every width-based override lives here and nowhere else, widest first, and
- * this section stays at the end of the file — the first rule below is only
+ * this section stays at the end of the file, the first rule below is only
  * true while it is. Add a new component's rules above it, never after.
  *
  * They used to sit beside the rules they changed, scattered through six
@@ -978,7 +978,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
  *      against an equally specific base rule.
  *   2. So write them equally specific. A base rule that needs an element
  *      qualifier (a.foo) beats a plain .foo override no matter where it
- *      sits — give the element its own class instead.
+ *      sits, give the element its own class instead.
  *
  * scripts/breakpoints.mjs walks these widths in a browser and asserts what is
  * actually visible at each, so a regression here fails loudly rather than on
@@ -987,7 +987,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 @media (max-width: 1000px) {
   .g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* Three number tiles still fit here — dropping straight to one column
+  /* Three number tiles still fit here, dropping straight to one column
      stacked net worth, assets and liabilities down the page for no reason. */
   .g-2-1 { grid-template-columns: minmax(0, 1fr); }
 }
@@ -1018,8 +1018,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
      index.html asks for viewport-fit=cover, so on a home screen the app's
      colours reach the edges of the screen instead of sitting in a letterbox.
      The cost is that the bottom of the page now runs under the home
-     indicator, and everything pinned there has to be lifted clear of it —
-     by nothing at all on a phone that has no indicator, which is why this is
+     indicator, and everything pinned there has to be lifted clear of it, by nothing at all on a phone that has no indicator, which is why this is
      an env() and not a number. The tab bar's own padding is set on the
      element in Sidebar.tsx: an inline style beats any rule written here. */
   .rule-prompt { bottom: calc(86px + env(safe-area-inset-bottom)); }
@@ -1029,7 +1028,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   /* ── topbar ──
      A page's own actions plus its title are wider than a phone: Budget's ran
      115px past the edge. They wrap to a second line rather than off the
-     screen, and the title no longer shrinks to make room — flex had squeezed
+     screen, and the title no longer shrinks to make room, flex had squeezed
      "Transactions" down to "Tra…". The primary button drops its label, which
      is the difference between two rows of chrome and three. */
   .topbar { padding: 10px 14px; flex-wrap: wrap; row-gap: 8px; }

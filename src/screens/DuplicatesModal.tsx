@@ -45,8 +45,8 @@ export function DuplicatesModal({ onClose }: { onClose: () => void }) {
     <Modal wide title="Find duplicate transactions" onClose={onClose}>
       <div className="col" style={{ gap: 14 }}>
         <div className="small muted" style={{ maxWidth: 660 }}>
-          Transactions that look like the same thing more than once. Each group keeps one — the one the
-          bank still syncs, or the one you have already categorised — and offers the rest for deletion.
+          Transactions that look like the same thing more than once. Each group keeps one, the one the
+          bank still syncs, or the one you have already categorised, and offers the rest for deletion.
           Nothing goes until you press the button, and one undo brings it all back.
         </div>
 
@@ -88,7 +88,7 @@ export function DuplicatesModal({ onClose }: { onClose: () => void }) {
                   ? "Ignoring the merchant will pair up two different things bought for the same amount on the same day. "
                   : ""}
                 {!opts.sameAccount ? "Ignoring the account will pair up the same purchase made on two cards. " : ""}
-                {opts.dayTolerance > 0 ? "A date window pairs up anything repeating within it — a daily coffee, for one. " : ""}
+                {opts.dayTolerance > 0 ? "A date window pairs up anything repeating within it, a daily coffee for one. " : ""}
                 Read the list before deleting.
               </span>
             </span>
@@ -157,7 +157,7 @@ export function DuplicatesModal({ onClose }: { onClose: () => void }) {
         ) : (
           <div className="small muted">
             Nothing matches these settings. If you know there are duplicates, try turning off
-            &ldquo;Merchant must match&rdquo; — a second import that mapped a different column is the usual
+            &ldquo;Merchant must match&rdquo;. A second import that mapped a different column is the usual
             reason two copies look different to the app but the same to you.
           </div>
         )}

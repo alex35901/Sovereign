@@ -78,7 +78,7 @@ function Row({ label, candidate, candidates, onPick }: {
           </button>
         )}
       />
-      {candidate ? <Left remaining={candidate.remaining} /> : <span className="tiny num nowrap muted">—</span>}
+      {candidate ? <Left remaining={candidate.remaining} /> : <span className="tiny num nowrap muted">-</span>}
     </div>
   );
 }
@@ -134,13 +134,13 @@ function Panel({ category, month, onDone }: { category: Category; month: MonthKe
           {from?.name} ends on <b>{fmt0((from?.remaining ?? 0) - preview.moved)}</b>,{" "}
           {to?.name} on <b>{fmt0((to?.remaining ?? 0) + preview.moved)}</b>.
           {capped
-            ? ` Capped at ${fmt0(preview.moved)} — that's all ${from?.name} has ${from?.rollover ? "left" : "budgeted"}.`
+            ? ` Capped at ${fmt0(preview.moved)}, that's all ${from?.name} has ${from?.rollover ? "left" : "budgeted"}.`
             : ""}
           {/* The one part of this that surprises people: giving away money that
               carried in drives the month's own plan below zero, which is
               exactly right and looks like a mistake unless it is said. */}
           {plannedAfter < 0 ? (
-            <> Its plan for the month lands on <b>{fmt0(plannedAfter)}</b> — {fmt0(-plannedAfter)} of what
+            <> Its plan for the month lands on <b>{fmt0(plannedAfter)}</b>. {fmt0(-plannedAfter)} of what
               it is giving away carried in rather than being budgeted this month.</>
           ) : null}
         </div>

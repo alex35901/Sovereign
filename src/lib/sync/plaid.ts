@@ -224,7 +224,7 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
     const totalCost = cents(h.cost_basis);
     return {
       accountSyncId: h.account_id,
-      ticker: security?.ticker_symbol || security?.name?.slice(0, 12) || "—",
+      ticker: security?.ticker_symbol || security?.name?.slice(0, 12) || "-",
       name: security?.name || security?.ticker_symbol || "Unknown holding",
       quantity: h.quantity,
       // Plaid's cost_basis is the total for the position; this app stores it per share

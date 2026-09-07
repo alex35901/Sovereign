@@ -185,7 +185,7 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       caveat: perSave ? `measured here · ${perSave} MB per save` : "measured in this browser",
       period: "month",
       lastAt: s.lastSyncAt,
-      note: moved.calls > 20_000 ? `${moved.calls.toLocaleString()} requests this month — more than a sync should need` : undefined,
+      note: moved.calls > 20_000 ? `${moved.calls.toLocaleString()} requests this month, more than a sync should need` : undefined,
     },
     {
       id: "vercel-transfer",

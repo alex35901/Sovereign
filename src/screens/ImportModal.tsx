@@ -8,7 +8,7 @@ import { dateLabel } from "../lib/date";
 import { accountOptions } from "../lib/select";
 
 const ROLES: { value: ColumnRole; label: string }[] = [
-  { value: "ignore", label: "— ignore —" },
+  { value: "ignore", label: "(ignore)" },
   { value: "date", label: "Date" },
   { value: "merchant", label: "Merchant / description" },
   { value: "statement", label: "Original statement" },
@@ -185,7 +185,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                 </>
               ) : (
                 <div className="small neg" style={{ marginTop: 8 }}>
-                  Nothing to import — check that a Date column and an Amount (or Debit/Credit) column are mapped.
+                  Nothing to import. Check that a Date column and an Amount (or Debit/Credit) column are mapped.
                 </div>
               )}
             </Card>

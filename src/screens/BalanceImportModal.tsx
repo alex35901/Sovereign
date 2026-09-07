@@ -9,7 +9,7 @@ import { AreaChart } from "../components/charts";
 import { Btn, Card, Field, Modal, Money, SelectInput, Toggle } from "../components/ui";
 
 const ROLES: { value: BalanceRole; label: string }[] = [
-  { value: "ignore", label: "— ignore —" },
+  { value: "ignore", label: "(ignore)" },
   { value: "date", label: "Date" },
   { value: "balance", label: "Balance" },
   { value: "account", label: "Account / property" },
@@ -62,7 +62,7 @@ export function BalanceImportModal({ account, onClose }: { account: Account; onC
   return (
     <Modal
       wide
-      title={`Import balance history — ${account.name}`}
+      title={`Import balance history: ${account.name}`}
       onClose={onClose}
       footer={
         <>
@@ -85,7 +85,7 @@ export function BalanceImportModal({ account, onClose }: { account: Account; onC
           <div className="center">
             <div className="bold">Drop a balance history CSV</div>
             <div className="small muted">
-              A Date column and a Balance column is all it needs — daily, monthly, or occasional rows.
+              A Date column and a Balance column is all it needs. Daily, monthly or occasional rows.
             </div>
           </div>
           <Btn variant="primary" onClick={() => fileRef.current?.click()}>Choose file</Btn>
@@ -180,7 +180,7 @@ export function BalanceImportModal({ account, onClose }: { account: Account; onC
                 <>
                   <div className="divider" />
                   <span className="tiny faint">
-                    Repeated days are dropped — balances carry forward on the chart, so only the changes are stored.
+                    Repeated days are dropped: balances carry forward on the chart, so only the changes are stored.
                   </span>
                   <AreaChart
                     height={150}
@@ -198,14 +198,14 @@ export function BalanceImportModal({ account, onClose }: { account: Account; onC
                 <div className="small muted" style={{ marginTop: 10 }}>
                   This account already has a point from {dateLabel(staleImport.date, { year: true })} of{" "}
                   <Money value={staleImport.balance} cents={false} />, which is newer than the last row in this file.
-                  The history will fill in behind it, but the current balance stays where it is — choose{" "}
+                  The history will fill in behind it, but the current balance stays where it is. Choose{" "}
                   <b>Replace this account's history</b> if the file should win.
                 </div>
               ) : null}
 
               {!plan.points.length ? (
                 <div className="small neg" style={{ marginTop: 8 }}>
-                  Nothing to import — check that a Date column and a Balance column are mapped.
+                  Nothing to import. Check that a Date column and a Balance column are mapped.
                 </div>
               ) : null}
             </Card>

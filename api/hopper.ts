@@ -157,7 +157,7 @@ async function describe(err: unknown): Promise<string> {
   const { default: SDK } = await import("@anthropic-ai/sdk");
   if (err instanceof SDK.AuthenticationError) return "The server's API key was refused. Check ANTHROPIC_API_KEY in Vercel.";
   if (err instanceof SDK.RateLimitError) return "Anthropic is rate-limiting this key. Try again in a minute.";
-  if (err instanceof SDK.BadRequestError) return "That request was malformed — this is a bug in Sovereign, not something you did.";
+  if (err instanceof SDK.BadRequestError) return "That request was malformed. This is a bug in Sovereign, not something you did.";
   if (err instanceof SDK.APIError) return `The model could not be reached (${err.status}).`;
   return "The model could not be reached.";
 }

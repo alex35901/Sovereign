@@ -24,7 +24,7 @@ export function saveDB(db: DB): void {
     try {
       localStorage.setItem(KEY, JSON.stringify(db));
     } catch (err) {
-      console.error("Could not persist — storage is probably full.", err);
+      console.error("Could not persist, storage is probably full.", err);
     }
   }, 250);
 }

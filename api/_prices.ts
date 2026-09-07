@@ -79,7 +79,7 @@ async function one(apiKey: string, ticker: string): Promise<Outcome> {
   if (res.status === 401 || res.status === 403) {
     return {
       status: 401,
-      fatal: "Tiingo rejected the API key. Check it in Settings — it's the token from tiingo.com, not your password.",
+      fatal: "Tiingo rejected the API key. Check it in Settings: it is the token from tiingo.com, not your password.",
     };
   }
   if (res.status === 429) {

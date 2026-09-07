@@ -220,7 +220,7 @@ function RemainingCard({ row }: { row: BudgetRow }) {
         />
         <div className="tiny faint">
           {share === null
-            ? `Nothing planned — ${fmt0(row.actual)} spent`
+            ? `Nothing planned. ${fmt0(row.actual)} spent`
             : `${share}% of the ${fmt0(available)} available spent`}
         </div>
       </div>

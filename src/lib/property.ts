@@ -91,7 +91,7 @@ export function lookupsPerMonth(properties: number, everyHours: number): number 
 
 /** "every 34 hours" / "daily" / "every 3 days" */
 export function cadenceLabel(hours: number): string {
-  if (!Number.isFinite(hours)) return "never — too many properties for the free tier";
+  if (!Number.isFinite(hours)) return "never, too many properties for the free tier";
   if (hours < 24) return `every ${hours} hours`;
   if (hours < 36) return "about daily";
   const days = Math.round(hours / 24);

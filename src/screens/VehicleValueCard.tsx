@@ -36,7 +36,7 @@ export function VehicleValueCard({ account }: { account: Account }) {
     <Card>
       <CardHead
         title={<span className="row" style={{ gap: 8 }}><Car size={16} /> Estimated value</span>}
-        sub="Modelled from what it cost and how long you've had it — not a market quote"
+        sub="Modelled from what it cost and how long you've had it, not a market quote"
         right={
           <Btn
             variant="primary" disabled={!ready}
@@ -119,8 +119,8 @@ export function VehicleValueCard({ account }: { account: Account }) {
       )}
 
       <div className="tiny faint" style={{ marginTop: 12 }}>
-        Curves are fitted to 2026 industry averages for five-year depreciation — 41.8% for the average
-        vehicle, 34.2% for trucks, 57.2% for EVs — with the first year steepest. Mileage above or below
+        Curves are fitted to 2026 industry averages for five-year depreciation. 41.8% for the average
+        vehicle, 34.2% for trucks, 57.2% for EVs, with the first year steepest. Mileage above or below
         12,000 a year moves you along the curve faster or slower. If you have a real quote from a dealer
         or KBB, enter it as a balance point below and it takes precedence.
       </div>

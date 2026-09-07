@@ -93,7 +93,7 @@ export default function Hopper() {
               <div>
                 <div className="bold" style={{ fontSize: 15 }}>Ask about your money.</div>
                 <div className="small muted" style={{ marginTop: 4 }}>
-                  Hopper reads your accounts, transactions, budget and goals — the same figures the
+                  Hopper reads your accounts, transactions, budget and goals, the same figures the
                   rest of the app shows, worked out by the same code. He can look, not change.
                 </div>
               </div>

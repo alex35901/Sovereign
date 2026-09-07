@@ -181,11 +181,11 @@ function Row({ row, busy, onRun }: { row: Integration; busy: boolean; onRun: () 
       <td className="muted" style={{ whiteSpace: "nowrap" }}>{row.provider}</td>
       <td style={{ minWidth: 190 }}><KeyCell row={row} /></td>
       <td className="right num">
-        <div className="bold">{row.set ? row.used.toLocaleString() : "—"}</div>
+        <div className="bold">{row.set ? row.used.toLocaleString() : "-"}</div>
         <Bar row={row} state={health.state} />
       </td>
       <td className="right num">
-        <div>{row.ceiling > 0 ? row.ceiling.toLocaleString() : "—"}</div>
+        <div>{row.ceiling > 0 ? row.ceiling.toLocaleString() : "-"}</div>
         <div className="tiny faint" style={{ whiteSpace: "nowrap" }}>{row.unit} {PERIOD_LABEL[row.period]}</div>
         {row.caveat ? <div className="tiny faint" style={{ whiteSpace: "nowrap" }}>{row.caveat}</div> : null}
       </td>
@@ -305,7 +305,7 @@ function Stacked({ row, busy, onRun }: { row: Integration; busy: boolean; onRun:
       <div className="int-facts">
         <span className="col" style={{ gap: 0 }}>
           <span className="small">
-            {row.set ? <><b>{row.used.toLocaleString()}</b> of {row.ceiling.toLocaleString()}</> : "—"}
+            {row.set ? <><b>{row.used.toLocaleString()}</b> of {row.ceiling.toLocaleString()}</> : "-"}
           </span>
           <span className="tiny faint">{row.unit} {PERIOD_LABEL[row.period]}{row.caveat ? ` · ${row.caveat}` : ""}</span>
           <Bar row={row} state={health.state} />

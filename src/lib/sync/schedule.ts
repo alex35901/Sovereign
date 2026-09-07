@@ -9,7 +9,7 @@
 export type SyncCadence = "off" | "open" | "hourly" | "6h" | "daily" | "weekly";
 
 export const CADENCES: { value: SyncCadence; label: string; hours: number | null }[] = [
-  { value: "off", label: "Never — I'll sync by hand", hours: null },
+  { value: "off", label: "Never. I'll sync by hand", hours: null },
   { value: "open", label: "Whenever I open the app", hours: 0 },
   { value: "hourly", label: "Every hour", hours: 1 },
   { value: "6h", label: "Every 6 hours", hours: 6 },

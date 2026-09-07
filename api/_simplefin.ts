@@ -19,7 +19,7 @@ export class BridgeError extends Error {
 export async function claim(setupToken: string): Promise<string> {
   const claimUrl = Buffer.from(setupToken, "base64").toString("utf8").trim();
   if (!/^https:\/\//.test(claimUrl)) {
-    throw new BridgeError(400, "That setup token doesn't decode to an https URL. Copy the whole token — they're long and easy to truncate.");
+    throw new BridgeError(400, "That setup token doesn't decode to an https URL. Copy the whole token. They are long and easy to truncate.");
   }
   const upstream = await fetch(claimUrl, {
     method: "POST",
@@ -28,7 +28,7 @@ export async function claim(setupToken: string): Promise<string> {
   });
   const accessUrl = (await upstream.text()).trim();
   if (!upstream.ok || !/^https:\/\//.test(accessUrl)) {
-    throw new BridgeError(400, `Bridge rejected the token (${upstream.status}). Setup tokens are single-use — generate a fresh one, and check the bridge shows an active subscription or trial.`);
+    throw new BridgeError(400, `Bridge rejected the token (${upstream.status}). Setup tokens are single-use. Generate a fresh one, and check the bridge shows an active subscription or trial.`);
   }
   return accessUrl;
 }

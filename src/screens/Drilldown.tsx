@@ -176,7 +176,7 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
         <Card>
           <CardHead
             title="Over time"
-            sub={`${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"} — click one to look at it`}
+            sub={`${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"}, click one to look at it`}
             right={<Segmented value={grain} options={GRAINS} onChange={setGrain} />}
           />
           {earliest ? (

@@ -41,7 +41,7 @@ export default function Reports() {
   }, [range, earliestMonth]);
   const from = monthStart(months[0]);
   const to = monthEnd(months[months.length - 1]);
-  const span = `${monthLabel(months[0])} — ${monthLabel(months[months.length - 1])}`;
+  const span = `${monthLabel(months[0])} to ${monthLabel(months[months.length - 1])}`;
 
   return (
     <>

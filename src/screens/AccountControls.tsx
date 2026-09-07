@@ -48,7 +48,7 @@ export function AccountControls({ account }: { account: Account }) {
         />
         <Row
           title="Hide transactions"
-          body="Keeps its transactions out of cash flow, budgets and reports — the history as well as anything new."
+          body="Keeps its transactions out of cash flow, budgets and reports. The history as well as anything new."
           on={Boolean(account.hideTransactions)}
           onChange={(v) => set({ hideTransactions: v })}
         />
@@ -85,7 +85,7 @@ export function AccountControls({ account }: { account: Account }) {
             <span style={{ fontWeight: 500 }}>Delete account</span>
             <span className="small muted">
               Removes the account, its transactions and its holdings. It won't come back on the
-              next sync — the provider offering it again is remembered and ignored.
+              next sync: the provider offering it again is remembered and ignored.
             </span>
           </div>
           <ConfirmButton

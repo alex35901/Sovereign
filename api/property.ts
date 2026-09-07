@@ -81,7 +81,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
 
 /** Turns RentCast's status codes into something worth reading. */
 function describe(status: number, body: string): string {
-  if (status === 401 || status === 403) return "RentCast rejected the API key. Check it in Settings — it's the key from app.rentcast.io, not your password.";
+  if (status === 401 || status === 403) return "RentCast rejected the API key. Check it in Settings: it is the key from app.rentcast.io, not your password.";
   if (status === 404) return "RentCast has no record of that address. Try the full format: street, city, state, ZIP.";
   if (status === 429) return "You've used all 50 free RentCast lookups this month. The count resets at the start of next month.";
   return `RentCast returned ${status}: ${body.slice(0, 200)}`;

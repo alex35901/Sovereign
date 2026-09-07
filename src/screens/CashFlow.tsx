@@ -56,7 +56,7 @@ export default function CashFlow() {
         </div>
 
         <Card>
-          <CardHead title="Income vs. spending" sub={`${monthLabel(months[0], true)} — ${monthLabel(months[months.length - 1], true)}`} />
+          <CardHead title="Income vs. spending" sub={`${monthLabel(months[0], true)} to ${monthLabel(months[months.length - 1], true)}`} />
           <BarChart
             height={250}
             groups={flow.map((f) => ({

@@ -65,7 +65,7 @@ function PlaidTokens() {
   return (
     <SecretBox
       name="PLAID_ACCESS_TOKENS" value={items.map((i) => i.accessToken).join(" ")} said="Access tokens copied."
-      note={`One token per connection — ${items.map((i) => i.institution).join(", ")}. Each is a live credential to
+      note={`One token per connection. ${items.map((i) => i.institution).join(", ")}. Each is a live credential to
              that bank, so treat them like passwords. Connect another bank and this value changes: paste it again.`}
     />
   );
@@ -106,7 +106,7 @@ function SecretBox({ name, value, said, note }: {
       ]);
       notify(`${said} Paste it into Vercel as ${name}.`);
     } catch {
-      notify("Selected it for you — press Ctrl/Cmd+C to copy.");
+      notify("Selected it for you. Press Ctrl/Cmd+C to copy.");
     }
   };
 
@@ -179,34 +179,34 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
             ok={e.documentSealed === true}
             label="The stored document"
             detail={e.documentSealed === true
-              ? "is encrypted — what the database holds is ciphertext."
+              ? "is encrypted: what the database holds is ciphertext."
               : e.documentSealed === null
-                ? "is not there yet — save once from this browser."
+                ? "is not there yet. Save once from this browser."
                 : "is still readable. Set a passphrase above."}
           />
           <Row
             ok={unlocked}
             label="The key on this browser"
-            detail={unlocked ? "is held — it can read and save." : "is missing. Enter the encryption passphrase."}
+            detail={unlocked ? "is held: it can read and save." : "is missing. Enter the encryption passphrase."}
           />
           <Row
             ok={e.simplefinUrlSet}
             label="SIMPLEFIN_ACCESS_URL in Vercel"
             detail={e.simplefinUrlSet
-              ? "is set — the 9am pull can reach SimpleFIN."
+              ? "is set: the 9am pull can reach SimpleFIN."
               : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
           />
           <Row
             ok={e.plaidTokensSet}
             label="PLAID_ACCESS_TOKENS in Vercel"
             detail={e.plaidTokensSet
-              ? "is set — the 9am pull can reach Plaid too."
+              ? "is set: the 9am pull can reach Plaid too."
               : "is not set. Plaid connections will not be pulled overnight until it is."}
           />
           <Row
             ok={e.cronSecretSet}
             label="CRON_SECRET in Vercel"
-            detail={e.cronSecretSet ? "is set — the scheduled job can authenticate." : "is not set, so the 9am job cannot run."}
+            detail={e.cronSecretSet ? "is set: the scheduled job can authenticate." : "is not set, so the 9am job cannot run."}
           />
           <div className="tiny faint" style={{ marginTop: 2 }}>
             {e.queued === 0
@@ -423,7 +423,7 @@ export function EncryptionCard(){
       {!on ? (
         <div className="small muted">
           This applies to the cloud copy, so there is nothing to say until this browser is talking to it.
-          Connect it under “Sync across devices” above — if the budget turns out to be encrypted, the box
+          Connect it under “Sync across devices” above. If the budget turns out to be encrypted, the box
           for opening it appears here.
         </div>
       ) : !ready ? (
@@ -433,14 +433,14 @@ export function EncryptionCard(){
           <div className="small muted" style={{ maxWidth: 620 }}>
             The document is sealed with AES-256-GCM before it leaves this browser. Neon stores ciphertext,
             Vercel passes ciphertext, and the passphrase that opens it has never been sent anywhere. The key
-            is held on this browser in a form no script can read back out — clearing site data will ask for
+            is held on this browser in a form no script can read back out. Clearing site data will ask for
             the passphrase again.
           </div>
           <div className="setting-row">
             <span className="small">
               <b>The overnight sync still runs.</b> It cannot read the document, so it encrypts each pull to
               this installation&rsquo;s public key and leaves it in a queue. Whichever browser opens the app
-              next merges it in — that is the only place it can be read. For that to work, the credentials
+              next merges it in. That is the only place it can be read. For that to work, the credentials
               have to live in Vercel as <b>SIMPLEFIN_ACCESS_URL</b> and <b>PLAID_ACCESS_TOKENS</b>, since the
               job can no longer find them inside the document.
             </span>
@@ -460,21 +460,20 @@ export function EncryptionCard(){
           </div>
           <div className="tiny faint" style={{ maxWidth: 620 }}>
             Forgetting the key here is also the only way to check that a passphrase is the right one: this
-            browser will ask for it back, and what it says is the truth. Take the backup first — if the
+            browser will ask for it back, and what it says is the truth. Take the backup first: if the
             passphrase turns out not to be the one, that file is how you get the budget back.
           </div>
         </div>
       ) : encrypted ? (
         <div className="col" style={{ gap: 10 }}>
           <div className="small muted" style={{ maxWidth: 620 }}>
-            This budget is encrypted and this browser has no key for it. Enter the encryption passphrase —
-            not the sync passphrase — to read it here.
+            This budget is encrypted and this browser has no key for it. Enter the encryption passphrase, not the sync passphrase, to read it here.
           </div>
           {sealed.at ? (
             <div className="tiny faint">
               The stored copy was last written {new Date(sealed.at).toLocaleString()}
               {sealed.by ? ` by ${sealed.by}` : ""}. A passphrase that used to work and no longer does means
-              the document was sealed again — check that date against when you last set one.
+              the document was sealed again. Check that date against when you last set one.
             </div>
           ) : null}
           <div className="row wrap" style={{ gap: 8 }}>
@@ -491,7 +490,7 @@ export function EncryptionCard(){
             <summary className="small muted" style={{ cursor: "pointer" }}>Lost the passphrase?</summary>
             <div className="col" style={{ gap: 10, marginTop: 10 }}>
               <div className="small muted" style={{ maxWidth: 620 }}>
-                Then the stored copy can never be opened again — not by you, not by this app, not by anyone
+                Then the stored copy can never be opened again, not by you, not by this app, not by anyone
                 holding the database. That part is not recoverable and is the whole point of it.
                 <b> Your budget is not lost, though.</b> This browser keeps its own readable copy, and it is
                 what you are looking at right now: {db.transactions.length.toLocaleString()} transactions
@@ -501,7 +500,7 @@ export function EncryptionCard(){
                 <span className="small">
                   <b>Anything that exists only in the stored copy goes with it.</b> Edits made on a device
                   you can no longer open, and any overnight pulls not yet merged in, are inside a document
-                  nobody can read — sealing again writes over it. Take the backup first.
+                  nobody can read, sealing again writes over it. Take the backup first.
                 </span>
               </div>
               <div className="row wrap" style={{ gap: 8 }}>
@@ -521,7 +520,7 @@ export function EncryptionCard(){
                 <Btn onClick={backup}><Download size={14} /> Download a plain backup first</Btn>
                 <ConfirmButton
                   label="Seal again with a new passphrase"
-                  confirmLabel="Click again — the old copy goes"
+                  confirmLabel="Click again, the old copy goes"
                   onConfirm={() => void reseal()}
                 />
               </div>
@@ -591,19 +590,19 @@ function SetupFlow({ busy, onBackup, onSeal }: {
       {step === "learn" ? (
         <>
           <div className="small muted" style={{ maxWidth: 640 }}>
-            Right now the stored copy is readable by anyone who can reach the database — which includes
+            Right now the stored copy is readable by anyone who can reach the database, which includes
             anyone with your Neon or Vercel login. A passphrase set here seals it before it leaves this
             browser, so what is stored gives up nothing on inspection.
           </div>
           <div className="setting-row" style={{ alignItems: "stretch" }}>
             <div className="col" style={{ gap: 5, flex: 1, minWidth: 0 }}>
-              <div className="tiny faint">The sync passphrase — you already have one</div>
+              <div className="tiny faint">The sync passphrase, you already have one</div>
               <div className="small">Set in Vercel as <b>SYNC_PASSPHRASE</b>.</div>
               <div className="tiny muted">The server checks it. Change it whenever you like.</div>
               <div className="tiny muted">It decides who may <i>reach</i> the database.</div>
             </div>
             <div className="col" style={{ gap: 5, flex: 1, minWidth: 0 }}>
-              <div className="tiny" style={{ color: "var(--accent)" }}>The encryption passphrase — new, and different</div>
+              <div className="tiny" style={{ color: "var(--accent)" }}>The encryption passphrase, new, and different</div>
               <div className="small">Set here. Never sent anywhere.</div>
               <div className="tiny muted">Nothing can check it and nothing can reset it.</div>
               <div className="tiny muted">It decides who may <i>read</i> what the database holds.</div>
@@ -618,7 +617,7 @@ function SetupFlow({ busy, onBackup, onSeal }: {
             </span>
           </div>
           <div className="row">
-            <Btn variant="primary" onClick={() => setStep("backup")}>Understood — next</Btn>
+            <Btn variant="primary" onClick={() => setStep("backup")}>Understood, next</Btn>
           </div>
         </>
       ) : null}
@@ -627,8 +626,8 @@ function SetupFlow({ busy, onBackup, onSeal }: {
         <>
           <div className="small muted" style={{ maxWidth: 640 }}>
             A plain copy of everything, downloaded before anything is sealed. If the passphrase is ever
-            lost this file is the budget — {db.transactions.length.toLocaleString()} transactions across{" "}
-            {db.accounts.length} accounts — and without it there is nothing anyone can do.
+            lost this file is the budget. {db.transactions.length.toLocaleString()} transactions across{" "}
+            {db.accounts.length} accounts, and without it there is nothing anyone can do.
           </div>
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn variant={backedUp ? "default" : "primary"} onClick={() => { onBackup(); setBackedUp(true); }}>
@@ -639,7 +638,7 @@ function SetupFlow({ busy, onBackup, onSeal }: {
             </Btn>
           </div>
           {!backedUp ? (
-            <div className="tiny faint">This one is not optional — the button above unlocks the next step.</div>
+            <div className="tiny faint">This one is not optional, the button above unlocks the next step.</div>
           ) : (
             <div className="tiny pos">Saved. Keep it somewhere only you can reach.</div>
           )}
@@ -651,7 +650,7 @@ function SetupFlow({ busy, onBackup, onSeal }: {
           <div className="small muted" style={{ maxWidth: 640 }}>
             {own
               ? "Your own phrase. Several unrelated words beat one clever word, and length beats punctuation."
-              : `${WORD_COUNT} words picked at random by this browser — about ${generatedBits()} bits, which is far past anything guessable, and unmistakably not your SYNC_PASSPHRASE.`}
+              : `${WORD_COUNT} words picked at random by this browser, about ${generatedBits()} bits, which is far past anything guessable, and unmistakably not your SYNC_PASSPHRASE.`}
           </div>
           {own ? (
             <SecretInput
@@ -671,7 +670,7 @@ function SetupFlow({ busy, onBackup, onSeal }: {
             <span className="small">
               <b>Write it down now, before the next step.</b> A password manager, or paper somewhere only
               you can reach. The next step asks for it back from an empty box, which is the only way to
-              find out whether you really have it — and the moment to find out is now, not in six months
+              find out whether you really have it, and the moment to find out is now, not in six months
               on a phone.
             </span>
           </div>
@@ -689,7 +688,7 @@ function SetupFlow({ busy, onBackup, onSeal }: {
       {step === "confirm" ? (
         <>
           <div className="small muted" style={{ maxWidth: 640 }}>
-            Type it in from wherever you wrote it. Not from the last screen — that would only prove the
+            Type it in from wherever you wrote it. Not from the last screen, that would only prove the
             screen still exists.
           </div>
           <SecretInput
@@ -698,7 +697,7 @@ function SetupFlow({ busy, onBackup, onSeal }: {
           />
           {wrong ? (
             <div className="small neg">
-              That is not the same phrase. Nothing has been sealed — go back and look at it again.
+              That is not the same phrase. Nothing has been sealed, go back and look at it again.
             </div>
           ) : null}
           <div className="row wrap" style={{ gap: 8 }}>

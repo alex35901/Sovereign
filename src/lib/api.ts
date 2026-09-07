@@ -8,7 +8,7 @@
  */
 const missingFunction = (path: string) =>
   `The ${path} function isn't running, so the request never reached the provider. ` +
-  "`npm run dev` serves the UI only — start the app with `vercel dev`, or use your deployment.";
+  "`npm run dev` serves the UI only. Start the app with `vercel dev`, or use your deployment.";
 
 export async function postJSON<T>(path: string, body: Record<string, unknown>): Promise<T> {
   let res: Response;

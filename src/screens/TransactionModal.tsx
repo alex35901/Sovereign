@@ -198,7 +198,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
       </DetailRow>
 
       {txn?.statement ? (
-        <DetailRow label="Original statement" help="Exactly as the bank sent it — kept for reference and never edited">
+        <DetailRow label="Original statement" help="Exactly as the bank sent it, kept for reference and never edited">
           {/* Its whole value on hover, because the useful half of a statement
               line is often the half that does not fit. */}
           <span className="drow-statement truncate" title={txn.statement}>{txn.statement}</span>
@@ -318,7 +318,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         {splits.length ? (
           <div className={cx("small", splitOff ? "neg" : "muted")}>
             Splits total <Money value={splitTotal} /> of {fmt(amount)}
-            {splitOff ? ` — ${fmt(amount - splitTotal)} unassigned` : " ✓"}
+            {splitOff ? `. ${fmt(amount - splitTotal)} unassigned` : " ✓"}
           </div>
         ) : null}
       </div>

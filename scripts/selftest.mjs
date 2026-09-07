@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import http from "node:http";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { build } from "esbuild";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -4149,6 +4149,190 @@ await test("every notice says where to go and when it was true", () => {
     assert.ok(n.when && n.when.length, `${n.id} has nothing to say about when`);
     assert.ok(["neg", "pos", "warn"].includes(n.tone), `${n.id} has tone ${n.tone}`);
   }
+});
+
+
+await test("a goal speaks at half, at three quarters, and when it gets there", () => {
+  assert.equal(M.NT.goalTier(0, 1000), null);
+  assert.equal(M.NT.goalTier(499, 1000), null);
+  assert.equal(M.NT.goalTier(500, 1000), "half");
+  assert.equal(M.NT.goalTier(749, 1000), "half");
+  assert.equal(M.NT.goalTier(750, 1000), "most");
+  assert.equal(M.NT.goalTier(999, 1000), "most");
+  assert.equal(M.NT.goalTier(1000, 1000), "reached");
+  assert.equal(M.NT.goalTier(4000, 1000), "reached", "and there is no rung above it");
+  assert.equal(M.NT.goalTier(500, 0), null, "a goal with no target has nothing to be half of");
+});
+
+await test("reaching a goal congratulates rather than telling you what to do with it", () => {
+  const goalAt = (saved, target) => {
+    const base = M.emptyDB();
+    return {
+      ...base,
+      accounts: [{ id: "sav", name: "Savings", type: "savings", balance: saved, history: [], includeInNetWorth: true, hidden: false, goalAccount: true }],
+      goals: [{
+        id: "g1", name: "Laptop", emoji: "*", targetAmount: target, accountIds: [],
+        allocations: { sav: saved }, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
+      }],
+    };
+  };
+  const [done] = M.NT.notices(goalAt(3_000_00, 3_000_00)).filter((n) => n.kind === "goal");
+  assert.match(done.title, /Nice work/);
+  assert.equal(/spend/i.test(done.title + done.body), false, "no advice about what to do with it");
+  assert.match(done.id, /:reached$/);
+
+  const [half] = M.NT.notices(goalAt(1_500_00, 3_000_00)).filter((n) => n.kind === "goal");
+  assert.match(half.title, /50% funded/);
+  assert.match(half.body, /to go/);
+  assert.match(half.id, /:half$/);
+  // The rung is in the id, so passing the next one is new news.
+  const [most] = M.NT.notices(goalAt(2_400_00, 3_000_00)).filter((n) => n.kind === "goal");
+  assert.notEqual(most.id, half.id);
+});
+
+await test("unreviewed transactions are counted in rungs, not one by one", () => {
+  assert.equal(M.NT.reviewTier(0), null);
+  assert.equal(M.NT.reviewTier(24), null);
+  assert.equal(M.NT.reviewTier(25), 25);
+  assert.equal(M.NT.reviewTier(49), 25, "no new notice until the pile has really grown");
+  assert.equal(M.NT.reviewTier(50), 50);
+  assert.equal(M.NT.reviewTier(10_000), M.NT.REVIEW_RUNGS[M.NT.REVIEW_RUNGS.length - 1]);
+});
+
+const withTxns = (txns, cats) => {
+  const base = M.emptyDB();
+  const cat = base.categories.find((c) => {
+    const g = base.groups.find((x) => x.id === c.groupId);
+    return g && g.kind === "expense";
+  });
+  return {
+    ...base,
+    accounts: [{ id: "chk", name: "Everyday", type: "checking", balance: 0, history: [], includeInNetWorth: true, hidden: false }],
+    transactions: txns.map((t, i) => ({
+      id: `t${i}`, accountId: "chk", categoryId: cats ?? cat.id, tags: [],
+      pending: false, reviewed: true, hideFromReports: false, merchant: "Corner Shop", ...t,
+    })),
+  };
+};
+
+await test("a charge well past a merchant's usual is worth a word", () => {
+  const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-08-0${d}`, amount: -20_00 }));
+  const db = withTxns([...usual, { date: "2026-09-05", amount: -400_00 }]);
+  const [odd] = M.NT.unusualCharges(db, "2026-09-07");
+  assert.ok(odd, "four charges is enough to know what usual looks like");
+  assert.equal(odd.amount, 400_00);
+  assert.equal(odd.typical, 20_00);
+
+  // Three charges in total is not enough: one of them is the outlier, which
+  // leaves two to say what usual looks like.
+  const thin = withTxns([...usual.slice(0, 2), { date: "2026-09-05", amount: -400_00 }]);
+  assert.deepEqual(M.NT.unusualCharges(thin, "2026-09-07"), []);
+});
+
+await test("a coffee that cost triple is not news about anybody's money", () => {
+  // The multiple alone would flag it; the floor is what stops that.
+  const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-08-0${d}`, amount: -2_00 }));
+  const db = withTxns([...usual, { date: "2026-09-05", amount: -8_00 }]);
+  assert.deepEqual(M.NT.unusualCharges(db, "2026-09-07"), []);
+});
+
+await test("an old outlier is not news either", () => {
+  const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-01-0${d}`, amount: -20_00 }));
+  const db = withTxns([...usual, { date: "2026-02-05", amount: -400_00 }]);
+  assert.deepEqual(M.NT.unusualCharges(db, "2026-09-07"), [], "seven months ago is not a surprise");
+});
+
+await test("a recurring charge that stopped arriving is said out loud", () => {
+  // Silence is the one thing a list of transactions cannot show you.
+  const base = M.emptyDB();
+  const db = {
+    ...withTxns([
+      { date: "2026-05-04", amount: -14_99, merchant: "Streamly" },
+      { date: "2026-06-04", amount: -14_99, merchant: "Streamly" },
+      { date: "2026-07-04", amount: -14_99, merchant: "Streamly" },
+    ]),
+    recurring: [{
+      id: "rec_streamly", merchant: "Streamly", categoryId: base.categories[0].id,
+      amount: -14_99, cadence: "monthly", nextDate: "2026-09-04", kind: "subscription", detected: false,
+    }],
+  };
+  const [late] = M.NT.overdueRecurring(db, "2026-09-07");
+  assert.ok(late, "two months past a monthly charge is late");
+  assert.equal(late.merchant, "Streamly");
+  assert.equal(late.since, "2026-07-04");
+
+  // A few days late is a bill landing on a working day, not a bill that stopped.
+  assert.deepEqual(M.NT.overdueRecurring(db, "2026-08-08"), []);
+});
+
+await test("income that has not landed is the more urgent of the two", () => {
+  const base = M.emptyDB();
+  const db = {
+    ...withTxns([
+      { date: "2026-06-30", amount: 5_000_00, merchant: "Payroll" },
+      { date: "2026-07-31", amount: 5_000_00, merchant: "Payroll" },
+    ]),
+    recurring: [{
+      id: "rec_pay", merchant: "Payroll", categoryId: base.categories[0].id,
+      amount: 5_000_00, cadence: "monthly", nextDate: "2026-09-30", kind: "income", detected: false,
+    }],
+  };
+  const [n] = M.NT.notices(db, "2026-09-20").filter((x) => x.kind === "missing");
+  assert.ok(n);
+  assert.match(n.title, /has not paid/);
+  assert.equal(n.tone, "neg");
+  // Next month's absence is its own notice rather than the same one for ever.
+  const later = M.NT.notices(db, "2026-10-20").filter((x) => x.kind === "missing");
+  assert.notEqual(later[0].id, n.id);
+});
+
+await test("no user-facing text in the app uses an em dash", () => {
+  // Asked for, and easy to undo by accident: the character is one keystroke on
+  // a Mac and every generated sentence reaches for one. Comments are the
+  // author's business; strings and markup are the reader's, so only what
+  // survives stripping the comments is checked.
+  const strip = (text) => {
+    const out = [...text];
+    let i = 0, mode = null;
+    while (i < text.length) {
+      const two = text.slice(i, i + 2);
+      if (mode === null) {
+        if (two === "/*") { mode = "block"; i += 2; continue; }
+        if (two === "//") { mode = "line"; i += 2; continue; }
+        if (`"'\``.includes(text[i])) {
+          const q = text[i]; i++;
+          while (i < text.length && text[i] !== q) { if (text[i] === "\\") i++; i++; }
+          i++; continue;
+        }
+        i++;
+      } else if (mode === "block") {
+        if (two === "*/") { mode = null; out[i] = out[i + 1] = " "; i += 2; continue; }
+        if (text[i] !== "\n") out[i] = " ";
+        i++;
+      } else {
+        if (text[i] === "\n") { mode = null; i++; continue; }
+        out[i] = " "; i++;
+      }
+    }
+    return out.join("");
+  };
+
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) return walk(full);
+    return /\.(ts|tsx|css|html)$/.test(e.name) && !e.name.includes("emoji-data") ? [full] : [];
+  });
+
+  const bad = [];
+  for (const file of [...walk("src"), ...walk("api"), "index.html"]) {
+    const text = readFileSync(file, "utf8");
+    const shown = /\.(ts|tsx)$/.test(file) ? strip(text) : text;
+    for (const line of shown.split("\n")) {
+      if (line.includes("\u2014")) bad.push(`${file}: ${line.trim().slice(0, 90)}`);
+    }
+    if (/&mdash;|&#8212;|&#x2014;/i.test(text)) bad.push(`${file}: an mdash entity`);
+  }
+  assert.deepEqual(bad, [], `\n${bad.join("\n")}`);
 });
 
 /* ── colour belongs to the group ──────────────────────────────────────── */

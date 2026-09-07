@@ -23,7 +23,7 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
     text: check.secret.length ? `PLAID_SECRET is set (${check.secret.length} characters)` : "PLAID_SECRET is missing",
   });
   if (check.clientId.trimmed || check.secret.trimmed) {
-    lines.push({ ok: false, text: "One of them had stray whitespace, which has been trimmed — worth fixing in Vercel too" });
+    lines.push({ ok: false, text: "One of them had stray whitespace, which has been trimmed, worth fixing in Vercel too" });
   }
   lines.push({
     ok: true,
@@ -35,7 +35,7 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
     ok: check.probe.ok,
     text: check.probe.ok
       ? `Plaid accepted these credentials for ${check.environment}`
-      : `Plaid refused them — ${check.probe.error}`,
+      : `Plaid refused them. ${check.probe.error}`,
   });
 
   const wrongKeys = check.probe.error === "INVALID_API_KEYS";
@@ -53,10 +53,10 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
       ))}
       {wrongKeys && check.worksIn === "sandbox" ? (
         <div className="small" style={{ marginTop: 6 }}>
-          <b>These keys work — but only against Plaid's fake banks.</b> Plaid only shows a Production secret
+          <b>These keys work, but only against Plaid's fake banks.</b> Plaid only shows a Production secret
           on the Keys page once your Production access request has been approved; until then the page lists a
           Sandbox secret alone, which is what you have. Two ways forward: set <b>PLAID_ENV</b> to
-          <code> sandbox</code> in Vercel and redeploy, to try the whole flow against test banks now — or wait
+          <code> sandbox</code> in Vercel and redeploy, to try the whole flow against test banks now, or wait
           for approval, then paste the Production secret and remove PLAID_ENV. Either way, a Vercel variable
           only takes effect on the next deployment.
         </div>
@@ -164,8 +164,8 @@ export function PlaidCard() {
       </div>
 
       <div className="small muted" style={{ marginBottom: 12 }}>
-        <b>Investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages — positions, cost basis and prices.
-        <b> Bank</b> for chequing, savings and cards — transactions. An institution offering both can be
+        <b>Investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages: positions, cost basis and prices.
+        <b> Bank</b> for chequing, savings and cards: transactions. An institution offering both can be
         connected twice. The item count against the plan's ceiling is in the integrations table above.
       </div>
 
@@ -208,7 +208,7 @@ export function PlaidCard() {
 
       <div className="divider" />
       <details>
-        <summary className="small muted" style={{ cursor: "pointer" }}>Setup — two environment variables</summary>
+        <summary className="small muted" style={{ cursor: "pointer" }}>Setup, two environment variables</summary>
         <ol className="small muted" style={{ margin: "10px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 5 }}>
           <li>Sign up at <b>dashboard.plaid.com</b> and request Production access. Pay-as-you-go has no monthly minimum, so you pay only for the logins you connect.</li>
           <li>Copy your <b>client_id</b> and the <b>Production</b> secret from Team Settings → Keys.</li>

@@ -525,8 +525,8 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
       apply((db) => {
         const out = squashHistory(db);
         notify(out.removed
-          ? `Dropped ${out.removed.toLocaleString()} repeated balance point${out.removed === 1 ? "" : "s"} — ${Math.round(out.saved / 1024)} KB off every save.`
-          : "Nothing to drop — no balance point repeats the one before it.");
+          ? `Dropped ${out.removed.toLocaleString()} repeated balance point${out.removed === 1 ? "" : "s"}. ${Math.round(out.saved / 1024)} KB off every save.`
+          : "Nothing to drop, no balance point repeats the one before it.");
         return out.db;
       }, "compress balance history"),
 
@@ -654,8 +654,8 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
         const transactions = editTransactions(db, null, (t) => applyRules(enabled, t));
         const touched = transactions.filter((t, i) => t !== db.transactions[i]).length;
         notify(touched
-          ? `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"} — ${touched} transaction${touched === 1 ? "" : "s"} changed.`
-          : `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"} — nothing needed changing.`);
+          ? `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"}. ${touched} transaction${touched === 1 ? "" : "s"} changed.`
+          : `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"}, nothing needed changing.`);
         return { ...db, transactions };
       }, "run all rules"),
 

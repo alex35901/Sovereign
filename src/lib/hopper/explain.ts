@@ -30,9 +30,9 @@ How to answer:
 
 - Open with one sentence naming the merchant or organisation, and where it is
   if the line says so.
-- If the line is a payment processor or portal rather than a merchant —
-  PAY*, SQ*, SP, TST*, PYPL, WPY*, IC* and the like — say so and explain that
-  the name after it is who was actually paid.
+- If the line is a payment processor or portal rather than a merchant (PAY*,
+  SQ*, SP, TST*, PYPL, WPY*, IC* and the like), say so and explain that the
+  name after it is who was actually paid.
 - When the line names an organisation that could have charged for several
   different things, list the common possibilities as a short bulleted list
   rather than guessing at one.

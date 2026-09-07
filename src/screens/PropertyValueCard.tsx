@@ -52,7 +52,7 @@ export function PropertyValueCard({ account }: { account: Account }) {
         }
       />
 
-      <Field label="Address" hint="Street, city, state, ZIP — the fuller the better">
+      <Field label="Address" hint="Street, city, state, ZIP. The fuller the better">
         <TextInput
           value={address}
           onChange={(next) => { setAddress(next); actions.updateAccount(account.id, { address: next }); }}
