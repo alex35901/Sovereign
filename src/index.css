@@ -801,6 +801,34 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .donut-wrap { justify-content: center; }
 .donut-key { flex: 0 1 320px; min-width: 220px; }
 
+/* A recurring row is a link now, so it needs the colour it would otherwise
+   inherit from one. */
+.rec-row { text-decoration: none; color: inherit; }
+
+/* ── the recurring calendar ── */
+/* Full width on every screen, so the cells grow with the page rather than
+   staying letterboxed in a narrow column. */
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-cell {
+  min-height: 52px; border-radius: 8px; padding: 4px 5px; position: relative;
+  border: 1px solid transparent; min-width: 0;
+}
+.cal-cell.on { background: var(--surface-2); border-color: var(--line); }
+.cal-marks { display: flex; gap: 2px; flex-wrap: wrap; margin-top: 2px; }
+.cal-names { display: none; }
+/* Once a cell is wide enough to hold a name, it holds names: a dot only says
+   that something is due, which is what the narrow layout is for. */
+@media (min-width: 760px) {
+  .cal-cell { min-height: 96px; }
+  .cal-marks { display: none; }
+  .cal-names { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; min-width: 0; }
+  .cal-name {
+    display: flex; align-items: center; gap: 4px; min-width: 0;
+    font-size: 11px; color: var(--muted); line-height: 1.35;
+  }
+  .cal-name .dot { flex: none; }
+}
+
 /* ── reports ── */
 .report-controls .field { flex: 1 1 0; min-width: 0; }
 .report-controls .field > span { font-size: 11.5px; color: var(--muted); font-weight: 500; }

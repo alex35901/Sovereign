@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { CalendarDays, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { CalendarDays, Pencil, X } from "lucide-react";
 import type { Cadence, Recurring as RecurringItem } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -64,11 +65,29 @@ export default function Recurring() {
           <Tile label="Recurring income" value={<Money value={income.reduce((s, r) => s + r.amount, 0)} cents={false} />} tone="pos" />
         </div>
 
-        <div className="grid g-2-1">
-          <Card pad={false}>
+        {/* The calendar first and across the whole page: it is the thing this
+            screen is for, and in a third of the width its cells could hold a
+            dot and nothing else. */}
+        <Card>
+          <CardHead title="This month" sub={<span className="row" style={{ gap: 5 }}><CalendarDays size={13} /> {dateLabel(today(), { year: true })}</span>} />
+          <MonthGrid year={y} month={m} marks={marks} />
+          <div className="divider" />
+          <div className="row" style={{ gap: 16 }}>
+            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--c9)" }} /> Bills</span>
+            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--c3)" }} /> Income</span>
+          </div>
+        </Card>
+
+        <Card pad={false}>
             <CardHead flush title="Upcoming" sub="Detected from your transaction history, plus anything you've added" />
             {list.map((r) => (
-              <div key={r.id} className="list-row click" onClick={() => setEditing(r)}>
+              // The row is the merchant, so it goes where every other merchant
+              // on this app goes. Editing the schedule is the rarer thing and
+              // gets a button rather than the whole row.
+              <Link
+                key={r.id} to={`/merchants/${encodeURIComponent(r.merchant)}`}
+                className="list-row click rec-row"
+              >
                 <MerchantAvatar name={r.merchant} size={30} />
                 <div className="grow col" style={{ gap: 1 }}>
                   <span className="row" style={{ gap: 6 }}>
@@ -84,12 +103,18 @@ export default function Recurring() {
                   <Money value={r.amount} colored={r.amount > 0} />
                 </span>
                 <button
-                  className="btn btn-ghost btn-icon" title="Not recurring"
-                  onClick={(e) => { e.stopPropagation(); actions.dismissRecurring(r); }}
+                  className="btn btn-ghost btn-icon" title="Edit schedule" aria-label={`Edit ${r.merchant}'s schedule`}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditing(r); }}
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className="btn btn-ghost btn-icon" title="Not recurring" aria-label={`${r.merchant} is not recurring`}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); actions.dismissRecurring(r); }}
                 >
                   <X size={14} />
                 </button>
-              </div>
+              </Link>
             ))}
             {!list.length ? (
               <Empty
@@ -97,18 +122,7 @@ export default function Recurring() {
                 body="Three or more charges from the same merchant on a steady interval will show up here automatically."
               />
             ) : null}
-          </Card>
-
-          <Card>
-            <CardHead title="This month" sub={<span className="row" style={{ gap: 5 }}><CalendarDays size={13} /> {dateLabel(today(), { year: true })}</span>} />
-            <MonthGrid year={y} month={m} marks={marks} />
-            <div className="divider" />
-            <div className="row" style={{ gap: 16 }}>
-              <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--c9)" }} /> Bills</span>
-              <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--c3)" }} /> Income</span>
-            </div>
-          </Card>
-        </div>
+        </Card>
       </div>
       {editing ? <RecurringModal item={editing} onClose={() => setEditing(null)} /> : null}
     </>

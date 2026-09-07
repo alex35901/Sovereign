@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -962,6 +962,97 @@ try {
       }
     }
     await ctx.close();
+  }
+
+  if (want("recurring")) {
+    // ── the calendar leads, and a row is its merchant ──
+    for (const w of [1280, 390]) {
+      const rec = await browser.newPage({ viewport: { width: w, height: 1000 } });
+      await rec.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+      await rec.waitForTimeout(800);
+
+      const layout = await rec.evaluate(() => {
+        const cal = document.querySelector(".cal-grid");
+        const row = document.querySelector(".rec-row");
+        if (!cal || !row) return null;
+        const calCard = cal.closest(".card").getBoundingClientRect();
+        const listCard = row.closest(".card").getBoundingClientRect();
+        return {
+          calTop: Math.round(cal.getBoundingClientRect().top),
+          listTop: Math.round(row.getBoundingClientRect().top),
+          // The page's gutter is a gutter, not the calendar being narrow, so
+          // "full width" is measured against the card it used to sit beside.
+          calCard: { left: Math.round(calCard.left), width: Math.round(calCard.width) },
+          listCard: { left: Math.round(listCard.left), width: Math.round(listCard.width) },
+          // The grid's own width too: a card that is full width with a
+          // calendar capped narrow inside it is the thing being fixed, and
+          // measuring only the card cannot see it.
+          gridWidth: Math.round(cal.getBoundingClientRect().width),
+          columns: getComputedStyle(cal).gridTemplateColumns.split(" ").length,
+        };
+      });
+      check(`${w}px — the calendar sits above the transactions`,
+        layout !== null && layout.calTop < layout.listTop,
+        layout === null ? "no calendar or no rows" : `calendar at ${layout.calTop}, list at ${layout.listTop}`);
+      check(`${w}px — and takes the whole width rather than a column of it`,
+        layout !== null && layout.columns === 7
+        && Math.abs(layout.calCard.width - layout.listCard.width) <= 2
+        && Math.abs(layout.calCard.left - layout.listCard.left) <= 2
+        && layout.calCard.width - layout.gridWidth <= 40,
+        layout === null ? "no calendar"
+          : `grid ${layout.gridWidth} in card ${layout.calCard.width}px at ${layout.calCard.left}, `
+            + `list ${layout.listCard.width}px at ${layout.listCard.left}`);
+      await rec.close();
+    }
+
+    // A cell wide enough for a name shows one; a narrow one shows a dot.
+    const wide = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await wide.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(800);
+    const named = await wide.evaluate(() => {
+      // Drawn, not merely styled: an element inside a display:none parent still
+      // computes its own display, so asking it directly says "flex" for
+      // something nobody can see.
+      const drawn = (sel) => [...document.querySelectorAll(sel)]
+        .filter((e) => e.getBoundingClientRect().height > 0).length;
+      return { names: drawn(".cal-name"), dots: drawn(".cal-marks") };
+    });
+    check("1280px — a full-width cell names what is due, rather than dotting it",
+      named.names > 3 && named.dots === 0, `${named.names} names, ${named.dots} dot rows`);
+
+    // The row goes where every other merchant in the app goes.
+    const rows = await wide.evaluate(() => [...document.querySelectorAll(".rec-row")].slice(0, 4).map((r) => ({
+      tag: r.tagName,
+      href: r.getAttribute("href"),
+      merchant: r.querySelector(".truncate")?.innerText.trim() ?? "",
+    })));
+    check("a recurring row leads to its merchant's page",
+      rows.length > 0 && rows.every((r) => r.tag === "A"
+        && r.href === `/merchants/${encodeURIComponent(r.merchant)}`),
+      rows.map((r) => `${r.tag} ${r.href}`).join(", "));
+
+    const went = await tryStep("and clicking one goes there", async () => {
+      await wide.locator(".rec-row").first().click({ timeout: 5000 });
+      await wide.waitForTimeout(700);
+    });
+    if (went) {
+      check("landing on the merchant, not the schedule",
+        /\/merchants\//.test(wide.url()) && !await wide.locator(".modal").count(),
+        wide.url());
+      await wide.goBack();
+      await wide.waitForTimeout(600);
+    }
+
+    // Editing the schedule is still reachable, and must not follow the link.
+    const edited = await tryStep("the schedule can still be edited", async () => {
+      await wide.locator(".rec-row button[title='Edit schedule']").first().click({ timeout: 5000 });
+      await wide.locator(".modal").waitFor({ timeout: 5000 });
+    });
+    if (edited) {
+      check("which opens the schedule where it is, rather than navigating away",
+        /\/recurring/.test(wide.url()), wide.url());
+    }
+    await wide.close();
   }
 
   if (want("budget")) {

@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { fmt0 } from "../lib/money";
-import { color } from "./ui";
+import { color, cx } from "./ui";
 
 /** Tracks a container's pixel width so charts can lay out real text. */
 export function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
@@ -801,30 +801,39 @@ export function MonthGrid({ year, month, marks, onPick }: {
   const [hover, setHover] = useState<number | null>(null);
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 6 }}>
+      <div className="cal-grid" style={{ marginBottom: 6 }}>
         {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
           <div key={i} className="tiny faint center">{d}</div>
         ))}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+      <div className="cal-grid">
         {cells.map((day, i) => (
           <div
             key={i}
+            className={cx("cal-cell", Boolean(day && marks[day]?.length) && "on")}
             onMouseEnter={() => day && setHover(day)}
             onMouseLeave={() => setHover(null)}
             onClick={() => day && onPick?.(day)}
-            style={{
-              minHeight: 46, borderRadius: 8, padding: "4px 5px",
-              background: day && marks[day]?.length ? "var(--surface-2)" : "transparent",
-              border: `1px solid ${day && marks[day]?.length ? "var(--line)" : "transparent"}`,
-              position: "relative", cursor: day && marks[day]?.length ? "default" : undefined,
-            }}
           >
             {day ? <div className="tiny faint num">{day}</div> : null}
-            <div className="row" style={{ gap: 2, flexWrap: "wrap", marginTop: 2 }}>
+            {/* Dots on a narrow screen, names once the cell is wide enough to
+                hold one: a full-width calendar that says only "something is
+                due" wastes the width it was given. */}
+            <div className="cal-marks">
               {(day && marks[day] ? marks[day] : []).slice(0, 4).map((m, j) => (
                 <span key={j} className="dot" style={{ background: color(m.tone), width: 6, height: 6 }} />
               ))}
+            </div>
+            <div className="cal-names">
+              {(day && marks[day] ? marks[day] : []).slice(0, 3).map((m, j) => (
+                <span key={j} className="cal-name" title={`${m.label} ${fmt0(m.amount)}`}>
+                  <span className="dot" style={{ background: color(m.tone), width: 5, height: 5 }} />
+                  <span className="truncate">{m.label}</span>
+                </span>
+              ))}
+              {day && (marks[day]?.length ?? 0) > 3 ? (
+                <span className="tiny faint">+{marks[day]!.length - 3} more</span>
+              ) : null}
             </div>
             {hover === day && day && marks[day]?.length ? (
               <div className="chart-tip" style={{ left: 0, top: 44, minWidth: 150 }}>
