@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -866,6 +866,102 @@ try {
       check("390px — the detail screen fits the pocket it is on", fits === true, "it runs off the edge");
     }
     await pocket.close();
+  }
+
+  if (want("explain")) {
+    // ── what a statement line was ──
+    //
+    // The model is stubbed at the network boundary: this is about the button,
+    // the streaming, and — the part that matters for the bill — the second
+    // click never reaching the wire at all.
+    const ctx = await browser.newContext({ viewport: { width: 1180, height: 900 } });
+    await ctx.addInitScript(() => {
+      // A passphrase, or the client refuses before it gets as far as fetching.
+      try { localStorage.setItem("sovereign.cloud.pass", "test-pass"); } catch { /* private mode */ }
+      const real = window.fetch;
+      window.__hopperCalls = 0;
+      window.fetch = async (input, init) => {
+        const url = String(typeof input === "string" ? input : input.url);
+        if (!url.includes("/api/hopper")) return real(input, init);
+        window.__hopperCalls += 1;
+        const body = init?.body ? JSON.parse(init.body) : {};
+        window.__hopperBody = body;
+        const said = "This is a payment to the City of Fishers (Fishers, Indiana), processed through "
+          + "an online payment portal.\n\n- Utility bill (water/sewer/trash)\n- City services or permit fees";
+        const events = [
+          `data: ${JSON.stringify({ type: "text", text: said })}\n\n`,
+          `data: ${JSON.stringify({ type: "done", message: { content: [{ type: "text", text: said }], stop_reason: "end_turn" } })}\n\n`,
+        ];
+        return new Response(new Blob(events).stream(), {
+          status: 200, headers: { "content-type": "text/event-stream" },
+        });
+      };
+    });
+    const ex = await ctx.newPage();
+    await ex.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await ex.waitForTimeout(900);
+
+    // Not every transaction carries a statement — a hand-entered one has none
+    // — so this opens rows until it finds one that does.
+    const opened = await tryStep("a transaction with a statement opens", async () => {
+      for (let i = 0; i < 8; i++) {
+        await ex.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(i).click({ timeout: 5000 });
+        await ex.waitForTimeout(400);
+        if (await ex.locator(".modal .drow-explain").count()) return;
+        await ex.keyboard.press("Escape");
+        await ex.waitForTimeout(250);
+      }
+      throw new Error("no transaction in the first eight carried a statement");
+    });
+
+    if (opened) {
+      const asked = await tryStep("the question mark asks what the line was", async () => {
+        await ex.locator(".modal .drow-explain").first().click({ timeout: 5000 });
+        await ex.locator(".explain-body").waitFor({ timeout: 5000 });
+      });
+      if (asked) {
+        const shown = await ex.evaluate(() => ({
+          title: [...document.querySelectorAll(".modal h2, .modal h3, .modal .modal-title")]
+            .map((e) => e.innerText.trim()).find((t) => /explanation/i.test(t)) ?? null,
+          statement: document.querySelector(".explain-statement")?.innerText.trim() ?? null,
+          body: document.querySelector(".explain-body")?.innerText.trim() ?? null,
+          calls: window.__hopperCalls,
+          sent: window.__hopperBody,
+        }));
+        check("it opens its own screen, headed like Monarch's", /explanation/i.test(shown.title ?? ""), shown.title ?? "no title");
+        check("with the statement line it is explaining", (shown.statement ?? "").length > 0, shown.statement ?? "none");
+        check("and the answer, line breaks and all",
+          (shown.body ?? "").includes("City of Fishers") && (shown.body ?? "").includes("\n"),
+          (shown.body ?? "none").slice(0, 60));
+        check("one question, asked once", shown.calls === 1, `${shown.calls} calls`);
+        // No tools and no digest: this is a question about a string, not about
+        // the household's money.
+        check("and it goes up without Hopper's tools or its data",
+          shown.sent && !shown.sent.tools && shown.sent.messages.length === 1,
+          `tools ${Boolean(shown.sent?.tools)}, ${shown.sent?.messages?.length} messages`);
+        check("under instructions marked cacheable",
+          shown.sent?.system?.[0]?.cache_control?.type === "ephemeral",
+          JSON.stringify(shown.sent?.system?.[0]?.cache_control ?? null));
+
+        // The saving. Close it, open it again, and nothing should reach the wire.
+        const again = await tryStep("the same line can be asked about twice", async () => {
+          await ex.locator(".modal .btn", { hasText: /^Close$/ }).first().click({ timeout: 5000 });
+          await ex.waitForTimeout(300);
+          await ex.locator(".modal .drow-explain").first().click({ timeout: 5000 });
+          await ex.locator(".explain-body").waitFor({ timeout: 5000 });
+        });
+        if (again) {
+          const after = await ex.evaluate(() => ({
+            calls: window.__hopperCalls,
+            body: document.querySelector(".explain-body")?.innerText.trim() ?? null,
+          }));
+          check("but the second time is answered from the document, not the model",
+            after.calls === 1, `${after.calls} calls after asking twice`);
+          check("and it is the same answer", (after.body ?? "").includes("City of Fishers"), after.body ?? "none");
+        }
+      }
+    }
+    await ctx.close();
   }
 
   if (want("budget")) {

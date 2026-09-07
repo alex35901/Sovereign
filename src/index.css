@@ -522,6 +522,22 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 .drow-btn:hover { background: var(--surface-2); }
 .drow-btn > svg { color: var(--faint); flex: none; }
 .drow-statement { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); user-select: all; }
+/* The way to ask what a statement line was. Sits at the end of the value
+   rather than beside the label: the label's own question mark explains what
+   the field is, and this one asks about what is in it. */
+.drow-explain {
+  border: 0; background: none; padding: 0; flex: none; cursor: pointer;
+  color: var(--muted); display: grid; place-items: center;
+}
+.drow-explain:hover { color: var(--accent); }
+
+/* The explanation itself: the model writes plain sentences and hyphen
+   bullets, so the line breaks it wrote are the ones worth keeping. */
+.explain-statement {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.explain-body { white-space: pre-wrap; font-size: 14px; line-height: 1.55; }
 /* Everything that is not one of those lines — splits, the activity log. */
 .drow-block { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--line-soft); }
 .drow-block:last-child { border-bottom: 0; }

@@ -60,9 +60,22 @@ export class HopperError extends Error {
   }
 }
 
-/** One turn: send what we have, stream the answer back. */
-async function turn(
-  messages: Anthropic.MessageParam[],
+export interface TurnBody {
+  system?: Anthropic.TextBlockParam[];
+  tools?: Anthropic.Tool[];
+  messages: Anthropic.MessageParam[];
+}
+
+/**
+ * One turn: send what we have, stream the answer back.
+ *
+ * Exported because Hopper's chat is not the only thing that asks the model a
+ * question now. Everything below the body — the passphrase, the streaming, the
+ * error shapes — is the same whoever is asking, and a second copy of it would
+ * be a second place for a half-parsed event to go wrong.
+ */
+export async function turn(
+  body: TurnBody,
   onText: (chunk: string) => void,
 ): Promise<Anthropic.Message> {
   const pass = passphrase();
@@ -71,13 +84,7 @@ async function turn(
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${pass}` },
-    body: JSON.stringify({
-      // The frozen half first and cached: the instructions and the tool list
-      // never change, so they are the prefix worth paying for once.
-      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
-      tools: SCHEMAS,
-      messages,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok || !res.body) {
@@ -142,7 +149,13 @@ export async function ask(
 
   for (let i = 0; i < MAX_TURNS; i++) {
     onProgress({ text, used: [...used], thinking: true });
-    const message = await turn(messages, (chunk) => {
+    const message = await turn({
+      // The frozen half first and cached: the instructions and the tool list
+      // never change, so they are the prefix worth paying for once.
+      system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
+      tools: SCHEMAS,
+      messages,
+    }, (chunk) => {
       text += chunk;
       onProgress({ text, used: [...used], thinking: false });
     });

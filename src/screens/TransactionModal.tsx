@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, CircleHelp, Plus, Trash2 } from "lucide-react";
 import type { Transaction } from "../types";
@@ -12,6 +12,8 @@ import { ActivityLog } from "../components/ActivityLog";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { MerchantAvatar } from "./Transactions";
 import { accountOptions } from "../lib/select";
+import { cachedExplanation, explainFacts, explainTransaction, rememberExplanation } from "../lib/hopper/explain";
+import type { ExplainFacts } from "../lib/hopper/explain";
 
 /**
  * One line of the detail screen: what it is called, and what it is.
@@ -125,6 +127,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   const [reviewed, setReviewed] = useState(txn?.reviewed ?? true);
   const [hideFromReports, setHide] = useState(txn?.hideFromReports ?? false);
   const [splits, setSplits] = useState(txn?.splits?.map((s) => ({ categoryId: s.categoryId, amount: s.amount })) ?? []);
+  const [explaining, setExplaining] = useState<ExplainFacts | null>(null);
 
   const account = db.accounts.find((a) => a.id === accountId);
   const splitTotal = splits.reduce((s, x) => s + x.amount, 0);
@@ -200,6 +203,14 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
           {/* Its whole value on hover, because the useful half of a statement
               line is often the half that does not fit. */}
           <span className="drow-statement truncate" title={txn.statement}>{txn.statement}</span>
+          {/* The one question the app cannot answer from its own data: what
+              PAY*CITY OF FISHERS actually was. */}
+          <button
+            className="drow-explain" onClick={() => setExplaining(explainFacts(db, txn))}
+            title="What is this?" aria-label="Explain this statement"
+          >
+            <CircleHelp size={14} />
+          </button>
         </DetailRow>
       ) : null}
 
@@ -314,6 +325,61 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
       </div>
 
       {txn ? <div className="drow-block"><ActivityLog txn={txn} /></div> : null}
+
+      {explaining ? <ExplainModal facts={explaining} onClose={() => setExplaining(null)} /> : null}
+    </Modal>
+  );
+}
+
+/**
+ * What a statement line was, asked of the model.
+ *
+ * Asked once per merchant and then kept: the same city payment portal charges
+ * every month, and the answer to "what is PAY*CITY OF FISHERS" does not change
+ * between charges. A cached answer opens instantly and costs nothing, which is
+ * a better saving than any discount on asking again.
+ */
+function ExplainModal({ facts, onClose }: { facts: ExplainFacts; onClose: () => void }) {
+  const db = useDB();
+  const { apply } = useStore();
+  const cached = cachedExplanation(db, facts.statement);
+  const [text, setText] = useState(cached ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(!cached);
+  const asked = useRef(false);
+
+  useEffect(() => {
+    if (cached || asked.current) return;
+    asked.current = true;
+    void (async () => {
+      try {
+        const answer = await explainTransaction(facts, setText);
+        setText(answer);
+        // No label: nobody wants "undo: explained a transaction" sitting on
+        // top of the edit they actually want back.
+        apply((cur) => rememberExplanation(cur, facts.statement, answer));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "The explanation could not be fetched.");
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, [cached, facts, apply]);
+
+  return (
+    <Modal title="Transaction Explanation" onClose={onClose} footer={<Btn onClick={onClose}>Close</Btn>}>
+      <div className="col" style={{ gap: 16 }}>
+        <div className="col" style={{ gap: 4 }}>
+          <span className="tiny faint">Original Transaction</span>
+          <span className="explain-statement">{facts.statement}</span>
+        </div>
+        <div className="col" style={{ gap: 4 }}>
+          <span className="tiny faint">Explanation</span>
+          {error ? <span className="small neg">{error}</span> : null}
+          {text ? <div className="explain-body">{text}</div> : null}
+          {busy && !text ? <span className="small muted">Working it out…</span> : null}
+        </div>
+      </div>
     </Modal>
   );
 }

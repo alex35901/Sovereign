@@ -249,6 +249,12 @@ export interface Settings {
   /** How much of each provider's free tier has been spent. See lib/usage.ts. */
   usage?: Usage;
   /**
+   * What the model has already said an unfamiliar statement line was, kept so
+   * the same merchant is never paid for twice. Keyed by the normalised line,
+   * bounded, and dropped oldest first — see lib/hopper/explain.ts.
+   */
+  explanations?: Record<string, { text: string; at: string }>;
+  /**
    * Whether property values refresh on their own. The cadence is not stored:
    * it is worked out from how many properties there are against RentCast's
    * monthly allowance, so adding one slows them all rather than overrunning.
