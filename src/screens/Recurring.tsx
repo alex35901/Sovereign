@@ -4,10 +4,11 @@ import { CalendarDays, Pencil, X } from "lucide-react";
 import type { Cadence, Recurring as RecurringItem } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { addDays, dateLabel, parseISO, relativeDay, thisMonth, today } from "../lib/date";
-import { monthlyRecurringCost, recurringList } from "../lib/select";
+import { dateLabel, monthEnd, monthStart, parseISO, relativeDay, thisMonth, today } from "../lib/date";
+import { occurrences, recurringList, recurringSpend } from "../lib/select";
+import type { RecurringSpend } from "../lib/select";
 import { MonthGrid } from "../components/charts";
-import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, Tile, cx } from "../components/ui";
+import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { MerchantAvatar } from "./Transactions";
 
@@ -27,42 +28,53 @@ export default function Recurring() {
 
   const list = useMemo(() => recurringList(db), [db]);
   const bills = list.filter((r) => r.amount < 0);
-  const income = list.filter((r) => r.amount > 0);
-  const monthly = monthlyRecurringCost(list);
-  const soon = list.filter((r) => r.nextDate <= addDays(today(), 7));
-  const soonTotal = soon.filter((r) => r.amount < 0).reduce((s, r) => s + Math.abs(r.amount), 0);
 
-  const [y, m] = thisMonth().split("-").map(Number);
+  // Both figures come off the schedule this page draws, so the tiles and the
+  // calendar under them cannot disagree about what a month holds.
+  const month = thisMonth();
+  const thisMonthSpend = useMemo(
+    () => recurringSpend(list, monthStart(month), monthEnd(month), today()),
+    [list, month],
+  );
+  const thisYearSpend = useMemo(
+    () => recurringSpend(list, `${month.slice(0, 4)}-01-01`, `${month.slice(0, 4)}-12-31`, today()),
+    [list, month],
+  );
+
+  const [y, m] = month.split("-").map(Number);
   const marks = useMemo(() => {
     const out: Record<number, { tone: string; amount: number; label: string }[]> = {};
     for (const r of list) {
-      // show every occurrence that lands in the visible month
-      const step = { weekly: 7, biweekly: 14, monthly: 30, quarterly: 91, semiannual: 182, yearly: 365 }[r.cadence];
-      // walk back before nextDate as well, so days already paid this month still
-      // show up on the calendar
-      for (let i = -6; i <= 6; i++) {
-        const dt = parseISO(addDays(r.nextDate, step * i));
-        if (dt.getFullYear() !== y || dt.getMonth() + 1 !== m) continue;
-        const day = dt.getDate();
+      // Every occurrence in the visible month, walked the same way the totals
+      // above are — days already paid included, since they are what the month
+      // has spent.
+      for (const date of occurrences(r, monthStart(month), monthEnd(month))) {
+        const day = parseISO(date).getDate();
         (out[day] ??= []).push({
           tone: r.amount > 0 ? "--c3" : "--c9", amount: r.amount, label: r.merchant,
         });
       }
     }
     return out;
-  }, [list, y, m]);
+  }, [list, month]);
 
   return (
     <>
       <TopBar title="Recurring" />
       <div className="page stack">
-        <div className="grid g4">
-          <Tile label="Recurring / month" value={<Money value={monthly} cents={false} />}
-            sub={<span className="muted">{bills.length} bills & subscriptions</span>} />
-          <Tile label="Annualized" value={<Money value={monthly * 12} cents={false} />} />
-          <Tile label="Next 7 days" value={<Money value={soonTotal} cents={false} />}
-            sub={<span className="muted">{soon.length} item{soon.length === 1 ? "" : "s"} due</span>} />
-          <Tile label="Recurring income" value={<Money value={income.reduce((s, r) => s + r.amount, 0)} cents={false} />} tone="pos" />
+        {/* How much of what is committed has already gone, so what is left is
+            a figure to plan against rather than a total to work out. */}
+        <div className="grid g2">
+          <SpendTile
+            label="This month" spend={thisMonthSpend}
+            sub={`${bills.length} bill${bills.length === 1 ? "" : "s"} & subscriptions`}
+          />
+          <SpendTile
+            label={`${month.slice(0, 4)} so far`} spend={thisYearSpend}
+            sub={thisYearSpend.upcoming
+              ? `${thisYearSpend.upcoming} more due this year`
+              : "nothing else due this year"}
+          />
         </div>
 
         {/* The calendar first and across the whole page: it is the thing this
@@ -126,6 +138,33 @@ export default function Recurring() {
       </div>
       {editing ? <RecurringModal item={editing} onClose={() => setEditing(null)} /> : null}
     </>
+  );
+}
+
+/**
+ * Spent against committed, as one figure rather than two.
+ *
+ * "$5,000 of $7,800" says both what has gone and what is still coming; either
+ * number on its own leaves the other to be worked out, and the one worth
+ * knowing on a page about what happens next is the remainder.
+ */
+function SpendTile({ label, spend, sub }: { label: string; spend: RecurringSpend; sub: string }) {
+  const share = spend.total > 0 ? Math.min(1, spend.spent / spend.total) : 0;
+  return (
+    <Card>
+      <div className="col" style={{ gap: 7 }}>
+        <span className="tile-label">{label}</span>
+        <span className="tile-value num">
+          <Money value={spend.spent} cents={false} />
+          <span className="spend-of"> of <Money value={spend.total} cents={false} /></span>
+        </span>
+        <span className="spend-bar"><i style={{ width: `${share * 100}%` }} /></span>
+        <span className="spread tiny muted">
+          <span>{sub}</span>
+          <span className="num"><Money value={spend.left} cents={false} /> to go</span>
+        </span>
+      </div>
+    </Card>
   );
 }
 

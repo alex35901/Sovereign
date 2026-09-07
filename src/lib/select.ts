@@ -1,5 +1,5 @@
 import type { Account, Category, DB, ISODate, MonthKey, Recurring, Transaction } from "../types";
-import { addMonths, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
+import { addMonths, addMonthsDate, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
 import { goalSaved } from "./goal-funding.js";
 
 /* ── lookups ──────────────────────────────────────────────────────────── */
@@ -688,6 +688,82 @@ export function recurringList(db: DB): Recurring[] {
   }
   for (const r of manual.values()) if (!r.dismissed) merged.push(r);
   return merged.sort((a, b) => (a.nextDate < b.nextDate ? -1 : 1));
+}
+
+/**
+ * Every date a recurring item lands on inside a window.
+ *
+ * Walked from the next known date outwards, rather than assumed. Cadences
+ * longer than a fortnight step by calendar months, not by an average number of
+ * days: thirty days is not a month, and over a year that error turns twelve
+ * mortgage payments into thirteen — which is the difference between a yearly
+ * total you can plan against and one that is quietly eight percent high.
+ *
+ * The month is clamped to its own length on the way, so the 31st becomes the
+ * 28th in February and the 31st again in March rather than sliding forward a
+ * day at a time.
+ */
+export function occurrences(r: Recurring, from: ISODate, to: ISODate): ISODate[] {
+  const days: Record<Recurring["cadence"], number> = { weekly: 7, biweekly: 14, monthly: 0, quarterly: 0, semiannual: 0, yearly: 0 };
+  const months: Record<Recurring["cadence"], number> = { weekly: 0, biweekly: 0, monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
+  // Every date is measured from the one known date rather than from the last
+  // one worked out. Stepping a month at a time loses the day it started on:
+  // the 31st clamps to the 28th in February, and a walk that carries on from
+  // there is on the 28th for the rest of the year.
+  const at = (n: number): ISODate =>
+    days[r.cadence] ? addDays(r.nextDate, days[r.cadence] * n) : addMonthsDate(r.nextDate, months[r.cadence] * n);
+
+  // A weekly item over five years is 260 steps; the cap is what stops a
+  // malformed cadence from spinning rather than a limit anyone should reach.
+  const CAP = 4000;
+  const out: ISODate[] = [];
+
+  let n = 0;
+  while (n > -CAP && at(n) > from) n--;
+  while (n < CAP && at(n) < from) n++;
+  for (; n < CAP && at(n) <= to; n++) out.push(at(n));
+  return out;
+}
+
+/**
+ * What this window's recurring bills come to, and how much of it has already
+ * fallen due.
+ *
+ * Counted off the schedule rather than off the bank, and off the same walk the
+ * calendar draws, so the figure at the top of the screen and the marks below
+ * it are the same claim. What it answers is "of the money this month has
+ * committed, how much is still ahead of me" — which is the question worth
+ * asking of a page about what happens next.
+ */
+export interface RecurringSpend {
+  /** Bills whose date has passed, this window. */
+  spent: number;
+  /** Every bill in the window, passed or not. */
+  total: number;
+  /** Still to come. */
+  left: number;
+  /** How many are still to come. */
+  upcoming: number;
+}
+
+export function recurringSpend(
+  list: Recurring[],
+  from: ISODate,
+  to: ISODate,
+  asOf: ISODate = today(),
+): RecurringSpend {
+  let spent = 0;
+  let total = 0;
+  let upcoming = 0;
+  for (const r of list) {
+    if (r.amount >= 0) continue;
+    for (const date of occurrences(r, from, to)) {
+      total += Math.abs(r.amount);
+      if (date <= asOf) spent += Math.abs(r.amount);
+      else upcoming += 1;
+    }
+  }
+  return { spent, total, left: total - spent, upcoming };
 }
 
 export function monthlyRecurringCost(list: Recurring[]): number {

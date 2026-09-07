@@ -1005,6 +1005,55 @@ try {
       await rec.close();
     }
 
+    // ── the two tiles, and what they claim ──
+    const tiles = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await tiles.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await tiles.waitForTimeout(800);
+    const top = await tiles.evaluate(() => {
+      const money = (t) => Number(t.replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+      return [...document.querySelectorAll(".tile-label")].map((el) => {
+        const card = el.closest(".card");
+        const value = card.querySelector(".tile-value")?.innerText.replace(/\n/g, " ").trim() ?? "";
+        const parts = value.split(/\bof\b/);
+        return {
+          label: el.innerText.trim(),
+          value,
+          spent: money(parts[0] ?? ""),
+          total: parts[1] === undefined ? null : money(parts[1]),
+          bar: card.querySelector(".spend-bar > i")
+            ? parseFloat(getComputedStyle(card.querySelector(".spend-bar > i")).width)
+            : null,
+          barTrack: card.querySelector(".spend-bar")
+            ? parseFloat(getComputedStyle(card.querySelector(".spend-bar")).width)
+            : null,
+          foot: card.querySelector(".spread")?.innerText.replace(/\n/g, " ").trim() ?? "",
+        };
+      });
+    });
+    check("the page carries two metrics, not four",
+      top.length === 2, top.map((t) => t.label).join(", "));
+    check("and neither of them is the two that were dropped",
+      !top.some((t) => /next 7 days|recurring income/i.test(t.label)), top.map((t) => t.label).join(", "));
+    check("each says what has gone of what is committed",
+      top.every((t) => t.total !== null && t.total > 0 && t.spent <= t.total),
+      top.map((t) => t.value).join(" | "));
+    check("with the rest of it named rather than left to be worked out",
+      top.every((t) => /to go/.test(t.foot)), top.map((t) => t.foot).join(" | "));
+    // The bar is the same claim as the figures, so it has to agree with them.
+    check("and a bar drawn to the same share the figures give",
+      top.every((t) => {
+        const share = t.spent / t.total;
+        return Math.abs(t.bar / t.barTrack - share) <= 0.02;
+      }),
+      top.map((t) => `${Math.round((t.bar / t.barTrack) * 100)}% drawn vs ${Math.round((t.spent / t.total) * 100)}%`).join(" | "));
+    // The year is twelve of the month, on a schedule that is all monthly —
+    // which is what the demo data is, and what a day-stepped walk gets wrong.
+    const [month, year] = top;
+    check("the year's total is twelve times the month's",
+      Math.abs(year.total - month.total * 12) <= 12,
+      `${year.total} against ${month.total} × 12`);
+    await tiles.close();
+
     // A cell wide enough for a name shows one; a narrow one shows a dot.
     const wide = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     await wide.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });

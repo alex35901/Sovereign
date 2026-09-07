@@ -39,6 +39,7 @@ await build({
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
+      export { occurrences, recurringSpend, monthlyRecurringCost } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
@@ -3903,6 +3904,107 @@ await test("the instructions refuse the two answers that would be worse than non
   assert.match(M.EX.EXPLAIN_SYSTEM, /honest about uncertainty/i);
   assert.match(M.EX.EXPLAIN_SYSTEM, /Never guess at what the person bought/i);
   assert.match(M.EX.EXPLAIN_SYSTEM, /do not suggest a category/i);
+});
+
+
+/* ── what a month of recurring bills actually comes to ─────────────────── */
+
+const rec = (over = {}) => ({
+  id: "r1", merchant: "Wells Fargo Home Mortgage", amount: -2_846_12,
+  cadence: "monthly", nextDate: "2026-09-01", categoryId: "c_mortgage",
+  detected: true, ...over,
+});
+
+await test("a monthly bill lands twelve times a year, not thirteen", () => {
+  // Stepping by thirty days is what would make it thirteen, and eight percent
+  // is the difference between a yearly figure you can plan against and one
+  // that is quietly wrong.
+  const year = M.occurrences(rec({ nextDate: "2026-09-01" }), "2026-01-01", "2026-12-31");
+  assert.equal(year.length, 12);
+  assert.deepEqual(year.slice(0, 3), ["2026-01-01", "2026-02-01", "2026-03-01"]);
+  assert.equal(year[11], "2026-12-01");
+});
+
+await test("a monthly bill on the 31st does not slide down the calendar", () => {
+  // February clamps it and March puts it back. Day-stepping would walk it to
+  // the 30th, then the 29th, and by December it would be a different bill.
+  const days = M.occurrences(rec({ nextDate: "2026-01-31" }), "2026-01-01", "2026-06-30");
+  assert.deepEqual(days, ["2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31", "2026-06-30"]);
+});
+
+await test("occurrences before the next known date are counted too", () => {
+  // The month has already spent them; a walk that only goes forward from
+  // nextDate would report a month that has barely started.
+  const back = M.occurrences(rec({ nextDate: "2026-09-15" }), "2026-09-01", "2026-09-30");
+  assert.deepEqual(back, ["2026-09-15"]);
+  const earlier = M.occurrences(rec({ nextDate: "2026-12-15" }), "2026-09-01", "2026-09-30");
+  assert.deepEqual(earlier, ["2026-09-15"], "walked back three months to find it");
+});
+
+await test("a weekly bill lands four or five times depending on the month", () => {
+  const weekly = rec({ cadence: "weekly", nextDate: "2026-09-04" });
+  assert.equal(M.occurrences(weekly, "2026-09-01", "2026-09-30").length, 4);
+  // October 2026 has five Fridays.
+  assert.equal(M.occurrences(weekly, "2026-10-01", "2026-10-31").length, 5);
+  assert.equal(M.occurrences(rec({ cadence: "biweekly", nextDate: "2026-09-04" }), "2026-09-01", "2026-09-30").length, 2);
+});
+
+await test("the window's ends are inside it", () => {
+  const on = rec({ nextDate: "2026-09-01" });
+  assert.deepEqual(M.occurrences(on, "2026-09-01", "2026-09-01"), ["2026-09-01"]);
+  assert.deepEqual(M.occurrences(on, "2026-09-02", "2026-09-30"), [], "and a window that misses it holds nothing");
+});
+
+await test("a yearly bill is counted in the year and not in the wrong month", () => {
+  const insurance = rec({ cadence: "yearly", nextDate: "2026-12-10", amount: -1_200_00 });
+  assert.deepEqual(M.occurrences(insurance, "2026-01-01", "2026-12-31"), ["2026-12-10"]);
+  assert.deepEqual(M.occurrences(insurance, "2026-09-01", "2026-09-30"), []);
+});
+
+await test("what a month has spent is what has already fallen due", () => {
+  const list = [
+    rec({ id: "a", nextDate: "2026-09-01", amount: -2_000_00 }),
+    rec({ id: "b", nextDate: "2026-09-20", amount: -300_00 }),
+    rec({ id: "c", nextDate: "2026-09-25", amount: -50_00 }),
+  ];
+  const s = M.recurringSpend(list, "2026-09-01", "2026-09-30", "2026-09-07");
+  assert.equal(s.total, 2_350_00);
+  assert.equal(s.spent, 2_000_00, "only the one already past");
+  assert.equal(s.left, 350_00);
+  assert.equal(s.upcoming, 2);
+  assert.equal(s.spent + s.left, s.total, "the two halves are the whole");
+});
+
+await test("a bill due today counts as spent, not as still to come", () => {
+  const s = M.recurringSpend([rec({ nextDate: "2026-09-07", amount: -100_00 })], "2026-09-01", "2026-09-30", "2026-09-07");
+  assert.equal(s.spent, 100_00);
+  assert.equal(s.upcoming, 0);
+});
+
+await test("income is not spending", () => {
+  // The page counts what goes out. A payday in the middle of the month must
+  // not net off against the bills and make the month look half paid.
+  const list = [
+    rec({ id: "pay", amount: 5_000_00, nextDate: "2026-09-04" }),
+    rec({ id: "bill", amount: -400_00, nextDate: "2026-09-04" }),
+  ];
+  const s = M.recurringSpend(list, "2026-09-01", "2026-09-30", "2026-09-30");
+  assert.equal(s.total, 400_00);
+  assert.equal(s.spent, 400_00);
+});
+
+await test("a year of it is twelve months of it, not thirteen", () => {
+  // The check that ties the two tiles together: the same schedule read over a
+  // year has to be twelve times what it is over a month.
+  const list = [rec({ amount: -1_000_00, nextDate: "2026-09-01" })];
+  const month = M.recurringSpend(list, "2026-09-01", "2026-09-30", "2026-09-30");
+  const year = M.recurringSpend(list, "2026-01-01", "2026-12-31", "2026-12-31");
+  assert.equal(year.total, month.total * 12);
+});
+
+await test("nothing recurring is nothing spent, and no division by it", () => {
+  const s = M.recurringSpend([], "2026-09-01", "2026-09-30", "2026-09-07");
+  assert.deepEqual(s, { spent: 0, total: 0, left: 0, upcoming: 0 });
 });
 
 /* ── colour belongs to the group ──────────────────────────────────────── */

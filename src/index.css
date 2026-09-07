@@ -801,6 +801,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .donut-wrap { justify-content: center; }
 .donut-key { flex: 0 1 320px; min-width: 220px; }
 
+/* Spent against committed. The second figure is quieter than the first: what
+   has gone is the number being read, and the total is what it is read against. */
+.spend-of { font-size: 17px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+.spend-bar { display: block; height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.spend-bar > i { display: block; height: 100%; border-radius: 99px; background: var(--c9); }
+
 /* A recurring row is a link now, so it needs the colour it would otherwise
    inherit from one. */
 .rec-row { text-decoration: none; color: inherit; }
