@@ -192,6 +192,13 @@ export interface Recurring {
   kind: "bill" | "income" | "subscription";
   /** true when detected from history rather than entered by hand */
   detected: boolean;
+  /**
+   * The day the pattern completed — the third charge, which is what made this
+   * detectable at all. Not the day it was noticed: detection is recomputed
+   * from the transactions every time, so "when it was noticed" would be now,
+   * every time, and nothing could ever be new.
+   */
+  detectedAt?: ISODate;
   dismissed?: boolean;
 }
 
@@ -233,7 +240,12 @@ export interface Holding {
 export interface Settings {
   theme: "dark" | "light";
   currency: string;
-  privacyMode: boolean;
+  /**
+   * Notifications the household has read, by id, with when. Ids encode what
+   * was true — a budget category and how far past it — so escalating past the
+   * next threshold makes a new one rather than reviving the old.
+   */
+  seenNotices?: Record<string, string>;
   startPage: string;
   householdName: string;
   /** SimpleFIN access URL, stored locally. Empty until the user connects. */

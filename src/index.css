@@ -92,7 +92,6 @@ h3 { font-size: 14px; }
 .center { text-align: center; }
 .nowrap { white-space: nowrap; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.blurred { filter: blur(7px); user-select: none; }
 
 /* ── layout ───────────────────────────────────────────────────────────── */
 .app { display: flex; min-height: 100vh; }
@@ -800,6 +799,39 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    ring back against the left edge. */
 .donut-wrap { justify-content: center; }
 .donut-key { flex: 0 1 320px; min-width: 220px; }
+
+/* A pattern the app has only just worked out, until somebody has looked at it. */
+.rec-new { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+/* ── notifications ── */
+.notif-bell { position: relative; overflow: visible; }
+/* A count rather than a plain dot: "three things" is a different decision from
+   "something", and the bell has room to say which. */
+.notif-dot {
+  position: absolute; top: -2px; right: -2px; min-width: 15px; height: 15px;
+  padding: 0 3px; border-radius: 99px; background: var(--accent); color: #fff;
+  font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.notif-menu { padding: 0; max-height: min(70vh, 460px); overflow-y: auto; }
+.notif-head { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); position: sticky; top: 0; background: var(--surface-2); z-index: 1; }
+.notif-all { padding: 2px 6px; font-size: 11.5px; color: var(--accent); }
+.notif-row {
+  display: flex; gap: 9px; width: 100%; text-align: left; align-items: flex-start;
+  padding: 10px 12px; border: 0; border-bottom: 1px solid var(--line-soft);
+  background: none; color: inherit; cursor: pointer;
+}
+.notif-row:last-child { border-bottom: 0; }
+.notif-row:hover { background: var(--surface-3); }
+/* Unread is a bar down the side rather than a wash across the row: the row
+   already carries a tone, and two backgrounds fighting is neither. */
+.notif-row.unread { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.notif-tone { width: 3px; align-self: stretch; border-radius: 2px; flex: none; background: var(--muted); }
+.notif-tone.neg { background: var(--neg); }
+.notif-tone.pos { background: var(--pos); }
+.notif-tone.warn { background: var(--accent); }
+.notif-body { white-space: normal; line-height: 1.45; }
+.notif-empty { padding: 18px 14px; line-height: 1.5; }
 
 /* Spent against committed. The second figure is quieter than the first: what
    has gone is the number being read, and the total is what it is read against. */

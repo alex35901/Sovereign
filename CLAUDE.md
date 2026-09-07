@@ -118,7 +118,7 @@ CHROME_PATH=... node scripts/breakpoints.mjs --only=detail   # one section, ~7s
 Sections: `tx-columns`, `tx-select`, `tx-align`, `category-arrow`, `overflow`,
 `phone-account`, `phone-nav`, `nested-menu`, `drilldown-back`,
 `drilldown-scroll`, `goals`, `detail`, `budget`, `accounts`, `account-page`,
-`tx-filters`, `dashboard`, `merchants`, `reports`. **`--only` is for the iteration loop;
+`tx-filters`, `explain`, `recurring`, `notifications`, `dashboard`, `merchants`, `reports`. **`--only` is for the iteration loop;
 the verdict always comes from a full run.** A filtered run prints what it
 skipped so it cannot be mistaken for a full one.
 
@@ -198,6 +198,12 @@ icon service.
   `available` is therefore never negative, and the goals on one account can
   never hold more between them than the account does. Read `claimOn` only in
   the allocation dialog.
+- `src/lib/notifications.ts` — what the app would tell you if you had not been
+  looking. Every notice is derived from the document; only *which have been
+  read* is stored, and the id encodes what was true (`budget:2026-09:c_x:over25`)
+  so escalating past the next threshold raises a new one rather than reviving a
+  dismissed one. `unread()` is the single definition of unread — do not
+  reimplement the filter at a call site.
 - `src/lib/sync/` — provider sync, merge, and the save schedule.
 - `src/lib/history.ts` — balance-history compression.
 - `src/lib/hopper/` — the in-browser agent loop; its tools are read-only.

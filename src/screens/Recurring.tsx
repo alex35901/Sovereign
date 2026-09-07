@@ -1,16 +1,36 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, Pencil, X } from "lucide-react";
+import { CalendarDays, Pencil, Plus, X } from "lucide-react";
 import type { Cadence, Recurring as RecurringItem } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, monthEnd, monthStart, parseISO, relativeDay, thisMonth, today } from "../lib/date";
 import { occurrences, recurringList, recurringSpend } from "../lib/select";
+import { isNewRecurring, isSeen, markRead } from "../lib/notifications";
+import { UNCATEGORIZED } from "../lib/categories";
 import type { RecurringSpend } from "../lib/select";
 import { MonthGrid } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { MerchantAvatar } from "./Transactions";
+
+/**
+ * A new item, ready to be filled in.
+ *
+ * Its own id from the start, so saving it lands as a new row rather than
+ * overwriting something detected — and a date rather than a blank, because a
+ * schedule with no next date is not a schedule.
+ */
+const blank = (): RecurringItem => ({
+  id: `rec_manual_${Date.now().toString(36)}`,
+  merchant: "",
+  categoryId: UNCATEGORIZED,
+  amount: 0,
+  cadence: "monthly",
+  nextDate: today(),
+  kind: "bill",
+  detected: false,
+});
 
 const CADENCES: { value: Cadence; label: string }[] = [
   { value: "weekly", label: "Weekly" },
@@ -60,7 +80,14 @@ export default function Recurring() {
 
   return (
     <>
-      <TopBar title="Recurring" />
+      <TopBar
+        title="Recurring"
+        primary={
+          <Btn variant="primary" onClick={() => setEditing(blank())}>
+            <Plus size={14} /> Recurring
+          </Btn>
+        }
+      />
       <div className="page stack">
         {/* How much of what is committed has already gone, so what is left is
             a figure to plan against rather than a total to work out. */}
@@ -104,7 +131,9 @@ export default function Recurring() {
                 <div className="grow col" style={{ gap: 1 }}>
                   <span className="row" style={{ gap: 6 }}>
                     <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
-                    {r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
+                    {isNewRecurring(r) && !isSeen(db, `recurring:${r.id}`)
+                      ? <span className="tag rec-new">New</span>
+                      : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
                   </span>
                   <span className="tiny faint truncate">
                     {CADENCES.find((c) => c.value === r.cadence)?.label} · next {relativeDay(r.nextDate).toLowerCase()} ({dateLabel(r.nextDate)})
@@ -169,7 +198,11 @@ function SpendTile({ label, spend, sub }: { label: string; spend: RecurringSpend
 }
 
 function RecurringModal({ item, onClose }: { item: RecurringItem; onClose: () => void }) {
-  const { actions } = useStore();
+  const { actions, apply } = useStore();
+  // Acting on it is having seen it, so the "New" tag and the notification
+  // clear together rather than the row staying flagged after you have dealt
+  // with it.
+  const acknowledge = () => apply((cur) => markRead(cur, [`recurring:${item.id}`]));
   const [merchant, setMerchant] = useState(item.merchant);
   const [amount, setAmount] = useState(item.amount);
   const [cadence, setCadence] = useState<Cadence>(item.cadence);
@@ -182,13 +215,14 @@ function RecurringModal({ item, onClose }: { item: RecurringItem; onClose: () =>
       onClose={onClose}
       footer={
         <>
-          <Btn variant="danger" onClick={() => { actions.dismissRecurring(item); onClose(); }}>Not recurring</Btn>
+          <Btn variant="danger" onClick={() => { actions.dismissRecurring(item); acknowledge(); onClose(); }}>Not recurring</Btn>
           <div className="grow" />
           <Btn onClick={onClose}>Cancel</Btn>
           <Btn
             variant="primary"
             onClick={() => {
               actions.upsertRecurring({ ...item, merchant, amount, cadence, nextDate, categoryId, detected: false });
+              acknowledge();
               onClose();
             }}
           >

@@ -52,6 +52,7 @@ await build({
       export * as HT from "./src/lib/hopper/tools.ts";
       export { digest, SYSTEM } from "./src/lib/hopper/digest.ts";
       export * as EX from "./src/lib/hopper/explain.ts";
+      export * as NT from "./src/lib/notifications.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -4005,6 +4006,149 @@ await test("a year of it is twelve months of it, not thirteen", () => {
 await test("nothing recurring is nothing spent, and no division by it", () => {
   const s = M.recurringSpend([], "2026-09-01", "2026-09-30", "2026-09-07");
   assert.deepEqual(s, { spent: 0, total: 0, left: 0, upcoming: 0 });
+});
+
+
+/* ── what the app would tell you if you had not been looking ───────────── */
+
+await test("a category creeping past its plan says so once, then only when it matters", () => {
+  // Three rungs, not a percentage: reporting the number itself would raise a
+  // fresh notice on every transaction for the rest of the month.
+  assert.equal(M.NT.overspendTier(100_00, 100_00), null, "spent to the penny is not over");
+  assert.equal(M.NT.overspendTier(100_00, 99_00), null);
+  assert.equal(M.NT.overspendTier(100_00, 100_01), "over");
+  assert.equal(M.NT.overspendTier(100_00, 124_99), "over", "just under a quarter is still the first rung");
+  assert.equal(M.NT.overspendTier(100_00, 125_00), "over25");
+  assert.equal(M.NT.overspendTier(100_00, 149_99), "over25");
+  assert.equal(M.NT.overspendTier(100_00, 150_00), "over50");
+  assert.equal(M.NT.overspendTier(100_00, 900_00), "over50", "and there is no rung above it");
+  // Nothing planned is nothing to be over.
+  assert.equal(M.NT.overspendTier(0, 500_00), null);
+  assert.equal(M.NT.overspendTier(-100, 500), null);
+});
+
+const budgetDB = (planned, spent, month = M.thisMonth()) => {
+  const base = M.emptyDB();
+  const cat = base.categories.find((c) => {
+    const g = base.groups.find((x) => x.id === c.groupId);
+    return g && g.kind === "expense";
+  });
+  return {
+    ...base,
+    accounts: [{ id: "chk", name: "Everyday", type: "checking", balance: 0, history: [], includeInNetWorth: true, hidden: false }],
+    budgets: { [month]: { [cat.id]: planned } },
+    transactions: spent ? [{
+      id: "t1", accountId: "chk", date: `${month}-05`, merchant: "Shop", amount: -spent,
+      categoryId: cat.id, tags: [], pending: false, reviewed: true, hideFromReports: false,
+    }] : [],
+    __cat: cat,
+  };
+};
+
+await test("going further past a plan raises a new notice, not the old one again", () => {
+  // The whole reason the id carries the rung. Reading "over budget" must not
+  // silence "50% over budget" three weeks later.
+  const month = M.thisMonth();
+  const first = M.NT.notices(budgetDB(100_00, 110_00), `${month}-20`);
+  const worse = M.NT.notices(budgetDB(100_00, 160_00), `${month}-20`);
+  const idOf = (ns) => ns.filter((n) => n.kind === "budget").map((n) => n.id);
+  assert.equal(idOf(first).length, 1);
+  assert.equal(idOf(worse).length, 1);
+  assert.notEqual(idOf(first)[0], idOf(worse)[0]);
+  assert.match(idOf(first)[0], /:over$/);
+  assert.match(idOf(worse)[0], /:over50$/);
+
+  // And reading the first leaves the second unread.
+  const read = M.NT.markRead(budgetDB(100_00, 160_00), idOf(first));
+  assert.equal(M.NT.unread(read, `${month}-20`).filter((n) => n.kind === "budget").length, 1);
+});
+
+await test("a category inside its plan says nothing at all", () => {
+  const month = M.thisMonth();
+  const quiet = M.NT.notices(budgetDB(100_00, 60_00), `${month}-20`);
+  assert.deepEqual(quiet.filter((n) => n.kind === "budget"), []);
+});
+
+await test("a pattern that completed last week is news; one from last year is not", () => {
+  const on = (d) => ({ detected: true, detectedAt: d });
+  assert.equal(M.NT.isNewRecurring(on("2026-09-01"), "2026-09-07"), true);
+  assert.equal(M.NT.isNewRecurring(on("2026-09-07"), "2026-09-07"), true, "the day it completed counts");
+  assert.equal(M.NT.isNewRecurring(on("2026-08-08"), "2026-09-07"), true, "thirty days is still new");
+  assert.equal(M.NT.isNewRecurring(on("2026-08-07"), "2026-09-07"), false, "thirty-one is not");
+  assert.equal(M.NT.isNewRecurring(on("2025-01-01"), "2026-09-07"), false);
+  // A hand-entered item was never detected, so it was never news.
+  assert.equal(M.NT.isNewRecurring({ detected: false, detectedAt: "2026-09-06" }, "2026-09-07"), false);
+  assert.equal(M.NT.isNewRecurring({ detected: true }, "2026-09-07"), false, "and one with no date cannot be judged");
+  // A date in the future is not "new", it is wrong; it must not go negative
+  // and read as news for ever.
+  assert.equal(M.NT.isNewRecurring(on("2026-10-01"), "2026-09-07"), false);
+});
+
+await test("reading one notice leaves the others alone", () => {
+  const month = M.thisMonth();
+  const db = budgetDB(100_00, 160_00);
+  const all = M.NT.notices(db, `${month}-20`);
+  assert.ok(all.length >= 1);
+  assert.equal(M.NT.unread(db, `${month}-20`).length, all.length, "nothing is read to begin with");
+
+  const read = M.NT.markRead(db, [all[0].id]);
+  assert.equal(M.NT.isSeen(read, all[0].id), true);
+  assert.equal(M.NT.unread(read, `${month}-20`).length, all.length - 1);
+  // The notice itself does not disappear: a list that empties when you look at
+  // it gives you no way back to something half-read on a phone.
+  assert.equal(M.NT.notices(read, `${month}-20`).length, all.length);
+});
+
+await test("marking nothing read changes nothing", () => {
+  const db = budgetDB(100_00, 160_00);
+  assert.equal(M.NT.markRead(db, []), db, "and does not churn the document");
+});
+
+await test("the read marks are bounded, oldest dropped first", () => {
+  // The document is uploaded whole on every save.
+  let db = M.emptyDB();
+  const at = (i) => new Date(1_800_000_000_000 + i * 1000).toISOString();
+  for (let i = 0; i < M.NT.SEEN_CAP + 25; i++) db = M.NT.markRead(db, [`n${i}`], at(i));
+  const seen = db.settings.seenNotices;
+  assert.equal(Object.keys(seen).length, M.NT.SEEN_CAP);
+  assert.equal(seen.n0, undefined, "the first read is forgotten");
+  assert.equal(seen.n24, undefined);
+  assert.ok(seen.n25, "the twenty-sixth is the oldest kept");
+  assert.ok(seen[`n${M.NT.SEEN_CAP + 24}`], "and the newest is there");
+});
+
+await test("a goal that has got there says so, once", () => {
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{ id: "sav", name: "Savings", type: "savings", balance: 5_000_00, history: [], includeInNetWorth: true, hidden: false, goalAccount: true }],
+    goals: [{
+      id: "g1", name: "Laptop", emoji: "*", targetAmount: 3_000_00, accountIds: [],
+      allocations: { sav: 3_000_00 }, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
+    }],
+  };
+  const reached = M.NT.notices(db).filter((n) => n.kind === "goal");
+  assert.equal(reached.length, 1);
+  assert.match(reached[0].title, /Laptop/);
+  assert.equal(reached[0].tone, "pos");
+  assert.equal(reached[0].to, "/goals/g1");
+
+  // Short of it, nothing.
+  const short = { ...db, goals: [{ ...db.goals[0], targetAmount: 9_000_00 }] };
+  assert.deepEqual(M.NT.notices(short).filter((n) => n.kind === "goal"), []);
+  // Archived goals are not goals.
+  const gone = { ...db, goals: [{ ...db.goals[0], archived: true }] };
+  assert.deepEqual(M.NT.notices(gone).filter((n) => n.kind === "goal"), []);
+});
+
+await test("every notice says where to go and when it was true", () => {
+  const month = M.thisMonth();
+  for (const n of M.NT.notices(budgetDB(100_00, 160_00), `${month}-20`)) {
+    assert.ok(n.to, `${n.id} has nowhere to go`);
+    assert.match(n.at, /^\d{4}-\d{2}-\d{2}$/, `${n.id} has no date`);
+    assert.ok(n.when && n.when.length, `${n.id} has nothing to say about when`);
+    assert.ok(["neg", "pos", "warn"].includes(n.tone), `${n.id} has tone ${n.tone}`);
+  }
 });
 
 /* ── colour belongs to the group ──────────────────────────────────────── */

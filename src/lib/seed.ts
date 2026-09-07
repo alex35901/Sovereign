@@ -323,7 +323,7 @@ export function buildDemoDB(): DB {
     budgets: {},
     goals, recurring: [], rules, holdings,
     settings: {
-      theme: "dark", currency: "USD", privacyMode: false,
+      theme: "dark", currency: "USD",
       startPage: "/dashboard", householdName: "My household",
     },
   };
@@ -365,7 +365,7 @@ export function emptyDB(): DB {
     version: 1,
     accounts: [], groups, categories, transactions: [], tags: [],
     budgets: {}, goals: [], recurring: [], rules: [], holdings: [],
-    settings: { theme: "dark", currency: "USD", privacyMode: false, startPage: "/dashboard", householdName: "My household" },
+    settings: { theme: "dark", currency: "USD", startPage: "/dashboard", householdName: "My household" },
   };
 }
 

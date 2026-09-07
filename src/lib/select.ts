@@ -669,6 +669,9 @@ export function detectRecurring(db: DB): Recurring[] {
       amount: Math.round(avg) * (last.amount < 0 ? -1 : 1),
       cadence,
       nextDate: next,
+      // The charge that completed the pattern, so a caller can tell a
+      // subscription that started last month from one that has run for years.
+      detectedAt: sorted[2].date,
       kind: last.amount > 0 ? "income" : avg < 5000 ? "subscription" : "bill",
       detected: true,
     });

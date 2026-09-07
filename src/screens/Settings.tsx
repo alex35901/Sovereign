@@ -95,11 +95,6 @@ export default function Settings() {
                 on={db.settings.theme === "dark"} onChange={actions.toggleTheme}
                 label={<span className="small">Dark theme</span>}
               />
-              <Toggle
-                on={db.settings.privacyMode}
-                onChange={(v) => actions.patchSettings({ privacyMode: v })}
-                label={<span className="small">Privacy mode — blur every amount</span>}
-              />
             </div>
           </Card>
 

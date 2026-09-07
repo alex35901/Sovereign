@@ -87,12 +87,11 @@ function Editable({ view, edit, chevron = true }: {
 function AmountHeader({ value, onChange, autoFocus }: {
   value: number; onChange: (cents: number) => void; autoFocus?: boolean;
 }) {
-  const { db } = useStore();
   const [buf, setBuf] = useState<string | null>(null);
   return (
     <div className="txn-amount">
       <input
-        className={cx("num", value > 0 && "pos", db.settings.privacyMode && "blurred")}
+        className={cx("num", value > 0 && "pos")}
         inputMode="decimal" autoFocus={autoFocus} aria-label="Amount"
         value={buf ?? fmt(value)}
         onFocus={(e) => {

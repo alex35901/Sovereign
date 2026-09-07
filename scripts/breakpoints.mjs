@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1102,6 +1102,174 @@ try {
         /\/recurring/.test(wide.url()), wide.url());
     }
     await wide.close();
+  }
+
+  if (want("notifications")) {
+    // ── the bell replaces the eye ──
+    const nb = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await nb.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+    await nb.waitForTimeout(800);
+
+    const bar = await nb.evaluate(() => ({
+      bell: document.querySelectorAll(".topbar .notif-bell").length,
+      badge: document.querySelector(".notif-dot")?.innerText.trim() ?? null,
+      titles: [...document.querySelectorAll(".topbar button")].map((b) => b.getAttribute("title") ?? ""),
+      blurred: document.querySelectorAll(".blurred").length,
+    }));
+    check("the top bar carries a bell", bar.bell === 1, `${bar.bell} bells`);
+    check("and no longer offers to hide the amounts",
+      !bar.titles.some((t) => /hide amounts|show amounts/i.test(t)), bar.titles.join(" | "));
+    check("with nothing left blurred anywhere", bar.blurred === 0, `${bar.blurred} blurred`);
+    check("the bell counts what is unread", bar.badge !== null && /^[0-9]+\+?$/.test(bar.badge), bar.badge ?? "no badge");
+
+    const opened = await tryStep("the bell opens the list", async () => {
+      await nb.locator(".notif-bell").click({ timeout: 5000 });
+      await nb.locator(".notif-row").first().waitFor({ timeout: 5000 });
+    });
+    if (opened) {
+      const list = await nb.evaluate(() => ({
+        rows: [...document.querySelectorAll(".notif-row")].map((r) => ({
+          text: r.innerText.replace(/\n/g, " · ").trim(),
+          unread: r.classList.contains("unread"),
+        })),
+        inside: (() => {
+          const panel = document.querySelector(".notif-panel").getBoundingClientRect();
+          return panel.right <= window.innerWidth + 1 && panel.left >= -1;
+        })(),
+      }));
+      check("each row says what happened and what it costs",
+        list.rows.length > 0 && list.rows.every((r) => /\S/.test(r.text)),
+        list.rows.map((r) => r.text).slice(0, 2).join(" || "));
+      check("and every one of them is unread to begin with",
+        list.rows.every((r) => r.unread), `${list.rows.filter((r) => r.unread).length} of ${list.rows.length}`);
+      check("the panel stays on the screen", list.inside, "the panel ran off the edge");
+
+      // Clicking one goes where it points, and stops counting.
+      const before = list.rows.length;
+      const followed = await tryStep("a notice takes you to what it is about", async () => {
+        await nb.locator(".notif-row").first().click({ timeout: 5000 });
+        await nb.waitForTimeout(800);
+      });
+      if (followed) {
+        check("landing somewhere, with the list closed behind it",
+          !await nb.locator(".notif-panel").count(), "the panel stayed open");
+        await nb.locator(".notif-bell").click();
+        await nb.waitForTimeout(400);
+        const after = await nb.evaluate(() => ({
+          badge: document.querySelector(".notif-dot")?.innerText.trim() ?? "0",
+          rows: document.querySelectorAll(".notif-row").length,
+          unread: document.querySelectorAll(".notif-row.unread").length,
+        }));
+        check("the one that was read stops counting", Number(after.badge) === before - 1,
+          `badge ${after.badge}, was ${before}`);
+        check("but stays in the list rather than vanishing", after.rows === before,
+          `${after.rows} rows, was ${before}`);
+        check("shown as read", after.unread === before - 1, `${after.unread} unread`);
+
+        const cleared = await tryStep("everything can be marked read at once", async () => {
+          await nb.locator(".notif-all").click({ timeout: 5000 });
+          await nb.waitForTimeout(500);
+        });
+        if (cleared) {
+          const end = await nb.evaluate(() => ({
+            badge: document.querySelector(".notif-dot")?.innerText.trim() ?? null,
+            unread: document.querySelectorAll(".notif-row.unread").length,
+          }));
+          check("and then the bell is quiet", end.badge === null && end.unread === 0,
+            `badge ${end.badge}, ${end.unread} unread`);
+        }
+      }
+    }
+    await nb.close();
+
+    // ── a recurring item can be added by hand ──
+    const add = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await add.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await add.waitForTimeout(800);
+    const beforeRows = await add.locator(".rec-row").count();
+    const added = await tryStep("a recurring item can be added by hand", async () => {
+      await add.locator(".topbar button", { hasText: /Recurring/ }).first().click({ timeout: 5000 });
+      await add.locator(".modal").waitFor({ timeout: 5000 });
+      await add.locator(".modal input").first().fill("Adobe Creative Cloud");
+      await add.locator(".modal .btn-primary, .modal button", { hasText: /^Save$/ }).first().click({ timeout: 5000 });
+      await add.waitForTimeout(700);
+    });
+    if (added) {
+      const rows = await add.evaluate(() => [...document.querySelectorAll(".rec-row")].map((r) => r.innerText));
+      check("which lands in the list rather than replacing something detected",
+        rows.length === beforeRows + 1 && rows.some((t) => /Adobe Creative Cloud/.test(t)),
+        `${rows.length} rows, was ${beforeRows}`);
+    }
+    await add.close();
+
+    // ── a pattern the app has only just worked out ──
+    //
+    // Seeded: the demo history is old, so nothing in it completed recently and
+    // the state being checked would never occur.
+    const seedCtx = await browser.newContext();
+    const sp = await seedCtx.newPage();
+    await sp.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await sp.waitForTimeout(1000);
+    const doc = JSON.parse(await sp.evaluate(() => localStorage.getItem("sovereign.db.v1")));
+    await seedCtx.close();
+
+    const iso = (daysAgo) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+    const newDoc = {
+      ...doc,
+      recurring: [
+        ...(doc.recurring ?? []),
+        {
+          id: "rec_fresh_thing", merchant: "Fresh Thing", categoryId: doc.categories[0].id,
+          amount: -9_99, cadence: "monthly", nextDate: iso(-20), kind: "subscription",
+          detected: true, detectedAt: iso(3),
+        },
+        {
+          id: "rec_old_thing", merchant: "Old Thing", categoryId: doc.categories[0].id,
+          amount: -4_99, cadence: "monthly", nextDate: iso(-25), kind: "subscription",
+          detected: true, detectedAt: iso(200),
+        },
+      ],
+    };
+
+    const tagCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await tagCtx.addInitScript((d) => {
+      if (!localStorage.getItem("sovereign.db.v1")) localStorage.setItem("sovereign.db.v1", d);
+    }, JSON.stringify(newDoc));
+    const tag = await tagCtx.newPage();
+    await tag.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await tag.waitForTimeout(900);
+
+    const tags = await tag.evaluate(() => {
+      const of = (name) => {
+        const row = [...document.querySelectorAll(".rec-row")]
+          .find((r) => r.querySelector(".truncate")?.innerText.trim() === name);
+        return row ? [...row.querySelectorAll(".tag")].map((t) => t.innerText.trim()) : null;
+      };
+      return { fresh: of("Fresh Thing"), old: of("Old Thing") };
+    });
+    check("a pattern found in the last month is tagged as new",
+      tags.fresh?.includes("New") ?? false, JSON.stringify(tags.fresh));
+    check("and one that has been running for months is not",
+      tags.old !== null && !tags.old.includes("New"), JSON.stringify(tags.old));
+
+    // Acting on it is having seen it.
+    const acted = await tryStep("acting on it clears the tag", async () => {
+      const row = tag.locator(".rec-row").filter({ hasText: "Fresh Thing" }).first();
+      await row.locator("button[title='Edit schedule']").click({ timeout: 5000 });
+      await tag.locator(".modal").waitFor({ timeout: 5000 });
+      await tag.locator(".modal button", { hasText: /^Save$/ }).first().click({ timeout: 5000 });
+      await tag.waitForTimeout(600);
+    });
+    if (acted) {
+      const after = await tag.evaluate(() => {
+        const row = [...document.querySelectorAll(".rec-row")]
+          .find((r) => r.querySelector(".truncate")?.innerText.trim() === "Fresh Thing");
+        return row ? [...row.querySelectorAll(".tag")].map((t) => t.innerText.trim()) : null;
+      });
+      check("so the row stops shouting once it has been dealt with",
+        after !== null && !after.includes("New"), JSON.stringify(after));
+    }
+    await tagCtx.close();
   }
 
   if (want("budget")) {

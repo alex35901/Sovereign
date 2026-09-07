@@ -3,7 +3,6 @@ import type { ChangeEvent, CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Eye, EyeOff, X } from "lucide-react";
 import { fmt, fmt0, parseMoney, toInput } from "../lib/money";
-import { useStore } from "../store";
 
 export const cx = (...xs: (string | false | null | undefined)[]): string => xs.filter(Boolean).join(" ");
 
@@ -26,16 +25,13 @@ export function CardHead({ title, sub, right, flush }: { title: ReactNode; sub?:
   );
 }
 
-/** Money display that respects privacy mode. */
+/** An amount, formatted and toned. */
 export function Money({ value, cents = true, sign, colored, compact, className, style }: {
   value: number; cents?: boolean; sign?: boolean; colored?: boolean; compact?: boolean; className?: string; style?: CSSProperties;
 }) {
-  const { db } = useStore();
   const text = cents ? fmt(value, { sign, compact }) : fmt0(value, { sign, compact });
   const tone = colored ? (value > 0 ? "pos" : value < 0 ? "neg" : "muted") : "";
-  return (
-    <span className={cx("num", tone, db.settings.privacyMode && "blurred", className)} style={style}>{text}</span>
-  );
+  return <span className={cx("num", tone, className)} style={style}>{text}</span>;
 }
 
 export function Tile({ label, value, sub, tone, onClick }: {
