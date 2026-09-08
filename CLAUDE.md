@@ -210,6 +210,11 @@ comments and fails on any that come back.
   so escalating past the next threshold raises a new one rather than reviving a
   dismissed one. `unread()` is the single definition of unread — do not
   reimplement the filter at a call site.
+- `src/lib/compress.ts` — gzip and base64, for the document on the wire. A
+  plaintext document is compressed in transit (`z` in the body, `?z=1` on the
+  GET); an encrypted one is compressed *before* sealing, because ciphertext is
+  random and does not compress. Envelope `v: 2` means the plaintext was
+  gzipped; `v: 1` must keep opening for ever.
 - `src/lib/sync/` — provider sync, merge, and the save schedule.
 - `src/lib/history.ts` — balance-history compression.
 - `src/lib/hopper/` — the in-browser agent loop; its tools are read-only.

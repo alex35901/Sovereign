@@ -1,4 +1,5 @@
 import type { DB } from "../types.js";
+import { canCompress, pack, unpack } from "./compress.js";
 
 /**
  * End-to-end encryption for the stored document.
@@ -104,7 +105,18 @@ export async function unseal(key: CryptoKey, sealed: Sealed): Promise<string> {
 /* ── the document envelope ─────────────────────────────────────────────── */
 
 export interface Envelope {
-  v: 1;
+  /**
+   * 1 is ciphertext of the raw JSON. 2 is ciphertext of the gzipped JSON,
+   * which is most of what the document weighs.
+   *
+   * Compressed before sealing rather than after, because ciphertext is random
+   * and does not compress at all. The cost is that the stored length now
+   * varies with how repetitive the budget is as well as how large it is, which
+   * is a little more than length alone told before. Against a server that can
+   * only watch, and cannot choose what goes into the document, that is a
+   * trade worth making for an eightfold reduction in what crosses the wire.
+   */
+  v: 1 | 2;
   kdf: { name: "PBKDF2"; hash: "SHA-256"; iterations: number; salt: string };
   cipher: "AES-256-GCM";
   iv: string;
@@ -122,7 +134,7 @@ export interface Envelope {
 export function isEnvelope(doc: unknown): doc is Envelope {
   if (!doc || typeof doc !== "object") return false;
   const d = doc as Partial<Envelope>;
-  return d.v === 1 && typeof d.ct === "string" && typeof d.iv === "string" && !!d.kdf;
+  return (d.v === 1 || d.v === 2) && typeof d.ct === "string" && typeof d.iv === "string" && !!d.kdf;
 }
 
 /* ── the drop box ──────────────────────────────────────────────────────── */
@@ -265,9 +277,13 @@ export async function unlockExisting(env: Envelope, passphrase: string): Promise
 }
 
 export async function encryptDocument(doc: DB, at: Unlocked): Promise<Envelope> {
-  const body = await seal(at.key, JSON.stringify(doc));
+  const json = JSON.stringify(doc);
+  // Where the browser cannot compress, it saves the way it always did. An old
+  // browser writing a large document is better than one that cannot save.
+  const packed = canCompress() ? await pack(json) : null;
+  const body = await seal(at.key, packed ?? json);
   return {
-    v: 1,
+    v: packed ? 2 : 1,
     kdf: at.kdf,
     cipher: "AES-256-GCM",
     iv: body.iv,
@@ -278,5 +294,6 @@ export async function encryptDocument(doc: DB, at: Unlocked): Promise<Envelope> 
 }
 
 export async function decryptDocument(env: Envelope, at: Unlocked): Promise<DB> {
-  return JSON.parse(await unseal(at.key, { iv: env.iv, ct: env.ct })) as DB;
+  const plain = await unseal(at.key, { iv: env.iv, ct: env.ct });
+  return JSON.parse(env.v === 2 ? await unpack(plain) : plain) as DB;
 }

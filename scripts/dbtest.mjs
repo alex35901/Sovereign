@@ -5,6 +5,8 @@
  *   DATABASE_URL=postgres://... node scripts/dbtest.mjs
  */
 import assert from "node:assert/strict";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { Buffer } from "node:buffer";
 import { build } from "esbuild";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -1081,6 +1083,54 @@ await test("an encrypted document gets its Plaid pull queued, not merged", async
   delete process.env.PLAID_ACCESS_TOKENS;
   delete process.env.PLAID_CLIENT_ID;
   delete process.env.PLAID_SECRET;
+});
+
+await test("a compressed save stores exactly what a plain one would", async () => {
+  // The whole point: the same document arrives, whichever way it was sent.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await wipe(); await clearAttempts();
+
+  const doc = M.buildDemoDB();
+  const z = gzipSync(Buffer.from(JSON.stringify(doc), "utf8")).toString("base64");
+  const put = await asServer({ z, baseVersion: 0 }, "PUT");
+  assert.equal(put.status, 200, put.text);
+
+  const back = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.deepEqual(back.doc, doc, "what came back is not what went up");
+
+  // And it really was smaller on the way.
+  assert.ok(z.length * 5 < JSON.stringify(doc).length,
+    `${(z.length / 1024).toFixed(0)} KB compressed against ${(JSON.stringify(doc).length / 1024).toFixed(0)} KB plain`);
+});
+
+await test("a browser that says it can inflate is sent the compressed form", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await wipe(); await clearAttempts();
+  const doc = M.buildDemoDB();
+  await asServer({ doc, baseVersion: 0 }, "PUT");
+
+  const plain = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.ok(plain.doc, "asked plainly, it answers plainly");
+  assert.equal(plain.z, undefined);
+
+  const squeezed = JSON.parse((await invokeWith(M.dbHandler, {
+    method: "GET", headers: { authorization: "Bearer the-right-one" }, url: "/api/db?z=1",
+  })).text);
+  assert.equal(squeezed.found, true);
+  assert.ok(squeezed.z, "asked for compression, it compresses");
+  assert.equal(squeezed.doc, undefined, "and does not send both");
+  assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(squeezed.z, "base64")).toString("utf8")), doc);
+  assert.equal(squeezed.version, plain.version, "the rest of the answer is unchanged");
+});
+
+await test("a compressed body that is not compressed is refused, not stored", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await wipe(); await clearAttempts();
+  const bad = await asServer({ z: "this is not gzip", baseVersion: 0 }, "PUT");
+  assert.equal(bad.status, 400);
+  assert.match(JSON.parse(bad.text).error, /could not be read/i);
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(after.found, false, "and nothing was written");
 });
 
 /* ── results, always last so every test above is reported ─────────────── */

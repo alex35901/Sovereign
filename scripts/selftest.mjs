@@ -99,6 +99,7 @@ await build({
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
       export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
       export * as C from "./src/lib/crypto.ts";
+      export * as Z from "./src/lib/compress.ts";
       export * as RI from "./src/lib/rules-import.ts";
       export * as D from "./src/lib/dedupe.ts";
       export { groupColor, withGroupColors, GROUP_TONES } from "./src/lib/category-colors.ts";
@@ -4379,6 +4380,68 @@ await test("a refusal that waiting cannot fix stops rather than backs off", () =
     false,
     "and no amount of waiting makes it due",
   );
+});
+
+
+/* ── squeezing the document before it crosses the wire ─────────────────── */
+
+await test("what goes up comes back exactly as it went", () => {
+  assert.equal(M.Z.canCompress(), true, "this runtime should be able to compress");
+});
+
+await test("packing and unpacking is lossless, including the awkward characters", async () => {
+  for (const text of [
+    "",
+    "plain",
+    JSON.stringify({ merchant: "Café Ñoño 🍜", amount: -1234, notes: "line\nbreak\ttab \"quoted\"" }),
+    "x".repeat(200_000),
+  ]) {
+    assert.equal(await M.Z.unpack(await M.Z.pack(text)), text, `round trip failed for ${text.slice(0, 24)}`);
+  }
+});
+
+await test("a real budget goes over the wire several times smaller", async () => {
+  const json = JSON.stringify(M.buildDemoDB());
+  const packed = await M.Z.pack(json);
+  // Base64 costs a third back and it is still this much smaller.
+  assert.ok(packed.length * 5 < json.length,
+    `${(json.length / 1024).toFixed(0)} KB became ${(packed.length / 1024).toFixed(0)} KB, which is not worth the trouble`);
+  assert.equal(await M.Z.unpack(packed), json);
+});
+
+await test("an encrypted budget is compressed inside its own ciphertext", async () => {
+  // Ciphertext is random and does not compress, so squeezing it afterwards
+  // does nothing. It has to happen before the sealing.
+  const db = M.buildDemoDB();
+  const at = await M.C.unlockNew("a passphrase for the test");
+  const env = await M.C.encryptDocument(db, at);
+  assert.equal(env.v, 2, "a browser that can compress writes the newer envelope");
+  assert.ok(JSON.stringify(env).length * 5 < JSON.stringify(db).length,
+    `the envelope is ${(JSON.stringify(env).length / 1024).toFixed(0)} KB`);
+  assert.deepEqual(await M.C.decryptDocument(env, at), db, "and it opens back to exactly what went in");
+});
+
+await test("a budget sealed before any of this still opens", async () => {
+  // The one that matters: somebody's stored document is a v1 envelope, and it
+  // has to keep working for ever, not until the next deploy.
+  const db = M.buildDemoDB();
+  const at = await M.C.unlockNew("a passphrase for the test");
+  const body = await M.C.seal(at.key, JSON.stringify(db));
+  const v1 = {
+    v: 1, kdf: at.kdf, cipher: "AES-256-GCM",
+    iv: body.iv, ct: body.ct, pub: at.pub, wrappedPriv: at.wrappedPriv,
+  };
+  assert.equal(M.C.isEnvelope(v1), true, "and is still recognised as an envelope");
+  assert.deepEqual(await M.C.decryptDocument(v1, at), db);
+});
+
+await test("an envelope is an envelope at either version, and nothing else is", () => {
+  const base = { kdf: { name: "PBKDF2" }, ct: "x", iv: "y" };
+  assert.equal(M.C.isEnvelope({ ...base, v: 1 }), true);
+  assert.equal(M.C.isEnvelope({ ...base, v: 2 }), true);
+  assert.equal(M.C.isEnvelope({ ...base, v: 3 }), false, "a version this build cannot read is not one to guess at");
+  assert.equal(M.C.isEnvelope({ transactions: [], accounts: [] }), false);
+  assert.equal(M.C.isEnvelope(null), false);
 });
 
 /* ── colour belongs to the group ──────────────────────────────────────── */

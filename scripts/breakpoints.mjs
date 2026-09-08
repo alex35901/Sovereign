@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1359,6 +1359,49 @@ try {
         return window.__puts;
       });
       void blocked;
+    }
+    await ctx.close();
+  }
+
+  if (want("compress")) {
+    // ── the budget goes up compressed ──
+    const ctx = await browser.newContext({ viewport: { width: 1180, height: 900 } });
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.setItem("sovereign.cloud.pass", "test-pass");
+        localStorage.setItem("sovereign.cloud.state.v1", JSON.stringify({ version: 1, dirty: false }));
+      } catch { /* private mode */ }
+      window.__put = null;
+      const real = window.fetch;
+      window.fetch = async (input, init) => {
+        const url = String(typeof input === "string" ? input : input.url);
+        if (!url.includes("/api/db")) return real(input, init);
+        if ((init?.method ?? "GET").toUpperCase() === "GET") {
+          return new Response(JSON.stringify({ found: true, version: 1, updatedAt: null, updatedBy: null, sealed: false }),
+            { status: 200, headers: { "content-type": "application/json" } });
+        }
+        const body = JSON.parse(init.body);
+        window.__put = { keys: Object.keys(body), bytes: init.body.length, hasZ: typeof body.z === "string" };
+        return new Response(JSON.stringify({ version: 2, updatedAt: new Date().toISOString() }), { status: 200 });
+      };
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1200);
+
+    const saved = await tryStep("an edit is saved", async () => {
+      await page.locator(".topbar button[title='Toggle theme']").click({ timeout: 5000 });
+      await page.waitForTimeout(11_000);
+    });
+    if (saved) {
+      const put = await page.evaluate(() => window.__put);
+      const plain = await page.evaluate(() => localStorage.getItem("sovereign.db.v1")?.length ?? 0);
+      check("a save carries the compressed form rather than the document",
+        put !== null && put.hasZ && !put.keys.includes("doc"),
+        put === null ? "no save was made" : put.keys.join(", "));
+      check("and it is several times smaller than the budget itself",
+        put !== null && plain > 0 && put.bytes * 4 < plain,
+        put === null ? "no save" : `${Math.round(put.bytes / 1024)} KB on the wire against ${Math.round(plain / 1024)} KB of budget`);
     }
     await ctx.close();
   }

@@ -1,6 +1,7 @@
 import type { DB } from "../types";
 import type { Envelope } from "./crypto.js";
 import { decryptDocument, encryptDocument, isEnvelope } from "./crypto.js";
+import { canCompress, pack, unpack } from "./compress.js";
 import { restore, vault } from "./vault.js";
 import { haltSync, notifySync, resumeSync, syncHalt } from "./sync-halt.js";
 import { measure, noteTransfer } from "./transfer.js";
@@ -198,10 +199,16 @@ export interface RemoteDoc {
  * installation that has not been encrypted yet, the document itself.
  */
 export async function pull(): Promise<RemoteDoc | null> {
-  const res = await call({ method: "GET" });
+  // `?z=1` says this browser can inflate the answer. Asked for rather than
+  // assumed, so a tab still running an older bundle keeps getting the plain
+  // form it understands.
+  const res = await call({ method: "GET" }, undefined, canCompress() ? "?z=1" : "");
   if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
-  const body = (await res.json()) as RemoteDoc & { doc: DB | Envelope };
-  if (!body.found) return null;
+  const raw = (await res.json()) as RemoteDoc & { doc?: DB | Envelope; z?: string };
+  if (!raw.found) return null;
+  const body = raw.z
+    ? { ...raw, doc: JSON.parse(await unpack(raw.z)) as DB | Envelope }
+    : (raw as RemoteDoc & { doc: DB | Envelope });
 
   if (isEnvelope(body.doc)) {
     const at = vault() ?? await restore();
@@ -233,10 +240,16 @@ export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
   // itself out of a document its other devices could no longer read.
   const at = vault() ?? await restore();
   const payload = at ? await encryptDocument(doc, at) : doc;
+  // An envelope is already compressed inside its own ciphertext, and random
+  // bytes do not compress twice. A document saved in the clear is the case
+  // this helps, and it is the case where the whole budget is on the wire.
+  const packed = !at && canCompress() ? await pack(JSON.stringify(payload)) : null;
   const res = await call({
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ doc: payload, baseVersion, device: deviceName() }),
+    body: JSON.stringify(packed
+      ? { z: packed, baseVersion, device: deviceName() }
+      : { doc: payload, baseVersion, device: deviceName() }),
   });
   if (res.status === 409) throw new CloudError(await messageOf(res, "Changed elsewhere."), 409);
   if (!res.ok) throw new CloudError(await messageOf(res, `Save failed (${res.status})`), res.status);

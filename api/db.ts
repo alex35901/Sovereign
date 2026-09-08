@@ -1,4 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { gunzipSync, gzipSync } from "node:zlib";
+import { Buffer } from "node:buffer";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
 import {
@@ -127,13 +129,33 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         return send(200, meta ? { found: true, ...meta } : { found: false });
       }
       const stored = await readDoc();
-      return send(200, stored ? { found: true, ...stored } : { found: false });
+      if (!stored) return send(200, { found: false });
+      // Gzipped when the browser says it can inflate it. The document is JSON
+      // with the same twenty field names on every one of thousands of rows, so
+      // this is where most of the traffic between the CDN and this function
+      // goes, and it is roughly an eighth of the size compressed.
+      if (/[?&]z=1(&|$)/.test(req.url ?? "")) {
+        const { doc, ...rest } = stored;
+        const z = gzipSync(Buffer.from(JSON.stringify(doc), "utf8")).toString("base64");
+        return send(200, { found: true, ...rest, z });
+      }
+      return send(200, { found: true, ...stored });
     }
 
     if (req.method === "PUT" || req.method === "POST") {
       const body = (typeof req.body === "string" ? safeParse(req.body) : req.body) as {
-        doc?: unknown; baseVersion?: number; device?: string;
+        doc?: unknown; z?: string; baseVersion?: number; device?: string;
       } | undefined;
+      // `z` is the same document, gzipped and base64'd, which is how a browser
+      // that can compress sends it. Inflated here into exactly what `doc`
+      // would have been, so nothing below this line knows the difference.
+      if (body && typeof body.z === "string" && body.doc === undefined) {
+        try {
+          body.doc = JSON.parse(gunzipSync(Buffer.from(body.z, "base64")).toString("utf8")) as unknown;
+        } catch {
+          return send(400, { error: "The compressed document could not be read." });
+        }
+      }
       if (!body || body.doc === undefined) return send(400, { error: "No document supplied." });
       if (typeof body.baseVersion !== "number" || body.baseVersion < 0) {
         return send(400, { error: "A baseVersion is required so a stale write can be refused." });
