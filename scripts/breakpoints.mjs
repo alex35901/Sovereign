@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1270,6 +1270,97 @@ try {
         after !== null && !after.includes("New"), JSON.stringify(after));
     }
     await tagCtx.close();
+  }
+
+  if (want("retry")) {
+    // ── a save that fails does not keep trying every minute ──
+    //
+    // The whole document goes up on every save, so a retry loop is a bill
+    // rather than an annoyance. The endpoint is stubbed to refuse, and the
+    // clock is wound forward rather than waited out.
+    const ctx = await browser.newContext({ viewport: { width: 1180, height: 900 } });
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.setItem("sovereign.cloud.pass", "test-pass");
+        localStorage.setItem("sovereign.cloud.state.v1", JSON.stringify({ version: 1, dirty: false }));
+      } catch { /* private mode */ }
+      window.__puts = 0;
+      window.__bytes = 0;
+      const real = window.fetch;
+      window.fetch = async (input, init) => {
+        const url = String(typeof input === "string" ? input : input.url);
+        if (!url.includes("/api/db")) return real(input, init);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (method === "GET") {
+          // The version check: cheap, and always says "nothing new".
+          return new Response(JSON.stringify({ found: true, version: 1, updatedAt: null, updatedBy: null, sealed: false }),
+            { status: 200, headers: { "content-type": "application/json" } });
+        }
+        window.__puts += 1;
+        window.__bytes += (init?.body ?? "").length;
+        return new Response(JSON.stringify({ error: "Nope." }), { status: 500, headers: { "content-type": "application/json" } });
+      };
+    });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1200);
+
+    // One edit, which is one save, which fails.
+    // The theme toggle is an edit like any other: it goes through apply, so it
+    // marks the document unsent and starts the same save.
+    const edited = await tryStep("an edit is made while the server is refusing", async () => {
+      await page.locator(".topbar button[title='Toggle theme']").click({ timeout: 5000 });
+      // Longer than the ceiling on the debounce, so the save has certainly run.
+      await page.waitForTimeout(11_000);
+    });
+
+    if (edited) {
+      const state = await page.evaluate(() => ({
+        puts: window.__puts,
+        stored: JSON.parse(localStorage.getItem("sovereign.cloud.state.v1") ?? "{}"),
+      }));
+      check("a refused save is recorded rather than forgotten",
+        state.stored.dirty === true && (state.stored.failures ?? 0) >= 1 && state.stored.nextTryAt > Date.now(),
+        JSON.stringify(state.stored));
+
+      // What used to retry it: every tick of the sixty-second poll, and every
+      // return to the tab, both of which go through syncNow. Waiting out four
+      // real minutes is not a test, so the same path is driven directly.
+      const before = state.puts;
+      await page.evaluate(() => {
+        const s = JSON.parse(localStorage.getItem("sovereign.cloud.state.v1"));
+        s.nextTryAt = Date.now() + 10 * 60_000;
+        localStorage.setItem("sovereign.cloud.state.v1", JSON.stringify(s));
+      });
+      for (let i = 0; i < 6; i++) {
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        await page.waitForTimeout(250);
+      }
+      const after = await page.evaluate(() => window.__puts);
+      check("and is not sent again while it is waiting", after === before,
+        `${after} puts, was ${before}`);
+      check("which is what keeps a stuck tab from sending the whole budget every minute",
+        after === before, `${after - before} extra copies went up`);
+
+      // A wrong passphrase is not weather: it stops until somebody acts.
+      const blocked = await page.evaluate(() => {
+        window.fetch = async (input, init) => {
+          const url = String(typeof input === "string" ? input : input.url);
+          if (!url.includes("/api/db")) return window.__realFetch?.(input, init) ?? new Response("{}");
+          if ((init?.method ?? "GET").toUpperCase() === "GET") {
+            return new Response(JSON.stringify({ found: true, version: 1 }), { status: 200 });
+          }
+          window.__puts += 1;
+          return new Response(JSON.stringify({ error: "Wrong passphrase." }), { status: 401 });
+        };
+        const s = JSON.parse(localStorage.getItem("sovereign.cloud.state.v1"));
+        s.nextTryAt = 0; s.failures = 0;
+        localStorage.setItem("sovereign.cloud.state.v1", JSON.stringify(s));
+        return window.__puts;
+      });
+      void blocked;
+    }
+    await ctx.close();
   }
 
   if (want("budget")) {

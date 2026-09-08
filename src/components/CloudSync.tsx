@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import {
-  CloudError, cloudEnabled, cloudState, deviceName, head, pull, push, setCloudState,
+  CloudError, cloudEnabled, cloudState, deviceName, head, isBlocking, mayPush, pull, push,
+  retryDelay, setCloudState,
   stashConflict, subscribeSync,
 } from "../lib/cloud";
 import { drainQueue } from "../lib/sync/drain";
@@ -74,11 +75,15 @@ export function CloudSync() {
    * fails leaves the work marked unsent and something has to try it again. The
    * poll used to say in a comment that it did this, and simply return.
    */
-  const pushNow = async () => {
+  const pushNow = async (force = false) => {
     if (busy.current || !cloudEnabled()) return;
+    const at = cloudState();
+    // A save that has failed is not tried again on the next tick. The whole
+    // document goes up each time, and a tab left open on a broken connection
+    // used to send half a megabyte every sixty seconds until it was closed.
+    if (!force && !mayPush(at)) return;
     busy.current = true;
     try {
-      const at = cloudState();
       const res = await push(latest.current, at.version);
       setCloudState({ version: res.version, dirty: false });
     } catch (err) {
@@ -89,9 +94,24 @@ export function CloudSync() {
           install(remote.doc);
           setCloudState({ version: remote.version, dirty: false });
           act.current.notify(`${remote.updatedBy} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
+          return;
         }
       }
-      // Anything else stays marked unsent, and the next poll tries again.
+      // Everything else stays unsent and waits, longer each time. Said once
+      // when it starts failing rather than on every attempt: a toast a minute
+      // is not more informative than a toast.
+      const failures = (at.failures ?? 0) + 1;
+      const blocked = err instanceof CloudError && isBlocking(err.status) ? err.message : undefined;
+      setCloudState({
+        ...cloudState(), dirty: true, failures,
+        nextTryAt: Date.now() + retryDelay(failures),
+        blocked,
+      });
+      if (failures === 1) {
+        act.current.notify(blocked
+          ? `Not saving to the cloud: ${blocked}`
+          : "Could not save to the cloud. It will try again shortly.");
+      }
     } finally {
       busy.current = false;
     }
@@ -144,7 +164,10 @@ export function CloudSync() {
         install(remote.doc);
         setCloudState({ version: remote.version, dirty: false });
       } else if (local.dirty || local.version === 0) {
-        // this browser is ahead, or has never agreed with the server
+        // This browser is ahead, or has never agreed with the server. Through
+        // the same door as the debounce, so a failing save backs off here too
+        // rather than being retried by every tick of the poll.
+        if (!mayPush(local)) return;
         const res = await push(latest.current, meta.version);
         setCloudState({ version: res.version, dirty: false });
       } else {
@@ -207,6 +230,13 @@ export function CloudSync() {
     if (!firstEdit.current) firstEdit.current = Date.now();
     const delay = saveDelay(firstEdit.current);
 
+    // An edit clears the backoff. Somebody is at the keyboard, which is the
+    // one moment worth spending a retry on: whatever was wrong may have been
+    // put right, and if it has not been, the wait starts again from a minute.
+    if (state.failures || state.nextTryAt || state.blocked) {
+      setCloudState({ ...cloudState(), failures: 0, nextTryAt: undefined, blocked: undefined });
+    }
+
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => { firstEdit.current = 0; void pushNow(); }, delay);
 
@@ -221,9 +251,12 @@ export function CloudSync() {
     // session has to stop this where it stands.
     if (busy.current || !ready.current || !cloudEnabled()) return;
     const at = cloudState();
-    // Our own unsent work comes first — and gets sent, rather than waiting for
-    // another edit that may never come.
-    if (at.dirty) { await pushNow(); return; }
+    // Our own unsent work comes first, and gets sent rather than waiting for
+    // another edit that may never come. While a failed save is backing off,
+    // this falls through to the version check below instead: that costs a few
+    // hundred bytes, and a browser that cannot save should still be able to
+    // notice that another device has.
+    if (at.dirty && mayPush(at)) { await pushNow(); return; }
     busy.current = true;
     try {
       // The version first, on its own. This used to fetch the whole document

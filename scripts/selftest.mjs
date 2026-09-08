@@ -64,6 +64,7 @@ await build({
       export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE } from "./api/_plaid.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { findConnection } from "./api/_store.ts";
+      export { retryDelay, mayPush, isBlocking, RETRY_MS } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
@@ -4333,6 +4334,51 @@ await test("no user-facing text in the app uses an em dash", () => {
     if (/&mdash;|&#8212;|&#x2014;/i.test(text)) bad.push(`${file}: an mdash entity`);
   }
   assert.deepEqual(bad, [], `\n${bad.join("\n")}`);
+});
+
+
+/* ── a save that fails does not keep trying every minute ───────────────── */
+
+await test("a failed save waits, and waits longer each time", () => {
+  // The bill this exists to stop: the whole document goes up on every save,
+  // and a save retried by the sixty-second poll is half a megabyte a minute
+  // for as long as the tab is open.
+  assert.equal(M.retryDelay(1), 60_000, "a minute after the first failure");
+  assert.ok(M.retryDelay(2) > M.retryDelay(1));
+  assert.ok(M.retryDelay(3) > M.retryDelay(2));
+  assert.equal(M.retryDelay(99), M.RETRY_MS[M.RETRY_MS.length - 1], "and levels off rather than growing for ever");
+  assert.equal(M.retryDelay(0), 60_000, "no failures yet is still the shortest wait");
+
+  // What it costs, worked out rather than asserted in the abstract: a stuck
+  // tab used to send 1,440 copies a day and now sends fewer than 50.
+  const day = 24 * 60 * 60_000;
+  let spent = 0, at = 0, tries = 0;
+  while (at < day) { tries += 1; at += M.retryDelay(tries); spent += 1; }
+  assert.ok(spent < 60, `a stuck tab should try fewer than 60 times a day, not ${spent}`);
+});
+
+await test("a save is not attempted while it is backing off", () => {
+  const now = 1_800_000_000_000;
+  assert.equal(M.mayPush({ version: 1, dirty: true }, now), true, "nothing has failed yet");
+  assert.equal(M.mayPush({ version: 1, dirty: true, nextTryAt: now + 1000 }, now), false);
+  assert.equal(M.mayPush({ version: 1, dirty: true, nextTryAt: now - 1 }, now), true, "the wait is over");
+});
+
+await test("a refusal that waiting cannot fix stops rather than backs off", () => {
+  // A wrong passphrase and a missing database are settings, not weather.
+  assert.equal(M.isBlocking(401), true);
+  assert.equal(M.isBlocking(403), true);
+  assert.equal(M.isBlocking(503), true);
+  assert.equal(M.isBlocking(500), false, "a server that fell over may well be back in a minute");
+  assert.equal(M.isBlocking(409), false, "and a conflict resolves itself by pulling");
+
+  const now = 1_800_000_000_000;
+  assert.equal(M.mayPush({ version: 1, dirty: true, blocked: "Wrong passphrase." }, now), false);
+  assert.equal(
+    M.mayPush({ version: 1, dirty: true, blocked: "Wrong passphrase.", nextTryAt: now - 10_000 }, now),
+    false,
+    "and no amount of waiting makes it due",
+  );
 });
 
 /* ── colour belongs to the group ──────────────────────────────────────── */

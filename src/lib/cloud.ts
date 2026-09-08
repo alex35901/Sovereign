@@ -23,6 +23,45 @@ export interface CloudState {
   version: number;
   /** Local edits made since then that the server hasn't accepted yet. */
   dirty: boolean;
+  /** Consecutive failed saves, which is what sets how long to wait. */
+  failures?: number;
+  /** Epoch ms before which no save should be attempted. */
+  nextTryAt?: number;
+  /** Set when the failure is one that waiting cannot fix. */
+  blocked?: string;
+}
+
+/**
+ * How long to wait before trying a failed save again.
+ *
+ * The whole document goes up on every save, and a save that fails used to be
+ * retried by the sixty-second poll, for ever, for as long as the tab was open.
+ * Half a megabyte a minute is about seven hundred megabytes a day from one
+ * forgotten tab, which is how a household budget ran through thirty gigabytes
+ * of a ten gigabyte allowance.
+ *
+ * So: back off, and hard. A minute, then two, four, eight, sixteen, and then
+ * half an hour for ever. Any success clears it.
+ */
+export const RETRY_MS = [60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000];
+
+export const retryDelay = (failures: number): number =>
+  RETRY_MS[Math.min(Math.max(0, failures - 1), RETRY_MS.length - 1)]!;
+
+/**
+ * Whether waiting could possibly help.
+ *
+ * A refused passphrase and a locked document are not weather: they are
+ * settings, and nothing changes until somebody changes them. Retrying those on
+ * a timer is pure traffic, so they stop until the next edit or reload.
+ */
+export const isBlocking = (status: number): boolean =>
+  status === 401 || status === 403 || status === 503;
+
+/** Whether a save may be attempted now. */
+export function mayPush(state: CloudState, now: number = Date.now()): boolean {
+  if (state.blocked) return false;
+  return !state.nextTryAt || now >= state.nextTryAt;
 }
 
 const read = <T,>(key: string, fallback: T): T => {
