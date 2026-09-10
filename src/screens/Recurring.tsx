@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, Pencil, Plus } from "lucide-react";
+import { CalendarDays, Check, Pencil, Plus } from "lucide-react";
 import type { Cadence, Recurring as RecurringItem } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, monthEnd, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
-import { occurrences, recurringList, recurringSpend } from "../lib/select";
+import { occurrences, paidOccurrences, recurringList, recurringSpend } from "../lib/select";
 import { isNewRecurring, isSeen, markRead } from "../lib/notifications";
 import { UNCATEGORIZED } from "../lib/categories";
 import type { RecurringSpend } from "../lib/select";
@@ -46,7 +46,6 @@ export default function Recurring() {
   const [editing, setEditing] = useState<RecurringItem | null>(null);
 
   const list = useMemo(() => recurringList(db), [db]);
-  const bills = list.filter((r) => r.amount < 0);
 
   // Both figures come off the schedule this page draws, so the tiles and the
   // calendar under them cannot disagree about what a month holds.
@@ -62,23 +61,28 @@ export default function Recurring() {
 
   const [y, m] = month.split("-").map(Number);
   const marks = useMemo(() => {
-    const out: Record<number, { tone: string; amount: number; label: string; to: string }[]> = {};
+    const out: Record<number, { tone: string; amount: number; label: string; to: string; paid: boolean }[]> = {};
     for (const r of list) {
+      // The schedule says what is due; the bank says what went. Both are
+      // needed here: a date in the past is not a payment, and a payment two
+      // days early is still this month's.
+      const settled = paidOccurrences(db, r, monthStart(month), monthEnd(month));
       // Every occurrence in the visible month, walked the same way the totals
       // above are — days already paid included, since they are what the month
       // has spent.
       for (const date of occurrences(r, monthStart(month), monthEnd(month))) {
         const day = parseISO(date).getDate();
         (out[day] ??= []).push({
-          tone: r.amount > 0 ? "--pos" : "--neg", amount: r.amount, label: r.merchant,
+          tone: r.amount > 0 ? "--pos" : "--bill", amount: r.amount, label: r.merchant,
           // The same place the row below the calendar goes: one merchant, one
           // page, however you arrived at it.
           to: `/merchants/${encodeURIComponent(r.merchant)}`,
+          paid: settled.has(date),
         });
       }
     }
     return out;
-  }, [list, month]);
+  }, [db, list, month]);
 
   return (
     <>
@@ -96,7 +100,9 @@ export default function Recurring() {
         <div className="grid g2">
           <SpendTile
             label="This month" spend={thisMonthSpend}
-            sub={`${bills.length} bill${bills.length === 1 ? "" : "s"} & subscriptions`}
+            sub={thisMonthSpend.upcoming
+              ? `${thisMonthSpend.upcoming} more due this month`
+              : "nothing else due this month"}
           />
           <SpendTile
             label="This year" spend={thisYearSpend}
@@ -114,8 +120,9 @@ export default function Recurring() {
           <MonthGrid year={y} month={m} marks={marks} />
           <div className="divider" />
           <div className="row" style={{ gap: 16 }}>
-            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--neg)" }} /> Bills</span>
+            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--bill)" }} /> Bills</span>
             <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--pos)" }} /> Income</span>
+            <span className="row tiny muted" style={{ gap: 5 }}><Check size={11} className="cal-tick" strokeWidth={3} /> Paid</span>
           </div>
         </Card>
 
@@ -137,7 +144,7 @@ export default function Recurring() {
                       ? <span className="tag rec-new">New</span>
                       : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
                   </span>
-                  <span className="tiny faint truncate">
+                  <span className="tiny faint truncate rec-when">
                     {CADENCES.find((c) => c.value === r.cadence)?.label} · next {relativeDayMid(r.nextDate)}
                   </span>
                 </div>

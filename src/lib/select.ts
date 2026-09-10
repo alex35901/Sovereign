@@ -769,6 +769,71 @@ export function recurringSpend(
   return { spent, total, left: total - spent, upcoming };
 }
 
+/**
+ * How far either side of a scheduled date a real charge still counts as it.
+ *
+ * Wide enough for a bill that lands on the first working day after a weekend,
+ * and for one paid a couple of days early, without being wide enough to reach
+ * the next occurrence of anything that arrives more often than fortnightly.
+ */
+export const PAID_WINDOW_DAYS = 5;
+
+/**
+ * How far off the expected amount a charge may be and still be the same bill.
+ *
+ * Utilities swing with the season, so this is a factor rather than a few
+ * dollars, with a floor for the small ones: a $10 subscription that comes to
+ * $12 is the same subscription, and 0.4x of $10 is $4.
+ */
+const PAID_LOW = 0.4;
+const PAID_HIGH = 2.5;
+const PAID_FLOOR = 500;
+
+const paidAmountFits = (expected: number, actual: number): boolean => {
+  const want = Math.abs(expected);
+  const got = Math.abs(actual);
+  if (Math.abs(got - want) <= PAID_FLOOR) return true;
+  return got >= want * PAID_LOW && got <= want * PAID_HIGH;
+};
+
+/**
+ * Which of a schedule's dates in a window have actually been paid.
+ *
+ * The rest of this page counts off the calendar: a date in the past means a
+ * bill fell due, not that any money moved. This asks the bank instead, so the
+ * calendar can say which of the month's bills have really gone out.
+ *
+ * A transaction answers for one date and no more. Without that, a single
+ * charge from a merchant marks every occurrence near it paid, which on a
+ * weekly schedule is most of the month.
+ */
+export function paidOccurrences(db: DB, r: Recurring, from: ISODate, to: ISODate): Set<ISODate> {
+  const muted = mutedAccountIds(db);
+  const key = merchantKey(r.merchant);
+  const sign = Math.sign(r.amount);
+  const candidates = db.transactions
+    .filter((t) => merchantKey(t.merchant) === key
+      && Math.sign(t.amount) === sign
+      && counts(t, muted)
+      && paidAmountFits(r.amount, t.amount))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+  const taken = new Set<string>();
+  const paid = new Set<ISODate>();
+  for (const date of occurrences(r, from, to)) {
+    let best: Transaction | null = null;
+    let bestGap = Infinity;
+    for (const t of candidates) {
+      if (taken.has(t.id)) continue;
+      const gap = Math.abs(parseISO(t.date).getTime() - parseISO(date).getTime()) / 86400000;
+      if (gap > PAID_WINDOW_DAYS) continue;
+      if (gap < bestGap) { best = t; bestGap = gap; }
+    }
+    if (best) { taken.add(best.id); paid.add(date); }
+  }
+  return paid;
+}
+
 export function monthlyRecurringCost(list: Recurring[]): number {
   const per: Record<Recurring["cadence"], number> = {
     weekly: 52 / 12, biweekly: 26 / 12, monthly: 1, quarterly: 1 / 3, semiannual: 1 / 6, yearly: 1 / 12,

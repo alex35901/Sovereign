@@ -18,6 +18,11 @@
   --pos-soft: rgba(53, 196, 140, 0.14);
   --neg: #f2685e;
   --neg-soft: rgba(242, 104, 94, 0.14);
+  /* A bill on the calendar. --neg is tuned to sit under a figure without
+     shouting, which next to green on a white cell reads as orange rather than
+     as red. A mark has no such duty, so it is allowed to be the colour it is
+     standing in for. */
+  --bill: #ef4444;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.24);
   --radius: 12px;
   --radius-sm: 8px;
@@ -56,6 +61,7 @@
   --pos-soft: rgba(20, 143, 99, 0.12);
   --neg: #ce3f37;
   --neg-soft: rgba(206, 63, 55, 0.1);
+  --bill: #d92020;
   --shadow: 0 1px 2px rgba(20, 30, 45, 0.06), 0 6px 20px rgba(20, 30, 45, 0.06);
 }
 
@@ -855,6 +861,10 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* A recurring row is a link now, so it needs the colour it would otherwise
    inherit from one. */
 .rec-row { text-decoration: none; color: inherit; }
+/* Set as a label rather than as a sentence. "Monthly · next Sep 17" mixes
+   three casings in six words, and the argument about which of them deserves a
+   capital goes away when none of them has one. */
+.rec-when { text-transform: uppercase; letter-spacing: 0.045em; }
 
 /* ── the recurring calendar ── */
 /* Full width on every screen, so the cells grow with the page rather than
@@ -865,7 +875,11 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   border: 1px solid transparent; min-width: 0;
 }
 .cal-cell.on { background: var(--surface-2); border-color: var(--line); }
-.cal-marks { display: flex; gap: 2px; flex-wrap: wrap; margin-top: 2px; }
+.cal-marks { display: flex; gap: 2px; flex-wrap: wrap; margin-top: 2px; align-items: center; }
+/* Paid, in the green everything settled wears. It replaces the dot rather than
+   joining it: a cell has room for four marks, not eight, and once the money
+   has gone "due today" is no longer the news the day carries. */
+.cal-tick { color: var(--pos); flex: none; }
 .cal-names { display: none; }
 /* Once a cell is wide enough to hold a name, it holds names: a dot only says
    that something is due, which is what the narrow layout is for. */
@@ -879,7 +893,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   }
   /* Aligned to the first line of a name rather than to the middle of however
      many lines it turned out to need. */
-  .cal-name .dot { flex: none; margin-top: 4px; }
+  .cal-name .dot, .cal-name .cal-tick { flex: none; margin-top: 3px; }
   .cal-name-text { min-width: 0; overflow-wrap: anywhere; }
   a.cal-name:hover { color: var(--text); }
   a.cal-name:hover .cal-name-text { text-decoration: underline; }

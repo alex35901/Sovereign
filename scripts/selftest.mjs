@@ -39,7 +39,7 @@ await build({
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
-      export { occurrences, recurringSpend, monthlyRecurringCost } from "./src/lib/select.ts";
+      export { occurrences, recurringSpend, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
@@ -4257,6 +4257,78 @@ await test("a date stays a proper noun in the middle of a sentence", () => {
   assert.equal(relativeDayMid(far), relativeDay(far));
   assert.match(relativeDayMid(far), /^[A-Z][a-z]{2} \d{1,2}$/);
   assert.ok(thisMonth().length === 7);
+});
+
+/* ── which of a month's bills actually went out ────────────────────────── */
+
+const paidDB = (txns) => ({
+  ...M.emptyDB(),
+  accounts: [
+    { id: "a1", name: "Checking", type: "checking", balance: 0, history: [] },
+    { id: "a2", name: "Shoebox", type: "checking", balance: 0, history: [], hideTransactions: true },
+  ],
+  transactions: txns.map((t, i) => ({
+    id: `t${i}`, accountId: "a1", date: t.date, merchant: t.merchant ?? "Wells Fargo Home Mortgage",
+    amount: t.amount ?? -2_846_12, categoryId: "c_mortgage", ...t,
+  })),
+});
+const paid = (txns, over = {}, from = "2026-09-01", to = "2026-09-30") =>
+  [...M.paidOccurrences(paidDB(txns), rec(over), from, to)].sort();
+
+await test("a bill is paid when the bank says so, not when the date passes", () => {
+  // The whole point: the calendar already knows the date has gone by.
+  assert.deepEqual(paid([]), [], "a date in the past is not a payment");
+  assert.deepEqual(paid([{ date: "2026-09-01" }]), ["2026-09-01"]);
+});
+
+await test("a charge a few days off is still that bill", () => {
+  const w = M.PAID_WINDOW_DAYS;
+  assert.equal(w, 5, "the tests below are written against this window");
+  // Late, for a bill that fell on a weekend.
+  assert.deepEqual(paid([{ date: "2026-09-06" }]), ["2026-09-01"]);
+  // And early, which is why a future date can already be settled.
+  assert.deepEqual(paid([{ date: "2026-08-27" }]), ["2026-09-01"]);
+  // A day further out either way is a different charge.
+  assert.deepEqual(paid([{ date: "2026-09-07" }]), []);
+  assert.deepEqual(paid([{ date: "2026-08-26" }]), []);
+});
+
+await test("one charge settles one date and no more", () => {
+  // Weekly occurrences are seven days apart and the window is five either
+  // way, so a charge landing between two of them is inside both. Without a
+  // claim it ticks both, and a month of bills goes green off one payment.
+  const weekly = { cadence: "weekly", nextDate: "2026-09-03", amount: -20_00 };
+  const between = paid([{ date: "2026-09-07", amount: -20_00 }], weekly);
+  assert.equal(between.length, 1, `one charge ticked ${between.length} dates: ${between.join(", ")}`);
+  assert.deepEqual(between, ["2026-09-03"], "and the earlier date has first claim on it");
+  // Two charges, two dates: the claim must not stop the second one landing.
+  const two = paid(
+    [{ date: "2026-09-04", amount: -20_00 }, { date: "2026-09-11", amount: -20_00 }],
+    weekly,
+  );
+  assert.deepEqual(two, ["2026-09-03", "2026-09-10"]);
+});
+
+await test("a charge has to look like the bill to count as it", () => {
+  // Utilities swing with the season, so the band is wide.
+  assert.deepEqual(paid([{ date: "2026-09-01", amount: -1_500_00 }]), ["2026-09-01"], "half is still the bill");
+  assert.deepEqual(paid([{ date: "2026-09-01", amount: -5_000_00 }]), ["2026-09-01"], "and so is nearly double");
+  // A $12 book from a merchant you also subscribe to is not the subscription.
+  assert.deepEqual(paid([{ date: "2026-09-01", amount: -12_00 }]), []);
+  // Nor is a refund, which is the same merchant and the same week.
+  assert.deepEqual(paid([{ date: "2026-09-01", amount: 2_846_12 }]), []);
+  // A small subscription gets an absolute floor rather than a proportion.
+  const small = { amount: -9_99 };
+  assert.deepEqual(paid([{ date: "2026-09-01", amount: -12_99 }], small), ["2026-09-01"]);
+});
+
+await test("and it has to be the same merchant, on an account that counts", () => {
+  assert.deepEqual(paid([{ date: "2026-09-01", merchant: "Wells Fargo Auto" }]), []);
+  // Spelling is not identity: the list this page draws takes the most common
+  // form, and the bank is not consistent about capitals.
+  assert.deepEqual(paid([{ date: "2026-09-01", merchant: "WELLS FARGO HOME MORTGAGE  " }]), ["2026-09-01"]);
+  assert.deepEqual(paid([{ date: "2026-09-01", accountId: "a2" }]), [], "a muted account is not evidence");
+  assert.deepEqual(paid([{ date: "2026-09-01", hideFromReports: true }]), []);
 });
 
 await test("a recurring charge that stopped arriving is said out loud", () => {

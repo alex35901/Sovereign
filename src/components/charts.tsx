@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { Check } from "lucide-react";
 import { fmt0 } from "../lib/money";
 import { color, cx } from "./ui";
 
@@ -803,8 +804,8 @@ export function HBars({ rows, onClick }: {
 export function MonthGrid({ year, month, marks, onPick }: {
   year: number; month: number;
   /** `to` makes the name a way in, for a mark that stands for something with
-   *  a page of its own. */
-  marks: Record<number, { tone: string; amount: number; label: string; to?: string }[]>;
+   *  a page of its own; `paid` swaps its dot for a tick. */
+  marks: Record<number, { tone: string; amount: number; label: string; to?: string; paid?: boolean }[]>;
   onPick?: (day: number) => void;
 }) {
   const first = new Date(year, month - 1, 1).getDay();
@@ -833,21 +834,28 @@ export function MonthGrid({ year, month, marks, onPick }: {
                 due" wastes the width it was given. */}
             <div className="cal-marks">
               {(day && marks[day] ? marks[day] : []).slice(0, 4).map((m, j) => (
-                <span key={j} className="dot" style={{ background: color(m.tone), width: 6, height: 6 }} />
+                m.paid
+                  ? <Check key={j} size={10} className="cal-tick" strokeWidth={3.5} />
+                  : <span key={j} className="dot" style={{ background: color(m.tone), width: 6, height: 6 }} />
               ))}
             </div>
             <div className="cal-names">
               {(day && marks[day] ? marks[day] : []).slice(0, 3).map((m, j) => {
                 const body = (
                   <>
-                    <span className="dot" style={{ background: color(m.tone), width: 5, height: 5 }} />
+                    {/* A tick where the dot would be: the dot says a bill is
+                        due on this day, and once the money has actually gone
+                        that is no longer the news. */}
+                    {m.paid
+                      ? <Check size={11} className="cal-tick" strokeWidth={3} />
+                      : <span className="dot" style={{ background: color(m.tone), width: 5, height: 5 }} />}
                     {/* Wrapped, not clipped: the cell has the height for a
                         second line, and a name cut to "Bright Horiz…" is one
                         you have to hover to read. */}
                     <span className="cal-name-text">{m.label}</span>
                   </>
                 );
-                const title = `${m.label} ${fmt0(m.amount)}`;
+                const title = `${m.label} ${fmt0(m.amount)}${m.paid ? " · paid" : ""}`;
                 return m.to
                   ? <Link key={j} to={m.to} className="cal-name click" title={title}>{body}</Link>
                   : <span key={j} className="cal-name" title={title}>{body}</span>;

@@ -270,6 +270,12 @@ Patterns worth reusing:
   then swaps that one row to a control. This is not decoration: a text box wide
   enough to type into is wider than its words, so an input left in the row
   strands the merchant logo in the middle of it.
+- `paidOccurrences` in `src/lib/select.ts` is the one place that says a
+  recurring bill has actually been paid. Everything else on that screen counts
+  off the schedule, where a date in the past only means a bill fell due, so the
+  two must not be confused: a tick in the calendar is a claim about money
+  having moved. A transaction answers for one occurrence and no more, or one
+  charge ticks a whole month of a weekly bill.
 - `DashCard` in `src/screens/Dashboard.tsx` makes a whole card the link to its
   page. The link is a `.dash-sheet` laid over the card, never a wrapper around
   it, because these cards hold links of their own and an anchor inside an

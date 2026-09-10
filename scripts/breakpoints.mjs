@@ -1057,6 +1057,9 @@ try {
       top.map((t) => t.value).join(" | "));
     check("with the rest of it named rather than left to be worked out",
       top.every((t) => /to go/.test(t.foot)), top.map((t) => t.foot).join(" | "));
+    check("and both count what is still due rather than what exists",
+      top.every((t) => /\d+ more due this (month|year)|nothing else due this (month|year)/.test(t.foot)),
+      top.map((t) => t.foot).join(" | "));
     // The bar is the same claim as the figures, so it has to agree with them.
     check("and a bar drawn to the same share the figures give",
       top.every((t) => {
@@ -1117,7 +1120,8 @@ try {
         return c;
       };
       const marks = [...document.querySelectorAll(".cal-name")].map((n) => ({
-        tone: getComputedStyle(n.querySelector(".dot")).backgroundColor,
+        paid: !!n.querySelector(".cal-tick"),
+        tone: n.querySelector(".dot") ? getComputedStyle(n.querySelector(".dot")).backgroundColor : null,
         text: (n.querySelector(".cal-name-text")?.textContent ?? "").trim(),
         href: n.getAttribute("href"),
         tag: n.tagName,
@@ -1130,18 +1134,47 @@ try {
       }));
       const legend = [...document.querySelectorAll(".card .row.tiny.muted")].map((r) => ({
         label: r.innerText.trim(),
-        tone: getComputedStyle(r.querySelector(".dot")).backgroundColor,
+        tone: r.querySelector(".dot") ? getComputedStyle(r.querySelector(".dot")).backgroundColor : null,
       }));
-      return { marks, legend, neg: token("--neg"), pos: token("--pos") };
+      return { marks, legend, bill: token("--bill"), neg: token("--neg"), pos: token("--pos") };
     });
-    const bills = cal.marks.filter((m) => m.tone !== cal.pos);
+    const bills = cal.marks.filter((m) => !m.paid && m.tone !== cal.pos);
     check("a bill in the calendar is drawn in red",
-      bills.length > 3 && bills.every((m) => m.tone === cal.neg),
+      bills.length > 3 && bills.every((m) => m.tone === cal.bill),
       `${bills.length} bills, tones ${[...new Set(bills.map((m) => m.tone))].join(" | ")}`);
-    check("and the key under it uses the same two colours",
-      cal.legend.length === 2
-      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === cal.neg
-      && cal.legend.find((l) => /income/i.test(l.label))?.tone === cal.pos,
+    // Red as in red. Two things are being ruled out and the thresholds are
+    // what tell them apart: an orange, where green runs well ahead of blue
+    // (--c9 is 232,114,74), and the salmon a negative figure wears, where
+    // green and blue are level but both too high to read as red (--neg is
+    // 242,104,94). A true red keeps both of them down.
+    const rgb = (c) => c.match(/\d+/g).map(Number);
+    const isRed = (c) => {
+      const [r, g, bl] = rgb(c);
+      return r > 170 && g < 95 && bl < 95 && Math.abs(g - bl) < 30;
+    };
+    check("and it is a red rather than an orange or a salmon",
+      isRed(cal.bill) && !isRed(cal.neg),
+      `--bill is ${cal.bill}, --neg is ${cal.neg}`);
+    // In both themes: the light one paints these on white, where a pale red
+    // has even less to work with.
+    const lightBill = await wide.evaluate(() => {
+      const root = document.documentElement;
+      const was = root.getAttribute("data-theme");
+      root.setAttribute("data-theme", "light");
+      const el = document.createElement("span");
+      el.style.color = getComputedStyle(root).getPropertyValue("--bill").trim();
+      document.body.append(el);
+      const c = getComputedStyle(el).color;
+      el.remove();
+      if (was) root.setAttribute("data-theme", was); else root.removeAttribute("data-theme");
+      return c;
+    });
+    check("in the light theme too", isRed(lightBill), lightBill);
+    check("and the key under it names the three things a day can be",
+      cal.legend.length === 3
+      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === cal.bill
+      && cal.legend.find((l) => /income/i.test(l.label))?.tone === cal.pos
+      && cal.legend.some((l) => /paid/i.test(l.label)),
       cal.legend.map((l) => `${l.label} ${l.tone}`).join(" | "));
     // Wrapped, not cut: a name too wide for its cell takes a second line and
     // still reads in full.
@@ -1153,6 +1186,68 @@ try {
       cal.marks.length > 3 && cal.marks.every((m) => m.tag === "A"
         && m.href === `/merchants/${encodeURIComponent(m.text)}`),
       cal.marks.slice(0, 3).map((m) => `${m.tag} ${m.href}`).join(", "));
+
+    // ── a tick is evidence, not a calendar reading ──
+    //
+    // The claim it makes is that money actually left the account, so it has to
+    // be checked against the transactions rather than against today's date.
+    const ticks = await wide.evaluate(() => {
+      const rows = [...document.querySelectorAll(".rec-row")];
+      const seen = new Map();
+      for (const r of rows) seen.set(r.querySelector(".truncate")?.innerText.trim(), true);
+      return {
+        marks: [...document.querySelectorAll(".cal-name")].map((n) => ({
+          day: Number(n.closest(".cal-cell").querySelector(".num")?.innerText.trim() ?? "0"),
+          name: (n.querySelector(".cal-name-text")?.textContent ?? "").trim(),
+          paid: !!n.querySelector(".cal-tick"),
+        })),
+        today: Number(new Date().toISOString().slice(8, 10)),
+      };
+    });
+    check("some of the month is ticked and some of it is not",
+      ticks.marks.some((m) => m.paid) && ticks.marks.some((m) => !m.paid),
+      `${ticks.marks.filter((m) => m.paid).length} of ${ticks.marks.length} ticked`);
+    // Nothing beyond the window round today can have been paid, because there
+    // is no transaction out there to pay it.
+    const early = ticks.marks.filter((m) => m.paid && m.day > ticks.today + 5);
+    check("and nothing well ahead of today is ticked",
+      early.length === 0,
+      early.map((m) => `${m.name} on the ${m.day}`).join(", "));
+    // The tick has to be answering the ledger, so each one is checked against
+    // that merchant's own transactions: a charge within the window of the day
+    // it is sitting on. An unticked day is checked the same way, for the
+    // absence — a rule that ticks everything would pass the first half alone.
+    const WINDOW = 5;
+    const chargesNear = async (name, day) => {
+      await wide.goto(`${BASE}/merchants/${encodeURIComponent(name)}`, { waitUntil: "networkidle" });
+      await wide.waitForTimeout(800);
+      const dates = await wide.evaluate(() =>
+        [...document.querySelectorAll(".date-head")].map((h) => h.innerText.split("\n")[0].trim()));
+      const now = new Date();
+      const want = new Date(now.getFullYear(), now.getMonth(), day).getTime();
+      return dates.filter((d) => Math.abs(new Date(d).getTime() - want) / 86400000 <= WINDOW);
+    };
+    const someTicked = ticks.marks.filter((m) => m.paid).slice(0, 3);
+    const missing = [];
+    for (const m of someTicked) {
+      if (!(await chargesNear(m.name, m.day)).length) missing.push(`${m.name} on the ${m.day}`);
+    }
+    check("every tick has a real charge behind it, on that merchant's own page",
+      someTicked.length > 0 && missing.length === 0,
+      missing.length ? `nothing near ${missing.join(", ")}` : `checked ${someTicked.length}`);
+
+    const unticked = ticks.marks.filter((m) => !m.paid).slice(0, 3);
+    const wrong = [];
+    for (const m of unticked) {
+      const near = await chargesNear(m.name, m.day);
+      if (near.length) wrong.push(`${m.name} on the ${m.day} has ${near[0]}`);
+    }
+    check("and a day left unticked has no charge behind it either",
+      unticked.length > 0 && wrong.length === 0,
+      wrong.join(", ") || `checked ${unticked.length}`);
+
+    await wide.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(800);
 
     const inCal = await tryStep("a name in the calendar can be clicked", async () => {
       await wide.locator(".cal-name").first().click({ timeout: 5000 });
@@ -1193,6 +1288,14 @@ try {
     check("and a month in it is still a month",
       line.every((r) => !/next [a-z]{3} \d/.test(r.sub)),
       line.map((r) => r.sub).join(" | "));
+    check("the schedule line is set as a label rather than a sentence",
+      (await wide.evaluate(() => {
+        const el = document.querySelector(".rec-row .rec-when");
+        if (!el) return "no line";
+        return getComputedStyle(el).textTransform === "uppercase"
+          && el.innerText === el.innerText.toUpperCase()
+          && el.innerText !== el.textContent ? "ok" : `${getComputedStyle(el).textTransform} / ${el.innerText}`;
+      })) === "ok");
     check("editing the schedule is the only button on a row",
       line.every((r) => r.buttons.length === 1 && r.buttons[0] === "Edit schedule"),
       line.map((r) => r.buttons.join("+") || "none").join(" | "));
@@ -1224,6 +1327,50 @@ try {
           .some((b) => /not recurring/i.test(b.innerText)))) === true);
     }
     await wide.close();
+
+    // ── a tick is not "the date went by" ──
+    //
+    // In this data every bill whose date has passed also has a charge behind
+    // it, so the two rules agree and the checks above cannot tell them apart.
+    // This makes them disagree: a bill entered by hand, dated the first of the
+    // month, for a merchant that has never been paid a penny. A calendar
+    // reading ticks it; only the bank can say it is unpaid.
+    //
+    // Its own page, so its own storage: browser.newPage gives a fresh context,
+    // and this leaves an item behind that would sort to the top of every list
+    // the checks above read.
+    const ghost = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await ghost.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await ghost.waitForTimeout(900);
+    const name = "Zzz Never Paid Anything";
+    const first = `${new Date().toISOString().slice(0, 8)}01`;
+    const added = await tryStep("a bill can be entered by hand", async () => {
+      await ghost.locator('.topbar button:has-text("Recurring")').click({ timeout: 5000 });
+      await ghost.locator(".modal").waitFor({ timeout: 5000 });
+      await ghost.locator(".modal .field:has(label:text-is('Merchant')) input").fill(name);
+      await ghost.locator(".modal .field:has(label:text-is('Amount')) input").fill("42.00");
+      await ghost.locator(".modal .field:has(label:text-is('Next date')) input").fill(first);
+      await ghost.locator('.modal-foot button:has-text("Save")').click({ timeout: 5000 });
+      await ghost.locator(".modal").waitFor({ state: "detached", timeout: 5000 });
+      await ghost.waitForTimeout(700);
+    });
+    if (added) {
+      const mine = await ghost.evaluate((who) => {
+        const el = [...document.querySelectorAll(".cal-name")]
+          .find((n) => (n.querySelector(".cal-name-text")?.textContent ?? "").trim() === who);
+        if (!el) return null;
+        return {
+          day: Number(el.closest(".cal-cell").querySelector(".num")?.innerText.trim() ?? "0"),
+          paid: !!el.querySelector(".cal-tick"),
+        };
+      }, name);
+      check("a bill dated earlier this month shows up on the day it was dated",
+        mine !== null && mine.day === 1, mine === null ? "not on the calendar" : `on the ${mine.day}`);
+      check("and is not ticked, because nothing was ever paid to it",
+        mine !== null && mine.paid === false,
+        mine?.paid ? "ticked with no charge behind it" : "not ticked");
+    }
+    await ghost.close();
   }
 
   if (want("notifications")) {
