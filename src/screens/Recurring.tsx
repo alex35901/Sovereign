@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, Pencil, Plus, X } from "lucide-react";
+import { CalendarDays, Pencil, Plus } from "lucide-react";
 import type { Cadence, Recurring as RecurringItem } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel, monthEnd, monthStart, parseISO, relativeDay, thisMonth, today } from "../lib/date";
+import { dateLabel, monthEnd, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
 import { occurrences, recurringList, recurringSpend } from "../lib/select";
 import { isNewRecurring, isSeen, markRead } from "../lib/notifications";
 import { UNCATEGORIZED } from "../lib/categories";
@@ -43,7 +43,6 @@ const CADENCES: { value: Cadence; label: string }[] = [
 
 export default function Recurring() {
   const db = useDB();
-  const { actions } = useStore();
   const [editing, setEditing] = useState<RecurringItem | null>(null);
 
   const list = useMemo(() => recurringList(db), [db]);
@@ -63,7 +62,7 @@ export default function Recurring() {
 
   const [y, m] = month.split("-").map(Number);
   const marks = useMemo(() => {
-    const out: Record<number, { tone: string; amount: number; label: string }[]> = {};
+    const out: Record<number, { tone: string; amount: number; label: string; to: string }[]> = {};
     for (const r of list) {
       // Every occurrence in the visible month, walked the same way the totals
       // above are — days already paid included, since they are what the month
@@ -71,7 +70,10 @@ export default function Recurring() {
       for (const date of occurrences(r, monthStart(month), monthEnd(month))) {
         const day = parseISO(date).getDate();
         (out[day] ??= []).push({
-          tone: r.amount > 0 ? "--c3" : "--c9", amount: r.amount, label: r.merchant,
+          tone: r.amount > 0 ? "--pos" : "--neg", amount: r.amount, label: r.merchant,
+          // The same place the row below the calendar goes: one merchant, one
+          // page, however you arrived at it.
+          to: `/merchants/${encodeURIComponent(r.merchant)}`,
         });
       }
     }
@@ -97,7 +99,7 @@ export default function Recurring() {
             sub={`${bills.length} bill${bills.length === 1 ? "" : "s"} & subscriptions`}
           />
           <SpendTile
-            label={`${month.slice(0, 4)} so far`} spend={thisYearSpend}
+            label="This year" spend={thisYearSpend}
             sub={thisYearSpend.upcoming
               ? `${thisYearSpend.upcoming} more due this year`
               : "nothing else due this year"}
@@ -112,8 +114,8 @@ export default function Recurring() {
           <MonthGrid year={y} month={m} marks={marks} />
           <div className="divider" />
           <div className="row" style={{ gap: 16 }}>
-            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--c9)" }} /> Bills</span>
-            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--c3)" }} /> Income</span>
+            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--neg)" }} /> Bills</span>
+            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--pos)" }} /> Income</span>
           </div>
         </Card>
 
@@ -136,7 +138,7 @@ export default function Recurring() {
                       : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
                   </span>
                   <span className="tiny faint truncate">
-                    {CADENCES.find((c) => c.value === r.cadence)?.label} · next {relativeDay(r.nextDate).toLowerCase()} ({dateLabel(r.nextDate)})
+                    {CADENCES.find((c) => c.value === r.cadence)?.label} · next {relativeDayMid(r.nextDate)}
                   </span>
                 </div>
                 <span className="rec-category"><CategoryTag categoryId={r.categoryId} /></span>
@@ -148,12 +150,6 @@ export default function Recurring() {
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditing(r); }}
                 >
                   <Pencil size={14} />
-                </button>
-                <button
-                  className="btn btn-ghost btn-icon" title="Not recurring" aria-label={`${r.merchant} is not recurring`}
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); actions.dismissRecurring(r); }}
-                >
-                  <X size={14} />
                 </button>
               </Link>
             ))}

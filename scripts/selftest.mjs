@@ -90,7 +90,7 @@ await build({
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
 
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
-      export { thisMonth, addMonths, addDays } from "./src/lib/date.ts";
+      export { thisMonth, addMonths, addDays, relativeDay, relativeDayMid } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS } from "./src/lib/sync/schedule.ts";
@@ -4242,6 +4242,21 @@ await test("an old outlier is not news either", () => {
   const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-01-0${d}`, amount: -20_00 }));
   const db = withTxns([...usual, { date: "2026-02-05", amount: -400_00 }]);
   assert.deepEqual(M.NT.unusualCharges(db, "2026-09-07"), [], "seven months ago is not a surprise");
+});
+
+await test("a date stays a proper noun in the middle of a sentence", () => {
+  const { relativeDay, relativeDayMid, addDays, thisMonth } = M;
+  const today = new Date().toISOString().slice(0, 10);
+  // The phrases were capitalised to start a line, so mid-sentence they drop it.
+  assert.equal(relativeDayMid(today), "today");
+  assert.equal(relativeDayMid(addDays(today, 1)), "tomorrow");
+  assert.equal(relativeDayMid(addDays(today, 3)), "in 3 days");
+  // A month is a name. Past the week relativeDay gives a date, and "next sep
+  // 17" is the bug this exists to stop.
+  const far = addDays(today, 20);
+  assert.equal(relativeDayMid(far), relativeDay(far));
+  assert.match(relativeDayMid(far), /^[A-Z][a-z]{2} \d{1,2}$/);
+  assert.ok(thisMonth().length === 7);
 });
 
 await test("a recurring charge that stopped arriving is said out loud", () => {

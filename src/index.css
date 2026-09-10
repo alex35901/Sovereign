@@ -850,7 +850,7 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    has gone is the number being read, and the total is what it is read against. */
 .spend-of { font-size: 17px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
 .spend-bar { display: block; height: 6px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
-.spend-bar > i { display: block; height: 100%; border-radius: 99px; background: var(--c9); }
+.spend-bar > i { display: block; height: 100%; border-radius: 99px; background: var(--pos); }
 
 /* A recurring row is a link now, so it needs the colour it would otherwise
    inherit from one. */
@@ -874,10 +874,15 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .cal-marks { display: none; }
   .cal-names { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; min-width: 0; }
   .cal-name {
-    display: flex; align-items: center; gap: 4px; min-width: 0;
+    display: flex; align-items: flex-start; gap: 4px; min-width: 0;
     font-size: 11px; color: var(--muted); line-height: 1.35;
   }
-  .cal-name .dot { flex: none; }
+  /* Aligned to the first line of a name rather than to the middle of however
+     many lines it turned out to need. */
+  .cal-name .dot { flex: none; margin-top: 4px; }
+  .cal-name-text { min-width: 0; overflow-wrap: anywhere; }
+  a.cal-name:hover { color: var(--text); }
+  a.cal-name:hover .cal-name-text { text-decoration: underline; }
 }
 
 /* ── reports ── */

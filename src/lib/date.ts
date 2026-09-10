@@ -92,6 +92,19 @@ export function relativeDay(d: ISODate): string {
   return dateLabel(d);
 }
 
+/**
+ * The same, set into the middle of a sentence.
+ *
+ * "next today", not "next Today" — but "next Sep 17", not "next sep 17": a
+ * month is a proper noun wherever it lands, and only the phrases were
+ * capitalised for the start of a line in the first place.
+ */
+export function relativeDayMid(d: ISODate): string {
+  const label = relativeDay(d);
+  if (label === dateLabel(d)) return label;
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
 /** Inclusive list of month keys from `from` to `to`. */
 export function monthRange(from: MonthKey, to: MonthKey): MonthKey[] {
   const out: MonthKey[] = [];

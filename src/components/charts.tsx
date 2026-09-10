@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { fmt0 } from "../lib/money";
 import { color, cx } from "./ui";
 
@@ -801,7 +802,9 @@ export function HBars({ rows, onClick }: {
 /** Month-grid calendar used by Recurring. */
 export function MonthGrid({ year, month, marks, onPick }: {
   year: number; month: number;
-  marks: Record<number, { tone: string; amount: number; label: string }[]>;
+  /** `to` makes the name a way in, for a mark that stands for something with
+   *  a page of its own. */
+  marks: Record<number, { tone: string; amount: number; label: string; to?: string }[]>;
   onPick?: (day: number) => void;
 }) {
   const first = new Date(year, month - 1, 1).getDay();
@@ -834,12 +837,21 @@ export function MonthGrid({ year, month, marks, onPick }: {
               ))}
             </div>
             <div className="cal-names">
-              {(day && marks[day] ? marks[day] : []).slice(0, 3).map((m, j) => (
-                <span key={j} className="cal-name" title={`${m.label} ${fmt0(m.amount)}`}>
-                  <span className="dot" style={{ background: color(m.tone), width: 5, height: 5 }} />
-                  <span className="truncate">{m.label}</span>
-                </span>
-              ))}
+              {(day && marks[day] ? marks[day] : []).slice(0, 3).map((m, j) => {
+                const body = (
+                  <>
+                    <span className="dot" style={{ background: color(m.tone), width: 5, height: 5 }} />
+                    {/* Wrapped, not clipped: the cell has the height for a
+                        second line, and a name cut to "Bright Horiz…" is one
+                        you have to hover to read. */}
+                    <span className="cal-name-text">{m.label}</span>
+                  </>
+                );
+                const title = `${m.label} ${fmt0(m.amount)}`;
+                return m.to
+                  ? <Link key={j} to={m.to} className="cal-name click" title={title}>{body}</Link>
+                  : <span key={j} className="cal-name" title={title}>{body}</span>;
+              })}
               {day && (marks[day]?.length ?? 0) > 3 ? (
                 <span className="tiny faint">+{marks[day]!.length - 3} more</span>
               ) : null}

@@ -1047,6 +1047,9 @@ try {
     });
     check("the page carries two metrics, not four",
       top.length === 2, top.map((t) => t.label).join(", "));
+    check("named for the stretch they cover, not for the year they fell in",
+      top.map((t) => t.label.toUpperCase()).join(" / ") === "THIS MONTH / THIS YEAR",
+      top.map((t) => t.label).join(" / "));
     check("and neither of them is the two that were dropped",
       !top.some((t) => /next 7 days|recurring income/i.test(t.label)), top.map((t) => t.label).join(", "));
     check("each says what has gone of what is committed",
@@ -1061,6 +1064,25 @@ try {
         return Math.abs(t.bar / t.barTrack - share) <= 0.02;
       }),
       top.map((t) => `${Math.round((t.bar / t.barTrack) * 100)}% drawn vs ${Math.round((t.spent / t.total) * 100)}%`).join(" | "));
+    // Green, like every other bar in the app that fills up rather than runs
+    // out. Read off the page rather than named here, so a change to the token
+    // moves both together.
+    const fills = await tiles.evaluate(() => {
+      const pos = getComputedStyle(document.documentElement).getPropertyValue("--pos").trim();
+      const swatch = document.createElement("span");
+      swatch.style.color = pos;
+      document.body.append(swatch);
+      const want = getComputedStyle(swatch).color;
+      swatch.remove();
+      return {
+        want,
+        bars: [...document.querySelectorAll(".spend-bar > i")]
+          .map((i) => getComputedStyle(i).backgroundColor),
+      };
+    });
+    check("both bars are drawn in the green the rest of the app fills with",
+      fills.bars.length === 2 && fills.bars.every((c) => c === fills.want),
+      `${fills.bars.join(" | ")} against ${fills.want}`);
     // The year is twelve of the month, on a schedule that is all monthly —
     // which is what the demo data is, and what a day-stepped walk gets wrong.
     const [month, year] = top;
@@ -1084,6 +1106,70 @@ try {
     check("1280px — a full-width cell names what is due, rather than dotting it",
       named.names > 3 && named.dots === 0, `${named.names} names, ${named.dots} dot rows`);
 
+    // ── what the calendar says, and where it goes ──
+    const cal = await wide.evaluate(() => {
+      const token = (name) => {
+        const el = document.createElement("span");
+        el.style.color = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        document.body.append(el);
+        const c = getComputedStyle(el).color;
+        el.remove();
+        return c;
+      };
+      const marks = [...document.querySelectorAll(".cal-name")].map((n) => ({
+        tone: getComputedStyle(n.querySelector(".dot")).backgroundColor,
+        text: (n.querySelector(".cal-name-text")?.textContent ?? "").trim(),
+        href: n.getAttribute("href"),
+        tag: n.tagName,
+        // Two lines' worth of height on a name too long for one, which is what
+        // wrapping looks like from the outside.
+        lines: Math.round(n.querySelector(".cal-name-text").getBoundingClientRect().height
+          / parseFloat(getComputedStyle(n.querySelector(".cal-name-text")).lineHeight)),
+        clipped: n.querySelector(".cal-name-text").scrollWidth
+          - Math.ceil(n.querySelector(".cal-name-text").getBoundingClientRect().width) > 1,
+      }));
+      const legend = [...document.querySelectorAll(".card .row.tiny.muted")].map((r) => ({
+        label: r.innerText.trim(),
+        tone: getComputedStyle(r.querySelector(".dot")).backgroundColor,
+      }));
+      return { marks, legend, neg: token("--neg"), pos: token("--pos") };
+    });
+    const bills = cal.marks.filter((m) => m.tone !== cal.pos);
+    check("a bill in the calendar is drawn in red",
+      bills.length > 3 && bills.every((m) => m.tone === cal.neg),
+      `${bills.length} bills, tones ${[...new Set(bills.map((m) => m.tone))].join(" | ")}`);
+    check("and the key under it uses the same two colours",
+      cal.legend.length === 2
+      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === cal.neg
+      && cal.legend.find((l) => /income/i.test(l.label))?.tone === cal.pos,
+      cal.legend.map((l) => `${l.label} ${l.tone}`).join(" | "));
+    // Wrapped, not cut: a name too wide for its cell takes a second line and
+    // still reads in full.
+    const longest = cal.marks.slice().sort((a, b) => b.text.length - a.text.length)[0];
+    check("a name too wide for its cell wraps rather than being clipped",
+      longest !== undefined && longest.lines > 1 && cal.marks.every((m) => !m.clipped),
+      longest ? `"${longest.text}" on ${longest.lines} line(s), ${cal.marks.filter((m) => m.clipped).length} clipped` : "no names");
+    check("and every name in the calendar leads to that merchant's page",
+      cal.marks.length > 3 && cal.marks.every((m) => m.tag === "A"
+        && m.href === `/merchants/${encodeURIComponent(m.text)}`),
+      cal.marks.slice(0, 3).map((m) => `${m.tag} ${m.href}`).join(", "));
+
+    const inCal = await tryStep("a name in the calendar can be clicked", async () => {
+      await wide.locator(".cal-name").first().click({ timeout: 5000 });
+      await wide.waitForTimeout(700);
+    });
+    if (inCal) {
+      check("and lands on the same page the row below it does",
+        /^\/merchants\//.test(new URL(wide.url()).pathname),
+        new URL(wide.url()).pathname);
+      // Back by address rather than by history: a click that went nowhere
+      // leaves history one step behind the page, and going back from there
+      // lands somewhere else entirely, which fails every check after this one
+      // for a reason that has nothing to do with them.
+      await wide.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+      await wide.waitForTimeout(700);
+    }
+
     // The row goes where every other merchant in the app goes.
     const rows = await wide.evaluate(() => [...document.querySelectorAll(".rec-row")].slice(0, 4).map((r) => ({
       tag: r.tagName,
@@ -1094,6 +1180,22 @@ try {
       rows.length > 0 && rows.every((r) => r.tag === "A"
         && r.href === `/merchants/${encodeURIComponent(r.merchant)}`),
       rows.map((r) => `${r.tag} ${r.href}`).join(", "));
+
+    const line = await wide.evaluate(() => [...document.querySelectorAll(".rec-row")].slice(0, 6).map((r) => ({
+      sub: r.querySelector(".tiny.faint")?.textContent.trim() ?? "",
+      buttons: [...r.querySelectorAll("button")].map((b) => b.getAttribute("title") ?? ""),
+    })));
+    check("a row's schedule line ends at the next date, with no bracket after it",
+      line.length > 3 && line.every((r) => /·\s*next\s+\S/.test(r.sub) && !/[()]/.test(r.sub)),
+      line.map((r) => r.sub).join(" | "));
+    // The month keeps its capital when the phrase loses one: "next sep 17" is
+    // what lowercasing the whole label gives, and it is not a date.
+    check("and a month in it is still a month",
+      line.every((r) => !/next [a-z]{3} \d/.test(r.sub)),
+      line.map((r) => r.sub).join(" | "));
+    check("editing the schedule is the only button on a row",
+      line.every((r) => r.buttons.length === 1 && r.buttons[0] === "Edit schedule"),
+      line.map((r) => r.buttons.join("+") || "none").join(" | "));
 
     const went = await tryStep("and clicking one goes there", async () => {
       await wide.locator(".rec-row").first().click({ timeout: 5000 });
@@ -1115,6 +1217,11 @@ try {
     if (edited) {
       check("which opens the schedule where it is, rather than navigating away",
         /\/recurring/.test(wide.url()), wide.url());
+      // The row lost its dismiss button, so this is the only way left to say
+      // something is not recurring. It has to still be here.
+      check("and still offers to say it is not recurring at all",
+        (await wide.evaluate(() => [...document.querySelectorAll(".modal button")]
+          .some((b) => /not recurring/i.test(b.innerText)))) === true);
     }
     await wide.close();
   }
