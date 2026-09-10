@@ -10,7 +10,6 @@ import Dashboard from "./screens/Dashboard";
 import Accounts from "./screens/Accounts";
 import AccountDetail from "./screens/AccountDetail";
 import Transactions from "./screens/Transactions";
-import CashFlow from "./screens/CashFlow";
 import Reports from "./screens/Reports";
 import Budget from "./screens/Budget";
 import Recurring from "./screens/Recurring";
@@ -42,7 +41,6 @@ export default function App() {
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/accounts/:id" element={<AccountDetail />} />
           <Route path="/transactions" element={<Transactions />} />
-          <Route path="/cash-flow" element={<CashFlow />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/budget" element={<Budget />} />
           <Route path="/recurring" element={<Recurring />} />

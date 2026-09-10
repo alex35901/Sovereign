@@ -91,7 +91,7 @@ const tryStep = async (what, fn) => {
 
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
-  "/dashboard", "/transactions", "/budget", "/accounts", "/cashflow", "/reports",
+  "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
   "/recurring", "/goals", "/investments", "/rules", "/categories", "/tags", "/settings",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
@@ -457,7 +457,7 @@ try {
     // ── every screen is reachable on a phone ──
     //
     // The bottom bar has room for four, and the fifth used to say "More" and go
-    // straight to Settings. Goals, Cash Flow, Reports, Recurring, Investments,
+    // straight to Settings. Goals, Merchants, Reports, Recurring, Investments,
     // Rules, Categories and Tags had no way in at all on a phone — the sidebar
     // that lists them is hidden below 720px. Checked by walking to each one and
     // reading the address back, because a link that renders is not the same as
@@ -2005,18 +2005,23 @@ try {
       await page.waitForTimeout(900);
       const pills = await page.evaluate(() =>
         [...document.querySelectorAll(".nw-card .scope-pill")].map((e) => e.innerText.trim()));
+      // The sub-heading between the kinds and the figure. The accounts page
+      // never had one, so on the dashboard it is a difference between two
+      // cards that are meant to be the same card.
+      const label = await page.evaluate(() =>
+        document.querySelector(".nw-card .nw-head .tile-label")?.innerText.trim() ?? "");
       const totals = {};
       for (let i = 0; i < pills.length; i++) {
         // Guarded: a pill that has become unclickable is a failure to report,
         // not an exception to bring the whole run down with. An aborted run
         // prints no failures at all, which reads exactly like a clean one.
         if (!await tryStep(`${path}: the ${pills[i]} pill can be clicked`, () =>
-          page.locator(".nw-card .scope-pill").nth(i).click({ timeout: 5000 }))) return { pills, totals };
+          page.locator(".nw-card .scope-pill").nth(i).click({ timeout: 5000 }))) return { pills, label, totals };
         await page.waitForTimeout(350);
         totals[pills[i]] = await page.evaluate(() =>
           document.querySelector(".nw-card .nw-value")?.innerText.trim() ?? null);
       }
-      return { pills, totals };
+      return { pills, label, totals };
     };
 
     const agree = await browser.newPage({ viewport: { width: 1180, height: 900 } });
@@ -2030,6 +2035,9 @@ try {
       differs.length === 0 && Object.values(onDash.totals).every((v) => v),
       differs.map((k) => `${k}: ${onDash.totals[k]} against ${onAccounts.totals[k]}`).join(", ")
         || JSON.stringify(onDash.totals));
+    check("and neither puts a sub-heading between the kinds and the figure",
+      onDash.label === "" && onAccounts.label === "",
+      `dashboard "${onDash.label}", accounts "${onAccounts.label}"`);
     await agree.close();
 
     // ── the dashboard ──
@@ -2039,10 +2047,11 @@ try {
 
     const cards = await dash.evaluate(() =>
       [...document.querySelectorAll(".page > .card")].map((c) =>
-        (c.querySelector("h2")?.innerText ?? c.querySelector(".tile-label")?.innerText ?? "").trim()));
-    // Lower-cased on both sides: the net worth card's name is a tile label,
-    // which CSS puts in capitals, and the test is about which cards are there
-    // rather than about how they are typeset.
+        // The net worth card wears no heading at all, the same as the one on
+        // the accounts page, so it answers for itself by what it draws.
+        c.querySelector(".nw-head") ? "net worth" : (c.querySelector("h2")?.innerText ?? "").trim()));
+    // Lower-cased on both sides: this is about which cards are there rather
+    // than about how any of them is typeset.
     check("the dashboard is the six cards, in that order",
       cards.join(" / ").toLowerCase() === "net worth / spending / budget / recurring / goals / investments",
       cards.join(" / "));
@@ -2058,8 +2067,8 @@ try {
       axis: document.querySelectorAll(".nw-card .axis-text").length,
     }));
     check("net worth leads with the shared chart, periods and all",
-      nw.label === "NET WORTH" && nw.spans === 6 && nw.axis === 0,
-      `${nw.label}, ${nw.spans} periods, ${nw.axis} axis labels`);
+      nw.label === "" && nw.spans === 6 && nw.axis === 0,
+      `${nw.label ? `labelled "${nw.label}"` : "no label"}, ${nw.spans} periods, ${nw.axis} axis labels`);
 
     // Spending: this month stops at today, last month runs the whole month.
     const spend = await dash.evaluate(() => {
@@ -2192,7 +2201,7 @@ try {
     };
     for (const [name, i, sel, want] of [
       ["net worth", 0, ".nw-value", "/accounts"],
-      ["spending", 1, "h2", "/cash-flow"],
+      ["spending", 1, "h2", "/reports"],
       ["budget", 2, "h2", "/budget"],
       ["recurring", 3, "h2", "/recurring"],
       ["goals", 4, "h2", "/goals"],
@@ -2207,7 +2216,7 @@ try {
     // rules of painting, so a sheet that only clears the text is not a sheet
     // over the card.
     const onChart = await opens(1, ".chart-wrap");
-    check("even the spending chart itself opens cash flow", onChart === "/cash-flow", onChart);
+    check("even the spending chart itself opens reports", onChart === "/reports", onChart);
     const onBar = await opens(2, ".bar");
     check("and the budget's own bar opens the budget", onBar === "/budget", onBar);
 
@@ -2228,15 +2237,20 @@ try {
     // The net worth card's own controls still answer, and still stay put.
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await dash.waitForTimeout(900);
-    const nwLabel = () => dash.evaluate(() =>
-      document.querySelector(".nw-card .nw-head .tile-label")?.innerText.trim() ?? "");
+    // What the card is showing, taken from the pill that is lit and the
+    // figure under it, since the card no longer says in words which kind it
+    // is drawing.
+    const nwKind = () => dash.evaluate(() => [
+      document.querySelector('.nw-card .scope-pill[aria-selected="true"]')?.innerText.trim() ?? "",
+      document.querySelector(".nw-card .nw-value")?.innerText.trim() ?? "",
+    ].join(" "));
     const nwPeriod = () => dash.evaluate(() =>
       document.querySelector(".nw-card .nw-head .faint")?.innerText.trim() ?? "");
-    const wasLabel = await nwLabel();
+    const wasLabel = await nwKind();
     const pillPath = await pressAt(dash.locator(".nw-card .scope-pill").nth(1));
     check("a kind on the net worth card switches the chart and stays on the dashboard",
-      pillPath === "/dashboard" && (await nwLabel()) !== wasLabel,
-      `${pillPath}, ${wasLabel} then ${await nwLabel()}`);
+      pillPath === "/dashboard" && (await nwKind()) !== wasLabel,
+      `${pillPath}, ${wasLabel} then ${await nwKind()}`);
 
     const wasPeriod = await nwPeriod();
     const spanPath = await pressAt(dash.locator(".nw-card .span-pill").nth(2));
@@ -2258,6 +2272,32 @@ try {
     check("and dragging across the graph reads it out rather than opening accounts",
       scrubPath === "/dashboard" && scrubTotal !== restTotal,
       `${scrubPath}, ${restTotal} then ${scrubTotal}`);
+
+    // ── the cash flow screen is gone ──
+    //
+    // It was the reports screen twice over. Checked by walking to its old
+    // address as well as by looking for a way in: a route left behind renders
+    // nothing and a link left behind goes nowhere, and neither shows up in a
+    // list of what the nav offers.
+    const wide = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+    await wide.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(600);
+    const offered = await wide.evaluate(() =>
+      [...document.querySelectorAll("a[href]")].map((a) => a.getAttribute("href")));
+    check("nothing on the dashboard offers a way to the cash flow screen",
+      !offered.some((h) => (h ?? "").startsWith("/cash-flow")),
+      offered.filter((h) => (h ?? "").startsWith("/cash-flow")).join(", "));
+    // textContent, not innerText: the rail collapses its labels, and a label
+    // that is merely narrow to the eye is still a way in.
+    const inNav = await wide.evaluate(() =>
+      [...document.querySelectorAll(".sidebar a[href]")].map((a) => (a.textContent ?? "").trim()));
+    check("nor does the sidebar", !inNav.some((t) => /cash\s*flow/i.test(t)), inNav.join(" / "));
+    await wide.goto(`${BASE}/cash-flow`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(700);
+    check("and its old address lands on a screen that exists",
+      new URL(wide.url()).pathname === "/dashboard",
+      new URL(wide.url()).pathname);
+    await wide.close();
 
     await dash.close();
   }
@@ -2441,6 +2481,16 @@ try {
       `${bars.green} up, ${bars.red} down`);
     check("with what was saved drawn across them", bars.line >= 1, `${bars.line} lines`);
 
+    // The savings rate came across when the cash flow screen was taken out.
+    // It is the proportion, which is the figure that stays comparable when the
+    // months being compared are not.
+    const summary = await rep.evaluate(() => {
+      const rows = [...document.querySelectorAll(".report-sum")].map((r) => r.innerText.replace(/\n/g, " "));
+      return { rows, rate: rows.find((r) => /savings rate/i.test(r)) ?? "" };
+    });
+    check("the flow summary still reports a savings rate",
+      /%/.test(summary.rate), summary.rows.join(" | "));
+
     // The pair used to sit side by side. A month is one column now, which is
     // also what buys the extra width each bar got.
     const columns = await rep.evaluate(() => {
@@ -2465,6 +2515,43 @@ try {
       columns.down > 3 && columns.paired === columns.down && columns.columns === columns.months,
       `${columns.paired}/${columns.down} paired, ${columns.columns} columns for ${columns.months} periods`);
     check("and the bars are wide enough to read", columns.width >= 10, `${columns.width}px wide`);
+
+    // ── fewer periods, fatter bars ──
+    //
+    // A quarter and a year are the same chart at two densities. When the year
+    // is asked for, the slots themselves hold the bars apart; when the quarter
+    // is, the bar has to take up the room the missing months left, or three
+    // pencil lines sit adrift in an empty card. Measured on a desktop card,
+    // which is where the emptiness was.
+    const flow = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await flow.goto(`${BASE}/reports`, { waitUntil: "networkidle" });
+    await flow.waitForTimeout(900);
+    const barsAt = async (range) => {
+      await flow.locator(".topbar select").first().selectOption(range);
+      await flow.waitForTimeout(800);
+      return flow.evaluate(() => {
+        const svg = document.querySelector(".card .chart-wrap svg");
+        const box = [...svg.querySelectorAll("rect")]
+          .filter((r) => getComputedStyle(r).fill === "rgb(53, 196, 140)")
+          .map((r) => r.getBoundingClientRect())
+          .sort((a, b) => a.left - b.left);
+        const mids = box.map((b) => (b.left + b.right) / 2);
+        // The slot each bar was given, so "wide enough" is a share of the room
+        // available rather than a pixel count that means nothing on its own.
+        const slot = mids.length > 1 ? mids[1] - mids[0] : svg.getBoundingClientRect().width;
+        return { count: box.length, width: Math.round(box[0]?.width ?? 0), fill: (box[0]?.width ?? 0) / slot };
+      });
+    };
+    const year = await barsAt("1y");
+    const quarter = await barsAt("3m");
+    check("a quarter draws fewer bars than a year", quarter.count < year.count && quarter.count > 1,
+      `${quarter.count} against ${year.count}`);
+    check("and draws them wider, rather than leaving the room empty",
+      quarter.width > year.width && quarter.width >= 60,
+      `${quarter.width}px for ${quarter.count} against ${year.width}px for ${year.count}`);
+    check("a year's bars still nearly fill their own slots",
+      year.fill > 0.5, `${Math.round(year.fill * 100)}% of the slot`);
+    await flow.close();
 
     // The second control is the chart's own, and only its own.
     const readControls = () => rep.evaluate(() =>

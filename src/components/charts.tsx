@@ -380,6 +380,9 @@ export function CompareChart({ current, previous, height = 210, span, tone = "--
  * red, and that is a thing you see at a glance only when they are measured
  * against the same nought.
  */
+/** How wide one period's bar may grow when there is room going spare. */
+const FLOW_BAR_MAX = 92;
+
 export function FlowChart({ buckets, height = 240, onPick }: {
   buckets: { key: string; label: string; income: number; expense: number; net: number }[];
   height?: number;
@@ -403,7 +406,13 @@ export function FlowChart({ buckets, height = 240, onPick }: {
   // the same month's two halves, and reading them off one vertical line is
   // what makes the shape of a month legible. It also buys back the width the
   // second bar was using, which goes into the bar that is left.
-  const barW = Math.max(6, Math.min(38, slot * 0.62));
+  //
+  // The ceiling is generous because a year of months and a quarter of them are
+  // the same chart at two densities: twelve bars are held apart by the slot
+  // and never reach it, while three bars on a desktop card would otherwise be
+  // three pencil lines adrift in a field of nothing. The bar takes its share
+  // of the slot it is given, and the share is what keeps the gaps even.
+  const barW = Math.max(6, Math.min(FLOW_BAR_MAX, slot * 0.62));
   const x = (i: number) => padL + slot * i + slot / 2;
   const ticks = rangeTicks(-hi, hi);
   const label = axisFormat(-hi, hi);

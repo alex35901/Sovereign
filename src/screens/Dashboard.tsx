@@ -110,7 +110,6 @@ function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeK
   return (
     <DashCard to="/accounts" label="Accounts" pad={false} className="nw-card">
       <BalanceChart
-        label={current.key === "net" ? "Net worth" : current.label}
         total={current.total} series={current.series} points={points}
         tone={trendTone(current.series)} range={range} onRange={onRange}
         above={<ScopeBar slices={slices} value={current.key} onChange={setScope} />}
@@ -132,7 +131,7 @@ function SpendingCard() {
   const diff = pace.spent - soFarLast;
 
   return (
-    <DashCard to="/cash-flow" label="Cash flow">
+    <DashCard to="/reports" label="Reports">
       <CardHead title="Spending" sub="This month vs. last month" />
       {pace.thisMonth.length ? (
         <>

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   ArrowLeftRight, ChartPie, Filter, Landmark, LayoutDashboard, LineChart, MessagesSquare, MoreHorizontal,
-  Repeat, Settings as SettingsIcon, Shapes, Store, Tag, Target, TrendingUp, Wallet,
+  Repeat, Settings as SettingsIcon, Shapes, Store, Tag, Target, Wallet,
 } from "lucide-react";
 import { useDB } from "../store";
 import { needsReviewCount, netWorthNow } from "../lib/select";
@@ -13,7 +13,6 @@ export const NAV = [
   { to: "/dashboard", label: "Dashboard", Icon: LayoutDashboard },
   { to: "/accounts", label: "Accounts", Icon: Landmark },
   { to: "/transactions", label: "Transactions", Icon: ArrowLeftRight },
-  { to: "/cash-flow", label: "Cash Flow", Icon: TrendingUp },
   { to: "/reports", label: "Reports", Icon: ChartPie },
   { to: "/merchants", label: "Merchants", Icon: Store },
 ];
@@ -91,7 +90,7 @@ const TABS = [NAV[0]!, NAV[1]!, NAV[2]!, NAV_PLAN[0]!];
  *
  * Worked out from the same arrays rather than listed again, so a screen added
  * to the sidebar cannot end up unreachable on a phone — which is exactly what
- * happened to Goals, Reports, Cash Flow, Investments and the rest: the fifth
+ * happened to Goals, Reports, Merchants, Investments and the rest: the fifth
  * tab said "More" and went straight to Settings, and nothing else had a way in
  * at all.
  */

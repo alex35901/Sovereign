@@ -4,7 +4,7 @@ import { ChevronRight } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { lastMonths, monthEnd, monthLabel, monthOf, monthStart } from "../lib/date";
-import { fmt0 } from "../lib/money";
+import { fmt0, fmtPct, pct } from "../lib/money";
 import { cashFlowSeries } from "../lib/select";
 import { breakdown, flowBuckets, sankeyData, summarise } from "../lib/reports";
 import type { Facet, Grain, Side, Slice } from "../lib/reports";
@@ -98,6 +98,7 @@ function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet
 
   const income = flow.reduce((s, f) => s + f.income, 0);
   const expense = flow.reduce((s, f) => s + f.expense, 0);
+  const saved = income - expense;
 
   return (
     <>
@@ -158,7 +159,16 @@ function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet
         <div className="col" style={{ gap: 0 }}>
           <SumRow label="Total income" value={income} tone="pos" />
           <SumRow label="Total expenses" value={expense} tone="neg" />
-          <SumRow label="Savings" value={income - expense} tone={income - expense >= 0 ? "pos" : "neg"} />
+          <SumRow label="Savings" value={saved} tone={saved >= 0 ? "pos" : "neg"} />
+          {/* The one figure the Cash Flow screen carried that this one did
+              not. It is the proportion, which is the part that stays
+              comparable when the months themselves are not. */}
+          <div className="spread report-sum">
+            <span>Savings rate</span>
+            <span className={cx("num bold", saved >= 0 ? "pos" : "neg")}>
+              {fmtPct(pct(saved, income || 1), 0)}
+            </span>
+          </div>
         </div>
       </Card>
 
