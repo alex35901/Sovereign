@@ -71,9 +71,19 @@ export interface Point { label: string; value: number; sub?: string }
 
 export function AreaChart({
   points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
-  markLine, markLabel, bare = false, onScrub, format,
+  markLine, markLabel, bare = false, onScrub, format, compare,
 }: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
+  /**
+   * A second line on the same axis, for reading one series against another.
+   *
+   * Values, not points: it is plotted against the same days, so it is the
+   * caller's job to have put both on a comparable footing before it gets
+   * here. A null is a day the second series has no reading for, which is what
+   * a fund younger than the account looks like — the line starts where its
+   * data does rather than at a flat guess.
+   */
+  compare?: { values: (number | null)[]; tone: string };
   /** A horizontal line to aim at — a goal's target, and where the line meets it. */
   markLine?: number;
   markLabel?: string;
@@ -125,16 +135,25 @@ export function AreaChart({
   const innerW = Math.max(40, w - padL - padR);
   const innerH = height - padT - padB;
   const values = points.map((p) => p.value);
-  const hasNegative = values.some((v) => v < 0);
+  const other = compare?.values.filter((v): v is number => v !== null) ?? [];
+  const hasNegative = values.some((v) => v < 0) || other.some((v) => v < 0);
   // The axis spans exactly the period's min and max. Zero is only forced in
   // where a caller asks for it; on a balance chart it would flatten the line
   // into a straight edge at the bottom.
   // The mark is part of the range, or a target above everything saved so far
   // would sit off the top of its own chart.
-  let lo = Math.min(...values, zeroBase ? 0 : Infinity, markLine ?? Infinity);
-  let hi = Math.max(...values, zeroBase ? 0 : -Infinity, markLine ?? -Infinity);
-  // a flat or near-flat series still needs a readable band
-  const minSpan = Math.max(100, Math.abs(hi) * 0.001);
+  // The second series is part of the range too, or the line it draws runs off
+  // the top of a chart scaled to the first one alone.
+  let lo = Math.min(...values, ...other, zeroBase ? 0 : Infinity, markLine ?? Infinity);
+  let hi = Math.max(...values, ...other, zeroBase ? 0 : -Infinity, markLine ?? -Infinity);
+  // A flat or near-flat series still needs a readable band. Taken from the
+  // size of the readings rather than as a fixed number of cents: this chart
+  // also draws proportions now, where every value is under one and a floor of
+  // "at least a dollar" flattens the whole series into a line through the
+  // middle. The fallback is only reached when every reading is zero, where
+  // the band's size cannot change what is drawn.
+  const scale = Math.max(Math.abs(hi), Math.abs(lo));
+  const minSpan = scale > 0 ? scale * 0.001 : 1;
   if (hi - lo < minSpan) {
     const mid = (hi + lo) / 2;
     lo = mid - minSpan / 2;
@@ -157,6 +176,17 @@ export function AreaChart({
   // Fill to the zero axis rather than the floor of the plot, so a negative
   // series paints the band between 0 and the balance instead of a thin sliver.
   const area = `${line} L${x(points.length - 1).toFixed(1)},${zeroY} L${x(0).toFixed(1)},${zeroY} Z`;
+  // Drawn in runs, so a gap in the middle is a gap rather than a straight
+  // line across it pretending to be data.
+  const compareRuns: string[] = [];
+  if (compare) {
+    let run: string[] = [];
+    compare.values.forEach((v, i) => {
+      if (v === null) { if (run.length > 1) compareRuns.push(run.join(" ")); run = []; return; }
+      run.push(`${run.length ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    });
+    if (run.length > 1) compareRuns.push(run.join(" "));
+  }
   const ticks = rangeTicks(lo, hi);
   const label = format ?? axisFormat(lo, hi);
 
@@ -228,6 +258,15 @@ export function AreaChart({
         <path d={area} fill={`url(#dn-${uid})`} clipPath={`url(#below-${uid})`} />
         <path d={line} fill="none" stroke={color(tone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" clipPath={`url(#above-${uid})`} />
         <path d={line} fill="none" stroke={color(negativeTone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" clipPath={`url(#below-${uid})`} />
+
+        {/* Above the fill and below the marker: it has to be readable over the
+            first series' shading without hiding a target line. */}
+        {compareRuns.map((d, i) => (
+          <path
+            key={i} d={d} fill="none" stroke={color(compare!.tone)} strokeWidth={1.75}
+            strokeLinejoin="round" strokeLinecap="round" opacity={0.95}
+          />
+        ))}
 
         {showZeroLine ? (
           <line x1={padL} x2={padL + innerW} y1={zeroY} y2={zeroY} stroke={color("--muted")} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />

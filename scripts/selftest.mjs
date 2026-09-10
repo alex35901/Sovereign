@@ -72,6 +72,8 @@ await build({
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
+      export { fetchHistory as fetchHistoryDirect, MAX_HISTORY } from "./api/_prices.ts";
+      export * as BM from "./src/lib/benchmarks.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4242,6 +4244,161 @@ await test("an old outlier is not news either", () => {
   const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-01-0${d}`, amount: -20_00 }));
   const db = withTxns([...usual, { date: "2026-02-05", amount: -400_00 }]);
   assert.deepEqual(M.NT.unusualCharges(db, "2026-09-07"), [], "seven months ago is not a surprise");
+});
+
+/* ── measuring a portfolio against the market ──────────────────────────── */
+
+const hist = (pairs, at = "2026-09-10T12:00:00.000Z") => ({
+  ticker: "SPY",
+  dates: pairs.map(([d]) => d),
+  closes: pairs.map(([, c]) => c),
+  fetchedAt: at,
+});
+
+await test("closes merge oldest first, one per day, newest answer winning", () => {
+  const { mergeCloses, emptyHistory } = M.BM;
+  const first = mergeCloses(emptyHistory("SPY"), [
+    { date: "2026-09-03", close: 300 },
+    { date: "2026-09-01", close: 100 },
+    { date: "2026-09-02", close: 200 },
+  ], "t1");
+  assert.deepEqual(first.dates, ["2026-09-01", "2026-09-02", "2026-09-03"]);
+  assert.deepEqual(first.closes, [100, 200, 300]);
+
+  // An adjusted close is restated backwards every time a dividend is paid, so
+  // a later answer for an old day replaces the one held.
+  const again = mergeCloses(first, [{ date: "2026-09-01", close: 99 }, { date: "2026-09-04", close: 400 }], "t2");
+  assert.deepEqual(again.dates, ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]);
+  assert.deepEqual(again.closes, [99, 200, 300, 400]);
+  assert.equal(again.fetchedAt, "t2");
+
+  // Rubbish is dropped rather than stored: the two arrays are read in lockstep.
+  const clean = mergeCloses(first, [
+    { date: "nonsense", close: 5 }, { date: "2026-09-05", close: 0 },
+    { date: "2026-09-06", close: NaN }, { date: "2026-09-07", close: -3 },
+  ], "t3");
+  assert.deepEqual(clean.dates, first.dates);
+  assert.equal(clean.dates.length, clean.closes.length);
+});
+
+await test("a shut market reads the last close before it", () => {
+  const { closeOn } = M.BM;
+  // Friday, Monday. The weekend in between is Friday's price, and anything
+  // before the history starts has no price at all rather than a flat guess.
+  const h = hist([["2026-09-04", 100], ["2026-09-07", 110]]);
+  assert.equal(closeOn(h, "2026-09-03"), null);
+  assert.equal(closeOn(h, "2026-09-04"), 100);
+  assert.equal(closeOn(h, "2026-09-05"), 100);
+  assert.equal(closeOn(h, "2026-09-06"), 100);
+  assert.equal(closeOn(h, "2026-09-07"), 110);
+  assert.equal(closeOn(h, "2027-01-01"), 110, "and after the end it is the last one");
+  assert.equal(closeOn(M.BM.emptyHistory("SPY"), "2026-09-07"), null);
+});
+
+await test("both lines are rebased to where the period opened", () => {
+  const { returnSeries, rebase } = M.BM;
+  const h = hist([["2026-09-01", 100], ["2026-09-02", 110], ["2026-09-03", 90]]);
+  assert.deepEqual(returnSeries(h, ["2026-09-01", "2026-09-02", "2026-09-03"]), [0, 0.1, -0.1]);
+  // Rebasing is a rescale, not a reshape: the portfolio's own line is the same
+  // shape in dollars and in proportions, which is why they can share an axis.
+  assert.deepEqual(rebase([200, 220, 180]), [0, 0.1, -0.1]);
+});
+
+await test("a fund younger than the account starts its line where its data does", () => {
+  const { returnSeries } = M.BM;
+  const h = hist([["2026-09-03", 100], ["2026-09-04", 120]]);
+  const out = returnSeries(h, ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]);
+  // Nulls in front, and the rebasing starts at the first day it can read,
+  // rather than at zero, which would draw a jump nobody's money made.
+  assert.deepEqual(out, [null, null, 0, 0.2]);
+  // Nothing at all in the window is no line, not a line of zeroes.
+  assert.deepEqual(returnSeries(h, ["2026-01-01", "2026-01-02"]), [null, null]);
+});
+
+await test("only what is missing is asked for", () => {
+  const { needsFetch, HISTORY_MIN_GAP_HOURS } = M.BM;
+  const now = Date.parse("2026-09-10T18:00:00.000Z");
+  const stale = "2026-09-08T18:00:00.000Z";
+
+  // Nothing held: the whole window.
+  assert.deepEqual(needsFetch(undefined, "2020-01-01", "2026-09-10", now), { from: "2020-01-01", to: "2026-09-10" });
+
+  // Covered to the end: nothing.
+  assert.equal(needsFetch(hist([["2020-01-01", 1], ["2026-09-10", 2]], stale), "2020-01-01", "2026-09-10", now), null);
+
+  // Only the tail is missing, and only the tail is asked for.
+  assert.deepEqual(
+    needsFetch(hist([["2020-01-01", 1], ["2026-09-04", 2]], stale), "2020-01-01", "2026-09-10", now),
+    { from: "2026-09-05", to: "2026-09-10" },
+  );
+
+  // A history that starts after the window wanted cannot be extended
+  // backwards a day at a time, and a request costs the same either way.
+  assert.deepEqual(
+    needsFetch(hist([["2025-01-01", 1], ["2026-09-04", 2]], stale), "2020-01-01", "2026-09-10", now),
+    { from: "2020-01-01", to: "2026-09-10" },
+  );
+
+  // A weekend: the tail is behind today and will stay behind it until Monday,
+  // so a fresh answer is left alone rather than asked for on every visit.
+  const fresh = new Date(now - (HISTORY_MIN_GAP_HOURS - 1) * 3_600_000).toISOString();
+  assert.equal(needsFetch(hist([["2020-01-01", 1], ["2026-09-04", 2]], fresh), "2020-01-01", "2026-09-10", now), null);
+});
+
+await test("the provider's history is read for dividends, not for today's price", async () => {
+  const { fetchHistoryDirect } = M;
+  let seen = "";
+  const rows = [
+    { date: "2026-09-01T00:00:00.000Z", close: 10, adjClose: 9 },
+    { date: "2026-09-02T00:00:00.000Z", close: 11, adjClose: 10 },
+  ];
+  const out = await withFetch(async (url) => {
+    seen = String(url);
+    return new Response(JSON.stringify(rows), { status: 200 });
+  }, () => fetchHistoryDirect("k", "spy", "2026-09-01", "2026-09-02"));
+
+  assert.match(seen, /\/tiingo\/daily\/spy\/prices\?startDate=2026-09-01&endDate=2026-09-02$/);
+  // adjClose, not close: a portfolio collects its dividends, and a benchmark
+  // charted on unadjusted prices shows every distribution as a loss.
+  assert.deepEqual(out.rows, [{ date: "2026-09-01", close: 9 }, { date: "2026-09-02", close: 10 }]);
+  assert.equal(out.ticker, "SPY");
+});
+
+await test("and nothing that is not a symbol or a date reaches the wire", async () => {
+  const { fetchHistoryDirect } = M;
+  let called = 0;
+  const guard = async () => { called += 1; return new Response("[]", { status: 200 }); };
+  await withFetch(guard, async () => {
+    assert.deepEqual((await fetchHistoryDirect("k", "../../etc", "2026-09-01", "2026-09-02")).rows, []);
+    assert.deepEqual((await fetchHistoryDirect("k", "SPY", "2026-13-40", "2026-09-02")).rows, []);
+    assert.deepEqual((await fetchHistoryDirect("k", "SPY", "2026-02-31", "2026-09-02")).rows, []);
+    assert.deepEqual((await fetchHistoryDirect("k", "SPY", "2026-09-05", "2026-09-01")).rows, []);
+  });
+  assert.equal(called, 0, "a request was sent for something that is not a symbol or a date");
+
+  // A rejected key is the run failing, not one symbol missing, because every
+  // other request would fail the same way.
+  const bad = await withFetch(
+    async () => new Response("no", { status: 403 }),
+    () => fetchHistoryDirect("k", "SPY", "2026-09-01", "2026-09-02"),
+  );
+  assert.match(bad.fatal ?? "", /API key/);
+  assert.equal(bad.status, 401);
+});
+
+await test("a history request is answered by the same endpoint the quotes use", async () => {
+  const rows = [{ date: "2026-09-01", close: 10, adjClose: 9 }];
+  const res = await withFetch(
+    async () => new Response(JSON.stringify(rows), { status: 200 }),
+    () => invokePrices({ apiKey: "k", history: ["SPY"], from: "2026-09-01", to: "2026-09-02" }),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(JSON.parse(res.text), { history: { SPY: [{ date: "2026-09-01", close: 9 }] } });
+
+  // Missing dates is a bad request, not an empty answer that looks like a
+  // symbol nobody has heard of.
+  const nodates = await invokePrices({ apiKey: "k", history: ["SPY"] });
+  assert.equal(nodates.status, 400);
 });
 
 await test("a date stays a proper noun in the middle of a sentence", () => {

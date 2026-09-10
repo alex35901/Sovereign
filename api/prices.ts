@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { fetchQuotes } from "./_prices.js";
+import { MAX_HISTORY, fetchHistory, fetchQuotes } from "./_prices.js";
 
 /**
  * Server-side proxy for Tiingo end-of-day prices.
@@ -15,7 +15,14 @@ export const config = { runtime: "nodejs", maxDuration: 60 };
 
 type ApiRequest = IncomingMessage & { body?: unknown };
 
-interface Body { apiKey?: string; tickers?: unknown }
+interface Body {
+  apiKey?: string;
+  tickers?: unknown;
+  /** Symbols to fetch a window of closes for, instead of a single quote. */
+  history?: unknown;
+  from?: unknown;
+  to?: unknown;
+}
 
 export default async function handler(req: ApiRequest, res: ServerResponse): Promise<void> {
   const send = (status: number, data: unknown) => {
@@ -36,6 +43,26 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
 
   const apiKey = (body.apiKey ?? "").trim();
   if (!apiKey) return send(400, { error: "No Tiingo API key was supplied." });
+
+  // Two questions, one endpoint, because they are the same provider and the
+  // same key: "what is this worth now" and "what has it been worth". They are
+  // told apart by which field is present rather than by a mode flag, so a
+  // caller cannot ask for both and get half an answer.
+  if (Array.isArray(body.history) && body.history.length) {
+    const from = typeof body.from === "string" ? body.from : "";
+    const to = typeof body.to === "string" ? body.to : "";
+    if (!from || !to) return send(400, { error: "A history request needs a from and a to date." });
+
+    const want = body.history.filter((t): t is string => typeof t === "string").slice(0, MAX_HISTORY);
+    const out: Record<string, { date: string; close: number }[]> = {};
+    for (const ticker of want) {
+      const r = await fetchHistory(apiKey, ticker, from, to);
+      if (r.fatal) return send(r.status ?? 502, { error: r.fatal });
+      if (r.rows.length) out[r.ticker] = r.rows;
+    }
+    return send(200, { history: out });
+  }
+
   if (!Array.isArray(body.tickers) || !body.tickers.length) {
     return send(400, { error: "No tickers were supplied." });
   }

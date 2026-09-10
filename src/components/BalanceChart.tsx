@@ -112,11 +112,13 @@ export function ScopeBar({ slices, value, onChange }: {
   );
 }
 
-export function BalanceChart({ label, above, total, series, points, tone, range, onRange }: {
+export function BalanceChart({ label, above, under, total, series, points, tone, range, onRange, compare }: {
   /** A small line above the figure — "Current balance". */
   label?: string;
   /** Anything that belongs above that, flush to the card's top edge. */
   above?: ReactNode;
+  /** Anything that belongs between the chart and the periods under it. */
+  under?: ReactNode;
   /** Today's figure, which is not always the last plotted one: the chart is
    *  drawn from dated history, and a live balance can be ahead of it. */
   total: number;
@@ -125,6 +127,19 @@ export function BalanceChart({ label, above, total, series, points, tone, range,
   tone: string;
   range: RangeKey;
   onRange: (r: RangeKey) => void;
+  /**
+   * A second line, and what to say about it.
+   *
+   * `move` is that line's own change over the same stretch, said beside the
+   * portfolio's: the two figures together are the comparison, and the chart
+   * only shows which way it went.
+   */
+  compare?: {
+    values: (number | null)[];
+    tone: string;
+    label: string;
+    move: { change: number; pct: number | null };
+  };
 }) {
   // Where a finger is resting on the chart, if one is. Null means the whole
   // period, which is what the card says when nobody is touching it.
@@ -141,12 +156,33 @@ export function BalanceChart({ label, above, total, series, points, tone, range,
         {label ? <span className="tile-label">{label}</span> : null}
         <div className="nw-value num"><Money value={shown} /></div>
         <Delta move={move} period={window ?? periodOf(range)} />
+        {compare ? (
+          // Proportions, not money: an index has no dollars, and the whole
+          // point of putting it here is that the two are on one footing.
+          <span className="row nw-versus" style={{ gap: 7 }}>
+            <span className="dot" style={{ background: `var(${compare.tone})` }} />
+            <span className="muted">{compare.label}</span>
+            <span className={compare.move.pct !== null && compare.move.pct < 0 ? "neg" : "pos"}>
+              {/* pctLabel is unsigned, because everywhere else the arrow
+                  beside it carries the sign. Here there is no arrow. */}
+              {compare.move.pct === null
+                ? "no reading"
+                : `${compare.move.pct < 0 ? "-" : "+"}${pctLabel(compare.move.pct)}`}
+            </span>
+            <span className="faint">over the same stretch</span>
+          </span>
+        ) : null}
       </div>
 
       {/* Edge to edge, and no axis labels: every figure they would carry is
           spelled out in words directly above them — and follows the finger,
           which is the other reason they would be a second copy. */}
-      <AreaChart points={points} height={200} tone={tone} negativeTone={tone} bare onScrub={setAt} />
+      <AreaChart
+        points={points} height={200} tone={tone} negativeTone={tone} bare onScrub={setAt}
+        compare={compare ? { values: compare.values, tone: compare.tone } : undefined}
+      />
+
+      {under}
 
       <div className="span-bar">
         {SPANS.map((r) => (

@@ -271,6 +271,12 @@ Patterns worth reusing:
   then swaps that one row to a control. This is not decoration: a text box wide
   enough to type into is wider than its words, so an input left in the row
   strands the merchant logo in the middle of it.
+- Benchmark closing prices live in `localStorage` (`src/lib/benchmark-store.ts`),
+  **not in the document**, and that is deliberate. Everything in the document is
+  the user's own and is encrypted before it leaves the browser; SPY's closes are
+  public, identical for every user, and re-fetchable in one request. Putting six
+  years of them on every save would be paying sync bandwidth for data that says
+  nothing about anybody. The cost is that a new device fetches its own copy.
 - `paidOccurrences` in `src/lib/select.ts` is the one place that says a
   recurring bill has actually been paid. Everything else on that screen counts
   off the schedule, where a date in the past only means a bill fell due, so the

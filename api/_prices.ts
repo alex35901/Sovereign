@@ -16,6 +16,16 @@ import { isSymbol } from "../src/lib/symbol.js";
 
 const TIINGO = "https://api.tiingo.com/tiingo/daily";
 const TIMEOUT_MS = 10_000;
+/** Years of daily closes is a bigger answer than one quote, so a longer rope. */
+const HISTORY_TIMEOUT_MS = 20_000;
+
+/** A day, and a real one: 2026-02-31 parses and is not a date. */
+const isDay = (d: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const [y, m, day] = d.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, day));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === day;
+};
 
 /** One ticker is one request, and the free tier allows 50 an hour. */
 export const MAX_TICKERS = 40;
@@ -109,6 +119,92 @@ async function one(apiKey: string, ticker: string): Promise<Outcome> {
   if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return { miss: ticker };
 
   return { ticker, price, asOf: typeof last.date === "string" ? last.date.slice(0, 10) : "" };
+}
+
+/* ── closing prices over a window ─────────────────────────────────────── */
+
+/** One symbol's closes, oldest first, in dollars. */
+export interface HistoryResult {
+  ticker: string;
+  rows: { date: string; close: number }[];
+  /** Set when the run failed as a whole: a bad key, or the hourly limit. */
+  fatal?: string;
+  status?: number;
+}
+
+/** A window is one request whatever its length, so the cap is on symbols. */
+export const MAX_HISTORY = 4;
+
+/**
+ * Every close between two dates, for charting against a portfolio.
+ *
+ * `adjClose` here where the quote path takes `close`, and the two are right
+ * for opposite reasons. Valuing the shares in an account needs the price they
+ * would actually fetch today, which is `close`. Comparing a line against a
+ * portfolio that collects its dividends needs the series restated for
+ * dividends and splits, which is `adjClose` — otherwise every distribution
+ * shows up as the benchmark losing money.
+ */
+export async function fetchHistory(
+  apiKey: string,
+  ticker: string,
+  from: string,
+  to: string,
+): Promise<HistoryResult> {
+  const key = apiKey.trim();
+  const up = ticker.trim().toUpperCase();
+  // Checked, not escaped: nothing that is not shaped like a symbol is put in
+  // an outbound path at all, and the dates are pinned to the day they claim
+  // to be rather than passed through.
+  if (!key) return { ticker: up, rows: [], fatal: "No Tiingo API key was supplied.", status: 400 };
+  if (!isSymbol(up)) return { ticker: up, rows: [] };
+  if (!isDay(from) || !isDay(to) || from > to) return { ticker: up, rows: [] };
+
+  const url = `${TIINGO}/${encodeURIComponent(up.toLowerCase())}/prices`
+    + `?startDate=${from}&endDate=${to}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: { authorization: `Token ${key}`, accept: "application/json" },
+      signal: AbortSignal.timeout(HISTORY_TIMEOUT_MS),
+    });
+  } catch {
+    return { ticker: up, rows: [] };
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    return {
+      ticker: up, rows: [], status: 401,
+      fatal: "Tiingo rejected the API key. Check it in Settings: it is the token from tiingo.com, not your password.",
+    };
+  }
+  if (res.status === 429) {
+    return {
+      ticker: up, rows: [], status: 429,
+      fatal: "Tiingo's free tier allows 50 requests an hour. The comparison will fill in on the next try.",
+    };
+  }
+  if (!res.ok) return { ticker: up, rows: [] };
+
+  let raw: Row[];
+  try {
+    raw = JSON.parse(await res.text()) as Row[];
+  } catch {
+    return { ticker: up, rows: [] };
+  }
+  if (!Array.isArray(raw)) return { ticker: up, rows: [] };
+
+  const rows: { date: string; close: number }[] = [];
+  for (const r of raw) {
+    const date = typeof r.date === "string" ? r.date.slice(0, 10) : "";
+    const close = typeof r.adjClose === "number" ? r.adjClose : r.close;
+    if (!isDay(date)) continue;
+    if (typeof close !== "number" || !Number.isFinite(close) || close <= 0) continue;
+    rows.push({ date, close });
+  }
+  rows.sort((a, b) => (a.date < b.date ? -1 : 1));
+  return { ticker: up, rows };
 }
 
 /** Quotes for as many of `tickers` as Tiingo knows. Never throws. */

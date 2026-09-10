@@ -763,6 +763,10 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .nw-head { padding: 10px 16px 2px; display: flex; flex-direction: column; gap: 4px; }
 .nw-value { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; }
 .nw-head .row { font-size: 13px; font-weight: 500; }
+/* The benchmark's own return, under the portfolio's. Same size and the same
+   place, because the two figures are the comparison. */
+.nw-versus { font-size: 13px; font-weight: 500; margin-top: 1px; }
+.nw-versus .dot { flex: none; }
 
 /* Full width on a phone, where six pills exactly fill the line, and a centred
    group on a desktop card, where spreading them over a thousand pixels turns
@@ -820,6 +824,27 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    wraps under it. The key does not grow, or it would fill the row and push the
    ring back against the left edge. */
 .donut-wrap { justify-content: center; }
+
+/* What to measure the portfolio against, under the chart it is drawn on.
+   Scrolls sideways rather than wrapping, the same as the kinds above it: four
+   choices are one ordered run, and a second line of them reads as a lesser
+   row of options. */
+.against { padding: 12px 14px 0; }
+.against-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.against-row {
+  display: flex; align-items: center; gap: 7px; overflow-x: auto;
+  scrollbar-width: none; padding-bottom: 2px; min-width: 0;
+}
+.against-row::-webkit-scrollbar { display: none; }
+.against-label { flex: none; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.against-pill {
+  flex: none; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); background: none; color: var(--muted);
+  border-radius: 99px; padding: 5px 11px; font-size: 12px; font-weight: 600;
+}
+.against-pill:hover { color: var(--text); }
+.against-pill.on { background: var(--surface-3); color: var(--text); }
+.against-note { display: block; padding: 6px 2px 0; }
 
 /* The allocation half of the investments card. Its own padding, because the
    card is flush so that the chart on the other side of the switch can run to

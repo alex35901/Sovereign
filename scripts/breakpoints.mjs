@@ -2874,6 +2874,148 @@ try {
         `${before.headline} then ${after.headline}`);
     }
     await split.close();
+
+    // ── measuring the portfolio against the market ──
+    //
+    // The provider is stubbed rather than called: there is no Tiingo token in
+    // a test run and no network in CI, and what is being checked here is the
+    // whole client path anyway — that the closes are asked for once, cached,
+    // rebased onto the portfolio's own axis and drawn. The stub answers the
+    // way the real endpoint does, windowed by the dates it was asked for, so
+    // a request for the wrong window comes back short rather than silently
+    // right.
+    const closes = (seed, drift) => {
+      const rows = [];
+      let px = 100 + seed * 40;
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - 6);
+      let r = seed * 9973 + 7;
+      const rnd = () => ((r = (r * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff - 0.5);
+      for (let i = 0; i < 6 * 365; i++) {
+        d.setDate(d.getDate() + 1);
+        if (d.getDay() === 0 || d.getDay() === 6) continue;
+        px = Math.max(1, px * (1 + drift + rnd() * 0.012));
+        rows.push({ date: d.toISOString().slice(0, 10), close: Math.round(px * 100) / 100 });
+      }
+      return rows;
+    };
+    const MARKET = { SPY: closes(1, 0.0004), VTI: closes(2, 0.00035), BND: closes(3, -0.00002) };
+
+    const bench = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    let asked = [];
+    await bench.route("**/api/prices", async (route) => {
+      const body = route.request().postDataJSON();
+      if (Array.isArray(body.history)) {
+        asked.push({ tickers: body.history, from: body.from, to: body.to });
+        const out = {};
+        for (const t of body.history) {
+          const up = String(t).toUpperCase();
+          out[up] = (MARKET[up] ?? []).filter((x) => x.date >= body.from && x.date <= body.to);
+        }
+        return route.fulfill({ json: { history: out } });
+      }
+      return route.fulfill({ json: { quotes: [], misses: [] } });
+    });
+
+    // Through the settings screen: the document is the app's to write, and a
+    // test that edits it underneath passes against a state the app cannot be
+    // in. This is also the path a reader takes to turn the feature on.
+    await bench.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await bench.waitForTimeout(900);
+    const keyed = await tryStep("a Tiingo token can be entered", async () => {
+      // :visible, because the settings table and the phone cards both carry
+      // this field and only one of them is ever on screen.
+      await bench.locator(':is(tr, .int-row):has-text("Tiingo") input:visible').first()
+        .fill("test-token", { timeout: 5000 });
+      await bench.waitForTimeout(700);
+    });
+
+    if (keyed) {
+      await bench.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+      await bench.waitForTimeout(1000);
+
+      const offered = await bench.evaluate(() =>
+        [...document.querySelectorAll(".against-pill")].map((b) => b.innerText.trim()));
+      check("the portfolio can be measured against the market, or against nothing",
+        offered.join(" / ") === "Nothing / S&P 500 / US Stocks / US Bonds", offered.join(" / "));
+
+      const alone = await bench.evaluate(() => ({
+        lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
+        versus: document.querySelectorAll(".nw-versus").length,
+      }));
+      check("and draws only its own line until one is chosen",
+        alone.versus === 0 && alone.lines === 2,
+        `${alone.lines} lines, ${alone.versus} comparisons`);
+
+      asked = [];
+      const picked = await tryStep("a benchmark can be chosen", async () => {
+        await bench.locator('.against-pill:has-text("S&P 500")').click({ timeout: 5000 });
+        await bench.waitForTimeout(2200);
+      });
+      if (picked) {
+        // Six years, not the year on screen: the range pills move the window,
+        // and refetching on every press would spend a request each time.
+        check("which fetches one window wide enough for every period on offer",
+          asked.length === 1 && asked[0].tickers.join() === "SPY"
+          && Number(asked[0].to.slice(0, 4)) - Number(asked[0].from.slice(0, 4)) >= 5,
+          JSON.stringify(asked));
+
+        const two = await bench.evaluate(() => ({
+          lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
+          versus: document.querySelector(".nw-versus")?.innerText.replace(/\n/g, " ").trim() ?? "",
+          own: document.querySelector(".nw-head .row")?.innerText.replace(/\n/g, " ").trim() ?? "",
+          value: document.querySelector(".nw-value")?.innerText.trim() ?? "",
+        }));
+        check("a second line joins the first",
+          two.lines === 3, `${two.lines} lines drawn`);
+        check("and its return is said beside the portfolio's, both as proportions",
+          /S&P 500/.test(two.versus) && /[+-]\d/.test(two.versus) && /%/.test(two.versus),
+          two.versus);
+        check("while the headline stays in money, because a portfolio has some",
+          /^\$[\d,]+/.test(two.value) && /\$/.test(two.own), `${two.value} — ${two.own}`);
+
+        // Both lines are rebased to the period, so both start at the same
+        // height whatever they are worth. A benchmark plotted in dollars would
+        // sit somewhere off the top of a chart scaled to a portfolio.
+        const starts = await bench.evaluate(() => {
+          const svg = document.querySelector(".nw-card .chart-wrap svg");
+          const first = (d) => {
+            const m = (d ?? "").match(/M(-?[\d.]+),(-?[\d.]+)/);
+            return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : null;
+          };
+          const paths = [...svg.querySelectorAll("path[stroke]")]
+            .filter((p) => getComputedStyle(p).stroke !== "none")
+            .map((p) => first(p.getAttribute("d")))
+            .filter(Boolean);
+          return { paths, height: svg.getBoundingClientRect().height };
+        });
+        const ys = starts.paths.map((p) => p.y);
+        check("both lines open from the same height, because both are rebased",
+          ys.length >= 2 && Math.max(...ys) - Math.min(...ys) <= starts.height * 0.06,
+          `${ys.map((y) => Math.round(y)).join(" / ")} in ${Math.round(starts.height)}px`);
+
+        // Changing the period must not go back to the provider: the cache
+        // already holds six years and this is the press a reader makes most.
+        asked = [];
+        await bench.locator(".nw-card .span-pill").nth(1).click();
+        await bench.waitForTimeout(1200);
+        const after = await bench.evaluate(() =>
+          document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length);
+        check("and a different period is drawn from what was already fetched",
+          asked.length === 0 && after === 3, `${asked.length} more requests, ${after} lines`);
+
+        // Off again.
+        await bench.locator('.against-pill:has-text("Nothing")').click();
+        await bench.waitForTimeout(800);
+        const off = await bench.evaluate(() => ({
+          lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
+          versus: document.querySelectorAll(".nw-versus").length,
+        }));
+        check("choosing nothing puts the card back as it was",
+          off.lines === 2 && off.versus === 0, `${off.lines} lines, ${off.versus} comparisons`);
+      }
+    }
+    await bench.close();
   }
 
   if (want("reports")) {

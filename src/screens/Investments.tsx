@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { AssetClass, Holding } from "../types";
@@ -11,6 +11,9 @@ import { Donut } from "../components/charts";
 import { BalanceChart, ScopeBar } from "../components/BalanceChart";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, cx } from "../components/ui";
 import { priceSummary, refreshPrices, tickersOf } from "../lib/prices";
+import type { PriceHistory } from "../lib/benchmarks";
+import { BENCHMARKS, benchmarkFor, emptyHistory, fetchHistory, historyFloor, mergeCloses, needsFetch, rebase, returnSeries } from "../lib/benchmarks";
+import { loadHistory, saveHistory } from "../lib/benchmark-store";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
@@ -40,20 +43,54 @@ export default function Investments() {
   const [adding, setAdding] = useState(false);
   const p = useMemo(() => portfolioSummary(db), [db]);
 
-  const series = useMemo(() => {
+  const [against, setAgainst] = useState("");
+
+  const span = useMemo(() => {
     const earliest = earliestHistoryDate(p.invAccounts);
     const from = rangeStart(range, earliest);
     const start = earliest && earliest > from ? earliest : from;
-    const end = today();
-    const days = spanDays(start, end);
-    return sampleDates(start, end).map((d) => ({
+    return { start, end: today(), dates: sampleDates(start, today()) };
+  }, [p.invAccounts, range]);
+
+  const series = useMemo(() => {
+    const days = spanDays(span.start, span.end);
+    return span.dates.map((d) => ({
       label: sampleLabel(d, days),
       value: p.invAccounts.reduce((sum, a) => sum + balanceAt(a, d), 0),
       sub: dateLabel(d, { year: true }),
     }));
-  }, [p.invAccounts, range]);
+  }, [p.invAccounts, span]);
 
   const values = useMemo(() => series.map((x) => x.value), [series]);
+
+  const mark = benchmarkFor(against);
+  const history = useBenchmark(mark?.ticker, db.settings.tiingoApiKey ?? "");
+
+  /**
+   * Both lines rebased to where the period opened.
+   *
+   * The portfolio's shape does not change — dividing a series by its own first
+   * value is a rescale, not a reshape — so the chart looks the same and the
+   * benchmark simply joins it. What changes is what the axis means, and since
+   * this chart carries no axis, nothing on screen has to explain itself.
+   */
+  const compare = useMemo(() => {
+    if (!mark || !history.data || !history.data.dates.length) return undefined;
+    const theirs = returnSeries(history.data, span.dates);
+    const last = [...theirs].reverse().find((v) => v !== null) ?? null;
+    return {
+      values: theirs,
+      tone: mark.tone,
+      label: mark.label,
+      move: { change: 0, pct: last },
+    };
+  }, [mark, history.data, span.dates]);
+
+  const shownPoints = useMemo(() => {
+    if (!compare) return series;
+    const pct = rebase(values);
+    return series.map((s, i) => ({ ...s, value: pct[i] }));
+  }, [series, values, compare]);
 
   return (
     <>
@@ -71,8 +108,12 @@ export default function Investments() {
           <ScopeBar slices={VIEWS} value={view} onChange={setView} />
           {view === "value" ? (
             <BalanceChart
-              total={p.accountsValue} series={values} points={series}
+              total={p.accountsValue} series={values} points={shownPoints}
               tone={trendTone(values)} range={range} onRange={setRange}
+              compare={compare}
+              under={
+                <Against value={against} onChange={setAgainst} state={history.state} />
+              }
             />
           ) : (
             <Allocation p={p} />
@@ -160,6 +201,98 @@ export default function Investments() {
         />
       ) : null}
     </>
+  );
+}
+
+type FetchState = "idle" | "loading" | "error" | "nokey";
+
+/**
+ * One benchmark's closing prices, from this browser's cache and then the wire.
+ *
+ * The cache answers first and the chart draws immediately from whatever is
+ * already there, however old; the fetch only ever fills in what is missing.
+ * That matters because the window moves with the range pills, and a reader
+ * flicking between 1M and 5Y should not watch a chart empty itself each time.
+ */
+function useBenchmark(ticker: string | undefined, apiKey: string) {
+  const [data, setData] = useState<PriceHistory | null>(null);
+  const [state, setState] = useState<FetchState>("idle");
+  // Which symbols are already in flight, so two range changes in a second do
+  // not spend two requests on the same answer.
+  const busy = useRef<Set<string>>(new Set());
+
+  const load = useCallback(async (symbol: string) => {
+    const cached = loadHistory(symbol);
+    setData(cached.dates.length ? cached : null);
+
+    if (!apiKey.trim()) { setState(cached.dates.length ? "idle" : "nokey"); return; }
+
+    const want = needsFetch(cached, historyFloor(), today());
+    if (!want) { setState("idle"); return; }
+    if (busy.current.has(symbol)) return;
+
+    busy.current.add(symbol);
+    setState(cached.dates.length ? "idle" : "loading");
+    try {
+      const rows = await fetchHistory(apiKey, symbol, want.from, want.to);
+      const merged = mergeCloses(cached.dates.length ? cached : emptyHistory(symbol), rows, new Date().toISOString());
+      // Stamped even when the provider had nothing new, or a quiet market puts
+      // the page into a request loop.
+      saveHistory(merged);
+      setData(merged.dates.length ? merged : null);
+      setState(merged.dates.length ? "idle" : "error");
+    } catch {
+      setState(cached.dates.length ? "idle" : "error");
+    } finally {
+      busy.current.delete(symbol);
+    }
+  }, [apiKey]);
+
+  useEffect(() => {
+    if (!ticker) { setData(null); setState("idle"); return; }
+    void load(ticker);
+  }, [ticker, load]);
+
+  return { data, state };
+}
+
+/** The row of things to measure the portfolio against. */
+function Against({ value, onChange, state }: {
+  value: string; onChange: (v: string) => void; state: FetchState;
+}) {
+  return (
+    <div className="against">
+      <div className="against-line">
+        {/* Outside the scrolling run, or picking the last of four scrolls the
+            word that explains them off the left edge of a phone. */}
+        <span className="tiny faint against-label">Compare with</span>
+        <div className="against-row">
+        <button
+          className={cx("against-pill", !value && "on")} onClick={() => onChange("")}
+          aria-pressed={!value}
+        >
+          Nothing
+        </button>
+        {BENCHMARKS.map((b) => (
+          <button
+            key={b.key} className={cx("against-pill", value === b.key && "on")}
+            aria-pressed={value === b.key}
+            onClick={() => onChange(value === b.key ? "" : b.key)}
+          >
+            <span className="dot" style={{ background: `var(${b.tone})` }} />
+            {b.label}
+          </button>
+        ))}
+        </div>
+      </div>
+      {value && state !== "idle" ? (
+        <span className="tiny faint against-note">
+          {state === "loading" ? "Fetching closing prices…"
+            : state === "nokey" ? <>Add a Tiingo token under <Link to="/settings" className="link">Settings &rarr; Integrations</Link> to compare against the market.</>
+            : "Those closing prices could not be fetched. The portfolio line is unchanged."}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
