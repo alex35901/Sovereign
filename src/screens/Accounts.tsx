@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Plus } from "lucide-react";
 import type { Account, AccountType, ISODate } from "../types";
@@ -9,8 +9,8 @@ import {
   ACCOUNT_TYPE_LABEL, accountSlices, balanceAt, earliestHistoryDate, trendTone,
 } from "../lib/select";
 import { Sparkline } from "../components/charts";
-import { BalanceChart, Delta, pctLabel, periodOf } from "../components/BalanceChart";
-import { Btn, Card, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Toggle, cx } from "../components/ui";
+import { BalanceChart, Delta, ScopeBar, pctLabel, periodOf } from "../components/BalanceChart";
+import { Btn, Card, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Toggle } from "../components/ui";
 import { HiddenToggle } from "./AccountControls";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import type { RangeKey } from "../lib/range";
@@ -53,14 +53,6 @@ export default function Accounts() {
   // every row redraw the whole period.
   const sparkDates = useMemo(() => sampleDates(start, today(), 24), [start]);
 
-  // A pill chosen from the far end of the run can be half off the screen when
-  // the tap lands, which reads as though the tap missed.
-  const bar = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    bar.current?.querySelector('[aria-selected="true"]')
-      ?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
-  }, [current.key]);
-
   const hidden = db.accounts.filter((a) => a.hidden);
   const [showHidden, setShowHidden] = useState(false);
 
@@ -76,22 +68,7 @@ export default function Accounts() {
             <BalanceChart
               total={current.total} series={current.series} points={points}
               tone={trendTone(current.series)} range={range} onRange={setRange}
-              above={
-                /* Scrolls sideways rather than wrapping: the kinds are a
-                   single ordered run, and a second line of them reads as a
-                   second, lesser row of options. */
-                <div className="scope-bar" ref={bar} role="tablist" aria-label="What to show">
-                  {slices.map((s) => (
-                    <button
-                      key={s.key} role="tab" aria-selected={s.key === current.key}
-                      className={cx("scope-pill", s.key === current.key && "on")}
-                      onClick={() => setScope(s.key)}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              }
+              above={<ScopeBar slices={slices} value={current.key} onChange={setScope} />}
             />
           </Card>
         ) : null}

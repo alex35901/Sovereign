@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AreaChart } from "./charts";
 import { Money, cx } from "./ui";
@@ -73,6 +73,42 @@ export function Delta({ move, period }: {
       </span>
       <span className="faint">{period}</span>
     </span>
+  );
+}
+
+/**
+ * The run of account kinds above a balance chart.
+ *
+ * Net Worth first and then each kind that exists, which is the same question
+ * on the Accounts page and on the dashboard, so it is the same control. It
+ * scrolls sideways rather than wrapping: the kinds are a single ordered run,
+ * and a second line of them reads as a second, lesser row of options.
+ */
+export function ScopeBar({ slices, value, onChange }: {
+  slices: { key: string; label: string }[];
+  value: string;
+  onChange: (key: string) => void;
+}) {
+  // A pill chosen from the far end of the run can be half off the screen when
+  // the tap lands, which reads as though the tap missed.
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bar.current?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  }, [value]);
+
+  return (
+    <div className="scope-bar" ref={bar} role="tablist" aria-label="What to show">
+      {slices.map((s) => (
+        <button
+          key={s.key} role="tab" aria-selected={s.key === value}
+          className={cx("scope-pill", s.key === value && "on")}
+          onClick={() => onChange(s.key)}
+        >
+          {s.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

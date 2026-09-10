@@ -7,11 +7,11 @@ import {
   dateLabel, daysInMonth, monthLabel, relativeDay, thisMonth, today,
 } from "../lib/date";
 import {
-  aggregateSeries, budgetSummary, earliestHistoryDate, netWorthAt, portfolioSummary, trendTone,
+  accountSlices, aggregateSeries, budgetSummary, earliestHistoryDate, portfolioSummary, trendTone,
 } from "../lib/select";
 import { dueSoon, goalMoves, monthProgress, overPace, spendPace } from "../lib/dashboard";
 import { CompareChart } from "../components/charts";
-import { BalanceChart } from "../components/BalanceChart";
+import { BalanceChart, ScopeBar } from "../components/BalanceChart";
 import { Btn, Card, CardHead, Empty, Money, Progress, cx, color } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
 import type { RangeKey } from "../lib/range";
@@ -58,35 +58,43 @@ export default function Dashboard() {
 
 function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeKey) => void }) {
   const db = useDB();
+  const [scope, setScope] = useState("net");
+
   const start = useMemo(() => {
     const earliest = earliestHistoryDate(db.accounts);
     const from = rangeStart(range, earliest);
     return earliest && earliest > from ? earliest : from;
   }, [db.accounts, range]);
 
-  const { series, points, total } = useMemo(() => {
-    const dates = sampleDates(start, today());
+  const dates = useMemo(() => sampleDates(start, today()), [start]);
+  // The same slices the Accounts page cuts, so "Cash" here and "Cash" there
+  // are the same set of accounts rather than two answers that agree by
+  // accident. The first of them is net worth, which is what this card was.
+  const slices = useMemo(() => accountSlices(db, dates), [db, dates]);
+  // A kind can disappear underneath the selection when its last account is
+  // closed, and a card filtered to nothing has no way back to itself.
+  const current = slices.find((s) => s.key === scope) ?? slices[0]!;
+
+  const points = useMemo(() => {
     const days = spanDays(start, today());
-    const values = dates.map((d) => netWorthAt(db, d));
-    return {
-      series: values,
-      points: values.map((value, i) => ({
-        label: sampleLabel(dates[i], days), value, sub: dateLabel(dates[i], { year: true }),
-      })),
-      total: values[values.length - 1] ?? 0,
-    };
-  }, [db, start]);
+    return current.series.map((value, i) => ({
+      label: sampleLabel(dates[i], days), value, sub: dateLabel(dates[i], { year: true }),
+    }));
+  }, [current.series, dates, start]);
 
   return (
     <Card pad={false} className="nw-card">
       <BalanceChart
-        label="Net worth"
-        total={total} series={series} points={points}
-        tone={trendTone(series)} range={range} onRange={onRange}
+        label={current.key === "net" ? "Net worth" : current.label}
+        total={current.total} series={current.series} points={points}
+        tone={trendTone(current.series)} range={range} onRange={onRange}
         above={
-          <div className="dash-head">
-            <Link to="/accounts" className="link small">Accounts <ArrowRight size={12} /></Link>
-          </div>
+          <>
+            <div className="dash-head">
+              <Link to="/accounts" className="link small">Accounts <ArrowRight size={12} /></Link>
+            </div>
+            <ScopeBar slices={slices} value={current.key} onChange={setScope} />
+          </>
         }
       />
     </Card>

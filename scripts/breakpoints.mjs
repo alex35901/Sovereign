@@ -1995,6 +1995,39 @@ try {
   }
 
   if (want("dashboard")) {
+    // ── the net worth card cuts by kind, the way the Accounts page does ──
+    //
+    // Not merely "it has some pills": the same kind on either screen has to be
+    // the same set of accounts, or two screens quietly disagree about what
+    // Cash means.
+    const read = async (page, path) => {
+      await page.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(900);
+      const pills = await page.evaluate(() =>
+        [...document.querySelectorAll(".nw-card .scope-pill")].map((e) => e.innerText.trim()));
+      const totals = {};
+      for (let i = 0; i < pills.length; i++) {
+        await page.locator(".nw-card .scope-pill").nth(i).click();
+        await page.waitForTimeout(350);
+        totals[pills[i]] = await page.evaluate(() =>
+          document.querySelector(".nw-card .nw-value")?.innerText.trim() ?? null);
+      }
+      return { pills, totals };
+    };
+
+    const agree = await browser.newPage({ viewport: { width: 1180, height: 900 } });
+    const onDash = await read(agree, "/dashboard");
+    const onAccounts = await read(agree, "/accounts");
+    check("the dashboard's net worth card offers the same kinds the accounts page does",
+      onDash.pills.length > 2 && onDash.pills.join(" | ") === onAccounts.pills.join(" | "),
+      `dashboard: ${onDash.pills.join(" | ")}  //  accounts: ${onAccounts.pills.join(" | ")}`);
+    const differs = onDash.pills.filter((k) => onDash.totals[k] !== onAccounts.totals[k]);
+    check("and each of them is the same money on both",
+      differs.length === 0 && Object.values(onDash.totals).every((v) => v),
+      differs.map((k) => `${k}: ${onDash.totals[k]} against ${onAccounts.totals[k]}`).join(", ")
+        || JSON.stringify(onDash.totals));
+    await agree.close();
+
     // ── the dashboard ──
     const dash = await browser.newPage({ viewport: { width: 390, height: 900 } });
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
