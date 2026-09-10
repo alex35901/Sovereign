@@ -2007,7 +2007,11 @@ try {
         [...document.querySelectorAll(".nw-card .scope-pill")].map((e) => e.innerText.trim()));
       const totals = {};
       for (let i = 0; i < pills.length; i++) {
-        await page.locator(".nw-card .scope-pill").nth(i).click();
+        // Guarded: a pill that has become unclickable is a failure to report,
+        // not an exception to bring the whole run down with. An aborted run
+        // prints no failures at all, which reads exactly like a clean one.
+        if (!await tryStep(`${path}: the ${pills[i]} pill can be clicked`, () =>
+          page.locator(".nw-card .scope-pill").nth(i).click({ timeout: 5000 }))) return { pills, totals };
         await page.waitForTimeout(350);
         totals[pills[i]] = await page.evaluate(() =>
           document.querySelector(".nw-card .nw-value")?.innerText.trim() ?? null);
@@ -2120,12 +2124,6 @@ try {
     check("income stays green whatever it does, because behind on it is not the same news",
       income !== undefined && income.red === false);
 
-    check("the budget card's link says where it goes",
-      (await dash.evaluate(() => {
-        const card = [...document.querySelectorAll(".card")].find((c) => /^Budget/.test(c.querySelector("h2")?.innerText ?? ""));
-        return card.querySelector("a.link")?.innerText.trim() ?? "";
-      })) === "Budget");
-
     check("and reports income and expenses against their plans",
       /planned/.test(budget.rows) && /earned/.test(budget.rows) && /spent/.test(budget.rows),
       budget.rows.slice(0, 120));
@@ -2160,6 +2158,106 @@ try {
     });
     check("recurring says what is still due and lists what is coming",
       /still due this month/.test(rec.head) && rec.rows > 0, `${rec.head} — ${rec.rows} rows`);
+
+    // ── the card is the link ──
+    //
+    // The corner link is gone and the whole widget goes to its page instead,
+    // so these click a dead spot rather than a control, and click it for
+    // real: a dispatched event skips hit testing, which is the one thing
+    // being tested here. Anything that must stay live is checked after.
+    check("no card has a link in its corner any more",
+      (await dash.evaluate(() => document.querySelectorAll(".page > .card a.link").length)) === 0);
+
+    // The mouse rather than the locator: Playwright refuses to click an
+    // element that something else is covering, and reports a timeout, which
+    // says nothing about where the press would have landed. Being covered is
+    // the whole subject here, so these press the spot the reader sees and
+    // read off where the app went.
+    const pressAt = async (el) => {
+      // Six cards do not fit on a phone, and a press at coordinates below the
+      // fold lands on whatever is really there instead. Centred rather than
+      // merely brought into view, so the spot is not up against the tab bar.
+      await el.evaluate((e) => e.scrollIntoView({ block: "center" }));
+      await dash.waitForTimeout(300);
+      const spot = await el.boundingBox();
+      if (!spot) return "no such spot";
+      await dash.mouse.click(spot.x + spot.width / 2, spot.y + spot.height / 2);
+      await dash.waitForTimeout(600);
+      return decodeURIComponent(new URL(dash.url()).pathname);
+    };
+    const opens = async (i, sel) => {
+      await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+      await dash.waitForTimeout(700);
+      return pressAt(dash.locator(".page > .card").nth(i).locator(sel).first());
+    };
+    for (const [name, i, sel, want] of [
+      ["net worth", 0, ".nw-value", "/accounts"],
+      ["spending", 1, "h2", "/cash-flow"],
+      ["budget", 2, "h2", "/budget"],
+      ["recurring", 3, "h2", "/recurring"],
+      ["goals", 4, "h2", "/goals"],
+      ["investments", 5, "h2", "/investments"],
+    ]) {
+      const at = await opens(i, sel);
+      check(`clicking the ${name} widget anywhere opens ${want}`, at === want, at);
+    }
+
+    // "Anywhere" includes the parts of a card that are drawn in their own
+    // layer: a chart, a progress bar. Those sit above ordinary text by the
+    // rules of painting, so a sheet that only clears the text is not a sheet
+    // over the card.
+    const onChart = await opens(1, ".chart-wrap");
+    check("even the spending chart itself opens cash flow", onChart === "/cash-flow", onChart);
+    const onBar = await opens(2, ".bar");
+    check("and the budget's own bar opens the budget", onBar === "/budget", onBar);
+
+    // A row inside a list goes to that row's own page, not the card's.
+    await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await dash.waitForTimeout(700);
+    const recName = (await dash.locator(".page > .card").nth(3).locator(".list-row .truncate").first().innerText()).trim();
+    const recPath = await pressAt(dash.locator(".page > .card").nth(3).locator(".list-row").first());
+    check("a recurring row opens that merchant, the way the recurring page's rows do",
+      recPath === `/merchants/${recName}`, `${recPath} for ${recName}`);
+
+    await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await dash.waitForTimeout(700);
+    const goalPath = await pressAt(dash.locator(".page > .card").nth(4).locator(".goal-row").first());
+    check("a goal row opens that goal rather than the goals list",
+      /^\/goals\/.+/.test(goalPath), goalPath);
+
+    // The net worth card's own controls still answer, and still stay put.
+    await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await dash.waitForTimeout(900);
+    const nwLabel = () => dash.evaluate(() =>
+      document.querySelector(".nw-card .nw-head .tile-label")?.innerText.trim() ?? "");
+    const nwPeriod = () => dash.evaluate(() =>
+      document.querySelector(".nw-card .nw-head .faint")?.innerText.trim() ?? "");
+    const wasLabel = await nwLabel();
+    const pillPath = await pressAt(dash.locator(".nw-card .scope-pill").nth(1));
+    check("a kind on the net worth card switches the chart and stays on the dashboard",
+      pillPath === "/dashboard" && (await nwLabel()) !== wasLabel,
+      `${pillPath}, ${wasLabel} then ${await nwLabel()}`);
+
+    const wasPeriod = await nwPeriod();
+    const spanPath = await pressAt(dash.locator(".nw-card .span-pill").nth(2));
+    check("a period on the net worth card changes the range and stays on the dashboard",
+      spanPath === "/dashboard" && (await nwPeriod()) !== wasPeriod,
+      `${spanPath}, ${wasPeriod} then ${await nwPeriod()}`);
+
+    // A real press with the mouse, so the sheet over the card gets its chance
+    // to swallow it. It must not.
+    const chart = await dash.locator(".nw-card .chart-wrap").boundingBox();
+    const restTotal = await dash.evaluate(() => document.querySelector(".nw-value").innerText.trim());
+    await dash.mouse.move(chart.x + chart.width * 0.3, chart.y + chart.height / 2);
+    await dash.mouse.down();
+    await dash.mouse.move(chart.x + chart.width * 0.7, chart.y + chart.height / 2, { steps: 8 });
+    await dash.waitForTimeout(400);
+    const scrubTotal = await dash.evaluate(() => document.querySelector(".nw-value").innerText.trim());
+    const scrubPath = new URL(dash.url()).pathname;
+    await dash.mouse.up();
+    check("and dragging across the graph reads it out rather than opening accounts",
+      scrubPath === "/dashboard" && scrubTotal !== restTotal,
+      `${scrubPath}, ${restTotal} then ${scrubTotal}`);
 
     await dash.close();
   }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, TrendingDown, TrendingUp } from "lucide-react";
+import { TrendingDown, TrendingUp } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import {
@@ -54,6 +55,30 @@ export default function Dashboard() {
   );
 }
 
+/**
+ * A card that is itself the link to its page.
+ *
+ * The link is a transparent sheet laid over the whole card rather than a
+ * wrapper around it, because a card holds links of its own — a goal, a
+ * merchant — and an anchor inside an anchor is neither valid markup nor
+ * something the router will route. Laying it over instead leaves those as
+ * siblings, and anything that must stay clickable is lifted back above the
+ * sheet with .dash-through.
+ *
+ * It keeps a real href and its own focus ring, so the card is reachable by
+ * keyboard and can be opened in a new tab like any other link.
+ */
+function DashCard({ to, label, pad, className, children }: {
+  to: string; label: string; pad?: boolean; className?: string; children: ReactNode;
+}) {
+  return (
+    <Card pad={pad} className={cx("dash-card", className)}>
+      <Link to={to} className="dash-sheet" aria-label={label} />
+      {children}
+    </Card>
+  );
+}
+
 /* ── net worth ────────────────────────────────────────────────────────── */
 
 function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeKey) => void }) {
@@ -83,21 +108,14 @@ function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeK
   }, [current.series, dates, start]);
 
   return (
-    <Card pad={false} className="nw-card">
+    <DashCard to="/accounts" label="Accounts" pad={false} className="nw-card">
       <BalanceChart
         label={current.key === "net" ? "Net worth" : current.label}
         total={current.total} series={current.series} points={points}
         tone={trendTone(current.series)} range={range} onRange={onRange}
-        above={
-          <>
-            <div className="dash-head">
-              <Link to="/accounts" className="link small">Accounts <ArrowRight size={12} /></Link>
-            </div>
-            <ScopeBar slices={slices} value={current.key} onChange={setScope} />
-          </>
-        }
+        above={<ScopeBar slices={slices} value={current.key} onChange={setScope} />}
       />
-    </Card>
+    </DashCard>
   );
 }
 
@@ -114,12 +132,8 @@ function SpendingCard() {
   const diff = pace.spent - soFarLast;
 
   return (
-    <Card>
-      <CardHead
-        title="Spending"
-        sub="This month vs. last month"
-        right={<Link to="/cash-flow" className="link small">Cash flow <ArrowRight size={12} /></Link>}
-      />
+    <DashCard to="/cash-flow" label="Cash flow">
+      <CardHead title="Spending" sub="This month vs. last month" />
       {pace.thisMonth.length ? (
         <>
           <div className="row wrap" style={{ gap: 10, marginBottom: 6 }}>
@@ -139,7 +153,7 @@ function SpendingCard() {
           />
         </>
       ) : <Empty title="Nothing spent yet this month" />}
-    </Card>
+    </DashCard>
   );
 }
 
@@ -188,20 +202,17 @@ function BudgetCard({ month }: { month: string }) {
   const b = useMemo(() => budgetSummary(db, month), [db, month]);
   const day = Number(today().slice(8, 10));
   return (
-    <Card>
-      <CardHead
-        title="Budget" sub={`${monthLabel(month)} · day ${day} of ${daysInMonth(month)}`}
-        right={<Link to="/budget" className="link small">Budget <ArrowRight size={12} /></Link>}
-      />
+    <DashCard to="/budget" label="Budget">
+      <CardHead title="Budget" sub={`${monthLabel(month)} · day ${day} of ${daysInMonth(month)}`} />
       {b.plannedIncome || b.plannedExpense ? (
         <div className="col" style={{ gap: 18 }}>
           <BudgetLine label="Income" planned={b.plannedIncome} actual={b.actualIncome} doneWord="earned" />
           <BudgetLine label="Expenses" planned={b.plannedExpense} actual={b.actualExpense} doneWord="spent" pace />
         </div>
       ) : (
-        <Empty title="No budget set for this month" action={<Link to="/budget"><Btn>Set one up</Btn></Link>} />
+        <Empty title="No budget set for this month" action={<Link to="/budget" className="dash-through"><Btn>Set one up</Btn></Link>} />
       )}
-    </Card>
+    </DashCard>
   );
 }
 
@@ -211,18 +222,15 @@ function RecurringCard() {
   const db = useDB();
   const due = useMemo(() => dueSoon(db), [db]);
   return (
-    <Card pad={false}>
+    <DashCard to="/recurring" label="Recurring" pad={false}>
       <div className="dash-card-head">
-        <div className="spread">
-          <h2>Recurring</h2>
-          <Link to="/recurring" className="link small">All <ArrowRight size={12} /></Link>
-        </div>
+        <h2>Recurring</h2>
         <span className="small muted">
           <Money value={due.remaining} className="bold" /> still due this month
         </span>
       </div>
       {due.items.map((r) => (
-        <Link key={r.id} to="/recurring" className="list-row click">
+        <Link key={r.id} to={`/merchants/${encodeURIComponent(r.merchant)}`} className="list-row click dash-through">
           <MerchantAvatar name={r.merchant} size={30} />
           <div className="grow col" style={{ gap: 1, minWidth: 0 }}>
             <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
@@ -235,7 +243,7 @@ function RecurringCard() {
         </Link>
       ))}
       {!due.items.length ? <Empty title="Nothing due" body="Recurring charges are spotted from your transactions." /> : null}
-    </Card>
+    </DashCard>
   );
 }
 
@@ -265,12 +273,9 @@ function GoalsCard() {
   const up = moves.change >= 0;
 
   return (
-    <Card pad={false}>
+    <DashCard to="/goals" label="Goals" pad={false}>
       <div className="dash-card-head">
-        <div className="spread">
-          <h2>Goals</h2>
-          <Link to="/goals" className="link small">Goals <ArrowRight size={12} /></Link>
-        </div>
+        <h2>Goals</h2>
         <span className="small row" style={{ gap: 7 }}>
           <span className={up ? "pos" : "neg"}>
             {up ? "↗" : "↘"} <Money value={moves.change} />
@@ -282,7 +287,7 @@ function GoalsCard() {
       {moves.goals.map((m) => {
         const state = GOAL_STATE[m.status] ?? GOAL_STATE["no plan"];
         return (
-          <Link key={m.goal.id} to={`/goals/${m.goal.id}`} className="goal-row">
+          <Link key={m.goal.id} to={`/goals/${m.goal.id}`} className="goal-row dash-through">
             <span className="goal-mark">{m.goal.emoji}</span>
             <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
               <div className="spread">
@@ -312,7 +317,7 @@ function GoalsCard() {
           </Link>
         );
       })}
-    </Card>
+    </DashCard>
   );
 }
 
@@ -334,11 +339,8 @@ function InvestmentCard() {
   const up = change.delta >= 0;
 
   return (
-    <Card>
-      <CardHead
-        title="Investments" sub={`${monthLabel(thisMonth())} so far`}
-        right={<Link to="/investments" className="link small">Open <ArrowRight size={12} /></Link>}
-      />
+    <DashCard to="/investments" label="Investments">
+      <CardHead title="Investments" sub={`${monthLabel(thisMonth())} so far`} />
       <div className="row wrap" style={{ gap: 12, alignItems: "baseline" }}>
         <span className="num bold" style={{ fontSize: 26 }}><Money value={p.accountsValue} cents={false} /></span>
         <span className={up ? "pos" : "neg"}>
@@ -359,6 +361,6 @@ function InvestmentCard() {
           ))}
         </div>
       ) : null}
-    </Card>
+    </DashCard>
   );
 }

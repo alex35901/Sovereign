@@ -766,8 +766,21 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .span-pill:hover { color: var(--text); }
 .span-pill.on { background: var(--surface-3); color: var(--text); }
 
-/* ── dashboard ── */
-.dash-head { display: flex; justify-content: flex-end; padding: 10px 14px 0; }
+/* ── dashboard ──
+   Every card on this screen is the link to its own page, so the click target
+   is the card and not a word in its corner. The link is a transparent sheet
+   laid over the card rather than a wrapper around it: several of these cards
+   hold links of their own, and an anchor inside an anchor is not markup a
+   router can follow. Whatever has to stay live, such as a goal, a merchant or
+   the controls on the net worth chart, is lifted back above the sheet. */
+.dash-card { position: relative; transition: border-color 0.12s ease; }
+.dash-card:hover { border-color: var(--faint); }
+.dash-sheet { position: absolute; inset: 0; z-index: 1; border-radius: inherit; }
+.dash-sheet:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dash-through { position: relative; z-index: 2; }
+/* The chart is dragged rather than clicked, so it is a control too. */
+.nw-card .scope-bar, .nw-card .span-bar, .nw-card .chart-wrap { position: relative; z-index: 2; }
+
 .dash-card-head { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
 .dash-card-head h2 { font-size: 16px; }
 

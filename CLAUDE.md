@@ -270,6 +270,16 @@ Patterns worth reusing:
   then swaps that one row to a control. This is not decoration: a text box wide
   enough to type into is wider than its words, so an input left in the row
   strands the merchant logo in the middle of it.
+- `DashCard` in `src/screens/Dashboard.tsx` makes a whole card the link to its
+  page. The link is a `.dash-sheet` laid over the card, never a wrapper around
+  it, because these cards hold links of their own and an anchor inside an
+  anchor is neither valid markup nor something the router will follow. The
+  sheet carries an explicit `z-index: 1`, so incidental `position: relative`
+  content (`.chart-wrap`, `.bar`) stays under it; anything that must stay live
+  is lifted with `.dash-through` or a rule of its own. Testing this needs
+  `page.mouse.click` at the element's coordinates: `locator.click()` refuses to
+  press a covered element and reports a timeout, which says nothing about
+  where the press would have gone.
 
 ## Writing style
 
