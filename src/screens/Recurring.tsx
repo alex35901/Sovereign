@@ -73,7 +73,7 @@ export default function Recurring() {
       for (const date of occurrences(r, monthStart(month), monthEnd(month))) {
         const day = parseISO(date).getDate();
         (out[day] ??= []).push({
-          tone: r.amount > 0 ? "--pos" : "--neg", amount: r.amount, label: r.merchant,
+          tone: r.amount > 0 ? "--pos" : "--bill", amount: r.amount, label: r.merchant,
           // The same place the row below the calendar goes: one merchant, one
           // page, however you arrived at it.
           to: `/merchants/${encodeURIComponent(r.merchant)}`,
@@ -120,7 +120,7 @@ export default function Recurring() {
           <MonthGrid year={y} month={m} marks={marks} />
           <div className="divider" />
           <div className="row" style={{ gap: 16 }}>
-            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--neg)" }} /> Bills</span>
+            <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--bill)" }} /> Bills</span>
             <span className="row tiny muted" style={{ gap: 5 }}><span className="dot" style={{ background: "var(--pos)" }} /> Income</span>
             <span className="row tiny muted" style={{ gap: 5 }}><Check size={11} className="cal-tick" strokeWidth={3} /> Paid</span>
           </div>

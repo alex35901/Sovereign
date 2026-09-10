@@ -18,6 +18,14 @@
   --pos-soft: rgba(53, 196, 140, 0.14);
   --neg: #f2685e;
   --neg-soft: rgba(242, 104, 94, 0.14);
+  /* A bill on the calendar.
+     --neg is light because it has to hold up as small text on a dark ground,
+     and light red is coral. A mark carries no words, so it is free to be the
+     colour it stands for. Measured rather than guessed: at 5px only nine of a
+     dot's twenty-five pixels are the colour asked for and the rest are blended
+     toward the cell, so a red that is already halfway to orange arrives the
+     rest of the way. */
+  --bill: #dc2626;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.24);
   --radius: 12px;
   --radius-sm: 8px;
@@ -56,6 +64,7 @@
   --pos-soft: rgba(20, 143, 99, 0.12);
   --neg: #ce3f37;
   --neg-soft: rgba(206, 63, 55, 0.1);
+  --bill: #c81e1e;
   --shadow: 0 1px 2px rgba(20, 30, 45, 0.06), 0 6px 20px rgba(20, 30, 45, 0.06);
 }
 

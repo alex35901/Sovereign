@@ -848,7 +848,11 @@ export function MonthGrid({ year, month, marks, onPick }: {
                         that is no longer the news. */}
                     {m.paid
                       ? <Check size={11} className="cal-tick" strokeWidth={3} />
-                      : <span className="dot" style={{ background: color(m.tone), width: 5, height: 5 }} />}
+                      /* Seven rather than five: the smaller a round dot is
+                         the more of it is antialiased edge, and an edge is
+                         half the cell behind it, so a colour arrives washed
+                         out at the size it is least able to afford it. */
+                      : <span className="dot" style={{ background: color(m.tone), width: 7, height: 7 }} />}
                     {/* Wrapped, not clipped: the cell has the height for a
                         second line, and a name cut to "Bright Horiz…" is one
                         you have to hover to read. */}

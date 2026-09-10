@@ -1149,40 +1149,58 @@ try {
       };
       return { marks, legend, negText: asClass("neg"), posText: asClass("pos"), pos: token("--pos") };
     });
-    // The app already has one red for money going the wrong way and one green
-    // for money going the right way. A mark on the calendar says the same two
-    // things, so it wears the same two colours: a red of its own is a second
-    // answer to a question already settled, and it drifts.
+    // ── the bills mark is red, and red is not a matter of opinion here ──
+    //
+    // Three passes were spent on this and the earlier checks each let the
+    // failure through in a different way, so the rule is stated as the two
+    // things a reader actually complains about. Orange: green running ahead of
+    // blue. Coral: green and blue level but both too high, which is what the
+    // app's negative-amount colour is (242,104,94) and why the mark does not
+    // simply borrow it. Measured on the pixels the browser painted, not on the
+    // value the stylesheet asked for, because a dot this small is mostly
+    // antialiased edge and the edge is half the cell behind it.
+    const rgb = (c) => c.match(/\d+/g).map(Number);
+    const reads = (c) => {
+      const [r, g, b] = rgb(c);
+      if (g - b > 25) return "orange";
+      if (g > 90 || b > 90) return "coral";
+      if (r < 150) return "too dark to read as red";
+      return "red";
+    };
     const bills = cal.marks.filter((m) => !m.paid && m.tone !== cal.pos);
-    check("a bill in the calendar is the same red the app paints a negative amount",
-      bills.length > 3 && bills.every((m) => m.tone === cal.negText),
-      `${bills.length} bills in ${[...new Set(bills.map((m) => m.tone))].join(" | ")}, negative amounts are ${cal.negText}`);
-    check("and income the same green",
+    check("every bill in the calendar is marked in one colour",
+      bills.length > 3 && new Set(bills.map((m) => m.tone)).size === 1,
+      `${bills.length} bills in ${[...new Set(bills.map((m) => m.tone))].join(" | ")}`);
+    check("and that colour reads as red, not orange and not coral",
+      bills.length > 0 && reads(bills[0].tone) === "red",
+      `${bills[0]?.tone} reads ${bills[0] ? reads(bills[0].tone) : "nothing"}`);
+    check("which the app's negative-amount colour would not have",
+      reads(cal.negText) !== "red", `${cal.negText} reads ${reads(cal.negText)}`);
+    check("and income keeps the green the app pays out in",
       cal.pos === cal.posText, `${cal.pos} against ${cal.posText}`);
-    // Both themes: the pair is redefined for the light one, and a mark that
-    // followed only the dark values would go unnoticed until someone switched.
+    // The pair is redefined for the light theme, and a mark tuned only against
+    // the dark one goes unnoticed until somebody switches.
     const inLight = await wide.evaluate(() => {
       const root = document.documentElement;
       const was = root.getAttribute("data-theme");
       root.setAttribute("data-theme", "light");
-      const el = document.createElement("span");
-      el.className = "neg";
-      document.body.append(el);
-      const negText = getComputedStyle(el).color;
-      el.remove();
-      const dot = [...document.querySelectorAll(".cal-name")]
-        .map((n) => n.querySelector(".dot"))
-        .filter(Boolean)
+      const dots = [...document.querySelectorAll(".cal-name .dot")]
         .map((d) => getComputedStyle(d).backgroundColor);
       if (was) root.setAttribute("data-theme", was); else root.removeAttribute("data-theme");
-      return { negText, dots: [...new Set(dot)] };
+      return [...new Set(dots)];
     });
-    check("in the light theme too",
-      inLight.dots.includes(inLight.negText),
-      `dots ${inLight.dots.join(" | ")}, negative amounts ${inLight.negText}`);
-    check("and the key under it names the three things a day can be",
+    const lightBill = inLight.find((c) => c !== cal.pos && c !== cal.posText);
+    check("in the light theme too", lightBill !== undefined && reads(lightBill) === "red",
+      `${lightBill} reads ${lightBill ? reads(lightBill) : "nothing"}`);
+    // A dot small enough to be mostly edge arrives washed out whatever colour
+    // it was given, which is half of why three passes were needed.
+    const dotSize = await wide.evaluate(() =>
+      parseFloat(getComputedStyle(document.querySelector(".cal-name .dot")).width));
+    check("and the mark is big enough to carry a colour",
+      dotSize >= 7, `${dotSize}px across`);
+    check("the key under it names the three things a day can be",
       cal.legend.length === 3
-      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === cal.negText
+      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === bills[0]?.tone
       && cal.legend.find((l) => /income/i.test(l.label))?.tone === cal.pos
       && cal.legend.some((l) => /paid/i.test(l.label)),
       cal.legend.map((l) => `${l.label} ${l.tone}`).join(" | "));
