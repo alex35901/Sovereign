@@ -198,6 +198,13 @@ icon service.
   `available` is therefore never negative, and the goals on one account can
   never hold more between them than the account does. Read `claimOn` only in
   the allocation dialog.
+**Seeing it without a deployment.** `node scripts/preview.mjs` builds the whole
+app as one self-contained HTML file (hash routing, no code splitting, JS, CSS
+and the logo inlined) for publishing as an artifact. It runs on the demo budget
+in the browser's own storage; anything through `/api` is absent, downloads do
+nothing in the artifact viewer, and it is a snapshot to republish after a
+change.
+
 **No em dashes in user-facing text.** Not in strings, JSX, titles, aria-labels
 or `index.html`; comments are exempt. Use a colon when the second half explains
 the first, a full stop when it is a new thought, a comma for an aside, and

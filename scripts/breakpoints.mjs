@@ -752,9 +752,24 @@ try {
     await det.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
     await det.waitForTimeout(700);
 
+    // Opened by looking for one that carries a statement rather than by index.
+    // Which row is second depends on today's date, so nth(1) was a test that
+    // passed until a Tuesday.
+    // Which row is second depends on today's date, so nth(1) was a test that
+    // passed until a Tuesday. The one it settles on is remembered, because a
+    // later step reopens it to check an edit survived.
+    let detailRow = 0;
     const openedTxn = await tryStep("a transaction opens its detail screen", async () => {
-      await det.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(1).click({ timeout: 5000 });
-      await det.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+      for (let i = 0; i < 10; i++) {
+        await det.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(i).click({ timeout: 5000 });
+        await det.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+        const labels = await det.evaluate(() =>
+          [...document.querySelectorAll(".modal .drow-label")].map((e) => e.innerText.trim()));
+        if (labels.includes("Original statement")) { detailRow = i; return; }
+        await det.keyboard.press("Escape");
+        await det.waitForTimeout(250);
+      }
+      throw new Error("none of the first ten transactions carried a statement");
     });
 
     if (openedTxn) {
@@ -836,7 +851,7 @@ try {
           await det.waitForTimeout(250);
           await det.locator(".modal-foot button", { hasText: "Save changes" }).click({ timeout: 5000 });
           await det.waitForTimeout(700);
-          await det.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(1).click({ timeout: 5000 });
+          await det.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(detailRow).click({ timeout: 5000 });
           await det.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
         });
         if (saved) {
