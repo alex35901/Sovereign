@@ -1136,43 +1136,53 @@ try {
         label: r.innerText.trim(),
         tone: r.querySelector(".dot") ? getComputedStyle(r.querySelector(".dot")).backgroundColor : null,
       }));
-      return { marks, legend, bill: token("--bill"), neg: token("--neg"), pos: token("--pos") };
+      // The colour the app paints money going the wrong way, taken from the
+      // rule itself rather than from a token name, so the two cannot drift
+      // apart while both still look defensible in isolation.
+      const asClass = (cls) => {
+        const el = document.createElement("span");
+        el.className = cls;
+        document.body.append(el);
+        const c = getComputedStyle(el).color;
+        el.remove();
+        return c;
+      };
+      return { marks, legend, negText: asClass("neg"), posText: asClass("pos"), pos: token("--pos") };
     });
+    // The app already has one red for money going the wrong way and one green
+    // for money going the right way. A mark on the calendar says the same two
+    // things, so it wears the same two colours: a red of its own is a second
+    // answer to a question already settled, and it drifts.
     const bills = cal.marks.filter((m) => !m.paid && m.tone !== cal.pos);
-    check("a bill in the calendar is drawn in red",
-      bills.length > 3 && bills.every((m) => m.tone === cal.bill),
-      `${bills.length} bills, tones ${[...new Set(bills.map((m) => m.tone))].join(" | ")}`);
-    // Red as in red. Two things are being ruled out and the thresholds are
-    // what tell them apart: an orange, where green runs well ahead of blue
-    // (--c9 is 232,114,74), and the salmon a negative figure wears, where
-    // green and blue are level but both too high to read as red (--neg is
-    // 242,104,94). A true red keeps both of them down.
-    const rgb = (c) => c.match(/\d+/g).map(Number);
-    const isRed = (c) => {
-      const [r, g, bl] = rgb(c);
-      return r > 170 && g < 95 && bl < 95 && Math.abs(g - bl) < 30;
-    };
-    check("and it is a red rather than an orange or a salmon",
-      isRed(cal.bill) && !isRed(cal.neg),
-      `--bill is ${cal.bill}, --neg is ${cal.neg}`);
-    // In both themes: the light one paints these on white, where a pale red
-    // has even less to work with.
-    const lightBill = await wide.evaluate(() => {
+    check("a bill in the calendar is the same red the app paints a negative amount",
+      bills.length > 3 && bills.every((m) => m.tone === cal.negText),
+      `${bills.length} bills in ${[...new Set(bills.map((m) => m.tone))].join(" | ")}, negative amounts are ${cal.negText}`);
+    check("and income the same green",
+      cal.pos === cal.posText, `${cal.pos} against ${cal.posText}`);
+    // Both themes: the pair is redefined for the light one, and a mark that
+    // followed only the dark values would go unnoticed until someone switched.
+    const inLight = await wide.evaluate(() => {
       const root = document.documentElement;
       const was = root.getAttribute("data-theme");
       root.setAttribute("data-theme", "light");
       const el = document.createElement("span");
-      el.style.color = getComputedStyle(root).getPropertyValue("--bill").trim();
+      el.className = "neg";
       document.body.append(el);
-      const c = getComputedStyle(el).color;
+      const negText = getComputedStyle(el).color;
       el.remove();
+      const dot = [...document.querySelectorAll(".cal-name")]
+        .map((n) => n.querySelector(".dot"))
+        .filter(Boolean)
+        .map((d) => getComputedStyle(d).backgroundColor);
       if (was) root.setAttribute("data-theme", was); else root.removeAttribute("data-theme");
-      return c;
+      return { negText, dots: [...new Set(dot)] };
     });
-    check("in the light theme too", isRed(lightBill), lightBill);
+    check("in the light theme too",
+      inLight.dots.includes(inLight.negText),
+      `dots ${inLight.dots.join(" | ")}, negative amounts ${inLight.negText}`);
     check("and the key under it names the three things a day can be",
       cal.legend.length === 3
-      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === cal.bill
+      && cal.legend.find((l) => /bill/i.test(l.label))?.tone === cal.negText
       && cal.legend.find((l) => /income/i.test(l.label))?.tone === cal.pos
       && cal.legend.some((l) => /paid/i.test(l.label)),
       cal.legend.map((l) => `${l.label} ${l.tone}`).join(" | "));
@@ -1288,14 +1298,23 @@ try {
     check("and a month in it is still a month",
       line.every((r) => !/next [a-z]{3} \d/.test(r.sub)),
       line.map((r) => r.sub).join(" | "));
-    check("the schedule line is set as a label rather than a sentence",
-      (await wide.evaluate(() => {
-        const el = document.querySelector(".rec-row .rec-when");
-        if (!el) return "no line";
-        return getComputedStyle(el).textTransform === "uppercase"
-          && el.innerText === el.innerText.toUpperCase()
-          && el.innerText !== el.textContent ? "ok" : `${getComputedStyle(el).textTransform} / ${el.innerText}`;
-      })) === "ok");
+    const cased = await wide.evaluate(() => {
+      const el = document.querySelector(".rec-row .rec-when");
+      if (!el) return null;
+      return {
+        transform: getComputedStyle(el).textTransform,
+        // innerText is what the transform produced; textContent is what the
+        // markup says. A title-cased line differs from its source and is not
+        // simply shouted.
+        shown: el.innerText,
+        source: el.textContent,
+      };
+    });
+    check("the schedule line is title case, not a sentence and not a shout",
+      cased !== null && cased.transform === "capitalize"
+      && cased.shown !== cased.shown.toUpperCase()
+      && cased.shown.split(/\s+/).filter((w) => /^[A-Za-z]/.test(w)).every((w) => w[0] === w[0].toUpperCase()),
+      cased === null ? "no line" : `${cased.transform}: ${cased.shown}`);
     check("editing the schedule is the only button on a row",
       line.every((r) => r.buttons.length === 1 && r.buttons[0] === "Edit schedule"),
       line.map((r) => r.buttons.join("+") || "none").join(" | "));
