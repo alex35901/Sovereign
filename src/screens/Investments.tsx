@@ -7,9 +7,9 @@ import { TopBar } from "../shell/TopBar";
 import { dateLabel, today } from "../lib/date";
 import { fmtPct } from "../lib/money";
 import { ASSET_CLASS_LABEL, accountOptions, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary, trendTone } from "../lib/select";
-import { AreaChart, Donut } from "../components/charts";
-import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, Tile, cx } from "../components/ui";
-import { RangePicker } from "../components/pickers";
+import { Donut } from "../components/charts";
+import { BalanceChart, ScopeBar } from "../components/BalanceChart";
+import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, cx } from "../components/ui";
 import { priceSummary, refreshPrices, tickersOf } from "../lib/prices";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
@@ -19,10 +19,23 @@ const CLASS_TONES: Record<string, string> = {
   crypto: "--c5", real_estate: "--c1", other: "--c10",
 };
 
+/**
+ * The two questions the top of this screen answers.
+ *
+ * One control, the same one the accounts screen uses to pick a kind, because
+ * "what is it worth over time" and "what is it made of" are two views of one
+ * portfolio rather than two cards competing for the same width.
+ */
+const VIEWS = [
+  { key: "value", label: "Portfolio value" },
+  { key: "allocation", label: "Allocation" },
+];
+
 export default function Investments() {
   const db = useDB();
   const { actions } = useStore();
   const [range, setRange] = useState<RangeKey>("1y");
+  const [view, setView] = useState("value");
   const [editing, setEditing] = useState<Holding | null>(null);
   const [adding, setAdding] = useState(false);
   const p = useMemo(() => portfolioSummary(db), [db]);
@@ -40,10 +53,7 @@ export default function Investments() {
     }));
   }, [p.invAccounts, range]);
 
-  const portfolioTone = trendTone(series.map((x) => x.value));
-
-  const start = series[0]?.value ?? 0;
-  const growth = p.accountsValue - start;
+  const values = useMemo(() => series.map((x) => x.value), [series]);
 
   return (
     <>
@@ -52,42 +62,22 @@ export default function Investments() {
         primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Holding</span></Btn>}
       />
       <div className="page stack">
-        <div className="grid g4">
-          <Tile label="Portfolio value" value={<Money value={p.accountsValue} cents={false} />}
-            sub={<span className="muted">{p.invAccounts.length} accounts</span>} />
-          <Tile label="Holdings value" value={<Money value={p.value} cents={false} />}
-            sub={<span className="muted">{p.holdings.length} positions</span>} />
-          <Tile label="Total gain" value={<Money value={p.gain} cents={false} />} tone={p.gain >= 0 ? "pos" : "neg"}
-            sub={<span className={p.gain >= 0 ? "pos" : "neg"}>{fmtPct(p.gainPct)} vs cost basis</span>} />
-          <Tile label="Change over period" value={<Money value={growth} cents={false} sign={growth >= 0} />}
-            tone={growth >= 0 ? "pos" : "neg"} />
-        </div>
-
-        <div className="grid g-2-1">
-          <Card>
-            <CardHead title="Portfolio value" sub="Brokerage plus retirement balances" right={<RangePicker value={range} onChange={setRange} />} />
-            {/* Same rule as net worth: green if the period ended above where
-                it opened, red if below, and the dashed line says where that
-                was. */}
-            <AreaChart
-              points={series} height={240} startLine
-              tone={portfolioTone} negativeTone={portfolioTone}
+        {/* The same card the accounts screen leads with: the figure, how it
+            moved over the period, and a line you can put a finger on. The four
+            tiles that used to sit above it said the same things in worse
+            places — the period's change is the line's own subject, and what
+            the portfolio holds is the other view of this card. */}
+        <Card pad={false} className="nw-card">
+          <ScopeBar slices={VIEWS} value={view} onChange={setView} />
+          {view === "value" ? (
+            <BalanceChart
+              total={p.accountsValue} series={values} points={series}
+              tone={trendTone(values)} range={range} onRange={setRange}
             />
-          </Card>
-          <Card>
-            <CardHead title="Allocation" sub="By asset class" />
-            {p.byClass.length ? (
-              <Donut
-                size={150}
-                slices={p.byClass.map((c) => ({ label: c.label, value: c.value, tone: CLASS_TONES[c.key] ?? "--c10" }))}
-                center={<div className="col" style={{ gap: 0 }}>
-                  <span className="tiny muted">Holdings</span>
-                  <Money value={p.value} cents={false} className="bold" />
-                </div>}
-              />
-            ) : <Empty title="No holdings yet" body="Add positions to see allocation." />}
-          </Card>
-        </div>
+          ) : (
+            <Allocation p={p} />
+          )}
+        </Card>
 
         {p.invAccounts.map((a) => {
           const rows = p.holdings.filter((h) => h.accountId === a.id);
@@ -170,6 +160,47 @@ export default function Investments() {
         />
       ) : null}
     </>
+  );
+}
+
+/**
+ * What the portfolio is made of, as the other half of the card above it.
+ *
+ * It carries the two figures the tiles used to: what the holdings come to,
+ * in the middle of the ring, and what they have made against what was paid
+ * for them, underneath. Both are facts about today rather than about a
+ * period, which is why they belong on this side of the switch and not beside
+ * a chart with a date range on it.
+ */
+function Allocation({ p }: { p: ReturnType<typeof portfolioSummary> }) {
+  if (!p.byClass.length) {
+    return (
+      <div className="alloc-panel">
+        <Empty title="No holdings recorded yet" body="Add positions to see how the portfolio is split." />
+      </div>
+    );
+  }
+  return (
+    <div className="alloc-panel">
+      <Donut
+        size={190}
+        slices={p.byClass.map((c) => ({ label: c.label, value: c.value, tone: CLASS_TONES[c.key] ?? "--c10" }))}
+        center={<div className="col" style={{ gap: 0 }}>
+          <span className="tiny muted">Holdings</span>
+          <Money value={p.value} cents={false} className="bold" style={{ fontSize: 18 }} />
+        </div>}
+      />
+      <div className="alloc-foot spread small">
+        <span className="muted">{p.holdings.length} position{p.holdings.length === 1 ? "" : "s"} across {p.invAccounts.length} account{p.invAccounts.length === 1 ? "" : "s"}</span>
+        <span className="row" style={{ gap: 7 }}>
+          <span className={p.gain >= 0 ? "pos" : "neg"}>
+            {p.gain >= 0 ? "↗" : "↘"} <Money value={p.gain} cents={false} />
+            {p.cost ? ` (${fmtPct(p.gainPct)})` : ""}
+          </span>
+          <span className="faint">against what was paid</span>
+        </span>
+      </div>
+    </div>
   );
 }
 

@@ -820,6 +820,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    wraps under it. The key does not grow, or it would fill the row and push the
    ring back against the left edge. */
 .donut-wrap { justify-content: center; }
+
+/* The allocation half of the investments card. Its own padding, because the
+   card is flush so that the chart on the other side of the switch can run to
+   the edges. */
+.alloc-panel { padding: 14px 16px 16px; }
+.alloc-foot { border-top: 1px solid var(--line-soft); margin-top: 14px; padding-top: 12px; gap: 12px; flex-wrap: wrap; }
 .donut-key { flex: 0 1 320px; min-width: 220px; }
 
 /* A pattern the app has only just worked out, until somebody has looked at it. */

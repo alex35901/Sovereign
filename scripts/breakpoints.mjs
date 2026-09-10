@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -2709,6 +2709,171 @@ try {
       order.indexOf("/merchants") === order.indexOf("/reports") + 1,
       order.join(" "));
     await rail.close();
+  }
+
+  if (want("investments")) {
+    // ── one card, two questions ──
+    //
+    // The four tiles that used to sit above the chart are gone, and what they
+    // said has to still be somewhere: the period's change is the line's own
+    // subject, and what the portfolio holds is the other side of the switch.
+    const inv = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await inv.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+    await inv.waitForTimeout(1000);
+
+    const head = await inv.evaluate(() => {
+      const card = document.querySelector(".page > .nw-card");
+      return {
+        first: document.querySelector(".page > *")?.className ?? "",
+        views: [...document.querySelectorAll(".nw-card .scope-pill")].map((b) => b.innerText.trim()),
+        lit: document.querySelector('.nw-card .scope-pill[aria-selected="true"]')?.innerText.trim() ?? "",
+        value: card?.querySelector(".nw-value")?.innerText.trim() ?? "",
+        delta: card?.querySelector(".nw-head .row")?.innerText.replace(/\n/g, " ").trim() ?? "",
+        spans: card?.querySelectorAll(".span-pill").length ?? 0,
+        chart: card?.querySelectorAll(".chart-wrap svg").length ?? 0,
+        tiles: document.querySelectorAll(".page > .grid .tile-label").length,
+      };
+    });
+    check("the page leads with the portfolio card rather than a row of tiles",
+      head.first.includes("nw-card") && head.tiles === 0, `${head.first}, ${head.tiles} tiles`);
+    check("which offers the value and what it is made of",
+      head.views.join(" / ") === "Portfolio value / Allocation" && head.lit === "Portfolio value",
+      `${head.views.join(" / ")}, showing ${head.lit}`);
+    check("and reads like the accounts page: a figure, its change, and the period",
+      /^\$[\d,]+/.test(head.value) && /\d/.test(head.delta) && /year|month|time/.test(head.delta),
+      `${head.value} — ${head.delta}`);
+    check("with the same six periods and one chart",
+      head.spans === 6 && head.chart === 1, `${head.spans} periods, ${head.chart} charts`);
+
+    // The figure has to be the portfolio, not the holdings: those differ when
+    // an account carries cash that no position accounts for, and the chart is
+    // drawn from account balances.
+    const owned = await inv.evaluate(() => {
+      const money = (t) => Number((t ?? "").replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+      const cards = [...document.querySelectorAll(".page > .card")].filter((c) => c.querySelector(".card-head.flush"));
+      return {
+        headline: money(document.querySelector(".nw-value")?.innerText),
+        accounts: cards.map((c) => money(c.querySelector(".card-head.flush .num")?.innerText)),
+      };
+    });
+    const summed = owned.accounts.reduce((a, b) => a + b, 0);
+    check("and the headline is what the accounts below it add up to",
+      owned.accounts.length > 1 && Math.abs(owned.headline - summed) <= owned.accounts.length,
+      `${owned.headline} against ${summed} from ${owned.accounts.length} accounts`);
+
+    // Dragging: the same chart as everywhere else, so the figure follows.
+    const box = await inv.locator(".nw-card .chart-wrap").boundingBox();
+    const rest = await inv.evaluate(() => document.querySelector(".nw-value").innerText.trim());
+    await inv.mouse.move(box.x + box.width * 0.25, box.y + box.height / 2);
+    await inv.mouse.down();
+    await inv.mouse.move(box.x + box.width * 0.75, box.y + box.height / 2, { steps: 8 });
+    await inv.waitForTimeout(400);
+    const held = await inv.evaluate(() => ({
+      value: document.querySelector(".nw-value").innerText.trim(),
+      period: document.querySelector(".nw-head .faint")?.innerText.trim() ?? "",
+    }));
+    await inv.mouse.up();
+    check("a finger on the line moves the figure and names the stretch",
+      held.value !== rest && /\d{4}\s*[\u2013-]\s*\w/.test(held.period),
+      `${rest} then ${held.value}, ${held.period}`);
+
+    // ── the other side of the switch ──
+    const switched = await tryStep("allocation can be chosen", async () => {
+      await inv.locator(".nw-card .scope-pill").nth(1).click({ timeout: 5000 });
+      await inv.waitForTimeout(600);
+    });
+    if (switched) {
+      const alloc = await inv.evaluate(() => {
+        const money = (t) => Number((t ?? "").replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+        const card = document.querySelector(".page > .nw-card");
+        const rows = [...card.querySelectorAll(".donut-key .row")].map((r) => ({
+          label: r.querySelector(".truncate")?.innerText.trim() ?? "",
+          value: money(r.querySelector(".num.small")?.innerText),
+          share: Number((r.querySelector(".tiny")?.innerText ?? "").replace("%", "")),
+        }));
+        return {
+          rows,
+          ring: card.querySelectorAll("svg circle").length,
+          centre: money([...card.querySelectorAll(".num")].find((n) => /^\$/.test(n.innerText))?.innerText),
+          spans: card.querySelectorAll(".span-pill").length,
+          chart: card.querySelectorAll(".chart-wrap").length,
+          foot: card.querySelector(".alloc-foot")?.innerText.replace(/\n/g, " ").trim() ?? "",
+          views: card.querySelectorAll(".scope-pill").length,
+        };
+      });
+      check("the ring replaces the chart rather than joining it",
+        alloc.chart === 0 && alloc.ring > 1 && alloc.views === 2,
+        `${alloc.chart} charts, ${alloc.ring} arcs, ${alloc.views} views`);
+      check("and the period pills go with it, because allocation has no period",
+        alloc.spans === 0, `${alloc.spans} periods still showing`);
+      check("every asset class is named, with what it comes to and its share",
+        alloc.rows.length > 2 && alloc.rows.every((r) => r.label && r.value > 0 && r.share > 0),
+        alloc.rows.map((r) => `${r.label} ${r.value} ${r.share}%`).join(", "));
+      check("the shares account for the whole ring",
+        Math.abs(alloc.rows.reduce((s, r) => s + r.share, 0) - 100) <= 2,
+        `${alloc.rows.reduce((s, r) => s + r.share, 0)}%`);
+      check("and the middle of it is what the slices add up to",
+        Math.abs(alloc.centre - alloc.rows.reduce((s, r) => s + r.value, 0)) <= alloc.rows.length,
+        `${alloc.centre} against ${alloc.rows.reduce((s, r) => s + r.value, 0)}`);
+      // The gain the tiles used to carry has to have landed somewhere.
+      check("what the holdings have made against what was paid is still said",
+        /against what was paid/.test(alloc.foot) && /%/.test(alloc.foot), alloc.foot);
+
+      await inv.locator(".nw-card .scope-pill").nth(0).click();
+      await inv.waitForTimeout(600);
+      const back = await inv.evaluate(() => ({
+        spans: document.querySelectorAll(".nw-card .span-pill").length,
+        value: document.querySelector(".nw-value")?.innerText.trim() ?? "",
+      }));
+      check("and going back brings the chart and its periods with it",
+        back.spans === 6 && back.value === rest, `${back.spans} periods, ${back.value}`);
+    }
+    await inv.close();
+
+    // ── the headline is the portfolio, the ring is the holdings ──
+    //
+    // In this data the two come to the same figure, so nothing above can tell
+    // them apart, and a headline wired to the wrong one would read correctly
+    // for as long as every account's positions happened to account for its
+    // whole balance. A holding is added to force them apart: the ring is what
+    // the positions come to and must move, while the line is drawn from
+    // account balances and must not.
+    //
+    // Its own page, so its own storage: browser.newPage gives a fresh context.
+    const split = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await split.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+    await split.waitForTimeout(1000);
+    const money = (t) => Number((t ?? "").replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+    const readBoth = async () => {
+      const headline = money(await split.locator(".nw-value").innerText());
+      await split.locator(".nw-card .scope-pill").nth(1).click();
+      await split.waitForTimeout(500);
+      const ring = money(await split.locator(".donut-wrap .num.bold").first().innerText());
+      await split.locator(".nw-card .scope-pill").nth(0).click();
+      await split.waitForTimeout(500);
+      return { headline, ring };
+    };
+    const before = await readBoth();
+    const put = await tryStep("a holding can be added", async () => {
+      await split.locator('.topbar button:has-text("Holding")').click({ timeout: 5000 });
+      await split.locator(".modal").waitFor({ timeout: 5000 });
+      await split.locator(".modal .field:has(label:text-is('Ticker')) input").fill("ZZZTEST");
+      await split.locator(".modal .field:has(label:text-is('Shares')) input").fill("100");
+      await split.locator(".modal .field:has(label:text-is('Price per share')) input").fill("100.00");
+      await split.locator('.modal-foot button:has-text("Save")').click({ timeout: 5000 });
+      await split.locator(".modal").waitFor({ state: "detached", timeout: 5000 });
+      await split.waitForTimeout(800);
+    });
+    if (put) {
+      const after = await readBoth();
+      check("a new position moves what the ring says the holdings come to",
+        Math.abs((after.ring - before.ring) - 10000) <= 2,
+        `${before.ring} then ${after.ring}`);
+      check("and leaves the headline alone, because that is the accounts' own balance",
+        after.headline === before.headline,
+        `${before.headline} then ${after.headline}`);
+    }
+    await split.close();
   }
 
   if (want("reports")) {

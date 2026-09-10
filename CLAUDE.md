@@ -118,7 +118,8 @@ CHROME_PATH=... node scripts/breakpoints.mjs --only=detail   # one section, ~7s
 Sections: `tx-columns`, `tx-select`, `tx-align`, `category-arrow`, `overflow`,
 `phone-account`, `phone-nav`, `nested-menu`, `drilldown-back`,
 `drilldown-scroll`, `goals`, `detail`, `budget`, `accounts`, `account-page`,
-`tx-filters`, `explain`, `recurring`, `notifications`, `dashboard`, `merchants`, `reports`. **`--only` is for the iteration loop;
+`tx-filters`, `explain`, `recurring`, `notifications`, `dashboard`, `merchants`, `reports`,
+`investments`. **`--only` is for the iteration loop;
 the verdict always comes from a full run.** A filtered run prints what it
 skipped so it cannot be mistaken for a full one.
 
