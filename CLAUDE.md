@@ -271,6 +271,15 @@ Patterns worth reusing:
   then swaps that one row to a control. This is not decoration: a text box wide
   enough to type into is wider than its words, so an input left in the row
   strands the merchant logo in the middle of it.
+- Holdings on a Plaid-synced account are the provider's, not the app's:
+  `mergeSync` replaces every holding on an account the payload reports for, so
+  an edit there reverts at the next pull. The investments screen hides Add and
+  Edit for `syncSource === "plaid"` accounts and keeps them everywhere else —
+  SimpleFIN sends no holdings at all, so those accounts have no other way in.
+- **The store flushes its own copy of the document over `localStorage` on
+  `beforeunload`.** A browser test that writes to `localStorage` and then
+  reloads gets its edit thrown away, silently, and the test passes against demo
+  data instead. Seed a fixture with `page.addInitScript` before the app boots.
 - Benchmark closing prices live in `localStorage` (`src/lib/benchmark-store.ts`),
   **not in the document**, and that is deliberate. Everything in the document is
   the user's own and is encrypted before it leaves the browser; SPY's closes are

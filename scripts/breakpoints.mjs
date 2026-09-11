@@ -3102,6 +3102,76 @@ try {
           off.lines === 2 && off.legend === 0, `${off.lines} lines, ${off.legend} named`);
       }
 
+      // ── positions the sync owns are not the app's to edit ──
+      //
+      // Plaid sends holdings and a sync replaces every holding on an account
+      // it reports for, so an edit there reverts the next morning. SimpleFIN
+      // sends none and a hand-entered account has nobody else to speak for it,
+      // so both keep theirs.
+      //
+      // The document is seeded before the app boots rather than edited under
+      // it: the store flushes its own copy over localStorage on beforeunload,
+      // so anything written and then reloaded into is thrown away. Handing the
+      // app a document at startup is what a cloud pull does anyway.
+      const seeded = await bench.evaluate(() => localStorage.getItem("sovereign.db.v1"));
+      const openWith = async (edit) => {
+        const doc = JSON.parse(seeded);
+        edit(doc);
+        const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+        await page.addInitScript((raw) => localStorage.setItem("sovereign.db.v1", raw), JSON.stringify(doc));
+        await page.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+        await page.waitForTimeout(1200);
+        return page;
+      };
+      const isInvestment = (a) => ["investment", "retirement", "crypto"].includes(a.type);
+
+      const mixed = await openWith((doc) => {
+        const a = doc.accounts.find(isInvestment);
+        a.syncSource = "plaid";
+        a.syncId = "pl_test_1";
+      });
+      const split = await mixed.evaluate(() => ({
+        cards: [...document.querySelectorAll(".page > .card")]
+          .filter((c) => c.querySelector(".tbl-holdings"))
+          .map((c) => ({
+            sub: c.querySelector(".card-head.flush .small.muted")?.innerText.trim() ?? "",
+            edits: c.querySelectorAll(".tbl-holdings .btn").length,
+            rows: c.querySelectorAll(".tbl-holdings tbody tr").length,
+          })),
+        add: [...document.querySelectorAll(".topbar button")].filter((b) => /Holding/.test(b.innerText)).length,
+      }));
+      const owned = split.cards[0];
+      const mine = split.cards.slice(1);
+      check("an account whose positions the sync owns offers no way to edit them",
+        owned !== undefined && owned.edits === 0 && owned.rows > 0,
+        owned ? `${owned.edits} buttons over ${owned.rows} rows` : "no cards");
+      check("and says where they come from, rather than just going quiet",
+        /sync/i.test(owned?.sub ?? ""), owned?.sub);
+      check("while an account the sync does not speak for keeps its own",
+        mine.length > 0 && mine.every((c) => c.edits === c.rows && c.rows > 0),
+        mine.map((c) => `${c.edits}/${c.rows}`).join(", "));
+      check("and a holding can still be added while any account can take one",
+        split.add === 1, `${split.add} add buttons`);
+      await mixed.close();
+
+      // Every investment account synced: nothing left to file a holding under,
+      // so the button that would file it goes too.
+      const every = await openWith((doc) => {
+        for (const a of doc.accounts.filter(isInvestment)) {
+          a.syncSource = "plaid";
+          a.syncId = `pl_${a.id}`;
+        }
+      });
+      const none = await every.evaluate(() => ({
+        edits: document.querySelectorAll(".tbl-holdings .btn").length,
+        rows: document.querySelectorAll(".tbl-holdings tbody tr").length,
+        add: [...document.querySelectorAll(".topbar button")].filter((b) => /Holding/.test(b.innerText)).length,
+      }));
+      check("with every account synced, nothing on the page offers to edit a holding",
+        none.edits === 0 && none.rows > 0 && none.add === 0,
+        `${none.edits} edits, ${none.add} add, over ${none.rows} rows`);
+      await every.close();
+
       // ── the holdings table reads as columns of figures ──
       const aligned = await bench.evaluate(() => {
         const cells = [...document.querySelectorAll(".tbl-holdings th, .tbl-holdings td")];

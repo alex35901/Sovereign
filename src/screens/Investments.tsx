@@ -45,6 +45,20 @@ export default function Investments() {
   const p = useMemo(() => portfolioSummary(db), [db]);
 
   /**
+   * Accounts whose positions are this app's to edit.
+   *
+   * Plaid sends holdings, and a sync replaces every holding on an account it
+   * reports for — so a position edited on one of those accounts quietly
+   * reverts the next morning, and an Edit button there is a promise the app
+   * cannot keep. SimpleFIN sends none at all, and an account entered by hand
+   * has nobody else to speak for it, so both keep theirs.
+   */
+  const ownHoldings = useMemo(
+    () => p.invAccounts.filter((a) => a.syncSource !== "plaid"),
+    [p.invAccounts],
+  );
+
+  /**
    * What else is on the chart, in the order it was put there.
    *
    * Tickers, because a benchmark and a holding are the same question of the
@@ -117,7 +131,9 @@ export default function Investments() {
     <>
       <TopBar
         title="Investments"
-        primary={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Holding</span></Btn>}
+        primary={ownHoldings.length
+          ? <Btn variant="primary" onClick={() => setAdding(true)}><Plus size={15} /> <span className="btn-label">Holding</span></Btn>
+          : undefined}
       />
       <div className="page stack">
         {/* The same card the accounts screen leads with: the figure, how it
@@ -142,10 +158,14 @@ export default function Investments() {
         {p.invAccounts.map((a) => {
           const rows = p.holdings.filter((h) => h.accountId === a.id);
           const value = rows.reduce((s, h) => s + holdingValue(h), 0);
+          const synced = a.syncSource === "plaid";
           return (
             <Card key={a.id} pad={false}>
               <CardHead
-                flush title={a.name} sub={a.institution}
+                flush title={a.name}
+                // Said out loud, or a card with no way to edit anything on it
+                // looks broken rather than looked after.
+                sub={synced ? `${a.institution} · positions come from the sync` : a.institution}
                 right={<span className="num bold"><Money value={rows.length ? value : a.balance} cents={false} /></span>}
               />
               {rows.length ? (
@@ -204,7 +224,7 @@ export default function Investments() {
                               <div className="tiny">{cost ? fmtPct((gain / cost) * 100) : "-"}</div>
                             </td>
                             <td>
-                              <Btn size="sm" variant="ghost" onClick={() => setEditing(h)}>Edit</Btn>
+                              {synced ? null : <Btn size="sm" variant="ghost" onClick={() => setEditing(h)}>Edit</Btn>}
                             </td>
                           </tr>
                         );
@@ -461,7 +481,11 @@ const CLASS_OPTIONS = Object.entries(ASSET_CLASS_LABEL).map(([value, label]) => 
 function HoldingModal({ holding, onClose, onDelete }: { holding?: Holding; onClose: () => void; onDelete?: () => void }) {
   const db = useDB();
   const { actions } = useStore();
-  const invAccounts = db.accounts.filter((a) => ["investment", "retirement", "crypto"].includes(a.type));
+  // Same rule as the page: an account whose positions the sync owns is not
+  // one a holding can be filed under, because the next pull would drop it.
+  const invAccounts = db.accounts.filter(
+    (a) => ["investment", "retirement", "crypto"].includes(a.type) && a.syncSource !== "plaid",
+  );
   const [accountId, setAccountId] = useState(holding?.accountId ?? invAccounts[0]?.id ?? "");
   const [ticker, setTicker] = useState(holding?.ticker ?? "");
   const [name, setName] = useState(holding?.name ?? "");
