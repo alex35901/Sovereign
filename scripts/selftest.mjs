@@ -4281,6 +4281,24 @@ await test("closes merge oldest first, one per day, newest answer winning", () =
   assert.equal(clean.dates.length, clean.closes.length);
 });
 
+await test("a line added to the chart never borrows a colour already on it", () => {
+  const { nextTone, SERIES_TONES, BENCHMARKS } = M.BM;
+  // None of the three the benchmarks hold, or a holding put on the chart
+  // beside the S&P 500 would be drawn in the S&P 500's colour.
+  const benchTones = BENCHMARKS.map((b) => b.tone);
+  assert.ok(SERIES_TONES.every((t) => !benchTones.includes(t)), SERIES_TONES.join(", "));
+  // Nor the two the portfolio's own line wears, up or down.
+  assert.ok(!SERIES_TONES.includes("--pos") && !SERIES_TONES.includes("--neg"));
+
+  assert.equal(nextTone([]), SERIES_TONES[0]);
+  assert.equal(nextTone([SERIES_TONES[0]]), SERIES_TONES[1]);
+  // A gap left by something taken off the chart is filled before moving on,
+  // so colours do not march away from the start of the palette.
+  assert.equal(nextTone([SERIES_TONES[1]]), SERIES_TONES[0]);
+  // Past the end it wraps rather than handing back nothing to paint with.
+  assert.ok(SERIES_TONES.includes(nextTone(SERIES_TONES)));
+});
+
 await test("a shut market reads the last close before it", () => {
   const { closeOn } = M.BM;
   // Friday, Monday. The weekend in between is Friday's price, and anything

@@ -2899,7 +2899,15 @@ try {
       }
       return rows;
     };
-    const MARKET = { SPY: closes(1, 0.0004), VTI: closes(2, 0.00035), BND: closes(3, -0.00002) };
+    // Everything the demo portfolio holds except AAPL, which is left out on
+    // purpose: a symbol the provider has nothing for is the ordinary case of a
+    // private fund or a stable-value option, and it has to say so rather than
+    // lighting its marker and drawing nothing.
+    const MARKET = {
+      SPY: closes(1, 0.0004), VTI: closes(2, 0.00035), BND: closes(3, -0.00002),
+      VXUS: closes(4, 0.0002), VFIAX: closes(5, 0.00038), VTIAX: closes(6, 0.00021),
+      VBTLX: closes(7, -0.00001), VTWAX: closes(8, 0.0003), SPAXX: closes(9, 0.00001),
+    };
 
     const bench = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     let asked = [];
@@ -2936,16 +2944,17 @@ try {
 
       const offered = await bench.evaluate(() =>
         [...document.querySelectorAll(".against-pill")].map((b) => b.innerText.trim()));
-      check("the portfolio can be measured against the market, or against nothing",
-        offered.join(" / ") === "Nothing / S&P 500 / US Stocks / US Bonds", offered.join(" / "));
+      check("the portfolio can be measured against three markets, and none is forced",
+        offered.join(" / ") === "S&P 500 / US Stocks / US Bonds", offered.join(" / "));
 
       const alone = await bench.evaluate(() => ({
         lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
-        versus: document.querySelectorAll(".nw-versus").length,
+        legend: document.querySelectorAll(".nw-versus-item").length,
+        pressed: document.querySelectorAll('.against-pill[aria-pressed="true"]').length,
       }));
-      check("and draws only its own line until one is chosen",
-        alone.versus === 0 && alone.lines === 2,
-        `${alone.lines} lines, ${alone.versus} comparisons`);
+      check("and none of them is on until one is chosen",
+        alone.pressed === 0 && alone.legend === 0 && alone.lines === 2,
+        `${alone.pressed} pressed, ${alone.legend} named, ${alone.lines} lines`);
 
       asked = [];
       const picked = await tryStep("a benchmark can be chosen", async () => {
@@ -2962,37 +2971,33 @@ try {
 
         const two = await bench.evaluate(() => ({
           lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
-          versus: document.querySelector(".nw-versus")?.innerText.replace(/\n/g, " ").trim() ?? "",
+          legend: [...document.querySelectorAll(".nw-versus-item")].map((e) => e.innerText.replace(/\n/g, " ").trim()),
           own: document.querySelector(".nw-head .row")?.innerText.replace(/\n/g, " ").trim() ?? "",
           value: document.querySelector(".nw-value")?.innerText.trim() ?? "",
         }));
-        check("a second line joins the first",
-          two.lines === 3, `${two.lines} lines drawn`);
+        check("a second line joins the first", two.lines === 3, `${two.lines} lines drawn`);
         check("and its return is said beside the portfolio's, both as proportions",
-          /S&P 500/.test(two.versus) && /[+-]\d/.test(two.versus) && /%/.test(two.versus),
-          two.versus);
+          two.legend.length === 1 && /S&P 500/.test(two.legend[0]) && /[+-][\d.]+%/.test(two.legend[0]),
+          two.legend.join(" | "));
         check("while the headline stays in money, because a portfolio has some",
           /^\$[\d,]+/.test(two.value) && /\$/.test(two.own), `${two.value} — ${two.own}`);
 
         // Both lines are rebased to the period, so both start at the same
         // height whatever they are worth. A benchmark plotted in dollars would
         // sit somewhere off the top of a chart scaled to a portfolio.
-        const starts = await bench.evaluate(() => {
+        const startsAt = async () => bench.evaluate(() => {
           const svg = document.querySelector(".nw-card .chart-wrap svg");
-          const first = (d) => {
-            const m = (d ?? "").match(/M(-?[\d.]+),(-?[\d.]+)/);
-            return m ? { x: parseFloat(m[1]), y: parseFloat(m[2]) } : null;
-          };
           const paths = [...svg.querySelectorAll("path[stroke]")]
             .filter((p) => getComputedStyle(p).stroke !== "none")
-            .map((p) => first(p.getAttribute("d")))
-            .filter(Boolean);
-          return { paths, height: svg.getBoundingClientRect().height };
+            .map((p) => (p.getAttribute("d") ?? "").match(/M(-?[\d.]+),(-?[\d.]+)/))
+            .filter(Boolean)
+            .map((m) => parseFloat(m[2]));
+          return { ys: paths, height: svg.getBoundingClientRect().height };
         });
-        const ys = starts.paths.map((p) => p.y);
+        const starts = await startsAt();
         check("both lines open from the same height, because both are rebased",
-          ys.length >= 2 && Math.max(...ys) - Math.min(...ys) <= starts.height * 0.06,
-          `${ys.map((y) => Math.round(y)).join(" / ")} in ${Math.round(starts.height)}px`);
+          starts.ys.length >= 2 && Math.max(...starts.ys) - Math.min(...starts.ys) <= starts.height * 0.06,
+          `${starts.ys.map((y) => Math.round(y)).join(" / ")} in ${Math.round(starts.height)}px`);
 
         // Changing the period must not go back to the provider: the cache
         // already holds six years and this is the press a reader makes most.
@@ -3004,16 +3009,108 @@ try {
         check("and a different period is drawn from what was already fetched",
           asked.length === 0 && after === 3, `${asked.length} more requests, ${after} lines`);
 
-        // Off again.
-        await bench.locator('.against-pill:has-text("Nothing")').click();
-        await bench.waitForTimeout(800);
+        // ── as many as you like, each in its own colour ──
+        await bench.locator('.against-pill:has-text("US Bonds")').click();
+        await bench.waitForTimeout(1800);
+        const both = await bench.evaluate(() => ({
+          lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
+          legend: [...document.querySelectorAll(".nw-versus-item")].map((e) => e.innerText.replace(/\n/g, " ").trim()),
+          pressed: document.querySelectorAll('.against-pill[aria-pressed="true"]').length,
+        }));
+        check("a second market joins rather than replacing the first",
+          both.pressed === 2 && both.legend.length === 2 && both.lines === 4,
+          `${both.pressed} pressed, ${both.legend.join(" | ")}, ${both.lines} lines`);
+
+        // ── a holding is a price series too ──
+        const dots = bench.locator(".hold-dot");
+        const count = await dots.count();
+        check("every holding that carries a symbol can be put on the chart",
+          count > 3, `${count} holdings offer it`);
+        // A money-market fund typed in by hand has no symbol to ask about, so
+        // the whole table must not simply sprout a button per row.
+        const rows = await bench.evaluate(() =>
+          document.querySelectorAll(".tbl-holdings tbody tr").length);
+        check("and the toggle is a toggle, not decoration on every row",
+          (await bench.evaluate(() => document.querySelectorAll('.hold-dot[aria-pressed="true"]').length)) === 0
+          && count <= rows,
+          `${count} of ${rows} rows`);
+
+        // Two that are nobody's benchmark, so two colours actually come out
+        // of the palette — picking one would let a palette that hands back the
+        // same colour every time pass, since the benchmarks bring their own.
+        // And AAPL, which the provider here has nothing for.
+        for (const i of [1, 2, 4]) {
+          await dots.nth(i).click();
+          await bench.waitForTimeout(1500);
+        }
+
+        const many = await bench.evaluate(() => {
+          const tone = (el) => getComputedStyle(el).backgroundColor;
+          const svg = document.querySelector(".nw-card .chart-wrap svg");
+          return {
+            lines: [...svg.querySelectorAll("path[stroke]")]
+              .filter((p) => getComputedStyle(p).stroke !== "none")
+              .map((p) => getComputedStyle(p).stroke),
+            legend: [...document.querySelectorAll(".nw-versus-item")].map((e) => ({
+              text: e.innerText.replace(/\n/g, " ").trim(),
+              tone: tone(e.querySelector(".dot")),
+            })),
+            lit: [...document.querySelectorAll('.hold-dot[aria-pressed="true"]')].map(tone),
+          };
+        });
+        // Five named: two markets and three holdings. Six lines: the
+        // portfolio's own two clipped halves plus four that had prices behind
+        // them — AAPL is named but has nothing to draw.
+        check("a holding put on the chart draws its own line and is named for it",
+          many.legend.length === 5 && many.lines.length === 6,
+          `${many.legend.length} named, ${many.lines.length} lines`);
+        const quiet = many.legend.find((l) => /AAPL/.test(l.text));
+        check("and a symbol the provider has nothing for says so rather than going quiet",
+          quiet !== undefined && /no reading/i.test(quiet.text),
+          many.legend.map((l) => l.text).join(" | "));
+        // The whole point of a colour is telling one line from another.
+        const tones = many.legend.map((l) => l.tone);
+        check("and every line on the chart is a different colour",
+          new Set(tones).size === tones.length, tones.join(" | "));
+        check("with the holding's own marker painted to match its line",
+          many.lit.length === 3 && many.lit.every((t) => tones.includes(t)),
+          `${many.lit.join(" | ")} against ${tones.join(" | ")}`);
+
+        await dots.nth(1).click();
+        await bench.waitForTimeout(900);
+        const fewer = await bench.evaluate(() => ({
+          legend: document.querySelectorAll(".nw-versus-item").length,
+          lit: document.querySelectorAll('.hold-dot[aria-pressed="true"]').length,
+        }));
+        check("taking one off removes its line and leaves the rest",
+          fewer.legend === 4 && fewer.lit === 2, `${fewer.legend} named, ${fewer.lit} lit`);
+
+        // Off again, all of it.
+        for (const label of ["S&P 500", "US Bonds"]) {
+          await bench.locator(`.against-pill:has-text("${label}")`).click();
+          await bench.waitForTimeout(500);
+        }
+        while (await bench.locator('.hold-dot[aria-pressed="true"]').count()) {
+          await bench.locator('.hold-dot[aria-pressed="true"]').first().click();
+          await bench.waitForTimeout(500);
+        }
         const off = await bench.evaluate(() => ({
           lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
-          versus: document.querySelectorAll(".nw-versus").length,
+          legend: document.querySelectorAll(".nw-versus-item").length,
         }));
-        check("choosing nothing puts the card back as it was",
-          off.lines === 2 && off.versus === 0, `${off.lines} lines, ${off.versus} comparisons`);
+        check("and clearing them all puts the card back as it was",
+          off.lines === 2 && off.legend === 0, `${off.lines} lines, ${off.legend} named`);
       }
+
+      // ── the holdings table reads as columns of figures ──
+      const aligned = await bench.evaluate(() => {
+        const cells = [...document.querySelectorAll(".tbl-holdings th, .tbl-holdings td")];
+        const off = cells.filter((c) => getComputedStyle(c).textAlign !== "center");
+        return { total: cells.length, off: off.map((c) => `${c.tagName} "${c.innerText.trim().slice(0, 14)}"`) };
+      });
+      check("every column of the holdings table is centred, headers included",
+        aligned.total > 12 && aligned.off.length === 0,
+        aligned.off.slice(0, 5).join(", ") || `${aligned.total} cells`);
     }
     await bench.close();
   }

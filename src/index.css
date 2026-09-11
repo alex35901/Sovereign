@@ -846,6 +846,26 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .against-pill.on { background: var(--surface-3); color: var(--text); }
 .against-note { display: block; padding: 6px 2px 0; }
 
+/* Every line on the chart, named with its colour. One wrapping row rather than
+   a line each: half a dozen holdings would otherwise push the chart off the
+   card. */
+.nw-versus { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 2px; }
+.nw-versus-item { font-size: 13px; font-weight: 500; }
+.nw-versus-item .dot { flex: none; }
+
+/* The holdings table reads as columns of figures, so every column is centred
+   on itself, headers included. */
+.tbl-holdings th, .tbl-holdings td { text-align: center; vertical-align: middle; }
+.tbl-holdings th.hold-pick, .tbl-holdings td.hold-pick { width: 34px; padding-left: 14px; padding-right: 0; }
+/* Off is an outline, on is the colour it was given on the chart. A hollow ring
+   reads as "this could be on" where a grey disc reads as a disabled one. */
+.hold-dot {
+  width: 12px; height: 12px; border-radius: 50%; cursor: pointer;
+  border: 1.5px solid var(--line); background: none; padding: 0; display: block; margin: 0 auto;
+}
+.hold-dot:hover { border-color: var(--muted); }
+.hold-dot.on { border-width: 1.5px; }
+
 /* The allocation half of the investments card. Its own padding, because the
    card is flush so that the chart on the other side of the switch can run to
    the edges. */

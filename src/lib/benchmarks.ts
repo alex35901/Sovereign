@@ -41,6 +41,31 @@ export const BENCHMARKS: Benchmark[] = [
 export const benchmarkFor = (key: string): Benchmark | undefined =>
   BENCHMARKS.find((b) => b.key === key);
 
+export const benchmarkByTicker = (ticker: string): Benchmark | undefined =>
+  BENCHMARKS.find((b) => b.ticker === ticker.toUpperCase());
+
+/**
+ * Colours for a holding added to the chart, most distinguishable first.
+ *
+ * Five are spoken for before a reader picks anything: the three the benchmarks
+ * hold, and the green and red the portfolio's own line wears depending on
+ * which way it went. Drawing a holding in any of those would read as that
+ * thing rather than as the holding.
+ *
+ * What is left is ordered by how far it sits from all five and from each
+ * other, because the first two or three are what most people will ever use.
+ * The tail is deliberately the awkward ones: lime beside the portfolio's
+ * green and gold beside the bond line are the closest pairs here, so they are
+ * reached only by somebody who has already put six lines on one chart.
+ */
+export const SERIES_TONES = ["--c1", "--c6", "--c7", "--c13", "--c10", "--c8", "--c11"];
+
+/** The first colour nothing on the chart is already using. */
+export function nextTone(used: readonly string[]): string {
+  const taken = new Set(used);
+  return SERIES_TONES.find((t) => !taken.has(t)) ?? SERIES_TONES[used.length % SERIES_TONES.length];
+}
+
 /**
  * One symbol's closing prices, oldest first.
  *

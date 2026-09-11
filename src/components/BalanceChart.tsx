@@ -128,18 +128,14 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
   range: RangeKey;
   onRange: (r: RangeKey) => void;
   /**
-   * A second line, and what to say about it.
+   * Other lines on the same axis, and what to say about each.
    *
-   * `move` is that line's own change over the same stretch, said beside the
-   * portfolio's: the two figures together are the comparison, and the chart
-   * only shows which way it went.
+   * `pct` is that line's own change over the same stretch, said beside the
+   * portfolio's: the figures together are the comparison, and the chart only
+   * shows the shape of it. Null where the series has no reading in the window
+   * — a fund younger than the account, or a symbol the provider does not know.
    */
-  compare?: {
-    values: (number | null)[];
-    tone: string;
-    label: string;
-    move: { change: number; pct: number | null };
-  };
+  compare?: { values: (number | null)[]; tone: string; label: string; pct: number | null }[];
 }) {
   // Where a finger is resting on the chart, if one is. Null means the whole
   // period, which is what the card says when nobody is touching it.
@@ -156,21 +152,24 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
         {label ? <span className="tile-label">{label}</span> : null}
         <div className="nw-value num"><Money value={shown} /></div>
         <Delta move={move} period={window ?? periodOf(range)} />
-        {compare ? (
+        {compare?.length ? (
           // Proportions, not money: an index has no dollars, and the whole
-          // point of putting it here is that the two are on one footing.
-          <span className="row nw-versus" style={{ gap: 7 }}>
-            <span className="dot" style={{ background: `var(${compare.tone})` }} />
-            <span className="muted">{compare.label}</span>
-            <span className={compare.move.pct !== null && compare.move.pct < 0 ? "neg" : "pos"}>
-              {/* pctLabel is unsigned, because everywhere else the arrow
-                  beside it carries the sign. Here there is no arrow. */}
-              {compare.move.pct === null
-                ? "no reading"
-                : `${compare.move.pct < 0 ? "-" : "+"}${pctLabel(compare.move.pct)}`}
-            </span>
-            <span className="faint">over the same stretch</span>
-          </span>
+          // point of putting these here is that they are all on one footing.
+          // One wrapping row rather than a line each, because half a dozen
+          // holdings on the chart would otherwise push it off the card.
+          <div className="nw-versus">
+            {compare.map((c) => (
+              <span key={c.label} className="row nw-versus-item" style={{ gap: 6 }}>
+                <span className="dot" style={{ background: `var(${c.tone})` }} />
+                <span className="muted">{c.label}</span>
+                <span className={c.pct !== null && c.pct < 0 ? "neg" : "pos"}>
+                  {/* pctLabel is unsigned, because everywhere else the arrow
+                      beside it carries the sign. Here there is no arrow. */}
+                  {c.pct === null ? "no reading" : `${c.pct < 0 ? "-" : "+"}${pctLabel(c.pct)}`}
+                </span>
+              </span>
+            ))}
+          </div>
         ) : null}
       </div>
 
@@ -179,7 +178,7 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
           which is the other reason they would be a second copy. */}
       <AreaChart
         points={points} height={200} tone={tone} negativeTone={tone} bare onScrub={setAt}
-        compare={compare ? { values: compare.values, tone: compare.tone } : undefined}
+        compare={compare?.map((c) => ({ values: c.values, tone: c.tone }))}
       />
 
       {under}

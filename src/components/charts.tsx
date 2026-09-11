@@ -83,7 +83,7 @@ export function AreaChart({
    * a fund younger than the account looks like — the line starts where its
    * data does rather than at a flat guess.
    */
-  compare?: { values: (number | null)[]; tone: string };
+  compare?: { values: (number | null)[]; tone: string }[];
   /** A horizontal line to aim at — a goal's target, and where the line meets it. */
   markLine?: number;
   markLabel?: string;
@@ -135,7 +135,7 @@ export function AreaChart({
   const innerW = Math.max(40, w - padL - padR);
   const innerH = height - padT - padB;
   const values = points.map((p) => p.value);
-  const other = compare?.values.filter((v): v is number => v !== null) ?? [];
+  const other = (compare ?? []).flatMap((c) => c.values.filter((v): v is number => v !== null));
   const hasNegative = values.some((v) => v < 0) || other.some((v) => v < 0);
   // The axis spans exactly the period's min and max. Zero is only forced in
   // where a caller asks for it; on a balance chart it would flatten the line
@@ -178,14 +178,14 @@ export function AreaChart({
   const area = `${line} L${x(points.length - 1).toFixed(1)},${zeroY} L${x(0).toFixed(1)},${zeroY} Z`;
   // Drawn in runs, so a gap in the middle is a gap rather than a straight
   // line across it pretending to be data.
-  const compareRuns: string[] = [];
-  if (compare) {
+  const compareRuns: { d: string; tone: string }[] = [];
+  for (const c of compare ?? []) {
     let run: string[] = [];
-    compare.values.forEach((v, i) => {
-      if (v === null) { if (run.length > 1) compareRuns.push(run.join(" ")); run = []; return; }
+    c.values.forEach((v, i) => {
+      if (v === null) { if (run.length > 1) compareRuns.push({ d: run.join(" "), tone: c.tone }); run = []; return; }
       run.push(`${run.length ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`);
     });
-    if (run.length > 1) compareRuns.push(run.join(" "));
+    if (run.length > 1) compareRuns.push({ d: run.join(" "), tone: c.tone });
   }
   const ticks = rangeTicks(lo, hi);
   const label = format ?? axisFormat(lo, hi);
@@ -261,9 +261,9 @@ export function AreaChart({
 
         {/* Above the fill and below the marker: it has to be readable over the
             first series' shading without hiding a target line. */}
-        {compareRuns.map((d, i) => (
+        {compareRuns.map((c, i) => (
           <path
-            key={i} d={d} fill="none" stroke={color(compare!.tone)} strokeWidth={1.75}
+            key={i} d={c.d} fill="none" stroke={color(c.tone)} strokeWidth={1.75}
             strokeLinejoin="round" strokeLinecap="round" opacity={0.95}
           />
         ))}

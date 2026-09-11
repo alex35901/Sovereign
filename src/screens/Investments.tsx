@@ -11,8 +11,9 @@ import { Donut } from "../components/charts";
 import { BalanceChart, ScopeBar } from "../components/BalanceChart";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, cx } from "../components/ui";
 import { priceSummary, refreshPrices, tickersOf } from "../lib/prices";
+import { isSymbol } from "../lib/symbol";
 import type { PriceHistory } from "../lib/benchmarks";
-import { BENCHMARKS, benchmarkFor, emptyHistory, fetchHistory, historyFloor, mergeCloses, needsFetch, rebase, returnSeries } from "../lib/benchmarks";
+import { BENCHMARKS, benchmarkByTicker, emptyHistory, fetchHistory, historyFloor, mergeCloses, needsFetch, nextTone, rebase, returnSeries } from "../lib/benchmarks";
 import { loadHistory, saveHistory } from "../lib/benchmark-store";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
@@ -43,7 +44,29 @@ export default function Investments() {
   const [adding, setAdding] = useState(false);
   const p = useMemo(() => portfolioSummary(db), [db]);
 
-  const [against, setAgainst] = useState("");
+  /**
+   * What else is on the chart, in the order it was put there.
+   *
+   * Tickers, because a benchmark and a holding are the same question of the
+   * same provider once you have one. The colour is decided when a line is
+   * added and carried with it, so removing one does not repaint the rest.
+   */
+  const [picks, setPicks] = useState<{ ticker: string; label: string; tone: string }[]>([]);
+  const toggle = useCallback((ticker: string, label: string) => {
+    setPicks((cur) => {
+      if (cur.some((x) => x.ticker === ticker)) return cur.filter((x) => x.ticker !== ticker);
+      // One symbol is one line, however it was reached. A holding of VTI and
+      // the US Stocks benchmark are the same series, so they share a colour
+      // and a name rather than appearing twice in different clothes.
+      const bench = benchmarkByTicker(ticker);
+      return [...cur, {
+        ticker,
+        label: bench?.label ?? label,
+        tone: bench?.tone ?? nextTone(cur.map((x) => x.tone)),
+      }];
+    });
+  }, []);
+  const picked = useMemo(() => picks.map((x) => x.ticker), [picks]);
 
   const span = useMemo(() => {
     const earliest = earliestHistoryDate(p.invAccounts);
@@ -63,31 +86,29 @@ export default function Investments() {
 
   const values = useMemo(() => series.map((x) => x.value), [series]);
 
-  const mark = benchmarkFor(against);
-  const history = useBenchmark(mark?.ticker, db.settings.tiingoApiKey ?? "");
+  const market = useHistories(picked, db.settings.tiingoApiKey ?? "");
 
   /**
-   * Both lines rebased to where the period opened.
+   * Every line rebased to where the period opened.
    *
    * The portfolio's shape does not change — dividing a series by its own first
    * value is a rescale, not a reshape — so the chart looks the same and the
-   * benchmark simply joins it. What changes is what the axis means, and since
-   * this chart carries no axis, nothing on screen has to explain itself.
+   * others simply join it. What changes is what the axis means, and since this
+   * chart carries no axis, nothing on screen has to explain itself.
    */
-  const compare = useMemo(() => {
-    if (!mark || !history.data || !history.data.dates.length) return undefined;
-    const theirs = returnSeries(history.data, span.dates);
+  const compare = useMemo(() => picks.map((pick) => {
+    const h = market.data[pick.ticker];
+    // Kept in the list even with nothing behind it. A symbol the provider has
+    // never heard of — a private fund, a stable-value option in a 401(k) —
+    // otherwise lights its marker and then draws nothing, with no line and no
+    // word about why. A run of nulls draws nothing and says "no reading".
+    const theirs = h && h.dates.length ? returnSeries(h, span.dates) : span.dates.map(() => null);
     const last = [...theirs].reverse().find((v) => v !== null) ?? null;
-    return {
-      values: theirs,
-      tone: mark.tone,
-      label: mark.label,
-      move: { change: 0, pct: last },
-    };
-  }, [mark, history.data, span.dates]);
+    return { values: theirs, tone: pick.tone, label: pick.label, pct: last };
+  }), [picks, market.data, span.dates]);
 
   const shownPoints = useMemo(() => {
-    if (!compare) return series;
+    if (!compare.length) return series;
     const pct = rebase(values);
     return series.map((s, i) => ({ ...s, value: pct[i] }));
   }, [series, values, compare]);
@@ -110,10 +131,8 @@ export default function Investments() {
             <BalanceChart
               total={p.accountsValue} series={values} points={shownPoints}
               tone={trendTone(values)} range={range} onRange={setRange}
-              compare={compare}
-              under={
-                <Against value={against} onChange={setAgainst} state={history.state} />
-              }
+              compare={compare.length ? compare : undefined}
+              under={<Against picked={picked} onToggle={toggle} state={market.state} />}
             />
           ) : (
             <Allocation p={p} />
@@ -131,15 +150,16 @@ export default function Investments() {
               />
               {rows.length ? (
                 <div style={{ overflowX: "auto" }}>
-                  <table className="tbl">
+                  <table className="tbl tbl-holdings">
                     <thead>
                       <tr>
+                        <th className="hold-pick" />
                         <th>Holding</th>
-                        <th className="right">Shares</th>
-                        <th className="right">Price</th>
-                        <th className="right">Cost basis</th>
-                        <th className="right">Value</th>
-                        <th className="right">Gain</th>
+                        <th>Shares</th>
+                        <th>Price</th>
+                        <th>Cost basis</th>
+                        <th>Value</th>
+                        <th>Gain</th>
                         <th />
                       </tr>
                     </thead>
@@ -148,23 +168,42 @@ export default function Investments() {
                         const val = holdingValue(h);
                         const cost = holdingCost(h);
                         const gain = val - cost;
+                        const sym = h.ticker.trim().toUpperCase();
+                        const on = picks.find((x) => x.ticker === sym);
                         return (
                           <tr key={h.id}>
+                            <td className="hold-pick">
+                              {/* A position is a price series like any other,
+                                  so it goes on the chart the same way a
+                                  benchmark does. Only one that carries a
+                                  symbol: there is nothing to ask a provider
+                                  about a holding typed in by hand. */}
+                              {isSymbol(sym) ? (
+                                <button
+                                  className={cx("hold-dot", on && "on")}
+                                  style={on ? { background: `var(${on.tone})`, borderColor: `var(${on.tone})` } : undefined}
+                                  aria-pressed={Boolean(on)}
+                                  title={on ? `Take ${sym} off the chart` : `Put ${sym} on the chart`}
+                                  aria-label={on ? `Take ${sym} off the chart` : `Put ${sym} on the chart`}
+                                  onClick={() => toggle(sym, sym)}
+                                />
+                              ) : null}
+                            </td>
                             <td>
-                              <div className="col" style={{ gap: 0 }}>
+                              <div className="col" style={{ gap: 0, alignItems: "center" }}>
                                 <span className="bold">{h.ticker}</span>
                                 <span className="tiny faint truncate" style={{ maxWidth: 240 }}>{h.name}</span>
                               </div>
                             </td>
-                            <td className="right num">{h.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })}</td>
-                            <td className="right num"><Money value={h.price} /></td>
-                            <td className="right num muted"><Money value={cost} cents={false} /></td>
-                            <td className="right num bold"><Money value={val} cents={false} /></td>
-                            <td className={cx("right num", gain >= 0 ? "pos" : "neg")}>
+                            <td className="num">{h.quantity.toLocaleString("en-US", { maximumFractionDigits: 3 })}</td>
+                            <td className="num"><Money value={h.price} /></td>
+                            <td className="num muted"><Money value={cost} cents={false} /></td>
+                            <td className="num bold"><Money value={val} cents={false} /></td>
+                            <td className={cx("num", gain >= 0 ? "pos" : "neg")}>
                               <Money value={gain} cents={false} sign={gain >= 0} />
                               <div className="tiny">{cost ? fmtPct((gain / cost) * 100) : "-"}</div>
                             </td>
-                            <td className="right">
+                            <td>
                               <Btn size="sm" variant="ghost" onClick={() => setEditing(h)}>Edit</Btn>
                             </td>
                           </tr>
@@ -207,89 +246,97 @@ export default function Investments() {
 type FetchState = "idle" | "loading" | "error" | "nokey";
 
 /**
- * One benchmark's closing prices, from this browser's cache and then the wire.
+ * Closing prices for every symbol on the chart, from this browser and the wire.
  *
  * The cache answers first and the chart draws immediately from whatever is
  * already there, however old; the fetch only ever fills in what is missing.
  * That matters because the window moves with the range pills, and a reader
- * flicking between 1M and 5Y should not watch a chart empty itself each time.
+ * flicking between 1M and 5Y should not watch the lines empty themselves.
  */
-function useBenchmark(ticker: string | undefined, apiKey: string) {
-  const [data, setData] = useState<PriceHistory | null>(null);
+function useHistories(tickers: readonly string[], apiKey: string) {
+  const [data, setData] = useState<Record<string, PriceHistory>>({});
   const [state, setState] = useState<FetchState>("idle");
-  // Which symbols are already in flight, so two range changes in a second do
-  // not spend two requests on the same answer.
+  // Which symbols are already in flight, so a second render does not spend a
+  // second request on an answer that is already on its way.
   const busy = useRef<Set<string>>(new Set());
+  const key = tickers.join(",");
 
-  const load = useCallback(async (symbol: string) => {
-    const cached = loadHistory(symbol);
-    setData(cached.dates.length ? cached : null);
+  const load = useCallback(async (symbols: string[]) => {
+    if (!symbols.length) { setState("idle"); return; }
 
-    if (!apiKey.trim()) { setState(cached.dates.length ? "idle" : "nokey"); return; }
+    const cached: Record<string, PriceHistory> = {};
+    for (const t of symbols) cached[t] = loadHistory(t);
+    setData((cur) => ({ ...cur, ...cached }));
 
-    const want = needsFetch(cached, historyFloor(), today());
-    if (!want) { setState("idle"); return; }
-    if (busy.current.has(symbol)) return;
+    const short = symbols.filter((t) => needsFetch(cached[t], historyFloor(), today()));
+    if (!short.length) { setState("idle"); return; }
+    if (!apiKey.trim()) { setState("nokey"); return; }
 
-    busy.current.add(symbol);
-    setState(cached.dates.length ? "idle" : "loading");
-    try {
-      const rows = await fetchHistory(apiKey, symbol, want.from, want.to);
-      const merged = mergeCloses(cached.dates.length ? cached : emptyHistory(symbol), rows, new Date().toISOString());
-      // Stamped even when the provider had nothing new, or a quiet market puts
-      // the page into a request loop.
-      saveHistory(merged);
-      setData(merged.dates.length ? merged : null);
-      setState(merged.dates.length ? "idle" : "error");
-    } catch {
-      setState(cached.dates.length ? "idle" : "error");
-    } finally {
-      busy.current.delete(symbol);
-    }
+    const fresh = short.filter((t) => !busy.current.has(t));
+    if (!fresh.length) return;
+    for (const t of fresh) busy.current.add(t);
+    // Only a symbol with nothing behind it puts the card into a waiting state:
+    // one already drawn from cache should not blink while its tail arrives.
+    setState(fresh.some((t) => !cached[t].dates.length) ? "loading" : "idle");
+
+    let failed = false;
+    await Promise.all(fresh.map(async (t) => {
+      const want = needsFetch(cached[t], historyFloor(), today());
+      if (!want) return;
+      try {
+        const rows = await fetchHistory(apiKey, t, want.from, want.to);
+        const merged = mergeCloses(cached[t].dates.length ? cached[t] : emptyHistory(t), rows, new Date().toISOString());
+        // Stamped even when the provider had nothing new, or a quiet market
+        // puts the page into a request loop.
+        saveHistory(merged);
+        if (!merged.dates.length) failed = true;
+        setData((cur) => ({ ...cur, [t]: merged }));
+      } catch {
+        failed = true;
+      } finally {
+        busy.current.delete(t);
+      }
+    }));
+    setState(failed ? "error" : "idle");
   }, [apiKey]);
 
   useEffect(() => {
-    if (!ticker) { setData(null); setState("idle"); return; }
-    void load(ticker);
-  }, [ticker, load]);
+    void load(key ? key.split(",") : []);
+  }, [key, load]);
 
   return { data, state };
 }
 
-/** The row of things to measure the portfolio against. */
-function Against({ value, onChange, state }: {
-  value: string; onChange: (v: string) => void; state: FetchState;
+/** The market lines on offer, none of them on by default. */
+function Against({ picked, onToggle, state }: {
+  picked: readonly string[]; onToggle: (ticker: string, label: string) => void; state: FetchState;
 }) {
   return (
     <div className="against">
       <div className="against-line">
-        {/* Outside the scrolling run, or picking the last of four scrolls the
+        {/* Outside the scrolling run, or picking the last of them scrolls the
             word that explains them off the left edge of a phone. */}
         <span className="tiny faint against-label">Compare with</span>
         <div className="against-row">
-        <button
-          className={cx("against-pill", !value && "on")} onClick={() => onChange("")}
-          aria-pressed={!value}
-        >
-          Nothing
-        </button>
-        {BENCHMARKS.map((b) => (
-          <button
-            key={b.key} className={cx("against-pill", value === b.key && "on")}
-            aria-pressed={value === b.key}
-            onClick={() => onChange(value === b.key ? "" : b.key)}
-          >
-            <span className="dot" style={{ background: `var(${b.tone})` }} />
-            {b.label}
-          </button>
-        ))}
+          {BENCHMARKS.map((b) => {
+            const on = picked.includes(b.ticker);
+            return (
+              <button
+                key={b.key} className={cx("against-pill", on && "on")} aria-pressed={on}
+                onClick={() => onToggle(b.ticker, b.label)}
+              >
+                <span className="dot" style={{ background: `var(${b.tone})` }} />
+                {b.label}
+              </button>
+            );
+          })}
         </div>
       </div>
-      {value && state !== "idle" ? (
+      {picked.length && state !== "idle" ? (
         <span className="tiny faint against-note">
           {state === "loading" ? "Fetching closing prices…"
             : state === "nokey" ? <>Add a Tiingo token under <Link to="/settings" className="link">Settings &rarr; Integrations</Link> to compare against the market.</>
-            : "Those closing prices could not be fetched. The portfolio line is unchanged."}
+            : "Some closing prices could not be fetched. The lines that did arrive are unchanged."}
         </span>
       ) : null}
     </div>
