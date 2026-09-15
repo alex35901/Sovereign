@@ -71,7 +71,7 @@ export interface Point { label: string; value: number; sub?: string }
 
 export function AreaChart({
   points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
-  markLine, markLabel, bare = false, onScrub, format, compare,
+  markLine, markLabel, bare = false, onScrub, format, compare, tip,
 }: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
   /**
@@ -84,6 +84,14 @@ export function AreaChart({
    * data does rather than at a flat guess.
    */
   compare?: { values: (number | null)[]; tone: string }[];
+  /**
+   * What to show beside the finger, for a chart carrying more than one line.
+   *
+   * The headline above can only speak for one of them. With four lines on the
+   * page the question is what each was doing on the day under the finger, and
+   * that has to be answered where the finger is.
+   */
+  tip?: (index: number) => ReactNode;
   /** A horizontal line to aim at — a goal's target, and where the line meets it. */
   markLine?: number;
   markLabel?: string;
@@ -316,6 +324,10 @@ export function AreaChart({
           </g>
         ) : null}
       </svg>
+      {hover !== null && tip ? (
+        <Tip x={x(hover)} y={padT + innerH * 0.1} width={w}>{tip(hover)}</Tip>
+      ) : null}
+
       {hover !== null && !onScrub ? (
         <Tip x={x(hover)} y={y(points[hover].value)} width={w}>
           <div className="tiny muted">{points[hover].label}</div>

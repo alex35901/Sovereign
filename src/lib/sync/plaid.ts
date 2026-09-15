@@ -159,6 +159,8 @@ export interface RemoteHolding {
   /** per share, cents */
   price: number;
   assetClass: AssetClass;
+  /** What the provider calls it: "etf", "mutual fund", "equity", "cash". */
+  securityType?: string;
 }
 
 export interface PlaidPayload extends SyncPayload {
@@ -231,6 +233,10 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
       costBasis: h.quantity ? Math.round(totalCost / h.quantity) : 0,
       price,
       assetClass: mapAssetClass(security?.type),
+      // Kept as the provider said it, rather than folded into assetClass:
+      // "what it holds" and "what kind of product it is" are two questions,
+      // and an index fund and its ETF twin answer them differently.
+      securityType: typeof security?.type === "string" ? security.type : undefined,
     };
   });
 

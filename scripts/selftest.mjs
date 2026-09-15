@@ -74,6 +74,7 @@ await build({
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
       export { fetchHistory as fetchHistoryDirect, MAX_HISTORY } from "./api/_prices.ts";
       export * as BM from "./src/lib/benchmarks.ts";
+      export * as HG from "./src/lib/holdings.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4279,6 +4280,103 @@ await test("closes merge oldest first, one per day, newest answer winning", () =
   ], "t3");
   assert.deepEqual(clean.dates, first.dates);
   assert.equal(clean.dates.length, clean.closes.length);
+});
+
+/* ── cutting a list of positions, and what each has done ───────────────── */
+
+const invAcct = (id, name, institution, over = {}) =>
+  ({ id, name, institution, type: "investment", balance: 0, includeInNetWorth: true, hidden: false, history: [], ...over });
+const invHold = (accountId, ticker, quantity, price, over = {}) =>
+  ({ id: `h_${ticker}_${accountId}`, accountId, ticker, name: ticker, quantity, price, costBasis: price, assetClass: "us_equity", ...over });
+
+const ACCOUNTS = [
+  invAcct("a1", "Brokerage", "Fidelity"),
+  invAcct("a2", "401(k)", "Vanguard"),
+  invAcct("a3", "Empty", "Vanguard"),
+];
+const HOLDINGS = [
+  invHold("a1", "VTI", 10, 100_00, { securityType: "etf" }),
+  invHold("a1", "BND", 5, 100_00, { assetClass: "bond", securityType: "etf" }),
+  invHold("a2", "VTI", 40, 100_00, { securityType: "etf" }),
+  invHold("a2", "VFIAX", 1, 100_00, { securityType: "mutual fund" }),
+  invHold("a2", "PRIVATE", 1, 100_00, {}),
+];
+const cut = (by) => M.HG.groupHoldings(ACCOUNTS, HOLDINGS, by).map((g) => ({
+  label: g.label, tickers: g.rows.map((r) => r.ticker), value: g.value,
+}));
+
+await test("an account with nothing in it is still an account", () => {
+  // The balance still counts toward net worth and somebody has to notice the
+  // positions are missing, so the group stays even when it is empty.
+  const byAccount = cut("account");
+  assert.deepEqual(byAccount.map((g) => g.label), ["Brokerage", "401(k)", "Empty"]);
+  assert.deepEqual(byAccount[2], { label: "Empty", tickers: [], value: 0 });
+  // An asset class nobody holds is not the same kind of fact.
+  assert.ok(cut("class").every((g) => g.tickers.length > 0));
+});
+
+await test("the same positions answer whichever question is asked of them", () => {
+  assert.deepEqual(cut("institution").map((g) => g.label), ["Vanguard", "Fidelity"]);
+  assert.deepEqual(cut("class").map((g) => g.label), ["US Stocks", "Bonds"]);
+  assert.deepEqual(cut("type").map((g) => g.label), ["ETF", "Mutual fund", "Not recorded"]);
+  // "etf", not "Etf": a title-caser would get this wrong and look deliberate.
+  assert.ok(cut("type").some((g) => g.label === "ETF"));
+  // A holding nobody has told us the type of is its own group rather than
+  // being filed under one it might not be.
+  const unknown = cut("type").find((g) => g.label === "Not recorded");
+  assert.deepEqual(unknown.tickers, ["PRIVATE"]);
+});
+
+await test("one security held twice is one row, and every cut leads with the money", () => {
+  const bySecurity = M.HG.groupHoldings(ACCOUNTS, HOLDINGS, "security");
+  const vti = bySecurity.find((g) => g.label === "VTI");
+  assert.equal(vti.rows.length, 2, "VTI is held in two accounts and is one group");
+  assert.equal(vti.value, 50 * 100_00);
+  assert.equal(vti.sub, "Brokerage, 401(k)", "and says where it is held");
+  // Biggest first, in every cut: the question behind all of them is where the
+  // money is, and an alphabetical answer buries it.
+  for (const by of ["institution", "class", "type", "security"]) {
+    const vals = cut(by).map((g) => g.value);
+    assert.deepEqual(vals, [...vals].sort((x, y) => y - x), `${by} is not ordered by value`);
+  }
+});
+
+await test("a position's period return is its price, not its value", () => {
+  const { periodReturn } = M.HG;
+  const h = {
+    ticker: "X",
+    dates: ["2026-01-01", "2026-06-01", "2026-12-01"],
+    closes: [100, 150, 120],
+    fetchedAt: "",
+  };
+  assert.equal(periodReturn(h, "2026-01-01", "2026-06-01"), 0.5);
+  assert.equal(periodReturn(h, "2026-06-01", "2026-12-01"), -0.2);
+  // A window that opens before the readings do has no answer, and a blank is
+  // better than a zero — a zero reads as "went nowhere".
+  assert.equal(periodReturn(h, "2025-01-01", "2026-06-01"), null);
+  assert.equal(periodReturn(undefined, "2026-01-01", "2026-06-01"), null);
+  // Shut days read the last close before them, the same as the chart does.
+  assert.equal(periodReturn(h, "2026-01-15", "2026-06-15"), 0.5);
+});
+
+await test("a group's return is weighted by money, and ignores what it cannot price", () => {
+  const { groupReturn } = M.HG;
+  const hist = (t, from, to) => ({ ticker: t, dates: ["2026-01-01", "2026-06-01"], closes: [from, to], fetchedAt: "" });
+  const histories = {
+    BIG: hist("BIG", 100, 110),   // +10%, and worth nine times the other
+    SMALL: hist("SMALL", 100, 200), // +100%
+  };
+  const rows = [invHold("a1", "BIG", 90, 100_00), invHold("a1", "SMALL", 10, 100_00)];
+  const r = groupReturn(rows, histories, "2026-01-01", "2026-06-01");
+  // 0.9 × 10% + 0.1 × 100% = 19%. A plain average would say 55%.
+  assert.ok(Math.abs(r - 0.19) < 1e-9, `${r}`);
+
+  // A symbol nobody could price drops out of the weights too. Averaging a zero
+  // in for it would drag the answer down for a reason that is not the money.
+  const withGhost = [...rows, invHold("a1", "GHOST", 900, 100_00)];
+  const same = groupReturn(withGhost, histories, "2026-01-01", "2026-06-01");
+  assert.ok(Math.abs(same - 0.19) < 1e-9, `${same}`);
+  assert.equal(groupReturn([invHold("a1", "GHOST", 1, 100_00)], histories, "2026-01-01", "2026-06-01"), null);
 });
 
 await test("a line added to the chart never borrows a colour already on it", () => {

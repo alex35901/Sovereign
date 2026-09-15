@@ -131,6 +131,7 @@ export function mergeSync(
         costBasis: h.costBasis,
         price: h.price,
         assetClass: h.assetClass,
+        securityType: h.securityType,
       });
     }
     if (touched.size) {

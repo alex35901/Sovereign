@@ -112,6 +112,19 @@ export function ScopeBar({ slices, value, onChange }: {
   );
 }
 
+/** One line's name and what it had done by the day under the finger. */
+function ScrubRow({ tone, label, value }: { tone: string; label: string; value: number | null }) {
+  return (
+    <div className="row scrub-row" style={{ gap: 7 }}>
+      <span className="dot" style={{ background: `var(${tone})` }} />
+      <span className="grow truncate">{label}</span>
+      <span className={cx("num bold", value !== null && value < 0 ? "neg" : "pos")}>
+        {value === null ? "-" : `${value < 0 ? "-" : "+"}${pctLabel(value)}`}
+      </span>
+    </div>
+  );
+}
+
 export function BalanceChart({ label, above, under, total, series, points, tone, range, onRange, compare }: {
   /** A small line above the figure — "Current balance". */
   label?: string;
@@ -141,6 +154,9 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
   // period, which is what the card says when nobody is touching it.
   const [at, setAt] = useState<number | null>(null);
   const here = at === null ? null : Math.min(at, series.length - 1);
+  // The portfolio's own line is toned by how the period went, so its dot in
+  // the readout has to be the same colour rather than a fixed one.
+  const selfTone = tone;
   const shown = here === null || here < 0 ? total : series[here];
   const move = moveBetween(series, here ?? undefined);
   const window = here === null || !points.length ? null : `${points[0].sub} – ${points[here].sub}`;
@@ -179,6 +195,17 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
       <AreaChart
         points={points} height={200} tone={tone} negativeTone={tone} bare onScrub={setAt}
         compare={compare?.map((c) => ({ values: c.values, tone: c.tone }))}
+        tip={compare?.length ? (i) => (
+          <div className="col scrub-tip" style={{ gap: 4 }}>
+            <div className="tiny muted">{points[i]?.sub ?? points[i]?.label}</div>
+            {/* The portfolio first and named, because every other row on this
+                list is only interesting against it. */}
+            <ScrubRow tone={selfTone} label="Your portfolio" value={points[i]?.value ?? null} />
+            {compare.map((c) => (
+              <ScrubRow key={c.label} tone={c.tone} label={c.label} value={c.values[i] ?? null} />
+            ))}
+          </div>
+        ) : undefined}
       />
 
       {under}

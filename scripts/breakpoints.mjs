@@ -2963,11 +2963,19 @@ try {
       });
       if (picked) {
         // Six years, not the year on screen: the range pills move the window,
-        // and refetching on every press would spend a request each time.
+        // and refetching on every press would spend a request each time. The
+        // table asks for every position it lists, so what matters is the width
+        // of each window and that the symbol just chosen is among them.
         check("which fetches one window wide enough for every period on offer",
-          asked.length === 1 && asked[0].tickers.join() === "SPY"
-          && Number(asked[0].to.slice(0, 4)) - Number(asked[0].from.slice(0, 4)) >= 5,
+          asked.length > 0
+          && asked.every((a) => Number(a.to.slice(0, 4)) - Number(a.from.slice(0, 4)) >= 5)
+          && asked.some((a) => a.tickers.includes("SPY")),
           JSON.stringify(asked));
+        // Batched rather than one connection per symbol: a page that opens
+        // with a table full of positions would otherwise fan out.
+        check("and asks for several symbols per request rather than one each",
+          asked.every((a) => a.tickers.length <= 4) && asked.some((a) => a.tickers.length > 1),
+          asked.map((a) => a.tickers.length).join(", "));
 
         const two = await bench.evaluate(() => ({
           lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
@@ -3020,6 +3028,53 @@ try {
         check("a second market joins rather than replacing the first",
           both.pressed === 2 && both.legend.length === 2 && both.lines === 4,
           `${both.pressed} pressed, ${both.legend.join(" | ")}, ${both.lines} lines`);
+
+        // ── what every line was doing on the day under the finger ──
+        //
+        // The headline can only speak for one line. With four on the page the
+        // question is what each was doing on that day, and it has to be
+        // answered where the finger is.
+        const chart = await bench.locator(".nw-card .chart-wrap").boundingBox();
+        await bench.mouse.move(chart.x + chart.width * 0.55, chart.y + chart.height / 2);
+        await bench.waitForTimeout(500);
+        const readout = await bench.evaluate(() => {
+          const el = document.querySelector(".scrub-tip");
+          if (!el) return null;
+          return {
+            rows: [...el.querySelectorAll(".scrub-row")].map((r) => ({
+              label: r.querySelector(".truncate")?.innerText.trim() ?? "",
+              value: r.querySelector(".num")?.innerText.trim() ?? "",
+              tone: getComputedStyle(r.querySelector(".dot")).backgroundColor,
+            })),
+            date: el.querySelector(".tiny")?.innerText.trim() ?? "",
+          };
+        });
+        check("resting on the chart says what every line had done by that day",
+          readout !== null && readout.rows.length === 3
+          && readout.rows.every((r) => /^[+-][\d.]+%$/.test(r.value) || r.value === "-"),
+          readout ? readout.rows.map((r) => `${r.label} ${r.value}`).join(" | ") : "no readout");
+        check("the portfolio's own line among them, named and first",
+          readout?.rows[0]?.label === "Your portfolio", readout?.rows[0]?.label);
+        check("and each in the colour it is drawn in",
+          readout !== null && new Set(readout.rows.map((r) => r.tone)).size === readout.rows.length,
+          readout?.rows.map((r) => r.tone).join(" | "));
+        check("with the day it is reading named",
+          /\d{4}/.test(readout?.date ?? ""), readout?.date);
+
+        // The figures follow the finger rather than reporting the period.
+        await bench.mouse.move(chart.x + chart.width * 0.15, chart.y + chart.height / 2);
+        await bench.waitForTimeout(400);
+        const earlier = await bench.evaluate(() => ({
+          date: document.querySelector(".scrub-tip .tiny")?.innerText.trim() ?? "",
+          first: document.querySelector(".scrub-tip .scrub-row .num")?.innerText.trim() ?? "",
+        }));
+        check("and moving along it reads a different day",
+          earlier.date !== readout?.date && earlier.date !== "",
+          `${readout?.date} then ${earlier.date}`);
+        await bench.mouse.move(chart.x + chart.width / 2, chart.y - 60);
+        await bench.waitForTimeout(400);
+        check("taking the finger off puts it away",
+          (await bench.evaluate(() => document.querySelectorAll(".scrub-tip").length)) === 0);
 
         // ── a holding is a price series too ──
         const dots = bench.locator(".hold-dot");
@@ -3172,15 +3227,120 @@ try {
         `${none.edits} edits, ${none.add} add, over ${none.rows} rows`);
       await every.close();
 
-      // ── the holdings table reads as columns of figures ──
+      // ── the holdings table reads as columns of figures, and one of names ──
       const aligned = await bench.evaluate(() => {
+        const align = (c) => getComputedStyle(c).textAlign;
         const cells = [...document.querySelectorAll(".tbl-holdings th, .tbl-holdings td")];
-        const off = cells.filter((c) => getComputedStyle(c).textAlign !== "center");
-        return { total: cells.length, off: off.map((c) => `${c.tagName} "${c.innerText.trim().slice(0, 14)}"`) };
+        const figures = cells.filter((c) => !c.classList.contains("hold-name"));
+        const names = cells.filter((c) => c.classList.contains("hold-name"));
+        return {
+          total: cells.length,
+          off: figures.filter((c) => align(c) !== "center")
+            .map((c) => `${c.tagName} "${c.innerText.trim().slice(0, 14)}"`),
+          names: names.length,
+          namesLeft: names.filter((c) => align(c) === "left").length,
+        };
       });
-      check("every column of the holdings table is centred, headers included",
+      check("every column of figures is centred, headers included",
         aligned.total > 12 && aligned.off.length === 0,
         aligned.off.slice(0, 5).join(", ") || `${aligned.total} cells`);
+      // The name is not a figure: a run of tickers wants one left edge to
+      // read down, not a ragged middle.
+      check("and the holding itself reads down a left edge",
+        aligned.names > 4 && aligned.namesLeft === aligned.names,
+        `${aligned.namesLeft} of ${aligned.names} left`);
+
+      // ── the period the chart is showing runs through the table ──
+      //
+      // Set explicitly: an earlier check left the range on three months, and a
+      // test that reads whatever happens to be selected is reading its own
+      // neighbours rather than the feature.
+      await bench.locator(".nw-card .span-pill").nth(4).click();
+      await bench.waitForTimeout(1200);
+      const periodCol = async () => bench.evaluate(() => {
+        const heads = [...document.querySelectorAll(".tbl-holdings thead th")].map((h) => h.innerText.trim());
+        const at = heads.findIndex((h) => /^past /i.test(h));
+        const rows = [...document.querySelectorAll(".tbl-holdings tbody tr")];
+        return {
+          head: heads[at] ?? "",
+          at,
+          values: rows.map((r) => r.children[at]?.innerText.trim() ?? ""),
+          groups: [...document.querySelectorAll(".page > .card .card-head.flush")]
+            .map((h) => h.innerText.replace(/\n/g, " ").trim()),
+        };
+      });
+      const aYear = await periodCol();
+      check("each position says what it did over the period, named for it",
+        /past 1 year/i.test(aYear.head) && aYear.values.length > 4
+        && aYear.values.every((v) => /^[+-][\d.]+%$/.test(v) || v === "-"),
+        `${aYear.head}: ${aYear.values.slice(0, 4).join(", ")}`);
+      check("and so does each group it is filed under",
+        aYear.groups.every((g) => /[+-][\d.]+%/.test(g)),
+        aYear.groups.join(" | "));
+
+      // Changing the range changes the table, which is the whole point.
+      await bench.locator(".nw-card .span-pill").nth(0).click();
+      await bench.waitForTimeout(1200);
+      const aMonth = await periodCol();
+      check("choosing a different period renames the column and rewrites it",
+        /past 1 month/i.test(aMonth.head)
+        && aMonth.values.join() !== aYear.values.join(),
+        `${aMonth.head}: ${aMonth.values.slice(0, 4).join(", ")}`);
+      await bench.locator(".nw-card .span-pill").nth(4).click();
+      await bench.waitForTimeout(1200);
+
+      // ── the same positions, cut a different way ──
+      const cuts = await bench.evaluate(() =>
+        [...document.querySelectorAll(".hold-controls select option")].map((o) => o.innerText.trim()));
+      check("the table can be cut five ways",
+        cuts.join(" / ") === "By account / By institution / By asset class / By security type / By security",
+        cuts.join(" / "));
+
+      const cutBy = async (value) => {
+        await bench.locator(".hold-controls select").selectOption(value);
+        await bench.waitForTimeout(800);
+        return bench.evaluate(() => ({
+          groups: [...document.querySelectorAll(".page > .card")]
+            .filter((c) => c.querySelector(".card-head.flush"))
+            .map((c) => ({
+              label: c.querySelector(".card-head.flush h2")?.innerText.trim() ?? "",
+              value: Number((c.querySelector(".card-head.flush .num.bold")?.innerText ?? "")
+                .replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0"),
+              rows: c.querySelectorAll(".tbl-holdings tbody tr").length,
+            })),
+          positions: document.querySelectorAll(".tbl-holdings tbody tr").length,
+        }));
+      };
+      const byAccount = await cutBy("account");
+      const byClass = await cutBy("class");
+      const byType = await cutBy("type");
+      const bySecurity = await cutBy("security");
+
+      check("each cut names its groups differently",
+        new Set([byAccount, byClass, byType, bySecurity]
+          .map((c) => c.groups.map((g) => g.label).join("|"))).size === 4,
+        [byAccount, byClass, byType, bySecurity].map((c) => c.groups.map((g) => g.label).join(",")).join("  //  "));
+      check("and every one of them still accounts for every position",
+        [byClass, byType, bySecurity].every((c) => c.positions === byAccount.positions),
+        `${byAccount.positions} by account against ${[byClass, byType, bySecurity].map((c) => c.positions).join(", ")}`);
+      // The question behind every cut is where the money is, so the biggest
+      // group leads. Not the account cut, which keeps the order the accounts
+      // are in so an empty one still appears.
+      for (const [name, cut] of [["asset class", byClass], ["security type", byType], ["security", bySecurity]]) {
+        const vals = cut.groups.map((g) => g.value);
+        check(`the ${name} cut leads with the money`,
+          vals.length > 1 && vals.every((v, i) => i === 0 || v <= vals[i - 1]),
+          vals.join(" > "));
+      }
+      // "etf" from a provider, not "Etf" from a title-caser.
+      check("a provider's own word for an instrument is written the way a reader would",
+        byType.groups.some((g) => g.label === "ETF") && !byType.groups.some((g) => /^Etf$/.test(g.label)),
+        byType.groups.map((g) => g.label).join(", "));
+      await cutBy("account");
+
+      // ── the prices card is gone ──
+      check("the page no longer carries a card about where prices come from",
+        (await bench.evaluate(() => !/previous close|refresh prices/i.test(document.body.innerText))) === true);
     }
     await bench.close();
   }

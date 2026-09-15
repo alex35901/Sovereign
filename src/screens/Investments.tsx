@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Link } from "react-router-dom";
-import type { AssetClass, Holding } from "../types";
+import type { AssetClass, Holding, ISODate } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, today } from "../lib/date";
@@ -10,13 +10,16 @@ import { ASSET_CLASS_LABEL, accountOptions, balanceAt, earliestHistoryDate, hold
 import { Donut } from "../components/charts";
 import { BalanceChart, ScopeBar } from "../components/BalanceChart";
 import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, cx } from "../components/ui";
-import { priceSummary, refreshPrices, tickersOf } from "../lib/prices";
+import { MAX_TICKERS } from "../lib/prices";
 import { isSymbol } from "../lib/symbol";
+import type { GroupBy } from "../lib/holdings";
+import { GROUPINGS, groupHoldings, groupReturn, holdingTickers, periodReturn } from "../lib/holdings";
 import type { PriceHistory } from "../lib/benchmarks";
-import { BENCHMARKS, benchmarkByTicker, emptyHistory, fetchHistory, historyFloor, mergeCloses, needsFetch, nextTone, rebase, returnSeries } from "../lib/benchmarks";
+import { BENCHMARKS, benchmarkByTicker, emptyHistory, fetchHistories, historyFloor, mergeCloses, needsFetch, nextTone, rebase, returnSeries } from "../lib/benchmarks";
 import { loadHistory, saveHistory } from "../lib/benchmark-store";
 import type { RangeKey } from "../lib/range";
 import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
+import { SPANS } from "../components/BalanceChart";
 
 const CLASS_TONES: Record<string, string> = {
   us_equity: "--c2", intl_equity: "--c4", bond: "--c12", cash: "--c3",
@@ -100,7 +103,27 @@ export default function Investments() {
 
   const values = useMemo(() => series.map((x) => x.value), [series]);
 
-  const market = useHistories(picked, db.settings.tiingoApiKey ?? "");
+  const [groupBy, setGroupBy] = useState<GroupBy>("account");
+
+  /**
+   * Every symbol the page needs closes for: the lines a reader has chosen,
+   * and every position in the table, because each row now says what it did
+   * over the period. Asked for together so the fetch below can batch them.
+   */
+  const wanted = useMemo(() => {
+    const out = new Set(holdingTickers(db, MAX_TICKERS));
+    for (const t of picked) out.add(t);
+    return [...out];
+  }, [db, picked]);
+
+  const market = useHistories(wanted, db.settings.tiingoApiKey ?? "");
+
+  const groups = useMemo(
+    () => groupHoldings(p.invAccounts, p.holdings, groupBy),
+    [p.invAccounts, p.holdings, groupBy],
+  );
+  const periodLabel = SPANS.find((x) => x.value === range)?.period ?? range;
+  const accountOf = useMemo(() => new Map(p.invAccounts.map((a) => [a.id, a])), [p.invAccounts]);
 
   /**
    * Every line rebased to where the period opened.
@@ -155,18 +178,34 @@ export default function Investments() {
           )}
         </Card>
 
-        {p.invAccounts.map((a) => {
-          const rows = p.holdings.filter((h) => h.accountId === a.id);
-          const value = rows.reduce((s, h) => s + holdingValue(h), 0);
-          const synced = a.syncSource === "plaid";
+        <div className="row wrap hold-controls">
+          <h2 className="grow">Holdings</h2>
+          <SelectInput
+            value={groupBy} onChange={(v) => setGroupBy(v as GroupBy)} options={GROUPINGS}
+          />
+        </div>
+
+        {groups.map((g) => {
+          const rows = g.rows;
+          const a = g.account;
+          const moved = groupReturn(rows, market.data, span.start, span.end);
           return (
-            <Card key={a.id} pad={false}>
+            <Card key={g.key} pad={false}>
               <CardHead
-                flush title={a.name}
+                flush title={g.label}
                 // Said out loud, or a card with no way to edit anything on it
                 // looks broken rather than looked after.
-                sub={synced ? `${a.institution} · positions come from the sync` : a.institution}
-                right={<span className="num bold"><Money value={rows.length ? value : a.balance} cents={false} /></span>}
+                sub={a?.syncSource === "plaid" ? `${g.sub} · positions come from the sync` : g.sub}
+                right={
+                  <span className="row" style={{ gap: 12 }}>
+                    {moved === null ? null : (
+                      <span className={cx("small num", moved < 0 ? "neg" : "pos")}>
+                        {moved < 0 ? "-" : "+"}{fmtPct(Math.abs(moved) * 100)}
+                      </span>
+                    )}
+                    <span className="num bold"><Money value={rows.length || !a ? g.value : a.balance} cents={false} /></span>
+                  </span>
+                }
               />
               {rows.length ? (
                 <div style={{ overflowX: "auto" }}>
@@ -174,12 +213,16 @@ export default function Investments() {
                     <thead>
                       <tr>
                         <th className="hold-pick" />
-                        <th>Holding</th>
+                        <th className="hold-name">Holding</th>
                         <th>Shares</th>
                         <th>Price</th>
                         <th>Cost basis</th>
                         <th>Value</th>
                         <th>Gain</th>
+                        {/* Named for the period the chart is showing, and it
+                            moves with it — the whole table answers the same
+                            question the range pills just asked. */}
+                        <th>Past {periodLabel}</th>
                         <th />
                       </tr>
                     </thead>
@@ -190,6 +233,12 @@ export default function Investments() {
                         const gain = val - cost;
                         const sym = h.ticker.trim().toUpperCase();
                         const on = picks.find((x) => x.ticker === sym);
+                        const moved = periodReturn(market.data[sym], span.start, span.end);
+                        // Asked of the row's own account rather than the
+                        // group's: a group cut by asset class holds rows from
+                        // several accounts, and only some of them may be the
+                        // provider's to speak for.
+                        const synced = accountOf.get(h.accountId)?.syncSource === "plaid";
                         return (
                           <tr key={h.id}>
                             <td className="hold-pick">
@@ -209,8 +258,8 @@ export default function Investments() {
                                 />
                               ) : null}
                             </td>
-                            <td>
-                              <div className="col" style={{ gap: 0, alignItems: "center" }}>
+                            <td className="hold-name">
+                              <div className="col" style={{ gap: 0 }}>
                                 <span className="bold">{h.ticker}</span>
                                 <span className="tiny faint truncate" style={{ maxWidth: 240 }}>{h.name}</span>
                               </div>
@@ -223,6 +272,9 @@ export default function Investments() {
                               <Money value={gain} cents={false} sign={gain >= 0} />
                               <div className="tiny">{cost ? fmtPct((gain / cost) * 100) : "-"}</div>
                             </td>
+                            <td className={cx("num", moved !== null && moved < 0 ? "neg" : moved !== null ? "pos" : "faint")}>
+                              {moved === null ? "-" : `${moved < 0 ? "-" : "+"}${fmtPct(Math.abs(moved) * 100)}`}
+                            </td>
                             <td>
                               {synced ? null : <Btn size="sm" variant="ghost" onClick={() => setEditing(h)}>Edit</Btn>}
                             </td>
@@ -232,13 +284,13 @@ export default function Investments() {
                     </tbody>
                   </table>
                 </div>
-              ) : (
+              ) : a ? (
                 <div style={{ padding: 16 }}>
                   <span className="small faint">
                     No positions recorded. The account balance of <Money value={a.balance} cents={false} /> still counts toward net worth.
                   </span>
                 </div>
-              )}
+              ) : null}
             </Card>
           );
         })}
@@ -249,7 +301,6 @@ export default function Investments() {
           </Card>
         ) : null}
 
-        <PricesCard />
       </div>
 
       {editing || adding ? (
@@ -299,24 +350,39 @@ function useHistories(tickers: readonly string[], apiKey: string) {
     // one already drawn from cache should not blink while its tail arrives.
     setState(fresh.some((t) => !cached[t].dates.length) ? "loading" : "idle");
 
-    let failed = false;
-    await Promise.all(fresh.map(async (t) => {
+    // Symbols wanting the same window travel together. Most do: either they
+    // are all new, or they all need the same few days on the end.
+    const byWindow = new Map<string, { from: ISODate; to: ISODate; tickers: string[] }>();
+    for (const t of fresh) {
       const want = needsFetch(cached[t], historyFloor(), today());
-      if (!want) return;
+      if (!want) { busy.current.delete(t); continue; }
+      const key = `${want.from}|${want.to}`;
+      const bucket = byWindow.get(key) ?? { ...want, tickers: [] };
+      bucket.tickers.push(t);
+      byWindow.set(key, bucket);
+    }
+
+    let failed = false;
+    for (const { from, to, tickers: batch } of byWindow.values()) {
       try {
-        const rows = await fetchHistory(apiKey, t, want.from, want.to);
-        const merged = mergeCloses(cached[t].dates.length ? cached[t] : emptyHistory(t), rows, new Date().toISOString());
-        // Stamped even when the provider had nothing new, or a quiet market
-        // puts the page into a request loop.
-        saveHistory(merged);
-        if (!merged.dates.length) failed = true;
-        setData((cur) => ({ ...cur, [t]: merged }));
+        const rows = await fetchHistories(apiKey, batch, from, to);
+        const at = new Date().toISOString();
+        const merged: Record<string, PriceHistory> = {};
+        for (const t of batch) {
+          const next = mergeCloses(cached[t].dates.length ? cached[t] : emptyHistory(t), rows[t] ?? [], at);
+          // Stamped even when the provider had nothing new, or a quiet market
+          // puts the page into a request loop.
+          saveHistory(next);
+          if (!next.dates.length) failed = true;
+          merged[t] = next;
+        }
+        setData((cur) => ({ ...cur, ...merged }));
       } catch {
         failed = true;
       } finally {
-        busy.current.delete(t);
+        for (const t of batch) busy.current.delete(t);
       }
-    }));
+    }
     setState(failed ? "error" : "idle");
   }, [apiKey]);
 
@@ -401,78 +467,6 @@ function Allocation({ p }: { p: ReturnType<typeof portfolioSummary> }) {
         </span>
       </div>
     </div>
-  );
-}
-
-/**
- * Where prices come from, and how to get fresh ones.
- *
- * Holdings that Tiingo has no quote for keep whatever price was typed in, so
- * this names them rather than leaving someone to work out why one row is stale.
- */
-function PricesCard() {
-  const db = useDB();
-  const { apply, notify } = useStore();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [misses, setMisses] = useState<string[] | null>(null);
-
-  const key = db.settings.tiingoApiKey ?? "";
-  const tickers = tickersOf(db.holdings);
-  const last = db.settings.lastPricesAt;
-
-  const refresh = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const outcome = await refreshPrices(db, apply, "refresh prices");
-      setMisses(outcome.misses);
-      notify(priceSummary(outcome));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "The price refresh failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!key.trim()) {
-    return (
-      <Card>
-        <CardHead title="Prices" sub="Typed in by hand" />
-        <span className="small muted">
-          Every price above is whatever was last entered on the holding. Add a free Tiingo token under{" "}
-          <Link to="/settings" className="link">Settings &rarr; Integrations</Link> and they refresh
-          themselves each morning, alongside the account sync.
-        </span>
-      </Card>
-    );
-  }
-
-  return (
-    <Card>
-      <CardHead
-        title="Prices"
-        sub="Previous close, from Tiingo"
-        right={
-          <Btn onClick={() => void refresh()} disabled={busy || !tickers.length}>
-            <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
-            {busy ? "Refreshing…" : "Refresh prices"}
-          </Btn>
-        }
-      />
-      <span className="small muted">
-        {tickers.length
-          ? <>{tickers.length} symbol{tickers.length === 1 ? "" : "s"} priced{" "}
-            {last ? <>, last checked {dateLabel(last.slice(0, 10), { year: true })}</> : ", not checked yet"}.</>
-          : <>No holdings carry a ticker yet, so there is nothing to price.</>}
-      </span>
-      {misses?.length ? (
-        <div className="tiny faint" style={{ marginTop: 8 }}>
-          No quote for {misses.join(", ")}. Those keep the price entered on the holding.
-        </div>
-      ) : null}
-      {error ? <div className="small neg" style={{ marginTop: 8 }}>{error}</div> : null}
-    </Card>
   );
 }
 

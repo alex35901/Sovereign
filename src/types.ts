@@ -235,6 +235,16 @@ export interface Holding {
   costBasis: number; // per share, cents
   price: number; // per share, cents
   assetClass: AssetClass;
+  /**
+   * What kind of instrument it is, as the provider named it: "etf", "mutual
+   * fund", "equity", "fixed income", "cash".
+   *
+   * A different question from assetClass, which is what the money is *in*. An
+   * S&P 500 index fund and an S&P 500 ETF hold the same thing and are not the
+   * same product. Only a provider that says so fills this in; a holding typed
+   * in by hand leaves it empty rather than guessing from the name.
+   */
+  securityType?: string;
 }
 
 export interface Settings {

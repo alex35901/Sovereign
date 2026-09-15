@@ -272,14 +272,14 @@ export function buildDemoDB(): DB {
   amortize("a_auto", -cents(28400), cents(365));
 
   const holdings: Holding[] = [
-    { id: uid("h"), accountId: "a_brokerage", ticker: "VTI", name: "Vanguard Total Stock Market ETF", quantity: 118.42, costBasis: cents(214.1), price: cents(312.66), assetClass: "us_equity" },
-    { id: uid("h"), accountId: "a_brokerage", ticker: "VXUS", name: "Vanguard Total Intl Stock ETF", quantity: 96.3, costBasis: cents(56.2), price: cents(74.18), assetClass: "intl_equity" },
-    { id: uid("h"), accountId: "a_brokerage", ticker: "AAPL", name: "Apple Inc.", quantity: 42, costBasis: cents(148.9), price: cents(241.55), assetClass: "us_equity" },
-    { id: uid("h"), accountId: "a_brokerage", ticker: "SPAXX", name: "Fidelity Government Money Market", quantity: 4180.11, costBasis: cents(1), price: cents(1), assetClass: "cash" },
-    { id: uid("h"), accountId: "a_401k", ticker: "VFIAX", name: "Vanguard 500 Index Admiral", quantity: 402.8, costBasis: cents(392.4), price: cents(561.22), assetClass: "us_equity" },
-    { id: uid("h"), accountId: "a_401k", ticker: "VTIAX", name: "Vanguard Total Intl Index Admiral", quantity: 611.4, costBasis: cents(29.8), price: cents(38.94), assetClass: "intl_equity" },
-    { id: uid("h"), accountId: "a_401k", ticker: "VBTLX", name: "Vanguard Total Bond Market Admiral", quantity: 780.2, costBasis: cents(10.4), price: cents(9.81), assetClass: "bond" },
-    { id: uid("h"), accountId: "a_roth", ticker: "VTWAX", name: "Vanguard Total World Stock Admiral", quantity: 1402.6, costBasis: cents(34.1), price: cents(48.02), assetClass: "us_equity" },
+    { id: uid("h"), accountId: "a_brokerage", ticker: "VTI", name: "Vanguard Total Stock Market ETF", quantity: 118.42, costBasis: cents(214.1), price: cents(312.66), assetClass: "us_equity", securityType: "etf" },
+    { id: uid("h"), accountId: "a_brokerage", ticker: "VXUS", name: "Vanguard Total Intl Stock ETF", quantity: 96.3, costBasis: cents(56.2), price: cents(74.18), assetClass: "intl_equity", securityType: "etf" },
+    { id: uid("h"), accountId: "a_brokerage", ticker: "AAPL", name: "Apple Inc.", quantity: 42, costBasis: cents(148.9), price: cents(241.55), assetClass: "us_equity", securityType: "equity" },
+    { id: uid("h"), accountId: "a_brokerage", ticker: "SPAXX", name: "Fidelity Government Money Market", quantity: 4180.11, costBasis: cents(1), price: cents(1), assetClass: "cash", securityType: "cash" },
+    { id: uid("h"), accountId: "a_401k", ticker: "VFIAX", name: "Vanguard 500 Index Admiral", quantity: 402.8, costBasis: cents(392.4), price: cents(561.22), assetClass: "us_equity", securityType: "mutual fund" },
+    { id: uid("h"), accountId: "a_401k", ticker: "VTIAX", name: "Vanguard Total Intl Index Admiral", quantity: 611.4, costBasis: cents(29.8), price: cents(38.94), assetClass: "intl_equity", securityType: "mutual fund" },
+    { id: uid("h"), accountId: "a_401k", ticker: "VBTLX", name: "Vanguard Total Bond Market Admiral", quantity: 780.2, costBasis: cents(10.4), price: cents(9.81), assetClass: "bond", securityType: "mutual fund" },
+    { id: uid("h"), accountId: "a_roth", ticker: "VTWAX", name: "Vanguard Total World Stock Admiral", quantity: 1402.6, costBasis: cents(34.1), price: cents(48.02), assetClass: "us_equity", securityType: "mutual fund" },
   ];
 
   // make each investment account's balance agree with the positions inside it,

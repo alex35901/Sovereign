@@ -849,6 +849,14 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* Every line on the chart, named with its colour. One wrapping row rather than
    a line each: half a dozen holdings would otherwise push the chart off the
    card. */
+/* What every line was doing on the day under the finger. Wider than a plain
+   chart tip because it carries a name and a figure per line, and pinned near
+   the top of the plot so it does not chase the line it is describing. */
+.scrub-tip { min-width: 190px; }
+.scrub-row { font-size: 12px; }
+.scrub-row .dot { flex: none; }
+.scrub-row .num { font-size: 12px; }
+
 .nw-versus { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 2px; }
 .nw-versus-item { font-size: 13px; font-weight: 500; }
 .nw-versus-item .dot { flex: none; }
@@ -856,6 +864,15 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* The holdings table reads as columns of figures, so every column is centred
    on itself, headers included. */
 .tbl-holdings th, .tbl-holdings td { text-align: center; vertical-align: middle; }
+/* Every column is a column of figures, and centred reads as one. The name is
+   not a figure: a run of tickers and fund names wants one left edge to scan
+   down, not a ragged middle. */
+.tbl-holdings th.hold-name, .tbl-holdings td.hold-name { text-align: left; }
+
+/* The heading over the tables, and what to cut them by. */
+.hold-controls { gap: 12px; align-items: center; margin-top: 4px; }
+.hold-controls h2 { font-size: 17px; }
+.hold-controls .select { width: auto; min-width: 170px; flex: none; }
 .tbl-holdings th.hold-pick, .tbl-holdings td.hold-pick { width: 34px; padding-left: 14px; padding-right: 0; }
 /* Off is an outline, on is the colour it was given on the chart. A hollow ring
    reads as "this could be on" where a grey disc reads as a disabled one. */

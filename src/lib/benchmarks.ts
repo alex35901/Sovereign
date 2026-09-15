@@ -219,11 +219,39 @@ export async function fetchHistory(
   from: ISODate,
   to: ISODate,
 ): Promise<{ date: ISODate; close: number }[]> {
-  const res = await postJSON<HistoryResponse>("/api/prices", {
-    apiKey: apiKey.trim(), history: [ticker], from, to,
-  });
-  const rows = res.history?.[ticker.toUpperCase()] ?? [];
-  return rows
-    .filter((r) => isDay(r.date) && Number.isFinite(r.close) && r.close > 0)
-    .map((r) => ({ date: r.date, close: Math.round(r.close * 100) }));
+  return (await fetchHistories(apiKey, [ticker], from, to))[ticker.toUpperCase()] ?? [];
+}
+
+/**
+ * How many symbols go in one request.
+ *
+ * The provider's free tier allows fifty requests an hour and there is no batch
+ * endpoint, so the proxy loops — but one HTTP round trip carrying four is four
+ * fewer connections from a page that opens with a table full of positions.
+ * Matches MAX_HISTORY on the server, which is what actually caps it.
+ */
+export const HISTORY_BATCH = 4;
+
+/** The same, for several symbols at once. Keyed by symbol, upper-cased. */
+export async function fetchHistories(
+  apiKey: string,
+  tickers: readonly string[],
+  from: ISODate,
+  to: ISODate,
+): Promise<Record<string, { date: ISODate; close: number }[]>> {
+  const out: Record<string, { date: ISODate; close: number }[]> = {};
+  for (let i = 0; i < tickers.length; i += HISTORY_BATCH) {
+    const batch = tickers.slice(i, i + HISTORY_BATCH);
+    // Sequential, deliberately: a page with forty positions would otherwise
+    // open ten connections at once and trip the limiter that a queue does not.
+    const res = await postJSON<HistoryResponse>("/api/prices", {
+      apiKey: apiKey.trim(), history: batch, from, to,
+    });
+    for (const [ticker, rows] of Object.entries(res.history ?? {})) {
+      out[ticker.toUpperCase()] = rows
+        .filter((r) => isDay(r.date) && Number.isFinite(r.close) && r.close > 0)
+        .map((r) => ({ date: r.date, close: Math.round(r.close * 100) }));
+    }
+  }
+  return out;
 }
