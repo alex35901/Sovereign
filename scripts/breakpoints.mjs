@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -92,7 +92,7 @@ const tryStep = async (what, fn) => {
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
-  "/recurring", "/goals", "/investments", "/rules", "/categories", "/tags", "/settings",
+  "/recurring", "/goals", "/investments", "/forecast", "/rules", "/categories", "/tags", "/settings",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
@@ -3698,6 +3698,204 @@ try {
         box.left > 8 && Math.abs(box.left - box.right) <= 3, `${box.left}px left, ${box.right}px right`);
     }
     await wide.close();
+  }
+
+  if (want("forecast")) {
+    // ── a guess, drawn as a guess ──
+    //
+    // The headline is one walk out of three and the band around it is the
+    // other two. A reader who sees only the line will read a figure thirty
+    // years out as a promise, so the band has to actually be there and it has
+    // to be wider than the line.
+    const fc = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await fc.goto(`${BASE}/forecast`, { waitUntil: "networkidle" });
+    await fc.waitForTimeout(900);
+
+    const shape = await fc.evaluate(() => {
+      const card = document.querySelector(".page > .nw-card");
+      const svg = card?.querySelector("svg");
+      const paths = svg ? [...svg.querySelectorAll("path")] : [];
+      const filled = paths.filter((x) => x.getAttribute("fill") !== "none" && x.getAttribute("d"));
+      const box = (el) => (el ? el.getBoundingClientRect() : null);
+      const tiles = [...document.querySelectorAll(".page > .grid.g3 > .card")].map((c) => box(c));
+      return {
+        first: document.querySelector(".page > *")?.className ?? "",
+        headline: card?.querySelector(".nw-total")?.innerText.trim() ?? "",
+        range: card?.querySelector(".fc-head .small.faint")?.innerText.trim() ?? "",
+        charts: card ? card.querySelectorAll(".chart-wrap svg").length : 0,
+        bands: filled.length,
+        marks: [...(svg?.querySelectorAll("text.axis-text") ?? [])].map((t) => t.textContent),
+        tileRows: new Set(tiles.map((b) => Math.round(b.top))).size,
+        tileCount: tiles.length,
+        dials: document.querySelectorAll(".fc-grid .field").length,
+        dialRows: new Set([...document.querySelectorAll(".fc-grid .field")]
+          .map((el) => Math.round(el.getBoundingClientRect().top))).size,
+        accounts: document.querySelectorAll(".fc-acc").length,
+      };
+    });
+    check("the page leads with the forecast card",
+      shape.first.includes("fc-scenarios") && shape.charts === 1, `${shape.first}, ${shape.charts} charts`);
+    check("with a figure and the range it could land in",
+      /^\$[\d,]+$/.test(shape.headline) && /between .* and /.test(shape.range),
+      `${shape.headline} — ${shape.range}`);
+    check("the band is drawn, not just the line",
+      shape.bands >= 1, `${shape.bands} filled paths`);
+
+    /**
+     * How far apart the good and bad cases are drawn at the end of the walk.
+     *
+     * In pixels, but as a floor rather than a comparison: the band closes back
+     * on itself at the last x, so both outcomes are among the points there and
+     * a band built from one walk three times collapses to nothing. A ratio
+     * between two runs would not catch that, because the chart rescales to
+     * whatever it is handed.
+     */
+    const bandGapAtEnd = () => fc.evaluate(() => {
+      const d = document.querySelector("svg path[opacity='0.1']")?.getAttribute("d") ?? "";
+      const pts = [...d.matchAll(/([\d.]+),([\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+      if (!pts.length) return 0;
+      const right = Math.max(...pts.map((q) => q[0]));
+      const ys = pts.filter((q) => q[0] === right).map((q) => q[1]);
+      return ys.length > 1 ? Math.max(...ys) - Math.min(...ys) : 0;
+    });
+    check("and it has real height, rather than three copies of one walk",
+      (await bandGapAtEnd()) > 20, `${(await bandGapAtEnd()).toFixed(0)}px apart at the end`);
+
+    // The card leads with net worth at retirement. What is left at the end is
+    // a different figure on a different tile, and reading one where the other
+    // belongs draws a chart that looks entirely correct.
+    // The first dollar figure in the string, and only that one: the sentence
+    // ends "left at 95", and stripping every non-digit would glue the age onto
+    // the money and compare a number that is in neither place.
+    const money = (t) => Number((/\$([\d,]+)/.exec(t ?? "")?.[1] ?? "").replace(/,/g, ""));
+    const atEnd = money(await fc.locator(".grid.g3 .card").first().locator(".small.muted").innerText());
+    check("the headline is the figure at retirement, not the one at the end",
+      atEnd > 0 && money(shape.headline) !== atEnd, `${shape.headline} against ${atEnd}`);
+    check("and the retirement age is marked on it",
+      shape.marks.some((t) => /Retire at \d+/.test(t ?? "")), shape.marks.filter(Boolean).join(" "));
+    check("three tiles on one row on a desktop",
+      shape.tileCount === 3 && shape.tileRows === 1, `${shape.tileCount} tiles over ${shape.tileRows} rows`);
+    check("and every assumption is a field on the page",
+      shape.dials === 10 && shape.dialRows <= 3, `${shape.dials} fields over ${shape.dialRows} rows`);
+    check("with a row per account whose tax or terms the walk needs",
+      shape.accounts >= 3, `${shape.accounts} rows`);
+
+    // ── the picture is answered, not decorated ──
+    //
+    // Every figure on this screen could be drawn convincingly from the wrong
+    // source: the headline from the end of the plan rather than retirement,
+    // the band from one walk drawn three times, the marker from a label that
+    // moves while the line stays put. Each of these changes one input and
+    // requires the thing it should move to move.
+    const storedPlan = () => fc.evaluate(() =>
+      JSON.parse(localStorage.getItem("sovereign.db.v1") ?? "{}").forecast ?? null);
+    check("looking at the forecast does not write one into the document",
+      (await storedPlan()) === null);
+
+    const markerX = () => fc.evaluate(() => {
+      const g = [...document.querySelectorAll("svg g")]
+        .find((el) => /Retire at/.test(el.querySelector("text")?.textContent ?? ""));
+      return g ? Number(g.querySelector("line")?.getAttribute("x1")) : null;
+    });
+    /**
+     * The good case less the bad one, in dollars, as the card states them.
+     *
+     * Read off the words rather than measured off the drawing: the chart
+     * rescales to whatever it is given, so a band twice as wide in money is
+     * only a few pixels taller once it fills the plot, and a pixel check
+     * quietly stops being able to tell the two apart.
+     */
+    const bandSpread = () => fc.evaluate(() => {
+      const text = document.querySelector(".fc-head .small.faint")?.innerText ?? "";
+      const nums = [...text.matchAll(/\$([\d.,]+)([kM]?)/g)]
+        .map((m) => Number(m[1].replace(/,/g, "")) * (m[2] === "M" ? 1e6 : m[2] === "k" ? 1e3 : 1));
+      return nums.length === 2 ? nums[1] - nums[0] : 0;
+    });
+    const headline = () => fc.locator(".nw-total").first().innerText();
+    const retireBox = fc.locator(".fc-grid .field").nth(1).locator("input");
+    const spreadBox = fc.locator(".fc-grid .field").nth(4).locator("input");
+
+    const wasHeadline = await headline();
+    const wasMark = await markerX();
+    const wasBand = await bandSpread();
+
+    if (await tryStep("the retire-at box takes an edit", async () => {
+      await retireBox.fill("55", { timeout: 5000 });
+      await retireBox.blur();
+      await fc.waitForTimeout(700);
+    })) {
+      check("retiring ten years earlier changes the answer",
+        (await headline()) !== wasHeadline, `${wasHeadline} -> ${await headline()}`);
+      check("and the marker moves rather than only being relabelled",
+        wasMark !== null && (await markerX()) < wasMark - 20, `${wasMark} -> ${await markerX()}`);
+      check("and the edit is saved to the scenario",
+        (await storedPlan())?.scenarios?.[0]?.assumptions?.retireAge === 55);
+      await retireBox.fill("65");
+      await retireBox.blur();
+      await fc.waitForTimeout(500);
+    }
+
+    if (await tryStep("the give-or-take box takes an edit", async () => {
+      await spreadBox.fill("4", { timeout: 5000 });
+      await spreadBox.blur();
+      await fc.waitForTimeout(700);
+    })) {
+      check("a wider give-or-take is a wider range of outcomes",
+        (await bandSpread()) > wasBand * 1.3, `${wasBand} -> ${await bandSpread()}`);
+      await spreadBox.fill("2");
+      await spreadBox.blur();
+      await fc.waitForTimeout(500);
+    }
+
+    // The earliest retirement age is bisected over the same walk. Lengthening
+    // the horizon means more years to pay for, so the answer has to move.
+    const throughBox = fc.locator(".fc-grid .field").nth(2).locator("input");
+    const earliestNow = await fc.locator(".tile-value").nth(1).innerText();
+    if (await tryStep("the plan-through box takes an edit", async () => {
+      await throughBox.fill("120", { timeout: 5000 });
+      await throughBox.blur();
+      await fc.waitForTimeout(900);
+    })) {
+      const later = await fc.locator(".tile-value").nth(1).innerText();
+      check("a longer horizon pushes the earliest retirement later",
+        Number(later) > Number(earliestNow), `${earliestNow} -> ${later}`);
+      await throughBox.fill("95");
+      await throughBox.blur();
+      await fc.waitForTimeout(600);
+    }
+
+    await fc.setViewportSize({ width: 390, height: 900 });
+    await fc.waitForTimeout(500);
+    const phone = await fc.evaluate(() => {
+      const tiles = [...document.querySelectorAll(".page > .grid.g3 > .card")]
+        .map((c) => c.getBoundingClientRect());
+      const fields = [...document.querySelectorAll(".fc-grid .field")]
+        .map((el) => el.getBoundingClientRect());
+      const page = document.querySelector(".page").getBoundingClientRect();
+      return {
+        tileRows: new Set(tiles.map((b) => Math.round(b.top))).size,
+        perRow: new Set(fields.filter((b) => Math.round(b.top) === Math.round(fields[0].top)).map((b) => b.left)).size,
+        widest: Math.round(Math.max(...[...document.querySelectorAll(".page *")]
+          .map((el) => el.getBoundingClientRect().right))),
+        edge: Math.round(page.right),
+      };
+    });
+    check("one tile per row on a phone",
+      phone.tileRows === 3, `${phone.tileRows} rows`);
+    check("and two dials across rather than one",
+      phone.perRow === 2, `${phone.perRow} per row`);
+    check("with nothing hanging off the right edge",
+      phone.widest <= phone.edge + 1, `${phone.widest} against ${phone.edge}`);
+    await fc.close();
+
+    const rail = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rail.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await rail.waitForTimeout(500);
+    const order = await rail.evaluate(() =>
+      [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
+    check("Forecast sits at the end of the Plan group",
+      order.indexOf("/forecast") === order.indexOf("/investments") + 1, order.join(" "));
+    await rail.close();
   }
 
 } finally {

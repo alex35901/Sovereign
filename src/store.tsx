@@ -15,6 +15,8 @@ import { squashHistory } from "./lib/history";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
+import type { Assumptions, ForecastEvent, ForecastPlan, Scenario } from "./lib/forecast";
+import { activeScenario, blankPlan } from "./lib/forecast";
 
 /** Tag colours for tags created by an import, spread across the palette. */
 const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
@@ -298,10 +300,45 @@ export interface Actions {
   /** Recolours a whole group; every category in it follows. */
   setGroupColor: (id: ID, color: string) => void;
 
+  /**
+   * The forecast, which every action below edits through the scenario that is
+   * showing. A document that has never had a plan gets one on first touch
+   * rather than on load, so opening any other screen never writes anything.
+   */
+  selectScenario: (id: ID) => void;
+  addScenario: (name: string, copyFrom?: ID) => void;
+  renameScenario: (id: ID, name: string) => void;
+  deleteScenario: (id: ID) => void;
+  setAssumptions: (patch: Partial<Assumptions>) => void;
+  /** Terms for one liability, which nothing else in the document records. */
+  setDebtTerms: (accountId: ID, terms: { apr: number; termMonths: number }) => void;
+  addForecastEvent: (e: Omit<ForecastEvent, "id">) => void;
+  updateForecastEvent: (id: ID, patch: Partial<ForecastEvent>) => void;
+  deleteForecastEvent: (id: ID) => void;
+
   addHolding: (h: Omit<Holding, "id">) => void;
   updateHolding: (id: ID, patch: Partial<Holding>) => void;
   deleteHolding: (id: ID) => void;
 }
+
+/**
+ * The document with its forecast edited, creating one if there is none.
+ *
+ * Built here rather than at load, so a document that has never opened the
+ * forecast screen never grows a plan it did not ask for - and so the plan a
+ * first edit lands on is seeded from the accounts as they stand that day.
+ */
+const withPlan = (db: DB, fn: (plan: ForecastPlan) => ForecastPlan): DB =>
+  ({ ...db, forecast: fn(db.forecast ?? blankPlan(db)) });
+
+/** The same, for an edit to whichever scenario is showing. */
+const withScenario = (db: DB, fn: (sc: Scenario) => Scenario): DB =>
+  withPlan(db, (plan) => {
+    const current = activeScenario(plan);
+    if (!current) return plan;
+    const next = fn(current);
+    return { ...plan, scenarios: plan.scenarios.map((s) => (s.id === current.id ? next : s)) };
+  });
 
 function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: string) => void): Actions {
   return {
@@ -658,6 +695,50 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
           : `Ran ${enabled.length} rule${enabled.length === 1 ? "" : "s"}, nothing needed changing.`);
         return { ...db, transactions };
       }, "run all rules"),
+
+    selectScenario: (id) => apply((db) => withPlan(db, (plan) =>
+      (plan.scenarios.some((s) => s.id === id) ? { ...plan, activeId: id } : plan))),
+    addScenario: (name, copyFrom) => apply((db) => withPlan(db, (plan) => {
+      // A new scenario starts as a copy of one that already exists, because
+      // the interesting question is never "what if everything were different"
+      // — it is "what if I retired two years earlier than that".
+      const from = plan.scenarios.find((s) => s.id === (copyFrom ?? plan.activeId)) ?? plan.scenarios[0];
+      const id = uid("sc");
+      const next: Scenario = {
+        id,
+        name: name.trim() || "Scenario",
+        assumptions: { ...from.assumptions, debts: { ...from.assumptions.debts } },
+        events: from.events.map((e) => ({ ...e, id: uid("fe") })),
+      };
+      return { scenarios: [...plan.scenarios, next], activeId: id };
+    }), "add scenario"),
+    renameScenario: (id, name) => apply((db) => withPlan(db, (plan) => ({
+      ...plan,
+      scenarios: plan.scenarios.map((s) => (s.id === id ? { ...s, name: name.trim() || s.name } : s)),
+    })), "rename scenario"),
+    deleteScenario: (id) => apply((db) => withPlan(db, (plan) => {
+      // The last one stays: a plan with no scenarios has nothing to show and
+      // no button that would bring one back.
+      if (plan.scenarios.length < 2) return plan;
+      const scenarios = plan.scenarios.filter((s) => s.id !== id);
+      return { scenarios, activeId: plan.activeId === id ? scenarios[0].id : plan.activeId };
+    }), "delete scenario"),
+    setAssumptions: (patch) => apply((db) => withScenario(db, (sc) => ({
+      ...sc, assumptions: { ...sc.assumptions, ...patch },
+    }))),
+    setDebtTerms: (accountId, terms) => apply((db) => withScenario(db, (sc) => ({
+      ...sc,
+      assumptions: { ...sc.assumptions, debts: { ...sc.assumptions.debts, [accountId]: terms } },
+    }))),
+    addForecastEvent: (e) => apply((db) => withScenario(db, (sc) => ({
+      ...sc, events: [...sc.events, { ...e, id: uid("fe") }],
+    })), "add life event"),
+    updateForecastEvent: (id, patch) => apply((db) => withScenario(db, (sc) => ({
+      ...sc, events: sc.events.map((e) => (e.id === id ? { ...e, ...patch } : e)),
+    })), "edit life event"),
+    deleteForecastEvent: (id) => apply((db) => withScenario(db, (sc) => ({
+      ...sc, events: sc.events.filter((e) => e.id !== id),
+    })), "delete life event"),
 
     addHolding: (h) => apply((db) => ({ ...db, holdings: [...db.holdings, { ...h, id: uid("h") }] })),
     updateHolding: (id, patch) => apply((db) => ({ ...db, holdings: replace(db.holdings, id, patch) })),

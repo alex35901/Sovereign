@@ -17,6 +17,7 @@ import Hopper from "./screens/Hopper";
 import Goals from "./screens/Goals";
 import GoalDetail from "./screens/GoalDetail";
 import Investments from "./screens/Investments";
+import Forecast from "./screens/Forecast";
 import Settings from "./screens/Settings";
 import Rules from "./screens/Rules";
 import Categories from "./screens/Categories";
@@ -48,6 +49,7 @@ export default function App() {
           <Route path="/goals" element={<Goals />} />
           <Route path="/goals/:id" element={<GoalDetail />} />
           <Route path="/investments" element={<Investments />} />
+          <Route path="/forecast" element={<Forecast />} />
           <Route path="/rules" element={<Rules />} />
           <Route path="/categories" element={<Categories />} />
           <Route path="/categories/:id" element={<CategoryDetail />} />

@@ -71,9 +71,23 @@ export interface Point { label: string; value: number; sub?: string }
 
 export function AreaChart({
   points, height = 190, tone = "--accent", negativeTone = "--neg", zeroBase = false, startLine = false,
-  markLine, markLabel, bare = false, onScrub, format, compare, tip,
+  markLine, markLabel, bare = false, onScrub, format, compare, tip, band, marks,
 }: {
   points: Point[]; height?: number; tone?: string; negativeTone?: string; zeroBase?: boolean; startLine?: boolean;
+  /**
+   * A shaded range around the line, drawn behind it.
+   *
+   * For a forecast, where the line is one guess out of many and a reader who
+   * sees only the line will read it as a promise. Same length as `points`,
+   * because it is the same days.
+   */
+  band?: { low: number[]; high: number[] };
+  /**
+   * Vertical markers at named points along the run, for the things that make
+   * the shape the shape: the month somebody retires, the month they buy a
+   * house. Without them a kink in the line has no explanation on the page.
+   */
+  marks?: { index: number; label: string; tone?: string }[];
   /**
    * A second line on the same axis, for reading one series against another.
    *
@@ -143,7 +157,10 @@ export function AreaChart({
   const innerW = Math.max(40, w - padL - padR);
   const innerH = height - padT - padB;
   const values = points.map((p) => p.value);
-  const other = (compare ?? []).flatMap((c) => c.values.filter((v): v is number => v !== null));
+  const other = (compare ?? []).flatMap((c) => c.values.filter((v): v is number => v !== null))
+    // The band is part of the range too, or the good case runs off the top of
+    // a chart scaled to the middle one alone.
+    .concat(band ? [...band.low, ...band.high].filter((v) => Number.isFinite(v)) : []);
   const hasNegative = values.some((v) => v < 0) || other.some((v) => v < 0);
   // The axis spans exactly the period's min and max. Zero is only forced in
   // where a caller asks for it; on a balance chart it would flatten the line
@@ -195,6 +212,17 @@ export function AreaChart({
     });
     if (run.length > 1) compareRuns.push({ d: run.join(" "), tone: c.tone });
   }
+  // One closed shape: along the top of the good case and back along the
+  // bottom of the bad one.
+  const bandTop = band && band.low.length === points.length
+    ? points.map((_, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(band.high[i]).toFixed(1)}`).join(" ")
+    : null;
+  const bandBottom = band && band.low.length === points.length
+    ? points.map((_, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(band.low[i]).toFixed(1)}`).join(" ")
+    : null;
+  const bandPath = band && bandTop && bandBottom
+    ? `${bandTop} ${points.map((_, i) => points.length - 1 - i).map((i) => `L${x(i).toFixed(1)},${y(band.low[i]).toFixed(1)}`).join(" ")} Z`
+    : null;
   const ticks = rangeTicks(lo, hi);
   const label = format ?? axisFormat(lo, hi);
 
@@ -262,8 +290,23 @@ export function AreaChart({
           </g>
         ))}
 
-        <path d={area} fill={`url(#up-${uid})`} clipPath={`url(#above-${uid})`} />
-        <path d={area} fill={`url(#dn-${uid})`} clipPath={`url(#below-${uid})`} />
+        {/* The band replaces the gradient rather than joining it: two fills of
+            the same colour over each other read as one muddy shape, and the
+            one that carries meaning is the band. */}
+        {bandPath ? (
+          <>
+            <path d={bandPath} fill={color(tone)} opacity={0.1} stroke="none" />
+            {/* Edges, or a wash this wide reads as a stain rather than as two
+                outcomes with the answer somewhere between them. */}
+            <path d={bandTop!} fill="none" stroke={color(tone)} strokeWidth={1} opacity={0.4} />
+            <path d={bandBottom!} fill="none" stroke={color(tone)} strokeWidth={1} opacity={0.4} />
+          </>
+        ) : (
+          <>
+            <path d={area} fill={`url(#up-${uid})`} clipPath={`url(#above-${uid})`} />
+            <path d={area} fill={`url(#dn-${uid})`} clipPath={`url(#below-${uid})`} />
+          </>
+        )}
         <path d={line} fill="none" stroke={color(tone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" clipPath={`url(#above-${uid})`} />
         <path d={line} fill="none" stroke={color(negativeTone)} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" clipPath={`url(#below-${uid})`} />
 
@@ -299,6 +342,23 @@ export function AreaChart({
             stroke={color("--faint")} strokeWidth={1} strokeDasharray="3 4" opacity={0.8}
           />
         ) : null}
+
+        {(marks ?? []).filter((m) => m.index >= 0 && m.index < points.length).map((m, k) => (
+          <g key={`${m.label}-${k}`}>
+            <line
+              x1={x(m.index)} x2={x(m.index)} y1={padT} y2={padT + innerH}
+              stroke={color(m.tone ?? "--muted")} strokeWidth={1} strokeDasharray="3 4" opacity={0.8}
+            />
+            {/* Anchored away from whichever edge it is nearest, so a marker in
+                the last month does not write its label off the chart. */}
+            <text
+              className="axis-text" x={x(m.index) + (m.index > points.length * 0.7 ? -5 : 5)} y={padT + 9}
+              textAnchor={m.index > points.length * 0.7 ? "end" : "start"}
+            >
+              {m.label}
+            </text>
+          </g>
+        ))}
 
         {bare ? null : labelled.map((i) => (
           <text key={points[i].label + i} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">

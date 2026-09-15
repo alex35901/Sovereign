@@ -74,7 +74,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~446)
+### Unit tests — `scripts/selftest.mjs` (~598)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -102,7 +102,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~69)
+### Browser tests — `scripts/breakpoints.mjs` (~383)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -212,6 +212,24 @@ the first, a full stop when it is a new thought, a comma for an aside, and
 parentheses for a list of examples. A test in `scripts/selftest.mjs` strips the
 comments and fails on any that come back.
 
+- `src/lib/forecast.ts` — the only thing in the app that says what *might*
+  happen. A month-by-month walk, not a compound-interest formula: the moment a
+  plan has a house or a pension in it the formula stops applying and the walk
+  still works. Three rules hold it together and each is load-bearing —
+  **every assumption is a named editable number** (nothing is a constant in
+  that file), **the answer is a range** (`runBand` walks it three times), and
+  **figures are in today's money by default**. Two rate conversions, not one:
+  `monthlyRate` compounds (investments) and `debtMonthlyRate` divides by twelve
+  (lenders quote an APR and charge a twelfth of it, which is what makes 6% on
+  $300k the $1,798.65 payment on the statement). Inside a month the order is
+  income, bills, save or draw, *then* growth. A debt payment is already inside
+  measured spending, so only interest leaves and the payment is dropped from
+  `spend` when the balance clears. Withdrawals go cash → taxable →
+  traditional (**grossed up** by `1/(1-tax)`) → roth. Nothing else in the
+  document records a liability's rate or term, or which pot an account's money
+  is taxed in, which is why `Assumptions.debts` and `Account.taxTreatment`
+  exist. The plan is built on first edit, never on load: opening any other
+  screen must not write one.
 - `src/lib/notifications.ts` — what the app would tell you if you had not been
   looking. Every notice is derived from the document; only *which have been
   read* is stored, and the id encodes what was true (`budget:2026-09:c_x:over25`)
@@ -286,6 +304,13 @@ Patterns worth reusing:
   public, identical for every user, and re-fetchable in one request. Putting six
   years of them on every save would be paying sync bandwidth for data that says
   nothing about anybody. The cost is that a new device fetches its own copy.
+- `AreaChart` grew `band` and `marks` for the forecast. `band` replaces the
+  gradient fill rather than sitting on top of it: two translucent fills of the
+  same colour over each other read as one muddy shape, and the one carrying
+  meaning is the band. Its edges are stroked, or a wash spanning half the chart
+  reads as a stain instead of as two outcomes with the answer between them.
+  Both are folded into the axis range, or the good case runs off the top of a
+  chart scaled to the middle walk alone.
 - `paidOccurrences` in `src/lib/select.ts` is the one place that says a
   recurring bill has actually been paid. Everything else on that screen counts
   off the schedule, where a date in the past only means a bill fell due, so the

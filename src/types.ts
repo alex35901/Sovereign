@@ -47,6 +47,14 @@ export interface Account {
   logo?: string;
   /** The institution's website, used to look a logo up when it doesn't. */
   domain?: string;
+  /**
+   * Which pot the forecast draws this account from.
+   *
+   * Only the forecast reads it, and only investable accounts have one. Unset
+   * means "work it out from the type and the name", which gets a 401(k) and a
+   * Roth IRA right without anybody being asked.
+   */
+  taxTreatment?: "taxable" | "traditional" | "roth";
   syncSource?: "manual" | "csv" | "simplefin" | "plaid";
   syncId?: string;
   lastSyncedAt?: string;
@@ -330,6 +338,8 @@ export interface PlaidItemRef {
   lastSyncAt?: string;
 }
 
+import type { ForecastPlan } from "./lib/forecast.js";
+
 export interface DB {
   version: number;
   accounts: Account[];
@@ -351,6 +361,8 @@ export interface DB {
    * here is paid for on every sync.
    */
   hopper?: HopperExchange[];
+  /** Scenarios for the forecast. Absent until somebody opens it. */
+  forecast?: ForecastPlan;
   settings: Settings;
 }
 

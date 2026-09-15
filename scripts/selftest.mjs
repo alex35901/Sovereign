@@ -75,6 +75,7 @@ await build({
       export { fetchHistory as fetchHistoryDirect, MAX_HISTORY } from "./api/_prices.ts";
       export * as BM from "./src/lib/benchmarks.ts";
       export * as HG from "./src/lib/holdings.ts";
+      export * as FC from "./src/lib/forecast.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4280,6 +4281,327 @@ await test("closes merge oldest first, one per day, newest answer winning", () =
   ], "t3");
   assert.deepEqual(clean.dates, first.dates);
   assert.equal(clean.dates.length, clean.closes.length);
+});
+
+/* ── where the money is going, decades out ─────────────────────────────── */
+
+const ASSUME = (over = {}) => ({
+  birthYear: 1990, retireAge: 65, endAge: 95,
+  returnPct: 6, returnSpreadPct: 2, inflationPct: 3, wageGrowthPct: 3,
+  retirementSpendPct: 85, taxRatePct: 22, monthlyRetirementContribution: 0,
+  realDollars: false, debts: {}, ...over,
+});
+const POS = (over = {}) => ({
+  cash: 0, taxable: 0, traditional: 0, roth: 0, illiquid: 0, debts: [],
+  monthlyIncome: 0, monthlySpend: 0, ...over,
+});
+const run = (pos, assume, events = [], rate = null, from = "2030-01") =>
+  M.FC.runForecast(POS(pos), ASSUME(assume), events, rate ?? ASSUME(assume).returnPct, from);
+
+await test("a yearly rate is compounded into months, not divided by twelve", () => {
+  const { monthlyRate } = M.FC;
+  // 12%/12 is 1%, which compounds to 12.68% — over thirty years that error
+  // alone is a fifth of the answer.
+  assert.ok(Math.abs(monthlyRate(12) - 0.009488792934583046) < 1e-12, `${monthlyRate(12)}`);
+  assert.ok(Math.abs(Math.pow(1 + monthlyRate(7), 12) - 1.07) < 1e-12);
+  assert.equal(monthlyRate(0), 0);
+});
+
+await test("money left alone grows at the rate it was given, and no faster", () => {
+  // Ten years, nothing in or out: 100k at 6% is 100k × 1.06^10.
+  const out = run({ taxable: 100_000_00 }, { birthYear: 1990, retireAge: 95, endAge: 50 }, [], 6, "2030-01");
+  const last = out.points[out.points.length - 1];
+  const want = 100_000_00 * Math.pow(1.06, 10);
+  assert.ok(Math.abs(last.invested - want) / want < 0.005, `${last.invested} against ${Math.round(want)}`);
+});
+
+await test("a mortgage payment is already in what is spent, so only interest leaves", () => {
+  const { levelPayment } = M.FC;
+  // A level payment clears the balance over the term, and no sooner.
+  const pay = levelPayment(-300_000_00, 6, 360);
+  assert.ok(Math.abs(pay - 1798_65) < 200, `${pay}`);
+  assert.equal(levelPayment(-1200_00, 0, 12), 100_00, "a rate of nothing is the balance over the months");
+
+  // Twenty-five years of payments takes the balance to zero and not past it.
+  const out = run(
+    { cash: 50_000_00, monthlyIncome: 8_000_00, monthlySpend: 6_000_00, debts: [{ id: "m", balance: -300_000_00 }] },
+    { birthYear: 1990, retireAge: 95, endAge: 75, debts: { m: { apr: 6, termMonths: 360 } } },
+  );
+  // Thirty years from forty is seventy, and not a month before.
+  assert.ok(out.points.find((p) => p.age >= 71).debt === 0, "the mortgage is gone by the end of its term");
+  assert.ok(out.points.find((p) => p.age >= 69).debt < 0, "and is still there the year before");
+  assert.ok(out.points[12].debt < 0, "and is still there a year in");
+});
+
+await test("paying a debt off stops the household paying it", () => {
+  // The payment sits inside measured spending, so when the debt ends the
+  // spending has to fall — otherwise a forecast has somebody paying a
+  // mortgage on a house they own outright, forever.
+  //
+  // Nothing grows here, on purpose: with a return in it the gap between the
+  // two runs compounds and the thing being tested is buried under the market.
+  const still = { birthYear: 1990, retireAge: 95, endAge: 60, inflationPct: 0, wageGrowthPct: 0 };
+  const withDebt = run(
+    { taxable: 500_000_00, monthlyIncome: 6_000_00, monthlySpend: 5_000_00, debts: [{ id: "c", balance: -24_000_00 }] },
+    { ...still, debts: { c: { apr: 0, termMonths: 24 } } },
+    [], 0,
+  );
+  // The same household, a debt lighter and paying a debt lighter.
+  const noDebt = run(
+    { taxable: 500_000_00, monthlyIncome: 6_000_00, monthlySpend: 5_000_00 - 1_000_00 },
+    still, [], 0,
+  );
+  // One of them is 24,000 poorer and stays exactly 24,000 poorer: every month
+  // it pays 1,000 more, and every month it owes 1,000 less. After the debt
+  // ends they are the same household and the gap stops moving at all. Were the
+  // payment not dropped, the gap would widen by 1,000 a month from there.
+  const gapAt = (n) => noDebt.points[n].net - withDebt.points[n].net;
+  assert.ok(Math.abs(gapAt(0) - 24_000_00) < 100, `${gapAt(0)}`);
+  assert.ok(Math.abs(gapAt(24) - gapAt(0)) < 100, `${gapAt(0)} then ${gapAt(24)}`);
+  assert.ok(Math.abs(gapAt(230) - gapAt(0)) < 100, `${gapAt(0)} then ${gapAt(230)}`);
+});
+
+await test("retirement stops the pay and steps the spending down once", () => {
+  const out = run(
+    { taxable: 2_000_000_00, monthlyIncome: 10_000_00, monthlySpend: 5_000_00 },
+    { birthYear: 1990, retireAge: 45, endAge: 50, retirementSpendPct: 80, inflationPct: 0, wageGrowthPct: 0 },
+    [], 0,
+  );
+  const working = out.points.filter((p) => !p.retired);
+  const retired = out.points.filter((p) => p.retired);
+  assert.ok(working.length > 0 && retired.length > 0);
+  // Working: +10,000 in, -5,000 out, so net worth climbs by 5,000 a month.
+  const climb = working[12].net - working[11].net;
+  assert.ok(Math.abs(climb - 5_000_00) < 100, `${climb}`);
+  // Retired: nothing in, 80% of 5,000 out, so it falls by 4,000 a month and
+  // keeps falling by 4,000 — the step happens once, not every month.
+  const i = out.points.findIndex((p) => p.retired);
+  const first = out.points[i + 2].net - out.points[i + 1].net;
+  const later = out.points[i + 20].net - out.points[i + 19].net;
+  assert.ok(Math.abs(first + 4_000_00) < 100, `${first}`);
+  assert.ok(Math.abs(first - later) < 100, `${first} then ${later}`);
+});
+
+await test("a pre-tax withdrawal is grossed up, so the tax is really paid", () => {
+  // Spending 1,000 a month out of a traditional account at 25% has to take
+  // 1,333 out of it. A forecast that takes 1,000 is quietly 33% optimistic.
+  const draw = (taxRatePct) => {
+    const out = run(
+      { traditional: 120_000_00, monthlySpend: 1_000_00 },
+      { birthYear: 1990, retireAge: 40, endAge: 45, taxRatePct, inflationPct: 0, wageGrowthPct: 0, retirementSpendPct: 100 },
+      [], 0,
+    );
+    return 120_000_00 - out.points[12].invested;
+  };
+  // Untaxed, exactly what was spent leaves the pot.
+  const free = draw(0);
+  assert.ok(Math.abs(free - 13 * 1_000_00) < 100, `${free}`);
+  // Taxed, a quarter more has to leave for the same spending to happen.
+  assert.ok(Math.abs(draw(25) - free / 0.75) < 200, `${draw(25)} against ${free / 0.75}`);
+  assert.ok(Math.abs(draw(40) - free / 0.6) < 200, `${draw(40)} against ${free / 0.6}`);
+});
+
+await test("a pre-tax pot too small to cover the month hands the rest on, net of tax", () => {
+  // The pot has 750 in it and 1,000 is needed. Emptying it yields 750 less
+  // 25% tax, which is 562.50 of spendable money, so 437.50 still has to come
+  // out of the Roth. Taking the pot as worth its face value would leave only
+  // 250 to find, and the difference is the tax quietly never being paid.
+  const out = run(
+    { traditional: 750_00, roth: 100_000_00, monthlySpend: 1_000_00 },
+    { birthYear: 1990, retireAge: 40, endAge: 41, taxRatePct: 25, inflationPct: 0, wageGrowthPct: 0, retirementSpendPct: 100 },
+    [], 0,
+  );
+  assert.equal(out.points[0].invested, 100_000_00 - 437_50);
+});
+
+await test("a surplus piling up in cash gets invested once it is past a float", () => {
+  // Three months of spending stays liquid and the rest goes to work. Without
+  // this a thirty-year forecast has every dollar ever saved sitting in a
+  // current account earning nothing, which understates the answer by more
+  // than any assumption on the panel.
+  const out = run(
+    { monthlyIncome: 2_000_00, monthlySpend: 1_000_00 },
+    { birthYear: 1990, retireAge: 95, endAge: 45, inflationPct: 0, wageGrowthPct: 0 },
+    [], 0,
+  );
+  // 1,000 a month in: three months fills the float exactly, and nothing has
+  // been invested yet.
+  assert.equal(out.points[2].cash, 3_000_00);
+  assert.equal(out.points[2].invested, 0);
+  // The fourth month is the first with anywhere else to go.
+  assert.equal(out.points[3].cash, 3_000_00);
+  assert.equal(out.points[3].invested, 1_000_00);
+  // And the float stays a float rather than growing with the pile.
+  assert.equal(out.points[10].cash, 3_000_00);
+  assert.equal(out.points[10].invested, 8_000_00);
+});
+
+await test("savings are spent before the pre-tax pot, because tax is a real cost", () => {
+  const out = run(
+    { cash: 0, taxable: 10_000_00, traditional: 100_000_00, monthlySpend: 1_000_00 },
+    { birthYear: 1990, retireAge: 40, endAge: 43, taxRatePct: 30, inflationPct: 0, wageGrowthPct: 0, retirementSpendPct: 100 },
+    [], 0,
+  );
+  // Ten months of spending comes out of the taxable ten thousand, untaxed,
+  // and only then does the pre-tax pot start paying.
+  assert.ok(out.points[9].invested > 100_000_00 - 500_00, `${out.points[9].invested}`);
+  assert.ok(out.points[24].invested < 100_000_00, "and by two years in it has started");
+});
+
+await test("running out is reported, and not running out is not", () => {
+  const broke = run(
+    { cash: 10_000_00, monthlySpend: 1_000_00 },
+    { birthYear: 1990, retireAge: 40, endAge: 45, inflationPct: 0, retirementSpendPct: 100 },
+    [], 0,
+  );
+  assert.ok(broke.ranOutAt !== null && broke.ranOutAt > 40 && broke.ranOutAt < 42, `${broke.ranOutAt}`);
+  const fine = run(
+    { taxable: 5_000_000_00, monthlySpend: 1_000_00 },
+    { birthYear: 1990, retireAge: 40, endAge: 45, inflationPct: 0, retirementSpendPct: 100 },
+    [], 0,
+  );
+  assert.equal(fine.ranOutAt, null);
+});
+
+await test("today's money is the same walk, deflated", () => {
+  const pos = { taxable: 100_000_00 };
+  const assume = { birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 3 };
+  const nominal = run(pos, { ...assume, realDollars: false }, [], 6);
+  const real = run(pos, { ...assume, realDollars: true }, [], 6);
+  const n = nominal.points.length - 1;
+  // Ten years at 6% nominal and 3% inflation is about 3% a year in real terms.
+  const want = nominal.points[n].net * Math.pow(1.03, -10);
+  assert.ok(Math.abs(real.points[n].net - want) / want < 0.01,
+    `${real.points[n].net} against ${Math.round(want)}`);
+  assert.equal(real.points[0].net, nominal.points[0].net, "and today is today either way");
+});
+
+await test("the band is three walks, and a wider spread is a wider band", () => {
+  const pos = { taxable: 200_000_00 };
+  const a = ASSUME({ birthYear: 1990, retireAge: 95, endAge: 60, returnPct: 6, returnSpreadPct: 2 });
+  const band = M.FC.runBand(POS(pos), a, [], "2030-01");
+  const n = band.mid.points.length - 1;
+  assert.ok(band.low.points[n].net < band.mid.points[n].net);
+  assert.ok(band.mid.points[n].net < band.high.points[n].net);
+  const wide = M.FC.runBand(POS(pos), { ...a, returnSpreadPct: 4 }, [], "2030-01");
+  assert.ok(wide.high.points[n].net > band.high.points[n].net);
+  assert.ok(wide.low.points[n].net < band.low.points[n].net);
+  // No spread at all is one line three times, not a crash.
+  const flat = M.FC.runBand(POS(pos), { ...a, returnSpreadPct: 0 }, [], "2030-01");
+  assert.equal(flat.low.points[n].net, flat.high.points[n].net);
+});
+
+await test("an event only counts from the month it starts, and stops when told", () => {
+  const base = { taxable: 500_000_00, monthlySpend: 1_000_00 };
+  const assume = { birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 0, wageGrowthPct: 0 };
+  const plain = run(base, assume, [], 0);
+  const withPension = run(base, assume, [
+    { id: "e1", kind: "income", name: "Pension", at: "2035-01", amount: 2_000_00 },
+  ], 0);
+  // Nothing before it starts.
+  const before = plain.points.findIndex((p) => p.month === "2034-12");
+  assert.equal(withPension.points[before].net, plain.points[before].net);
+  // And 2,000 a month after.
+  const after = plain.points.findIndex((p) => p.month === "2036-01");
+  const gap = withPension.points[after].net - plain.points[after].net;
+  assert.ok(Math.abs(gap - 13 * 2_000_00) < 100, `${gap}`);
+
+  // An end age stops it.
+  const ends = run(base, assume, [
+    { id: "e1", kind: "income", name: "Pension", at: "2035-01", amount: 2_000_00, untilAge: 46 },
+  ], 0);
+  const n = ends.points.length - 1;
+  assert.ok(ends.points[n].net < withPension.points[n].net);
+});
+
+await test("a one-off lands once, in the month it is dated", () => {
+  const assume = { birthYear: 1990, retireAge: 95, endAge: 45, inflationPct: 0, wageGrowthPct: 0 };
+  const out = run({ cash: 100_000_00 }, assume, [
+    { id: "e", kind: "oneOff", name: "Inheritance", at: "2032-06", amount: 50_000_00 },
+  ], 0);
+  const at = (m) => out.points.find((p) => p.month === m).net;
+  assert.ok(Math.abs(at("2032-05") - 100_000_00) < 100, `${at("2032-05")}`);
+  assert.ok(Math.abs(at("2032-06") - 150_000_00) < 100, `${at("2032-06")}`);
+  assert.ok(Math.abs(at("2033-06") - 150_000_00) < 100, "and does not land again");
+
+  // The sign is the whole difference between an inheritance and a wedding,
+  // and a lump the plan cannot subtract is a plan that only ever gets richer.
+  const spent = run({ cash: 100_000_00 }, assume, [
+    { id: "w", kind: "oneOff", name: "Wedding", at: "2032-06", amount: -30_000_00 },
+  ], 0);
+  const out2 = (m) => spent.points.find((p) => p.month === m).net;
+  assert.ok(Math.abs(out2("2032-05") - 100_000_00) < 100, `${out2("2032-05")}`);
+  assert.ok(Math.abs(out2("2032-06") - 70_000_00) < 100, `${out2("2032-06")}`);
+  assert.ok(Math.abs(out2("2033-06") - 70_000_00) < 100, "and is not spent twice");
+});
+
+await test("buying a home moves money, adds a house, and adds a mortgage", () => {
+  const assume = { birthYear: 1990, retireAge: 95, endAge: 45, inflationPct: 0, wageGrowthPct: 0 };
+  const out = run({ cash: 200_000_00, monthlyIncome: 10_000_00, monthlySpend: 2_000_00 }, assume, [
+    { id: "h", kind: "home", name: "House", at: "2032-01", amount: 0,
+      home: { price: 500_000_00, downPayment: 100_000_00, apr: 6, termMonths: 360, monthlyCosts: 800_00 } },
+  ], 0);
+  const before = out.points.find((p) => p.month === "2031-12");
+  const after = out.points.find((p) => p.month === "2032-01");
+  assert.equal(before.illiquid, 0);
+  assert.equal(after.illiquid, 500_000_00, "the house is an asset the month it is bought");
+  assert.ok(after.debt < -399_000_00 && after.debt > -401_000_00, `${after.debt}`);
+  // Net worth barely moves: cash became a deposit and equity. What it costs is
+  // the interest and the upkeep, which show up over time rather than at once.
+  assert.ok(Math.abs(after.net - before.net) < 10_000_00, `${before.net} then ${after.net}`);
+  // And the mortgage is paid down from there.
+  const later = out.points.find((p) => p.month === "2034-01");
+  assert.ok(later.debt > after.debt, `${after.debt} then ${later.debt}`);
+});
+
+await test("the earliest retirement age is the first one the money survives", () => {
+  const { earliestRetirement } = M.FC;
+  const rich = POS({ taxable: 5_000_000_00, monthlyIncome: 10_000_00, monthlySpend: 3_000_00 });
+  const assume = ASSUME({ birthYear: 1990, endAge: 95, inflationPct: 0, wageGrowthPct: 0, returnPct: 5, retirementSpendPct: 100 });
+  assert.equal(earliestRetirement(rich, assume, [], "2030-01"), 40, "enough to stop today says today");
+
+  // Spending more than comes in, so the money goes even while working: there
+  // is no age that survives, and the answer is that there is no age.
+  const poor = POS({ taxable: 1_000_00, monthlyIncome: 5_000_00, monthlySpend: 5_400_00 });
+  assert.equal(earliestRetirement(poor, assume, [], "2030-01"), null, "and never enough says so");
+
+  // In between: the answer has to actually work, and the year before it must not.
+  const middling = POS({ taxable: 600_000_00, monthlyIncome: 8_000_00, monthlySpend: 5_000_00 });
+  const age = earliestRetirement(middling, assume, [], "2030-01");
+  assert.ok(age !== null && age > 40 && age < 95, `${age}`);
+  const at = (n) => M.FC.runForecast(middling, { ...assume, retireAge: n }, [], assume.returnPct, "2030-01").ranOutAt;
+  assert.equal(at(age), null, `retiring at ${age} should last`);
+  assert.ok(at(age - 1) !== null, `retiring at ${age - 1} should not`);
+});
+
+await test("an account lands in the pot it belongs to, without being asked", () => {
+  const { defaultTreatment, startingPosition } = M.FC;
+  assert.equal(defaultTreatment("retirement", "Roth IRA"), "roth");
+  assert.equal(defaultTreatment("retirement", "401(k)"), "traditional");
+  assert.equal(defaultTreatment("investment", "Brokerage"), "taxable");
+  assert.equal(defaultTreatment("checking", "Everyday"), null);
+
+  const db = {
+    ...M.emptyDB(),
+    accounts: [
+      { id: "c", name: "Checking", type: "checking", balance: 5_000_00, includeInNetWorth: true, hidden: false, history: [] },
+      { id: "b", name: "Brokerage", type: "investment", balance: 50_000_00, includeInNetWorth: true, hidden: false, history: [] },
+      { id: "k", name: "401(k)", type: "retirement", balance: 200_000_00, includeInNetWorth: true, hidden: false, history: [] },
+      { id: "r", name: "Roth IRA", type: "retirement", balance: 60_000_00, includeInNetWorth: true, hidden: false, history: [] },
+      { id: "h", name: "House", type: "real_estate", balance: 400_000_00, includeInNetWorth: true, hidden: false, history: [] },
+      { id: "m", name: "Mortgage", type: "mortgage", balance: -300_000_00, includeInNetWorth: true, hidden: false, history: [] },
+      { id: "x", name: "Old", type: "investment", balance: 900_00, includeInNetWorth: true, hidden: true, history: [] },
+      // Said out loud beats guessed: a brokerage holding somebody's Roth.
+      { id: "o", name: "Odd", type: "investment", balance: 7_000_00, includeInNetWorth: true, hidden: false, history: [], taxTreatment: "roth" },
+    ],
+  };
+  const pos = startingPosition(db, 0, 0);
+  assert.equal(pos.cash, 5_000_00);
+  assert.equal(pos.taxable, 50_000_00);
+  assert.equal(pos.traditional, 200_000_00);
+  assert.equal(pos.roth, 60_000_00 + 7_000_00);
+  assert.equal(pos.illiquid, 400_000_00);
+  assert.deepEqual(pos.debts, [{ id: "m", balance: -300_000_00 }]);
 });
 
 /* ── cutting a list of positions, and what each has done ───────────────── */
