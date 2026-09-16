@@ -72,6 +72,12 @@ bundle, and the browser checks then pass against code that was never changed.
 own outcome rather than as a catch. Watch for it especially when a mutation
 removes the last use of an import, which trips TS6133.
 
+**`npx tsc --noEmit` type-checks nothing in `src/`.** The root `tsconfig.json`
+carries `"files": []` and exists to give Vercel sane defaults for `api/`; the
+app is checked through its project reference. So that command passes on code
+that does not compile, which makes it worse than useless as a gate. **Use
+`npx tsc -b`**, or just `npm run build`, which runs it.
+
 **A crash is not a catch either.** `scripts/breakpoints.mjs` prints its results
 at the end, so any locator that throws takes the whole list with it. Read
 through `page.evaluate` when the thing being read might legitimately be absent
@@ -114,7 +120,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~419)
+### Browser tests — `scripts/breakpoints.mjs` (~427)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -379,6 +385,19 @@ Patterns worth reusing:
   because the house kept pace with inflation and the mortgage kept amortising:
   a rising line under a headline saying they were three million short. A house
   is not something you can spend.
+- Every `AreaChart` draws a readout, so **touch is wired for all of them**, not
+  only the ones that hand theirs to a caller through `onScrub`. It used to be
+  gated on that prop, which meant a finger did nothing at all on five charts
+  (forecast, estate, goal detail, vehicle value, the balance import preview).
+  `touch-action: pan-y` throughout: a vertical drag still scrolls the page, a
+  horizontal one reads the chart, and the reading follows the finger and clears
+  when it lifts. A tap therefore shows nothing, which is correct.
+- Where a chart has a `band`, its own tooltip reports both edges. The line
+  under the finger is only ever the middle of three, and a forecast whose whole
+  point is that it is a range should not make a reader measure the edges by
+  eye. `Math.max`/`Math.min` rather than trusting the order: nothing promises
+  the good case is the higher number, and a pair printed backwards reads as a
+  bug.
 - `AreaChart` grew `band` and `marks` for the forecast. `band` replaces the
   gradient fill rather than sitting on top of it: two translucent fills of the
   same colour over each other read as one muddy shape, and the one carrying

@@ -618,6 +618,18 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 /* ── charts ───────────────────────────────────────────────────────────── */
 .chart-tip { position: absolute; pointer-events: none; background: var(--surface-3); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font-size: 12px; box-shadow: var(--shadow); z-index: 20; white-space: nowrap; }
 .chart-wrap { position: relative; }
+/* The band's two edges under the figure on the line, as a pair of labelled
+   rows: "$2.5M to $3.8M" on one line reads as a single quantity, and which
+   end is which is the thing being asked. */
+.tip-band {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 1px 12px;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}
+.tip-band > .num { text-align: right; }
 svg .grid-line { stroke: var(--line-soft); stroke-width: 1; }
 svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 

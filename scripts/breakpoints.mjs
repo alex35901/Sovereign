@@ -3839,7 +3839,8 @@ try {
     // ends "left at 95", and stripping every non-digit would glue the age onto
     // the money and compare a number that is in neither place.
     const money = (t) => Number((/\$([\d,]+)/.exec(t ?? "")?.[1] ?? "").replace(/,/g, ""));
-    const atEnd = money(await fc.locator(".grid.g3 .card").first().locator(".small.muted").innerText());
+    const atEnd = money(await fc.evaluate(() =>
+      document.querySelector(".grid.g3 .card .small.muted")?.innerText ?? ""));
     check("the headline is the figure at retirement, not the one at the end",
       atEnd > 0 && money(shape.headline) !== atEnd, `${shape.headline} against ${atEnd}`);
     check("and the retirement age is marked on it",
@@ -3917,6 +3918,60 @@ try {
       await spreadBox.blur();
       await fc.waitForTimeout(500);
     }
+
+    // ── the readout says what the band is worth ──
+    //
+    // The line under the finger is only ever the middle of three, and a
+    // forecast whose whole point is that it is a range should not make you
+    // read the edges off the shading by eye.
+    const chartBox = await fc.locator(".nw-card .chart-wrap svg").boundingBox();
+    const readAt = async (frac) => {
+      await fc.mouse.move(chartBox.x + chartBox.width * frac, chartBox.y + chartBox.height * 0.5);
+      await fc.waitForTimeout(320);
+      const t = await fc.evaluate(() => document.querySelector(".chart-tip")?.innerText ?? "");
+      const n = (re) => Number((re.exec(t) ?? [])[1]?.replace(/,/g, "") ?? 0);
+      return { text: t, mid: n(/^\D*\$([\d,]+)/m), high: n(/High\s*\$([\d,]+)/), low: n(/Low\s*\$([\d,]+)/) };
+    };
+
+    const early = await readAt(0.2);
+    const late = await readAt(0.85);
+    check("the readout names both edges of the band",
+      /High/.test(early.text) && /Low/.test(early.text), early.text.replace(/\n/g, " | "));
+    check("and they sit either side of the line, rather than being one figure twice",
+      early.low < early.mid && early.mid < early.high,
+      `${early.low} < ${early.mid} < ${early.high}`);
+    check("the range widens the further out it is read, because that is the point",
+      (late.high - late.low) > (early.high - early.low) * 2,
+      `${early.high - early.low} early against ${late.high - late.low} late`);
+
+    // A finger has to be able to read it too. Every chart here draws its own
+    // tooltip, and touch used to be wired only for the ones that hand their
+    // readout to a caller, so on a phone this one did nothing at all.
+    const svgSel = ".nw-card .chart-wrap svg";
+    const touch = async (type, frac) => fc.locator(svgSel).dispatchEvent(type, {
+      pointerId: 1, pointerType: "touch", isPrimary: true, bubbles: true,
+      clientX: chartBox.x + chartBox.width * frac, clientY: chartBox.y + chartBox.height * 0.5,
+    });
+    await fc.mouse.move(0, 0);
+    await fc.waitForTimeout(200);
+    await touch("pointerdown", 0.35);
+    await fc.waitForTimeout(300);
+    const held = await fc.evaluate(() => document.querySelector(".chart-tip")?.innerText ?? "");
+    await touch("pointermove", 0.75);
+    await fc.waitForTimeout(300);
+    const moved = await fc.evaluate(() => document.querySelector(".chart-tip")?.innerText ?? "");
+    await touch("pointerup", 0.75);
+    await fc.waitForTimeout(300);
+    const lifted = await fc.evaluate(() => document.querySelectorAll(".chart-tip").length);
+    check("a held finger reads the chart, band and all",
+      /High/.test(held) && /Low/.test(held), held.replace(/\n/g, " | ") || "nothing under the finger");
+    check("and dragging it along moves the reading",
+      held !== moved && moved.length > 0, `${held.slice(0, 24)} then ${moved.slice(0, 24)}`);
+    check("and lifting it puts the chart back",
+      lifted === 0, `${lifted} left behind`);
+    check("while the page still scrolls under a vertical drag",
+      (await fc.locator(svgSel).evaluate((el) => getComputedStyle(el).touchAction)) === "pan-y",
+      await fc.locator(svgSel).evaluate((el) => getComputedStyle(el).touchAction));
 
     // The earliest retirement age is bisected over the same walk. Lengthening
     // the horizon means more years to pay for, so the answer has to move.
@@ -4024,6 +4079,27 @@ try {
         [...document.querySelectorAll("svg text")].some((t) => /Nothing left at \d+/.test(t.textContent ?? "")))),
       shape.foot.slice(0, 60));
 
+    // A chart with no band must not grow a band readout: the survivor walk is
+    // a single line, and two identical figures labelled High and Low would be
+    // a confident lie.
+    //
+    // Inside tryStep because the way this breaks is by throwing during render:
+    // reading band!.low on a chart that has no band white-screens the page,
+    // and a bare locator waiting on a screen that will never paint takes the
+    // whole run down one line before it prints what passed.
+    let estTip = "";
+    if (await tryStep("the survivor chart can be read", async () => {
+      const estBox = await est.locator(".nw-card .chart-wrap svg").boundingBox({ timeout: 8000 });
+      await est.mouse.move(estBox.x + estBox.width * 0.3, estBox.y + estBox.height * 0.5);
+      await est.waitForTimeout(320);
+      estTip = await est.evaluate(() => document.querySelector(".chart-tip")?.innerText ?? "");
+      await est.mouse.move(0, 0);
+    })) {
+      check("a chart without a band says nothing about one",
+        estTip.length > 0 && !/High/.test(estTip) && !/Low/.test(estTip),
+        estTip.replace(/\n/g, " | ") || "no readout at all");
+    }
+
     // ── on paper ──
     //
     // The summary is the one thing this app makes that is meant to leave it.
@@ -4033,10 +4109,14 @@ try {
     await est.waitForTimeout(400);
     const paper = await est.evaluate(() => {
       const shown = (sel) => Boolean(document.querySelector(sel)?.getClientRects().length);
-      const ink = (sel) => {
-        const el = document.querySelector(sel);
-        return el ? getComputedStyle(el).color : "";
+      // Every read goes through this, missing element and all: getComputedStyle
+      // throws on null, and a page that failed to render has nothing to
+      // measure - which is a result to report, not a reason to end the run.
+      const style = (sel, prop) => {
+        const el = typeof sel === "string" ? document.querySelector(sel) : sel;
+        return el ? getComputedStyle(el)[prop] : "";
       };
+      const ink = (sel) => style(sel, "color");
       return {
         sidebar: shown(".sidebar"),
         topbar: shown(".topbar"),
@@ -4044,10 +4124,10 @@ try {
         owners: shown(".est-owners"),
         summary: shown(".est-print"),
         buttons: [...document.querySelectorAll(".est-section .btn")].filter((b) => b.getClientRects().length).length,
-        body: getComputedStyle(document.body).backgroundColor,
+        body: style(document.body, "backgroundColor"),
         faint: ink(".est-section .tiny.faint"),
         bold: ink(".est-line .bold"),
-        page: getComputedStyle(document.querySelector(".est-print")).backgroundColor,
+        page: style(".est-print", "backgroundColor"),
       };
     });
     check("printing drops the app and keeps the document",
@@ -4057,6 +4137,10 @@ try {
     // Measured rather than looked at: the same faint grey that reads correctly
     // on screen is most of a cartridge and barely legible on paper, and a
     // downscaled screenshot will not tell you which one you have.
+    // A chart with no band must not grow a band readout: the survivor walk is
+    // a single line, and two identical figures labelled High and Low would be
+    // a confident lie.
+
     check("and it comes out as ink on paper, whatever theme is on screen",
       paper.faint === "rgb(0, 0, 0)" && paper.bold === "rgb(0, 0, 0)"
       && paper.page === "rgb(255, 255, 255)" && paper.body === "rgb(255, 255, 255)",
@@ -4071,12 +4155,16 @@ try {
     // the whole point of this block: the shortfall has to fall by exactly what
     // was added, which no amount of reading the figure off the requirement
     // instead of off the gap can fake.
-    const shortfall = async () => money(await est.locator(".nw-total").innerText());
+    // Through the DOM rather than a locator: on a page that fails to render
+    // there is nothing to wait for, and waiting anyway kills the run before it
+    // prints a single result.
+    const shortfall = async () => money(
+      await est.evaluate(() => document.querySelector(".nw-total")?.innerText ?? ""));
     /** The age the line reaches the floor, which is a different reading of the
      *  same cover: the headline is arithmetic on a solved figure, this is the
      *  walk the chart is actually drawn from. */
-    const runsOutAt = async () =>
-      Number((/runs out at (\d+)/.exec(await est.locator(".est-foot").innerText()) ?? [])[1] ?? 0);
+    const runsOutAt = async () => Number((/runs out at (\d+)/.exec(
+      await est.evaluate(() => document.querySelector(".est-foot")?.innerText ?? "")) ?? [])[1] ?? 0);
     const beforeCover = await shortfall();
     const beforeRunOut = await runsOutAt();
     const added = await tryStep("a policy can be added", async () => {
@@ -4121,13 +4209,17 @@ try {
 
     // ── it is answered, not decorated ──
     const spendBox = est.locator(".fc-grid .field").nth(1).locator("input");
-    const before = await est.locator(".nw-total").innerText();
+    // `headline()` rather than a locator, for the reason above: these run
+    // outside tryStep and a page that will never paint must produce a failed
+    // check, not a dead run.
+    const headline = () => est.evaluate(() => document.querySelector(".nw-total")?.innerText ?? "");
+    const before = await headline();
     if (await tryStep("the spending box takes an edit", async () => {
       await spendBox.fill("50", { timeout: 5000 });
       await spendBox.blur();
       await est.waitForTimeout(900);
     })) {
-      const after = await est.locator(".nw-total").innerText();
+      const after = await headline();
       check("halving what they would spend changes what it would take",
         money(after) < money(before) || /all right/.test(after), `${before} -> ${after}`);
       await spendBox.fill("100");
@@ -4142,8 +4234,7 @@ try {
       await est.waitForTimeout(900);
     })) {
       check("and losing no pay at all needs no cover",
-        /all right/.test(await est.locator(".nw-total").innerText()),
-        await est.locator(".nw-total").innerText());
+        /all right/.test(await headline()), await headline());
     }
     await est.close();
 

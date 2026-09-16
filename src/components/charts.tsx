@@ -212,19 +212,27 @@ export function AreaChart({
     });
     if (run.length > 1) compareRuns.push({ d: run.join(" "), tone: c.tone });
   }
+  // Both arrays checked, not just the one: the top edge is drawn from `high`
+  // and the guard only ever looked at `low`, so a mismatched pair would have
+  // put NaN into the path and drawn nothing, silently.
+  const hasBand = Boolean(
+    band && band.low.length === points.length && band.high.length === points.length,
+  );
   // One closed shape: along the top of the good case and back along the
   // bottom of the bad one.
-  const bandTop = band && band.low.length === points.length
-    ? points.map((_, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(band.high[i]).toFixed(1)}`).join(" ")
+  const bandTop = hasBand
+    ? points.map((_, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(band!.high[i]).toFixed(1)}`).join(" ")
     : null;
-  const bandBottom = band && band.low.length === points.length
-    ? points.map((_, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(band.low[i]).toFixed(1)}`).join(" ")
+  const bandBottom = hasBand
+    ? points.map((_, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(band!.low[i]).toFixed(1)}`).join(" ")
     : null;
-  const bandPath = band && bandTop && bandBottom
-    ? `${bandTop} ${points.map((_, i) => points.length - 1 - i).map((i) => `L${x(i).toFixed(1)},${y(band.low[i]).toFixed(1)}`).join(" ")} Z`
+  const bandPath = hasBand && bandTop
+    ? `${bandTop} ${points.map((_, i) => points.length - 1 - i).map((i) => `L${x(i).toFixed(1)},${y(band!.low[i]).toFixed(1)}`).join(" ")} Z`
     : null;
   const ticks = rangeTicks(lo, hi);
   const label = format ?? axisFormat(lo, hi);
+  /** How the readout writes a figure. The axis rounds; this one does not. */
+  const tipFormat = format ?? fmt0;
 
   // Sampled days can land twice in the same month, which would print "Jan '26"
   // beside itself; only the first of a repeated label is drawn.
@@ -248,10 +256,14 @@ export function AreaChart({
           // Vertical drags still scroll the page; horizontal ones come here.
           // touch-action:none would turn a 200px-tall chart into a strip of
           // the screen that cannot be scrolled past.
-          touchAction: onScrub ? "pan-y" : undefined,
+          //
+          // Unconditional, because every one of these charts has a readout:
+          // the ones that hand it to a caller through onScrub, and the ones
+          // that draw their own tooltip. It used to be set only for the first
+          // kind, which is why a finger did nothing at all on the other five.
+          touchAction: "pan-y",
         }}
         onPointerDown={(e) => {
-          if (!onScrub) return;
           // Capture, or a finger that slides off the chart stops reporting
           // half way through the gesture.
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -392,8 +404,26 @@ export function AreaChart({
         <Tip x={x(hover)} y={y(points[hover].value)} width={w}>
           <div className="tiny muted">{points[hover].label}</div>
           <div className={`num bold ${points[hover].value < 0 ? "neg" : ""}`}>
-            {format ? format(points[hover].value) : fmt0(points[hover].value)}
+            {tipFormat(points[hover].value)}
           </div>
+          {/* The band is part of the chart, so the chart's own readout reports
+              it. A forecast whose whole point is that it is a range should not
+              make you guess the edges by eye, and the line under the finger is
+              only ever the middle of three. Ordered rather than trusted:
+              nothing promises the good case is the higher number, and a pair
+              printed backwards reads as a bug. */}
+          {hasBand ? (
+            <div className="tip-band">
+              <span className="tiny faint">High</span>
+              <span className="num tiny">
+                {tipFormat(Math.max(band!.low[hover], band!.high[hover]))}
+              </span>
+              <span className="tiny faint">Low</span>
+              <span className="num tiny">
+                {tipFormat(Math.min(band!.low[hover], band!.high[hover]))}
+              </span>
+            </div>
+          ) : null}
           {points[hover].sub ? <div className="tiny muted">{points[hover].sub}</div> : null}
         </Tip>
       ) : null}
