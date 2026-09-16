@@ -305,7 +305,10 @@ export function runForecast(
     if (!retired) income *= 1 + wage;
     spend *= 1 + inflation;
 
-    const debt = -debts.reduce((s, d) => s + d.balance, 0);
+    // The `|| 0` is not redundant: negating a sum of nothing gives negative
+    // zero, which prints as "-$0" and is not equal to zero under Object.is,
+    // so a paid-off debt would fail a test that says it is gone.
+    const debt = -debts.reduce((s, d) => s + d.balance, 0) || 0;
     const invested = taxable + traditional + roth;
     // Deflated back to today, so a reader is comparing like with like against
     // the balance on their own dashboard.

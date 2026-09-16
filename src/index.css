@@ -1089,6 +1089,67 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .fc-acc .select { width: auto; }
 .fc-terms { width: 74px; flex: none; }
 
+/* ── estate ───────────────────────────────────────────────────────────────
+ *
+ * Two pages in one: the survivor forecast, which is the app, and the summary,
+ * which is a document that has to survive leaving it on paper.
+ */
+.est-foot { padding: 4px 16px 14px; border-top: 1px solid var(--line-soft); padding-top: 12px; }
+.est-clears { padding: 0 16px 16px; }
+.est-line { gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line-soft); }
+.est-line:last-child { border-bottom: 0; }
+.est-line.click { cursor: pointer; }
+.est-line.click:hover { background: var(--surface-2); }
+.est-print { display: flex; flex-direction: column; gap: 16px; }
+.est-print-head { display: flex; flex-direction: column; gap: 4px; }
+.est-notes { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px 16px; }
+.est-notes textarea.input { resize: vertical; line-height: 1.5; }
+.est-benef { width: 170px; flex: none; }
+.est-owners .fc-acc:last-child { border-bottom: 0; }
+
+/* Not a width breakpoint, so it belongs here beside the rules it changes
+   rather than in the section at the end of the file.
+
+   The summary is the one thing this app makes that is meant to leave it. It
+   goes in a safe, or to an attorney, or in an envelope somebody opens on the
+   worst day of their life, and on that day a screenshot of a dark web app
+   with a navigation rail down the side is not what anybody needs. So the page
+   is rebuilt for paper: the app's chrome goes, the colours invert to ink on
+   white whatever theme is on screen, and every card becomes a block that will
+   not be split across a page break. */
+@media print {
+  .sidebar, .topbar, .mobile-tabs, .toast, .rule-prompt, .scrim { display: none !important; }
+  .main { margin-left: 0; }
+  .page { max-width: none; padding: 0; }
+  /* The page behind the card too. A browser leaves backgrounds out of a print
+     by default, but "Save as PDF" with backgrounds on is how most people will
+     actually keep this, and there the dark theme would frame the document in
+     a black border. */
+  html, body, .app, .main, .page { background: #fff !important; color: #000; }
+  /* Everything that is not the summary: the forecast card, the assumptions,
+     the ownership editor. All of it is for deciding, none of it for keeping. */
+  .est-screen > *:not(.est-print) { display: none !important; }
+  /* Light tokens on the page itself, so a reader printing in dark mode does
+     not empty a cartridge on the background. Named rather than hard-coded:
+     these are the same values :root[data-theme="light"] already uses. */
+  .est-screen {
+    --bg: #fff; --surface: #fff; --surface-2: #fff; --surface-3: #fff;
+    --line: #c8ced6; --line-soft: #dfe4ea;
+    --text: #000; --muted: #333; --faint: #555;
+    --pos: #000; --neg: #000; --accent: #000;
+  }
+  .est-screen, .est-screen * { color: var(--text) !important; background: #fff !important; }
+  .est-print { gap: 18px; }
+  .est-print-head h2 { font-size: 20px; }
+  .est-section { border: 1px solid var(--line); break-inside: avoid; }
+  .est-section .card-head.flush { border-bottom: 1px solid var(--line); }
+  /* A row kept whole: half a bank account at the foot of a page is worse than
+     a short page. */
+  .est-line, .fc-acc { break-inside: avoid; }
+  .est-section .btn { display: none !important; }
+  .est-notes textarea.input { border: 0; padding: 0; resize: none; height: auto; }
+}
+
 /* ── responsive ───────────────────────────────────────────────────────────
  *
  * Every width-based override lives here and nowhere else, widest first, and
@@ -1221,6 +1282,9 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 @media (max-width: 560px) {
   .g3 { grid-template-columns: minmax(0, 1fr); }
+  /* The name, then the two controls under it: three across leaves the account
+     name about forty pixels. */
+  .est-benef { width: 100%; }
   /* Two dials across rather than one: they are short numbers with short
      labels, and one per line turns the panel into a page of its own. */
   .fc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 4px 12px 14px; }

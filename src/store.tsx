@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, Category, DB, Goal, Holding, HopperExchange, ID, MonthKey, Recurring, Rule, Tag, Transaction } from "./types";
+import type { Account, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
 import { buildDemoDB, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
 import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
@@ -17,6 +17,8 @@ import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
 import type { Assumptions, ForecastEvent, ForecastPlan, Scenario } from "./lib/forecast";
 import { activeScenario, blankPlan } from "./lib/forecast";
+import type { Survivorship } from "./lib/estate";
+import { blankEstate } from "./lib/estate";
 
 /** Tag colours for tags created by an import, spread across the palette. */
 const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
@@ -316,6 +318,25 @@ export interface Actions {
   updateForecastEvent: (id: ID, patch: Partial<ForecastEvent>) => void;
   deleteForecastEvent: (id: ID) => void;
 
+  /**
+   * The estate record, which like the forecast is built on first edit rather
+   * than on load. Nothing here is a legal instrument and nothing here holds a
+   * credential; see the doc comment on EstateRecord.
+   */
+  setSurvivorship: (patch: Partial<Survivorship>) => void;
+  setEstate: (patch: Partial<Pick<EstateRecord, "guardians" | "wishes" | "reviewedAt">>) => void;
+  /** How one account is held and who it goes to. Nothing else reads these. */
+  setAccountEstate: (id: ID, patch: Partial<NonNullable<Account["estate"]>>) => void;
+  addPolicy: (p: Omit<Policy, "id">) => void;
+  updatePolicy: (id: ID, patch: Partial<Policy>) => void;
+  deletePolicy: (id: ID) => void;
+  addEstateContact: (c: Omit<EstateContact, "id">) => void;
+  updateEstateContact: (id: ID, patch: Partial<EstateContact>) => void;
+  deleteEstateContact: (id: ID) => void;
+  addEstateDocument: (d: Omit<EstateDocument, "id">) => void;
+  updateEstateDocument: (id: ID, patch: Partial<EstateDocument>) => void;
+  deleteEstateDocument: (id: ID) => void;
+
   addHolding: (h: Omit<Holding, "id">) => void;
   updateHolding: (id: ID, patch: Partial<Holding>) => void;
   deleteHolding: (id: ID) => void;
@@ -339,6 +360,10 @@ const withScenario = (db: DB, fn: (sc: Scenario) => Scenario): DB =>
     const next = fn(current);
     return { ...plan, scenarios: plan.scenarios.map((s) => (s.id === current.id ? next : s)) };
   });
+
+/** The document with its estate record edited, creating one if there is none. */
+const withEstate = (db: DB, fn: (e: EstateRecord) => EstateRecord): DB =>
+  ({ ...db, estate: fn(db.estate ?? blankEstate()) });
 
 function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: string) => void): Actions {
   return {
@@ -739,6 +764,45 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     deleteForecastEvent: (id) => apply((db) => withScenario(db, (sc) => ({
       ...sc, events: sc.events.filter((e) => e.id !== id),
     })), "delete life event"),
+
+    setSurvivorship: (patch) => apply((db) => withEstate(db, (e) => ({
+      ...e,
+      // Only ever a patch onto what is there, because the screen seeds a
+      // sensible one from the accounts and a partial write would drop it.
+      survivorship: { ...(e.survivorship as Survivorship), ...patch },
+    }))),
+    setEstate: (patch) => apply((db) => withEstate(db, (e) => ({ ...e, ...patch }))),
+    setAccountEstate: (id, patch) => apply((db) => ({
+      ...db,
+      accounts: db.accounts.map((a) => (a.id === id ? { ...a, estate: { ...a.estate, ...patch } } : a)),
+    })),
+    addPolicy: (p) => apply((db) => withEstate(db, (e) => ({
+      ...e, policies: [...e.policies, { ...p, id: uid("pol") }],
+    })), "add policy"),
+    updatePolicy: (id, patch) => apply((db) => withEstate(db, (e) => ({
+      ...e, policies: e.policies.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+    })), "edit policy"),
+    deletePolicy: (id) => apply((db) => withEstate(db, (e) => ({
+      ...e, policies: e.policies.filter((p) => p.id !== id),
+    })), "delete policy"),
+    addEstateContact: (c) => apply((db) => withEstate(db, (e) => ({
+      ...e, contacts: [...e.contacts, { ...c, id: uid("ec") }],
+    })), "add contact"),
+    updateEstateContact: (id, patch) => apply((db) => withEstate(db, (e) => ({
+      ...e, contacts: e.contacts.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    })), "edit contact"),
+    deleteEstateContact: (id) => apply((db) => withEstate(db, (e) => ({
+      ...e, contacts: e.contacts.filter((c) => c.id !== id),
+    })), "delete contact"),
+    addEstateDocument: (d) => apply((db) => withEstate(db, (e) => ({
+      ...e, documents: [...e.documents, { ...d, id: uid("ed") }],
+    })), "add document"),
+    updateEstateDocument: (id, patch) => apply((db) => withEstate(db, (e) => ({
+      ...e, documents: e.documents.map((d) => (d.id === id ? { ...d, ...patch } : d)),
+    })), "edit document"),
+    deleteEstateDocument: (id) => apply((db) => withEstate(db, (e) => ({
+      ...e, documents: e.documents.filter((d) => d.id !== id),
+    })), "delete document"),
 
     addHolding: (h) => apply((db) => ({ ...db, holdings: [...db.holdings, { ...h, id: uid("h") }] })),
     updateHolding: (id, patch) => apply((db) => ({ ...db, holdings: replace(db.holdings, id, patch) })),

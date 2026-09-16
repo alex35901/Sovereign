@@ -74,7 +74,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~598)
+### Unit tests — `scripts/selftest.mjs` (~612)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -102,7 +102,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~383)
+### Browser tests — `scripts/breakpoints.mjs` (~400)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -230,6 +230,29 @@ comments and fails on any that come back.
   is taxed in, which is why `Assumptions.debts` and `Account.taxTreatment`
   exist. The plan is built on first edit, never on load: opening any other
   screen must not write one.
+- `src/lib/estate.ts` — two halves of "what happens to the people who are
+  left". The survivorship half re-uses the forecast rather than
+  re-implementing it: a different starting position and a different set of
+  assumptions handed to the same `runForecast`, which matters because the
+  survivor case is the one nobody will ever check by hand. Two deliberate
+  conservatisms, because the cost of being wrong is not symmetrical:
+  **spending does not fall by default** (a household of four minus one adult
+  does not spend a quarter less, and a surviving parent may be buying
+  childcare), and **the payout is money, not magic** (clearing a mortgage with
+  it spends it, and a debt is cleared whole or not at all). `coverNeeded`
+  bisects to a `COVER_STEP` of $25k and returns null past a named
+  `COVER_CEILING`, because "more than any policy" is more use than a number
+  nobody could buy. The document half is `estateSummary`, which returns only
+  what the app **derives** — accounts, property, debts, and the bills that will
+  keep charging. Policies, contacts and where the papers are come from a
+  person, so the screen prints them from the cards that edit them; running
+  them through here as well is how "Insurance" once printed twice. Two traps
+  worth knowing: the charging section must read `recurringList(db)`, not
+  `db.recurring`, which is empty for nearly every document because a recurring
+  bill is detected rather than stored; and `includeInNetWorth` is deliberately
+  *not* a filter here, because an account somebody hid from a chart is still an
+  account an executor has to find. **Nothing in this record ever holds a
+  credential** - the whole point is that it can be printed and left in a safe.
 - `src/lib/notifications.ts` — what the app would tell you if you had not been
   looking. Every notice is derived from the document; only *which have been
   read* is stored, and the id encodes what was true (`budget:2026-09:c_x:over25`)
@@ -304,6 +327,21 @@ Patterns worth reusing:
   public, identical for every user, and re-fetchable in one request. Putting six
   years of them on every save would be paying sync bandwidth for data that says
   nothing about anybody. The cost is that a new device fetches its own copy.
+- The estate summary is the one thing this app makes that is meant to leave
+  it, so `@media print` in `src/index.css` rebuilds the page for paper: the
+  chrome goes, `.est-screen > *:not(.est-print)` goes with it (the forecast and
+  the editors are for deciding, not for keeping), and the tokens are redefined
+  to ink on white so a reader in dark mode does not empty a cartridge. It is
+  not a width breakpoint, so it lives beside the rules it changes rather than
+  in the section at the end. Check it with `page.emulateMedia({ media: "print" })`
+  and **read the computed colours** rather than looking at a screenshot: a
+  downscaled PNG shows colour fringing on black text, which is how a correct
+  print run can look wrong and a grey one can look fine.
+- The survivor chart plots **cash plus investments, not net worth**. Charted
+  against net worth it climbed for forty years after the family had run out,
+  because the house kept pace with inflation and the mortgage kept amortising:
+  a rising line under a headline saying they were three million short. A house
+  is not something you can spend.
 - `AreaChart` grew `band` and `marks` for the forecast. `band` replaces the
   gradient fill rather than sitting on top of it: two translucent fills of the
   same colour over each other read as one muddy shape, and the one carrying

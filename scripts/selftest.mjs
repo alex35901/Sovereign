@@ -76,6 +76,7 @@ await build({
       export * as BM from "./src/lib/benchmarks.ts";
       export * as HG from "./src/lib/holdings.ts";
       export * as FC from "./src/lib/forecast.ts";
+      export * as ES from "./src/lib/estate.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4602,6 +4603,277 @@ await test("an account lands in the pot it belongs to, without being asked", () 
   assert.equal(pos.roth, 60_000_00 + 7_000_00);
   assert.equal(pos.illiquid, 400_000_00);
   assert.deepEqual(pos.debts, [{ id: "m", balance: -300_000_00 }]);
+});
+
+/* ── what happens to the people who are left ───────────────────────────── */
+
+const SURV = (over = {}) => ({
+  incomeLost: 0, spendPct: 100, cover: 0, clears: [],
+  survivorBirthYear: 1990, survivorEndAge: 95, ...over,
+});
+/** The same helpers as the forecast tests, at the same 2030-01 and age 40. */
+const surv = (pos, assume, s, events = []) =>
+  M.ES.runSurvivor(POS(pos), ASSUME(assume), events, SURV(s), "2030-01");
+
+await test("losing an earner is the same walk with their pay taken out of it", () => {
+  const pos = { taxable: 500_000_00, monthlyIncome: 10_000_00, monthlySpend: 6_000_00 };
+  const still = { birthYear: 1990, retireAge: 95, endAge: 60, inflationPct: 0, wageGrowthPct: 0, returnPct: 0 };
+
+  // One earner of the two stops. What is left is 4,000 a month against 6,000
+  // of spending, so the pile falls by 2,000 a month and by nothing else.
+  const out = surv(pos, still, { incomeLost: 6_000_00, survivorEndAge: 60 });
+  const fall = out.points[24].net - out.points[25].net;
+  assert.ok(Math.abs(fall - 2_000_00) < 100, `${fall}`);
+
+  // And with nothing lost it is the ordinary forecast, to the cent.
+  const same = surv(pos, still, { incomeLost: 0, survivorEndAge: 60 });
+  const plain = run(pos, still, [], 0);
+  assert.equal(same.points[24].net, plain.points[24].net);
+});
+
+await test("the payout is money, not magic: it lands in cash and is then spent", () => {
+  const pos = { cash: 0, taxable: 0, monthlyIncome: 0, monthlySpend: 2_000_00 };
+  const still = { birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 0, wageGrowthPct: 0, returnPct: 0, retirementSpendPct: 100 };
+
+  const none = surv(pos, still, { survivorEndAge: 50 });
+  const paid = surv(pos, still, { cover: 250_000_00, survivorEndAge: 50 });
+  // The lump lands, and the first month is immediately spent out of it.
+  assert.equal(paid.points[0].net, 250_000_00 - 2_000_00);
+  // Ten years is 121 months of the walk, so 242,000 of spending. 250,000
+  // covers it and nothing covers it without a payout.
+  assert.equal(paid.ranOutAt, null, "and it carries them the whole way");
+  assert.ok(none.ranOutAt !== null && none.ranOutAt < 41, `${none.ranOutAt}`);
+
+  // A dollar short is a dollar short.
+  const thin = surv(pos, still, { cover: 200_000_00, survivorEndAge: 50 });
+  assert.ok(thin.ranOutAt !== null && thin.ranOutAt > 47, `${thin.ranOutAt}`);
+});
+
+await test("clearing a debt spends the payout and takes its payment with it", () => {
+  // Asked of the position rather than the walk: this is exact arithmetic and
+  // putting thirty years of compounding in front of it only hides it.
+  const pos = POS({ cash: 10_000_00, monthlySpend: 5_000_00, debts: [{ id: "m", balance: -240_000_00 }] });
+  const a = ASSUME({ debts: { m: { apr: 0, termMonths: 240 } } });
+
+  const cleared = M.ES.survivorPosition(pos, a, SURV({ cover: 300_000_00, clears: ["m"] }));
+  assert.equal(cleared.cash, 10_000_00 + 300_000_00 - 240_000_00, "the payout paid for it");
+  assert.deepEqual(cleared.debts, [], "the mortgage is gone");
+  // 240,000 over 240 months at no interest is 1,000 a month, and that 1,000
+  // was inside the 5,000 the household was measured spending.
+  assert.equal(cleared.monthlySpend, 4_000_00, "and its payment went with it");
+
+  const kept = M.ES.survivorPosition(pos, a, SURV({ cover: 300_000_00 }));
+  assert.equal(kept.cash, 310_000_00);
+  assert.equal(kept.monthlySpend, 5_000_00);
+  assert.equal(kept.debts.length, 1);
+});
+
+await test("a debt is cleared whole or not at all", () => {
+  // A part-paid mortgage is a different loan on terms no lender has offered,
+  // so a payout that cannot cover one leaves it exactly where it was.
+  const pos = POS({ cash: 0, monthlySpend: 5_000_00, debts: [{ id: "m", balance: -240_000_00 }] });
+  const a = ASSUME({ debts: { m: { apr: 0, termMonths: 240 } } });
+  const short = M.ES.survivorPosition(pos, a, SURV({ cover: 200_000_00, clears: ["m"] }));
+  assert.equal(short.cash, 200_000_00, "the money stays where it is");
+  assert.equal(short.debts.length, 1, "and so does the mortgage");
+  assert.equal(short.monthlySpend, 5_000_00, "which is still being paid for");
+});
+
+await test("clearing a debt is worth doing exactly when it costs more than the money earns", () => {
+  // Both of these are worth checking, because the intuition only holds one
+  // way round and a forecast that always said "pay it off" would be wrong
+  // half the time. At no interest it is a wash to the cent: paying a debt
+  // with cash swaps one for the other and the payment that stops is the
+  // principal that was already raising net worth.
+  //
+  // Solvent on purpose. Once a household has run out the two stop agreeing,
+  // because the walk goes on amortising a mortgage there is no longer any
+  // money to pay - which is fiction either way, in a run that has already
+  // reported the year it ran out.
+  const free = { birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 0, wageGrowthPct: 0, returnPct: 0, retirementSpendPct: 100, debts: { m: { apr: 0, termMonths: 240 } } };
+  const pos = { cash: 0, taxable: 0, monthlyIncome: 6_000_00, monthlySpend: 5_000_00, debts: [{ id: "m", balance: -240_000_00 }] };
+  const a1 = surv(pos, free, { cover: 300_000_00, survivorEndAge: 50 });
+  const b1 = surv(pos, free, { cover: 300_000_00, clears: ["m"], survivorEndAge: 50 });
+  assert.equal(a1.ranOutAt, null, "and it stays solvent, or the test is about something else");
+  assert.equal(a1.atEnd, b1.atEnd, "at no interest it makes no difference at all");
+
+  // At a rate above what the money earns, the interest never paid is the gain.
+  const dear = { ...free, returnPct: 3, debts: { m: { apr: 18, termMonths: 60 } } };
+  const owing = { cash: 0, taxable: 0, monthlyIncome: 6_000_00, monthlySpend: 3_000_00, debts: [{ id: "m", balance: -50_000_00 }] };
+  const kept = surv(owing, dear, { cover: 100_000_00, survivorEndAge: 50 });
+  const gone = surv(owing, dear, { cover: 100_000_00, clears: ["m"], survivorEndAge: 50 });
+  assert.ok(gone.atEnd > kept.atEnd, `${gone.atEnd} against ${kept.atEnd}`);
+});
+
+await test("what a household without them would spend is a number, not an assumption", () => {
+  // The default is that nothing changes, which is the conservative reading and
+  // deliberately not 85%: a household of four minus one adult does not spend a
+  // quarter less, and a surviving parent may be buying childcare that the two
+  // of them used to do between them.
+  const pos = POS({ monthlySpend: 4_000_00 });
+  assert.equal(M.ES.DEFAULT_SURVIVORSHIP.spendPct, 100);
+  assert.equal(M.ES.survivorPosition(pos, ASSUME(), SURV()).monthlySpend, 4_000_00);
+  assert.equal(M.ES.survivorPosition(pos, ASSUME(), SURV({ spendPct: 75 })).monthlySpend, 3_000_00);
+  assert.equal(M.ES.survivorPosition(pos, ASSUME(), SURV({ spendPct: 120 })).monthlySpend, 4_800_00);
+
+  // And it reaches the walk, rather than stopping at the position.
+  const still = { birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 0, wageGrowthPct: 0, returnPct: 0, retirementSpendPct: 100 };
+  const lean = surv({ cash: 300_000_00, monthlySpend: 4_000_00 }, still, { spendPct: 50, survivorEndAge: 50 });
+  const full = surv({ cash: 300_000_00, monthlySpend: 4_000_00 }, still, { spendPct: 100, survivorEndAge: 50 });
+  assert.equal(lean.ranOutAt, null, "half the spending lasts the ten years");
+  assert.ok(full.ranOutAt !== null, "and all of it does not");
+});
+
+await test("the survivor's own age is what the money has to last for", () => {
+  const pos = { cash: 750_000_00, monthlyIncome: 0, monthlySpend: 2_000_00 };
+  const still = { birthYear: 1990, retireAge: 95, endAge: 60, inflationPct: 0, wageGrowthPct: 0, returnPct: 0, retirementSpendPct: 100 };
+  // The plan's subject was born in 1990 and the survivor twenty years later,
+  // so the same horizon is twenty more years of spending to find.
+  const older = surv(pos, still, { survivorBirthYear: 1990, survivorEndAge: 70 });
+  const younger = surv(pos, still, { survivorBirthYear: 2010, survivorEndAge: 70 });
+  assert.equal(older.points.length, 30 * 12 + 1);
+  assert.equal(younger.points.length, 50 * 12 + 1);
+  // 361 months at 2,000 is 722,000, which 750,000 covers. 601 months is not.
+  assert.equal(older.ranOutAt, null);
+  assert.ok(younger.ranOutAt !== null, `${younger.ranOutAt}`);
+});
+
+await test("how much cover it would take is solved, and sold in round numbers", () => {
+  const { coverNeeded, COVER_STEP } = M.ES;
+  const pos = POS({ cash: 0, monthlyIncome: 0, monthlySpend: 2_000_00 });
+  const a = ASSUME({ birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 0, wageGrowthPct: 0, returnPct: 0, retirementSpendPct: 100 });
+  const s = SURV({ survivorEndAge: 50 });
+
+  // 121 months at 2,000 a month is 242,000, so the honest answer is the first
+  // round number above it.
+  const need = coverNeeded(pos, a, [], s, "2030-01");
+  assert.equal(need % COVER_STEP, 0, `${need} is not a round number`);
+  assert.equal(need, 250_000_00, `${need}`);
+  // And it is a real threshold, not a figure that merely looks plausible: the
+  // walk survives at it and does not one step below.
+  const at = (cover) => M.ES.runSurvivor(pos, a, [], { ...s, cover }, "2030-01").ranOutAt;
+  assert.equal(at(need), null, "the answer works");
+  assert.ok(at(need - COVER_STEP) !== null, "and the step below it does not");
+});
+
+await test("nothing needed is nothing, and nothing is enough is said rather than guessed", () => {
+  const { coverNeeded, COVER_CEILING } = M.ES;
+  const a = ASSUME({ birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 0, wageGrowthPct: 0, returnPct: 0, retirementSpendPct: 100 });
+  const s = SURV({ survivorEndAge: 50 });
+
+  // A household already living inside the pay that is left needs no cover.
+  const fine = POS({ monthlyIncome: 5_000_00, monthlySpend: 4_000_00 });
+  assert.equal(coverNeeded(fine, a, [], s, "2030-01"), 0);
+
+  // And spending no policy could carry is reported as such, rather than as a
+  // very large number that is really just the ceiling wearing a disguise.
+  const doomed = POS({ monthlyIncome: 0, monthlySpend: COVER_CEILING });
+  assert.equal(coverNeeded(doomed, a, [], s, "2030-01"), null);
+});
+
+/* ── what a family would need to find ──────────────────────────────────── */
+
+const estAcct = (id, name, type, balance, over = {}) =>
+  ({ id, name, type, balance, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0, ...over });
+
+await test("the summary shows everything that exists, not everything that counts", () => {
+  const db = {
+    ...M.emptyDB(),
+    accounts: [
+      estAcct("a", "Everyday", "checking", 5_000_00),
+      estAcct("b", "Brokerage", "investment", 50_000_00, { mask: "4471" }),
+      // Left out of the net worth chart on purpose, by somebody who did not
+      // want it skewing a line. It is still money and still has to be found.
+      estAcct("c", "Old savings", "savings", 12_000_00, { includeInNetWorth: false }),
+      estAcct("d", "Closed", "checking", 0, { closedAt: "2025-01-01" }),
+      estAcct("e", "Hidden", "savings", 900_00, { hidden: true }),
+      estAcct("m", "Mortgage", "mortgage", -300_000_00),
+      estAcct("h", "House", "real_estate", 500_000_00),
+    ],
+  };
+  const sections = M.ES.estateSummary(db, "2030-06-01");
+  const by = Object.fromEntries(sections.map((x) => [x.key, x]));
+  const names = (k) => by[k].lines.map((l) => l.name);
+
+  assert.deepEqual(names("assets"), ["Everyday", "Old savings", "Brokerage"],
+    "an account excluded from net worth is still an account");
+  assert.ok(!names("assets").includes("Closed"), "a closed account is not");
+  assert.ok(!names("assets").includes("Hidden"), "and neither is a hidden one");
+  assert.equal(by.assets.total, 5_000_00 + 12_000_00 + 50_000_00);
+  assert.deepEqual(names("owed"), ["Mortgage"]);
+  assert.equal(by.owed.total, -300_000_00);
+  assert.deepEqual(names("property"), ["House"]);
+  // The mask identifies which account without being a credential.
+  assert.ok(by.assets.lines[2].detail.includes("4471"), by.assets.lines[2].detail);
+  assert.ok(by.assets.lines[2].detail.includes("Acme"), by.assets.lines[2].detail);
+});
+
+await test("how an account is held and who it goes to are carried through", () => {
+  const db = {
+    ...M.emptyDB(),
+    accounts: [
+      estAcct("a", "Joint current", "checking", 9_000_00, {
+        estate: { ownership: "joint", beneficiary: "Sam", note: "Sam has the card" },
+      }),
+      estAcct("b", "401(k)", "retirement", 300_000_00, { estate: { ownership: "sole" } }),
+    ],
+  };
+  const [assets] = M.ES.estateSummary(db, "2030-06-01");
+  assert.equal(assets.lines[0].ownership, "Joint");
+  assert.equal(assets.lines[0].beneficiary, "Sam");
+  assert.equal(assets.lines[0].note, "Sam has the card");
+  assert.equal(assets.lines[1].ownership, "Sole");
+  assert.equal(assets.lines[1].beneficiary, undefined, "nothing invented where nothing was said");
+});
+
+await test("the bills that keep charging are the section nobody else could write", () => {
+  // Stored by hand here, but the list this reads is the merged one: a bill is
+  // normally worked out from the transactions and never written down, so a
+  // summary built from db.recurring alone would be blank for nearly everybody.
+  const db = {
+    ...M.emptyDB(),
+    accounts: [estAcct("a", "Everyday", "checking", 100_00)],
+    recurring: [
+      { id: "r1", merchant: "Netflix", categoryId: "c", accountId: "a", amount: -15_99, cadence: "monthly", nextDate: "2030-07-01", kind: "subscription", detected: true },
+      { id: "r2", merchant: "Mortgage", categoryId: "c", accountId: "a", amount: -2_100_00, cadence: "monthly", nextDate: "2030-07-01", kind: "bill", detected: true },
+      { id: "r3", merchant: "Payroll", categoryId: "c", accountId: "a", amount: 6_000_00, cadence: "monthly", nextDate: "2030-07-01", kind: "income", detected: true },
+      { id: "r4", merchant: "Gym", categoryId: "c", accountId: "a", amount: -40_00, cadence: "monthly", nextDate: "2030-07-01", kind: "subscription", detected: true, dismissed: true },
+    ],
+  };
+  const charging = M.ES.estateSummary(db, "2030-06-01").find((x) => x.key === "charging");
+  assert.deepEqual(charging.lines.map((l) => l.name), ["Mortgage", "Netflix"], "biggest first");
+  assert.ok(!charging.lines.some((l) => l.name === "Payroll"), "money coming in is not something to cancel");
+  assert.ok(!charging.lines.some((l) => l.name === "Gym"), "and neither is one already dismissed");
+  assert.ok(charging.lines[1].detail.includes("Everyday"), charging.lines[1].detail);
+  assert.equal(charging.total, -(2_100_00 + 15_99));
+  // Signed as an outflow however it was stored, or the total reads as income.
+  assert.ok(charging.lines.every((l) => l.amount < 0));
+});
+
+await test("only life cover pays out on a death", () => {
+  const db = {
+    ...M.emptyDB(),
+    estate: {
+      policies: [
+        { id: "p1", kind: "life", insurer: "Northwestern", coverage: 750_000_00, insures: "Alex", beneficiary: "Sam", policyNumber: "NM-9912" },
+        { id: "p2", kind: "disability", insurer: "Guardian", coverage: 5_000_00 },
+        { id: "p3", kind: "life", insurer: "Work", coverage: 250_000_00 },
+      ],
+      contacts: [], documents: [],
+    },
+  };
+  assert.equal(M.ES.lifeCover(db), 1_000_000_00, "a disability policy is not a death benefit");
+  // And the policies are not in the derived summary: they came from a person,
+  // so the screen prints them from the card that edits them. Putting them in
+  // both is how the page came to say "Insurance" twice.
+  assert.ok(!M.ES.estateSummary(db, "2030-06-01").some((x) => x.key === "policies"));
+});
+
+await test("an empty section is left out, but no debts is worth saying", () => {
+  const db = { ...M.emptyDB(), accounts: [estAcct("a", "Everyday", "checking", 100_00)] };
+  const keys = M.ES.estateSummary(db, "2030-06-01").map((x) => x.key);
+  assert.deepEqual(keys, ["assets", "owed"]);
+  assert.equal(M.ES.estateSummary(db, "2030-06-01")[1].lines.length, 0);
 });
 
 /* ── cutting a list of positions, and what each has done ───────────────── */

@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -92,7 +92,7 @@ const tryStep = async (what, fn) => {
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
-  "/recurring", "/goals", "/investments", "/forecast", "/rules", "/categories", "/tags", "/settings",
+  "/recurring", "/goals", "/investments", "/forecast", "/estate", "/rules", "/categories", "/tags", "/settings",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
@@ -3895,6 +3895,194 @@ try {
       [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
     check("Forecast sits at the end of the Plan group",
       order.indexOf("/forecast") === order.indexOf("/investments") + 1, order.join(" "));
+    await rail.close();
+  }
+
+  if (want("estate")) {
+    // ── the two halves, and the one that has to leave the app ──
+    const est = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await est.goto(`${BASE}/estate`, { waitUntil: "networkidle" });
+    await est.waitForTimeout(1200);
+
+    const money = (t) => Number((/-?\$([\d,]+)/.exec(t ?? "")?.[1] ?? "").replace(/,/g, ""));
+    const shape = await est.evaluate(() => ({
+      headline: document.querySelector(".nw-total")?.innerText.trim() ?? "",
+      sub: document.querySelector(".fc-head .small.faint")?.innerText.trim() ?? "",
+      foot: document.querySelector(".est-foot")?.innerText.trim() ?? "",
+      sections: [...document.querySelectorAll(".est-print .card-head h3, .est-print .card-head h2")]
+        .map((h) => h.innerText.trim()),
+      charging: [...document.querySelectorAll(".est-section")]
+        .find((c) => /keep charging/.test(c.innerText))?.querySelectorAll(".est-line").length ?? 0,
+      dials: document.querySelectorAll(".fc-grid .field").length,
+    }));
+    check("the estate screen leads with what happens to the people left",
+      /short|all right|any policy/.test(shape.headline), shape.headline);
+    check("and says how much cover it would take against how much there is",
+      /life cover/.test(shape.sub) || /already carries/.test(shape.sub), shape.sub);
+    check("with the four things that would change, and nothing hidden behind a menu",
+      shape.dials === 4, `${shape.dials} fields`);
+
+    // Each of these has to be here, and "Insurance" exactly once: it used to
+    // appear twice, because the derived summary and the card that edits it
+    // both drew it.
+    const want_ = ["Accounts and savings", "Property and vehicles", "What is owed", "Insurance",
+      "Things that will keep charging", "Who to call", "Where the papers are", "In your own words"];
+    check("the summary carries every section, in order and once each",
+      shape.sections.join(" | ") === want_.join(" | "), shape.sections.join(" | "));
+
+    // The section only this app could have written. Recurring bills are worked
+    // out from the transactions rather than stored, so reading the raw list
+    // left it empty for almost every document.
+    check("and the bills that will keep charging are actually in it",
+      shape.charging >= 5, `${shape.charging} rows`);
+
+    // The chart is what they could spend, not what they are worth. Against net
+    // worth this line climbed for forty years after the money had gone,
+    // because the house kept pace with inflation.
+    const chart = await est.evaluate(() => {
+      const d = document.querySelector(".nw-card .chart-wrap path[stroke-width='2']")?.getAttribute("d") ?? "";
+      const pts = [...d.matchAll(/([\d.]+),([\d.]+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
+      return { first: pts[0], last: pts[pts.length - 1], n: pts.length };
+    });
+    const ranOut = /runs out at/.test(shape.foot);
+    check("the line is money they could spend, so running out is a line on the floor",
+      !ranOut || (chart.n > 10 && chart.last[1] >= chart.first[1]),
+      `${shape.foot.slice(0, 60)} — from y=${chart.first?.[1]} to y=${chart.last?.[1]}`);
+    check("and the month it happens is named on the chart",
+      !ranOut || (await est.evaluate(() =>
+        [...document.querySelectorAll("svg text")].some((t) => /Nothing left at \d+/.test(t.textContent ?? "")))),
+      shape.foot.slice(0, 60));
+
+    // ── on paper ──
+    //
+    // The summary is the one thing this app makes that is meant to leave it.
+    // It goes in a safe or to an attorney, and on that day a dark screenshot
+    // with a nav rail down the side is not what anybody needs.
+    await est.emulateMedia({ media: "print" });
+    await est.waitForTimeout(400);
+    const paper = await est.evaluate(() => {
+      const shown = (sel) => Boolean(document.querySelector(sel)?.getClientRects().length);
+      const ink = (sel) => {
+        const el = document.querySelector(sel);
+        return el ? getComputedStyle(el).color : "";
+      };
+      return {
+        sidebar: shown(".sidebar"),
+        topbar: shown(".topbar"),
+        forecast: shown(".est-screen > .nw-card"),
+        owners: shown(".est-owners"),
+        summary: shown(".est-print"),
+        buttons: [...document.querySelectorAll(".est-section .btn")].filter((b) => b.getClientRects().length).length,
+        body: getComputedStyle(document.body).backgroundColor,
+        faint: ink(".est-section .tiny.faint"),
+        bold: ink(".est-line .bold"),
+        page: getComputedStyle(document.querySelector(".est-print")).backgroundColor,
+      };
+    });
+    check("printing drops the app and keeps the document",
+      !paper.sidebar && !paper.topbar && paper.summary, JSON.stringify(paper).slice(0, 90));
+    check("along with everything that was for deciding rather than keeping",
+      !paper.forecast && !paper.owners && paper.buttons === 0, `${paper.buttons} buttons left`);
+    // Measured rather than looked at: the same faint grey that reads correctly
+    // on screen is most of a cartridge and barely legible on paper, and a
+    // downscaled screenshot will not tell you which one you have.
+    check("and it comes out as ink on paper, whatever theme is on screen",
+      paper.faint === "rgb(0, 0, 0)" && paper.bold === "rgb(0, 0, 0)"
+      && paper.page === "rgb(255, 255, 255)" && paper.body === "rgb(255, 255, 255)",
+      `${paper.faint} and ${paper.bold} on ${paper.page}, body ${paper.body}`);
+    await est.emulateMedia({ media: "screen" });
+    await est.waitForTimeout(300);
+
+    // ── the cover in force is the policies, not a zero ──
+    //
+    // Nothing in the demo carries a policy, so every way of getting the cover
+    // wrong looks identical until one is actually entered. Adding it here is
+    // the whole point of this block: the shortfall has to fall by exactly what
+    // was added, which no amount of reading the figure off the requirement
+    // instead of off the gap can fake.
+    const shortfall = async () => money(await est.locator(".nw-total").innerText());
+    /** The age the line reaches the floor, which is a different reading of the
+     *  same cover: the headline is arithmetic on a solved figure, this is the
+     *  walk the chart is actually drawn from. */
+    const runsOutAt = async () =>
+      Number((/runs out at (\d+)/.exec(await est.locator(".est-foot").innerText()) ?? [])[1] ?? 0);
+    const beforeCover = await shortfall();
+    const beforeRunOut = await runsOutAt();
+    const added = await tryStep("a policy can be added", async () => {
+      await est.locator(".est-section", { hasText: "Insurance" })
+        .getByRole("button", { name: "Add one" }).click({ timeout: 5000 });
+      await est.waitForTimeout(300);
+      await est.locator(".modal input[type=text]").first().fill("Northwestern");
+      await est.locator(".modal input.num").fill("1000000");
+      await est.locator(".modal").getByRole("button", { name: "Add", exact: true }).click();
+      await est.waitForTimeout(900);
+    });
+    if (added) {
+      const afterLife = await shortfall();
+      check("a million of life cover takes a million off the shortfall",
+        Math.abs((beforeCover - afterLife) - 1_000_000) < 2, `${beforeCover} -> ${afterLife}`);
+      check("and it carries them years further before the money goes",
+        beforeRunOut > 0 && (await runsOutAt()) > beforeRunOut,
+        `ran out at ${beforeRunOut}, now ${await runsOutAt()}`);
+      check("and the policy is listed where a family would look for it",
+        (await est.locator(".est-section", { hasText: "Insurance" })
+          .locator(".est-line", { hasText: "Northwestern" }).count()) === 1);
+
+      // Only a death benefit pays out on a death. A disability policy belongs
+      // in the document and must not move this figure.
+      if (await tryStep("a second policy can be added", async () => {
+        await est.locator(".est-section", { hasText: "Insurance" })
+          .getByRole("button", { name: "Add", exact: true }).first().click({ timeout: 5000 });
+        await est.waitForTimeout(300);
+        await est.locator(".modal select").first().selectOption("disability");
+        await est.locator(".modal input[type=text]").first().fill("Guardian");
+        await est.locator(".modal input.num").fill("500000");
+        await est.locator(".modal").getByRole("button", { name: "Add", exact: true }).click();
+        await est.waitForTimeout(900);
+      })) {
+        check("a disability policy is listed but does not pay out on a death",
+          (await shortfall()) === afterLife
+          && (await est.locator(".est-section", { hasText: "Insurance" })
+            .locator(".est-line", { hasText: "Guardian" }).count()) === 1,
+          `${afterLife} -> ${await shortfall()}`);
+      }
+    }
+
+    // ── it is answered, not decorated ──
+    const spendBox = est.locator(".fc-grid .field").nth(1).locator("input");
+    const before = await est.locator(".nw-total").innerText();
+    if (await tryStep("the spending box takes an edit", async () => {
+      await spendBox.fill("50", { timeout: 5000 });
+      await spendBox.blur();
+      await est.waitForTimeout(900);
+    })) {
+      const after = await est.locator(".nw-total").innerText();
+      check("halving what they would spend changes what it would take",
+        money(after) < money(before) || /all right/.test(after), `${before} -> ${after}`);
+      await spendBox.fill("100");
+      await spendBox.blur();
+      await est.waitForTimeout(700);
+    }
+
+    const lostBox = est.locator(".fc-grid .field").nth(0).locator("input");
+    if (await tryStep("the lost-pay box takes an edit", async () => {
+      await lostBox.fill("0", { timeout: 5000 });
+      await lostBox.blur();
+      await est.waitForTimeout(900);
+    })) {
+      check("and losing no pay at all needs no cover",
+        /all right/.test(await est.locator(".nw-total").innerText()),
+        await est.locator(".nw-total").innerText());
+    }
+    await est.close();
+
+    const rail = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rail.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await rail.waitForTimeout(500);
+    const order = await rail.evaluate(() =>
+      [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
+    check("Estate sits after Forecast in the rail",
+      order.indexOf("/estate") === order.indexOf("/forecast") + 1, order.join(" "));
     await rail.close();
   }
 

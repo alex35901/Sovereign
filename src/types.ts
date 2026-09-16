@@ -55,6 +55,20 @@ export interface Account {
    * Roth IRA right without anybody being asked.
    */
   taxTreatment?: "taxable" | "traditional" | "roth";
+  /**
+   * What the estate summary needs to say about this account, and nothing else.
+   *
+   * Two facts the rest of the app has no use for and an executor cannot do
+   * without: a joint account passes straight to the other holder and never
+   * touches the will, and a named beneficiary on a retirement account beats
+   * whatever the will says. Getting either wrong is how money ends up in
+   * probate for a year.
+   */
+  estate?: {
+    ownership?: "sole" | "joint" | "trust";
+    beneficiary?: string;
+    note?: string;
+  };
   syncSource?: "manual" | "csv" | "simplefin" | "plaid";
   syncId?: string;
   lastSyncedAt?: string;
@@ -339,6 +353,71 @@ export interface PlaidItemRef {
 }
 
 import type { ForecastPlan } from "./lib/forecast.js";
+import type { Survivorship } from "./lib/estate.js";
+
+/**
+ * A policy that pays out, and who to.
+ *
+ * The policy number is here because it is what a claim is made with and the
+ * summary is useless without it. A password is not, and never will be: the
+ * whole point of this record is that it can be printed and left somewhere, and
+ * a printed page holding credentials is the most dangerous thing anyone owns.
+ */
+export interface Policy {
+  id: ID;
+  kind: "life" | "disability" | "other";
+  insurer: string;
+  policyNumber?: string;
+  /** What it pays out. Life cover feeds the survivor forecast. */
+  coverage: number;
+  /** Whose life it is on, when a household has more than one. */
+  insures?: string;
+  beneficiary?: string;
+  note?: string;
+}
+
+/** Somebody the family will have to ring: attorney, executor, guardian. */
+export interface EstateContact {
+  id: ID;
+  role: string;
+  name: string;
+  org?: string;
+  phone?: string;
+  email?: string;
+  note?: string;
+}
+
+/** A piece of paper, and where it physically is. */
+export interface EstateDocument {
+  id: ID;
+  name: string;
+  location: string;
+  note?: string;
+}
+
+/**
+ * Everything the app cannot work out from transactions.
+ *
+ * Deliberately not a will. A will is a legal instrument whose validity turns
+ * on state law - how many witnesses, whether one of them may also inherit,
+ * whether it was notarised - and a document that looks valid and is not would
+ * be discovered at the one moment nobody can fix it. This is the inventory an
+ * executor or an attorney asks for first, and the thing a family opens on the
+ * worst day of their life to find out what exists and who to call.
+ */
+export interface EstateRecord {
+  policies: Policy[];
+  contacts: EstateContact[];
+  documents: EstateDocument[];
+  /** Who should raise the children. A note to the attorney, not a nomination. */
+  guardians?: string;
+  /** Anything else worth saying, in their own words. */
+  wishes?: string;
+  /** The "if something happens to me" forecast, as it was last set up. */
+  survivorship?: Survivorship;
+  /** When the summary was last looked over, so a stale one can say so. */
+  reviewedAt?: ISODate;
+}
 
 export interface DB {
   version: number;
@@ -363,6 +442,8 @@ export interface DB {
   hopper?: HopperExchange[];
   /** Scenarios for the forecast. Absent until somebody opens it. */
   forecast?: ForecastPlan;
+  /** What a family would need to find. Absent until somebody opens it. */
+  estate?: EstateRecord;
   settings: Settings;
 }
 
