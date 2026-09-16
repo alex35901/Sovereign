@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -4466,6 +4466,111 @@ try {
       }
     }
     await bk.close();
+  }
+
+  if (want("sorting")) {
+    // ── a heading that sorts, three states ──
+    //
+    // Ascending, descending, then back to the order the table came in. The
+    // third state is the one worth testing: two-state sorting is a trap,
+    // because once a table has been sorted there is no way back to the order
+    // it chose, and that order usually means something.
+    const so = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    await so.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+    await so.waitForTimeout(1400);
+
+    /**
+     * One column, one array per card.
+     *
+     * Per card rather than across the page, because each group is its own
+     * table: read as one run the values drop back at every boundary and
+     * "sorted" becomes impossible to state.
+     */
+    const column = (n) => so.evaluate((i) => [...document.querySelectorAll(".tbl-holdings")]
+      .map((t) => [...t.querySelectorAll("tbody tr")]
+        .map((r) => Number((r.children[i]?.innerText ?? "").replace(/[^0-9.-]/g, "")) || 0)), n);
+    const rising = (cards) => cards.every((v) => v.every((x, i) => i === 0 || x >= v[i - 1]));
+    const falling = (cards) => cards.every((v) => v.every((x, i) => i === 0 || x <= v[i - 1]));
+    const flat = (cards) => cards.map((v) => v.join(" ")).join(" | ");
+    const ariaOf = () => so.evaluate(() =>
+      [...document.querySelectorAll(".tbl-holdings")[0].querySelectorAll("th")]
+        .map((t) => t.getAttribute("aria-sort")).filter(Boolean).join(","));
+    const clickTh = (name) => so.locator(".tbl-holdings").first()
+      .locator("th", { hasText: name }).first().click({ timeout: 8000 });
+
+    const natural = await column(5);
+    check("the holdings table has sortable headings",
+      (await so.locator(".tbl-holdings th.th-sort").count()) >= 6,
+      `${await so.locator(".tbl-holdings th.th-sort").count()} of them`);
+    check("and nothing is sorted until it is asked for",
+      /^(none,)*none$/.test(await ariaOf()), await ariaOf());
+
+    if (await tryStep("a heading can be clicked", async () => { await clickTh("Value"); await so.waitForTimeout(400); })) {
+      const asc = await column(5);
+      check("one click sorts low to high, in every card",
+        asc.length > 1 && rising(asc) && !falling(asc), flat(asc));
+      check("and says so, for a screen reader as well as an arrow",
+        /ascending/.test(await ariaOf()), await ariaOf());
+
+      await clickTh("Value");
+      await so.waitForTimeout(400);
+      const desc = await column(5);
+      check("a second click turns it round",
+        falling(desc) && !rising(desc), flat(desc));
+      check("and says that too", /descending/.test(await ariaOf()), await ariaOf());
+
+      await clickTh("Value");
+      await so.waitForTimeout(400);
+      check("a third click gives back the order it came in",
+        flat(await column(5)) === flat(natural),
+        `${flat(await column(5))} against ${flat(natural)}`);
+      check("with nothing left marked",
+        /^(none,)*none$/.test(await ariaOf()), await ariaOf());
+    }
+
+    // Moving to another column starts it over. Reached from *descending*
+    // deliberately: from ascending, a sort that wrongly carries the previous
+    // direction across looks exactly like one that starts fresh.
+    if (await tryStep("a second column can be sorted", async () => {
+      await clickTh("Value");
+      await so.waitForTimeout(250);
+      await clickTh("Value");
+      await so.waitForTimeout(250);
+      await clickTh("Shares");
+      await so.waitForTimeout(400);
+    })) {
+      check("moving to another column starts it ascending and clears the first",
+        (await ariaOf()).split(",").filter((x) => x !== "none").join() === "ascending",
+        await ariaOf());
+      check("and the new column really is ascending, not the old direction carried over",
+        rising(await column(2)), flat(await column(2)));
+    }
+    await so.close();
+
+    // The same headings on the other table that has them.
+    const ints = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+    await ints.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await ints.waitForTimeout(1200);
+    const names = () => ints.evaluate(() => [...document.querySelectorAll(".int-table tbody tr")]
+      .map((r) => r.children[0]?.innerText.trim()));
+    const order = await names();
+    check("the integrations table sorts too",
+      (await ints.locator(".int-table th.th-sort").count()) >= 6);
+    if (await tryStep("its headings can be clicked", async () => {
+      await ints.locator(".int-table th", { hasText: "Process" }).first().click({ timeout: 8000 });
+      await ints.waitForTimeout(400);
+    })) {
+      const asc = await names();
+      check("by name, alphabetically",
+        asc.join() === [...order].sort((a, b) => a.localeCompare(b)).join(), asc.join(" / "));
+      await ints.locator(".int-table th", { hasText: "Process" }).first().click();
+      await ints.waitForTimeout(300);
+      await ints.locator(".int-table th", { hasText: "Process" }).first().click();
+      await ints.waitForTimeout(400);
+      check("and back to the order the work runs in",
+        (await names()).join() === order.join(), (await names()).join(" / "));
+    }
+    await ints.close();
   }
 
 } finally {

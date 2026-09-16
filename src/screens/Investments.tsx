@@ -15,6 +15,8 @@ import { isSymbol } from "../lib/symbol";
 import type { GroupBy } from "../lib/holdings";
 import { GROUPINGS, groupHoldings, groupReturn, holdingTickers, periodReturn } from "../lib/holdings";
 import { MIX_AS_OF, lookThrough } from "../lib/funds";
+import type { SortValue } from "../components/sort";
+import { SortTh, sortRows, useSort } from "../components/sort";
 import type { PriceHistory } from "../lib/benchmarks";
 import { BENCHMARKS, benchmarkByTicker, emptyHistory, fetchHistories, historyFloor, mergeCloses, needsFetch, nextTone, rebase, returnSeries } from "../lib/benchmarks";
 import { loadHistory, saveHistory } from "../lib/benchmark-store";
@@ -105,6 +107,15 @@ export default function Investments() {
   const values = useMemo(() => series.map((x) => x.value), [series]);
 
   const [groupBy, setGroupBy] = useState<GroupBy>("account");
+  /**
+   * One sort across every card, not one per card.
+   *
+   * The cards are one table cut into groups rather than several tables that
+   * happen to share a page, so clicking Value on any of them means "biggest
+   * first" everywhere. Cleared by a third click, which gives back the order
+   * each cut chose: biggest first, or the account's own order.
+   */
+  const { sort, toggle: onSort } = useSort<HoldingField>();
 
   /**
    * Every symbol the page needs closes for: the lines a reader has chosen,
@@ -187,7 +198,9 @@ export default function Investments() {
         </div>
 
         {groups.map((g) => {
-          const rows = g.rows;
+          // Sorted here rather than in the grouping, so clearing the sort
+          // gives back whatever order the cut itself chose.
+          const rows = sortRows(g.rows, sort, (h, key) => holdingField(h, key, market.data, span));
           const a = g.account;
           const moved = groupReturn(rows, market.data, span.start, span.end);
           return (
@@ -214,16 +227,16 @@ export default function Investments() {
                     <thead>
                       <tr>
                         <th className="hold-pick" />
-                        <th className="hold-name">Holding</th>
-                        <th>Shares</th>
-                        <th>Price</th>
-                        <th>Cost basis</th>
-                        <th>Value</th>
-                        <th>Gain</th>
+                        <SortTh field="name" sort={sort} onSort={onSort} className="hold-name">Holding</SortTh>
+                        <SortTh field="shares" sort={sort} onSort={onSort}>Shares</SortTh>
+                        <SortTh field="price" sort={sort} onSort={onSort}>Price</SortTh>
+                        <SortTh field="cost" sort={sort} onSort={onSort}>Cost basis</SortTh>
+                        <SortTh field="value" sort={sort} onSort={onSort}>Value</SortTh>
+                        <SortTh field="gain" sort={sort} onSort={onSort}>Gain</SortTh>
                         {/* Named for the period the chart is showing, and it
-                            moves with it — the whole table answers the same
+                            moves with it: the whole table answers the same
                             question the range pills just asked. */}
-                        <th>Past {periodLabel}</th>
+                        <SortTh field="moved" sort={sort} onSort={onSort}>Past {periodLabel}</SortTh>
                         <th />
                       </tr>
                     </thead>
@@ -313,6 +326,34 @@ export default function Investments() {
       ) : null}
     </>
   );
+}
+
+/** Which column of the holdings table a row is being read for. */
+type HoldingField = "name" | "shares" | "price" | "cost" | "value" | "gain" | "moved";
+
+/**
+ * One holding's value for one column.
+ *
+ * The same arithmetic the cell does, so a column always sorts by exactly what
+ * it shows: Gain is money and not the percentage under it, and the period
+ * column is the proportion rather than the text "-" that stands in when a
+ * price provider has never heard of the symbol.
+ */
+function holdingField(
+  h: Holding,
+  key: HoldingField,
+  histories: Record<string, PriceHistory>,
+  span: { start: ISODate; end: ISODate },
+): SortValue {
+  switch (key) {
+    case "name": return h.ticker.trim() || h.name;
+    case "shares": return h.quantity;
+    case "price": return h.price;
+    case "cost": return holdingCost(h);
+    case "value": return holdingValue(h);
+    case "gain": return holdingValue(h) - holdingCost(h);
+    default: return periodReturn(histories[h.ticker.trim().toUpperCase()], span.start, span.end);
+  }
 }
 
 type FetchState = "idle" | "loading" | "error" | "nokey";

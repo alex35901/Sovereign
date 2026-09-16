@@ -4,6 +4,8 @@ import type { Settings } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { PERIOD_LABEL, healthOf, integrations } from "../lib/integrations";
+import type { SortValue } from "../components/sort";
+import { SortTh, sortRows, useSort } from "../components/sort";
 import type { Health, Integration } from "../lib/integrations";
 import { hopperMeter } from "../lib/hopper/loop";
 import type { HopperMeter } from "../lib/hopper/loop";
@@ -52,9 +54,12 @@ export function IntegrationsCard() {
   // enough to be worth polling.
   useEffect(() => { void hopperMeter().then(setMeter); }, []);
 
-  const rows = useMemo(() => integrations(db, meter && meter.configured
+  const all = useMemo(() => integrations(db, meter && meter.configured
     ? { messages: meter.spend?.messages ?? 0, limit: meter.limit }
     : null), [db, meter]);
+  // Cleared by a third click, which gives back the order the work runs in.
+  const { sort, toggle: onSort } = useSort<IntField>();
+  const rows = useMemo(() => sortRows(all, sort, intField), [all, sort]);
 
   const run = async (id: string) => {
     setBusy(id);
@@ -114,13 +119,13 @@ export function IntegrationsCard() {
         <table className="tbl">
           <thead>
             <tr>
-              <th>Process</th>
-              <th>Provider</th>
-              <th>Key</th>
-              <th className="right">Used</th>
-              <th className="right">Ceiling</th>
-              <th>Last run</th>
-              <th>Health</th>
+              <SortTh field="process" sort={sort} onSort={onSort}>Process</SortTh>
+              <SortTh field="provider" sort={sort} onSort={onSort}>Provider</SortTh>
+              <SortTh field="key" sort={sort} onSort={onSort}>Key</SortTh>
+              <SortTh field="used" sort={sort} onSort={onSort} className="right">Used</SortTh>
+              <SortTh field="ceiling" sort={sort} onSort={onSort} className="right">Ceiling</SortTh>
+              <SortTh field="lastAt" sort={sort} onSort={onSort}>Last run</SortTh>
+              <SortTh field="health" sort={sort} onSort={onSort}>Health</SortTh>
               <th />
             </tr>
           </thead>
@@ -147,6 +152,28 @@ export function IntegrationsCard() {
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
     </Card>
   );
+}
+
+type IntField = "process" | "provider" | "key" | "used" | "ceiling" | "lastAt" | "health";
+
+/** Worst first when sorted descending, which is the order anybody cares about. */
+const HEALTH_RANK: Record<Health, number> = { ok: 0, off: 1, warn: 2, down: 3 };
+
+/** One integration's value for one column, as the column shows it. */
+function intField(row: Integration, key: IntField): SortValue {
+  switch (key) {
+    case "process": return row.process;
+    case "provider": return row.provider;
+    // What the cell actually says: whether the credential is there, not which
+    // of the four shapes it takes.
+    case "key": return row.set ? 1 : 0;
+    case "used": return row.used;
+    case "ceiling": return row.ceiling;
+    // Never run is no answer rather than the beginning of time, so those rows
+    // sort to the bottom instead of leading "oldest first".
+    case "lastAt": return row.lastAt ?? null;
+    default: return HEALTH_RANK[healthOf(row).state];
+  }
 }
 
 /** Which rows have something to press, and what it says. */

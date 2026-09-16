@@ -92,7 +92,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~638)
+### Unit tests — `scripts/selftest.mjs` (~643)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -120,7 +120,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~435)
+### Browser tests — `scripts/breakpoints.mjs` (~448)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -413,6 +413,17 @@ Patterns worth reusing:
   eye. `Math.max`/`Math.min` rather than trusting the order: nothing promises
   the good case is the higher number, and a pair printed backwards reads as a
   bug.
+- `src/components/sort.tsx` is the shared "click a heading to sort" mechanism:
+  `useSort` (ascending, descending, then back to the order the table came in),
+  `sortRows` and `SortTh`. Three states rather than two on purpose - the
+  natural order usually means something (holdings biggest-first within an
+  account, integrations in the order the work runs) and two-state sorting
+  throws it away with no way back. A cell with no answer sorts **last in both
+  directions**, which is why the missing check runs before the direction rather
+  than the comparison simply being negated: negating it puts every unpriceable
+  row at the top of "worst first". NaN counts as missing, not as a small
+  number. Applied to the holdings table and the integrations table; the two CSV
+  previews deliberately do not sort, because there the row order is the file.
 - `AreaChart` grew `band` and `marks` for the forecast. `band` replaces the
   gradient fill rather than sitting on top of it: two translucent fills of the
   same colour over each other read as one muddy shape, and the one carrying

@@ -80,6 +80,7 @@ await build({
       export * as ES from "./src/lib/estate.ts";
       export * as FD from "./src/lib/funds.ts";
       export * as SS from "./src/lib/social-security.ts";
+      export { compareValues, sortRows } from "./src/components/sort.tsx";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4981,6 +4982,60 @@ await test("an empty section is left out, but no debts is worth saying", () => {
   const keys = M.ES.estateSummary(db, "2030-06-01").map((x) => x.key);
   assert.deepEqual(keys, ["assets", "owed"]);
   assert.equal(M.ES.estateSummary(db, "2030-06-01")[1].lines.length, 0);
+});
+
+/* ── sorting a table by its headings ───────────────────────────────────── */
+
+await test("numbers sort as numbers and words sort as words", () => {
+  const { compareValues: cmp } = M;
+  assert.ok(cmp(1, 2) < 0);
+  assert.ok(cmp(10, 9) > 0, "not as strings, or 10 would come before 9");
+  assert.equal(cmp(5, 5), 0);
+  assert.ok(cmp(-100, -5) < 0, "and negatives keep their order");
+  assert.ok(cmp("apple", "banana") < 0);
+  assert.ok(cmp("VTI", "vti") === 0, "case decides nothing");
+  assert.ok(cmp("Holding 2", "Holding 10") < 0, "and 2 comes before 10");
+});
+
+await test("a value nobody has is sorted last, whichever way the arrow points", () => {
+  const rows = [{ t: "A", v: 3 }, { t: "B", v: null }, { t: "C", v: 1 }, { t: "D", v: undefined }];
+  const by = (r) => r.v;
+  const up = M.sortRows(rows, { key: "v", dir: "asc" }, by).map((r) => r.t);
+  const down = M.sortRows(rows, { key: "v", dir: "desc" }, by).map((r) => r.t);
+  assert.deepEqual(up, ["C", "A", "B", "D"]);
+  // Not the reverse of the first: negating the comparison would float every
+  // row that has no answer to the top, so "worst first" would open with a
+  // list of things that have no performance to speak of.
+  assert.deepEqual(down, ["A", "C", "B", "D"]);
+});
+
+await test("clearing the sort gives back the order it came in", () => {
+  const rows = [{ t: "A", v: 3 }, { t: "B", v: 1 }, { t: "C", v: 2 }];
+  assert.deepEqual(M.sortRows(rows, null, (r) => r.v).map((r) => r.t), ["A", "B", "C"]);
+  // A copy either way, so a caller cannot sort the document by accident.
+  const out = M.sortRows(rows, null, (r) => r.v);
+  out.reverse();
+  assert.deepEqual(rows.map((r) => r.t), ["A", "B", "C"]);
+});
+
+await test("rows that tie keep the order they arrived in", () => {
+  const rows = [{ t: "A", v: 1 }, { t: "B", v: 1 }, { t: "C", v: 0 }, { t: "D", v: 1 }];
+  assert.deepEqual(M.sortRows(rows, { key: "v", dir: "asc" }, (r) => r.v).map((r) => r.t),
+    ["C", "A", "B", "D"]);
+  assert.deepEqual(M.sortRows(rows, { key: "v", dir: "desc" }, (r) => r.v).map((r) => r.t),
+    ["A", "B", "D", "C"]);
+});
+
+await test("a number that is not a number counts as no answer at all", () => {
+  // A return worked out from a price of zero, say. NaN compares false against
+  // everything, so left alone it scatters its rows wherever the sort walks.
+  const rows = [{ t: "A", v: 2 }, { t: "B", v: NaN }, { t: "C", v: 1 }];
+  const at = (dir) => M.sortRows(rows, { key: "v", dir }, (r) => r.v).map((r) => r.t);
+  assert.deepEqual(at("asc"), ["C", "A", "B"]);
+  // Both directions, because the first version of this only tested one and
+  // the missing check that ran before the direction was applied to null but
+  // not to NaN, which put it first the moment anybody clicked twice.
+  assert.deepEqual(at("desc"), ["A", "C", "B"]);
 });
 
 /* ── social security ───────────────────────────────────────────────────── */
