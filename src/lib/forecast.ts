@@ -1,6 +1,8 @@
 import type { DB, ID, MonthKey } from "../types.js";
 import { addMonths, lastMonths, monthOf, thisMonth } from "./date.js";
 import { cashFlowSeries } from "./select.js";
+import type { SocialSecurity } from "./social-security.js";
+import { DEFAULT_SOCIAL_SECURITY, benefitAt, hasBenefit } from "./social-security.js";
 
 /**
  * Where the money is going, decades out.
@@ -51,6 +53,15 @@ export interface Assumptions {
   realDollars: boolean;
   /** Per liability, because nothing else in the app records either. */
   debts: Record<ID, { apr: number; termMonths: number }>;
+  /**
+   * What the state pays, and from when.
+   *
+   * Absent until somebody fills it in, so every plan made before this existed
+   * walks exactly as it did. For most households it is the largest single line
+   * in retirement, and without it the walk shows a cliff at the retirement age
+   * that nobody's life actually has.
+   */
+  socialSecurity?: SocialSecurity;
 }
 
 export type EventKind = "income" | "expense" | "oneOff" | "home";
@@ -204,6 +215,11 @@ export function runForecast(
   const months = Math.max(1, Math.round((a.endAge - ageAt(from, a.birthYear)) * 12));
   const retireMonth = Math.max(0, Math.round((a.retireAge - ageAt(from, a.birthYear)) * 12));
 
+  // Looked up once. `hasBenefit` is what keeps a plan that has never been told
+  // about it from paying the cost of asking, every month, for fifty years.
+  const ss = hasBenefit(a.socialSecurity) ? a.socialSecurity! : null;
+  const spouseBorn = ss?.spouse?.birthYear ?? a.birthYear;
+
   const points: ForecastPoint[] = [];
   let atRetirement = 0;
   let ranOutAt: number | null = null;
@@ -220,6 +236,15 @@ export function runForecast(
 
     let inflow = retired ? 0 : income;
     let outflow = spend;
+
+    // Paid from the month it is claimed, whether or not anybody has retired:
+    // the two ages are unrelated, and plenty of people draw one while still
+    // earning the other. In today's money like every other figure here, so it
+    // is grown to the month the same way an income event is.
+    if (ss) {
+      const net = benefitAt(ss, a.birthYear, age, ageAt(month, spouseBorn), a.taxRatePct);
+      if (net > 0) inflow += net * Math.pow(1 + inflation, i);
+    }
 
     for (const e of events) {
       if (e.at > month) continue;
@@ -463,6 +488,7 @@ export function startingPosition(
 /* ── a plan to start from ─────────────────────────────────────────────── */
 
 export const DEFAULT_ASSUMPTIONS: Omit<Assumptions, "birthYear" | "debts"> = {
+  socialSecurity: DEFAULT_SOCIAL_SECURITY,
   retireAge: 65,
   endAge: 95,
   returnPct: 6,

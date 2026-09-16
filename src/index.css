@@ -1109,6 +1109,25 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    a bare select in the same bar. */
 .scope-select { display: inline-flex; flex: none; }
 
+/* The three claiming ages side by side. A claiming decision is made once and
+   is permanent, so the comparison belongs on the page rather than behind a
+   dial somebody has to sweep to discover it. */
+.ss-compare {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 16px 14px;
+}
+.ss-claim {
+  display: flex; flex-direction: column; gap: 2px; align-items: center;
+  padding: 10px 6px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); color: var(--text);
+}
+.ss-claim:hover { background: var(--surface-3); }
+.ss-claim.on { border-color: var(--accent); background: var(--accent-soft); }
+.ss-claim .num { font-size: 17px; }
+
 /* ── estate ───────────────────────────────────────────────────────────────
  *
  * Two pages in one: the survivor forecast, which is the app, and the summary,

@@ -18,6 +18,8 @@ import { allocate } from "./lib/goal-funding";
 import type { Assumptions, ForecastEvent, ForecastPlan, Scenario } from "./lib/forecast";
 import { activeScenario, blankPlan } from "./lib/forecast";
 import type { Survivorship } from "./lib/estate";
+import type { SocialSecurity } from "./lib/social-security";
+import { DEFAULT_SOCIAL_SECURITY } from "./lib/social-security";
 import { blankEstate } from "./lib/estate";
 
 /** Tag colours for tags created by an import, spread across the palette. */
@@ -314,6 +316,8 @@ export interface Actions {
   setAssumptions: (patch: Partial<Assumptions>) => void;
   /** Terms for one liability, which nothing else in the document records. */
   setDebtTerms: (accountId: ID, terms: { apr: number; termMonths: number }) => void;
+  /** What the state pays, and from when. A patch, so half of it can be set. */
+  setSocialSecurity: (patch: Partial<SocialSecurity>) => void;
   addForecastEvent: (e: Omit<ForecastEvent, "id">) => void;
   updateForecastEvent: (id: ID, patch: Partial<ForecastEvent>) => void;
   deleteForecastEvent: (id: ID) => void;
@@ -754,6 +758,16 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     setDebtTerms: (accountId, terms) => apply((db) => withScenario(db, (sc) => ({
       ...sc,
       assumptions: { ...sc.assumptions, debts: { ...sc.assumptions.debts, [accountId]: terms } },
+    }))),
+    setSocialSecurity: (patch) => apply((db) => withScenario(db, (sc) => ({
+      ...sc,
+      assumptions: {
+        ...sc.assumptions,
+        // Onto the default rather than onto nothing: a plan made before this
+        // existed has no settings to patch, and a partial write would leave it
+        // without a claim age.
+        socialSecurity: { ...DEFAULT_SOCIAL_SECURITY, ...sc.assumptions.socialSecurity, ...patch },
+      },
     }))),
     addForecastEvent: (e) => apply((db) => withScenario(db, (sc) => ({
       ...sc, events: [...sc.events, { ...e, id: uid("fe") }],

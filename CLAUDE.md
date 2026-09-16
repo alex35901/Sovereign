@@ -92,7 +92,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~623)
+### Unit tests — `scripts/selftest.mjs` (~638)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -120,7 +120,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~427)
+### Browser tests — `scripts/breakpoints.mjs` (~435)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -261,6 +261,21 @@ comments and fails on any that come back.
   and left out of the personal report, the same money in two places. Net worth
   and the reports still count everything; only the budget is the household's
   alone. The picker is absent from Reports entirely until something is marked.
+- `src/lib/social-security.ts` — the published claiming rules, and nothing
+  else. The benefit itself has to be typed in, because it is worked out from a
+  lifetime of earnings the app has never seen; everything after that is exact.
+  Full retirement age is a table, not a formula (two months per birth year
+  through each transition). A worker's own benefit is docked 5/9 of a percent a
+  month for the first three years early and the gentler 5/12 beyond that, and
+  earns 2/3 of a percent a month for waiting, capped at 70. **Both early rates
+  matter**: either one alone over five years gives 66.7% or 75% where the
+  answer is 70%. A spousal benefit is a different schedule again (25/36 of a
+  percent, then 5/12) and **earns nothing for waiting past full retirement
+  age**, which is the most expensive thing people get wrong about it. A spouse
+  takes their own record or half of the worker's, never both, and the half is
+  not payable until the worker has filed. `hasBenefit` is what keeps a plan
+  that has never been told about any of this from paying for the question every
+  month for fifty years.
 - `src/lib/funds.ts` — what a fund is actually made of. A portfolio of four
   tickers has four slices and answers nothing, because three of them are funds
   and a fund is a portfolio of its own: VT tagged "US Stocks" is forty percent

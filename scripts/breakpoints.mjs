@@ -3798,7 +3798,9 @@ try {
         marks: [...(svg?.querySelectorAll("text.axis-text") ?? [])].map((t) => t.textContent),
         tileRows: new Set(tiles.map((b) => Math.round(b.top))).size,
         tileCount: tiles.length,
-        dials: document.querySelectorAll(".fc-grid .field").length,
+        // The assumptions card's own fields. Counting every .fc-grid on the
+        // page swept up Social Security's three as well.
+        dials: document.querySelectorAll(".card:not(.ss-card) > .fc-grid .field").length,
         dialRows: new Set([...document.querySelectorAll(".fc-grid .field")]
           .map((el) => Math.round(el.getBoundingClientRect().top))).size,
         accounts: document.querySelectorAll(".fc-acc").length,
@@ -3972,6 +3974,72 @@ try {
     check("while the page still scrolls under a vertical drag",
       (await fc.locator(svgSel).evaluate((el) => getComputedStyle(el).touchAction)) === "pan-y",
       await fc.locator(svgSel).evaluate((el) => getComputedStyle(el).touchAction));
+
+    // ── social security ──
+    //
+    // The largest single line in most retirements, and the forecast did not
+    // have it: the walk stopped the pay at the retirement age and put nothing
+    // back. The figure has to be typed in, so nothing in the demo carries one
+    // and every way of getting this wrong looks the same until one is entered.
+    /** What the first tile says is left at the end of the plan. */
+    const leftAtEnd = async () => money(await fc.evaluate(
+      () => document.querySelector(".grid.g3 .card .small.muted")?.innerText ?? ""));
+    const beforeSS = await leftAtEnd();
+    if (await tryStep("a benefit can be entered", async () => {
+      await fc.locator(".ss-card input").first().fill("3000", { timeout: 8000 });
+      await fc.keyboard.press("Tab");
+      await fc.waitForTimeout(900);
+    })) {
+      check("entering a benefit leaves the household better off at the end",
+        (await leftAtEnd()) > beforeSS, `${beforeSS} -> ${await leftAtEnd()}`);
+
+      // The published factors, read off the page rather than off the module:
+      // 70% at 62 and 124% at 70 on a full retirement age of 67.
+      const compare = await fc.evaluate(() =>
+        [...document.querySelectorAll(".ss-claim")].map((b) => b.innerText.replace(/\n/g, " ")));
+      check("and the three claiming ages are compared on the page",
+        compare.length === 3, compare.join(" / "));
+      check("at the published factors, not an approximation of them",
+        /At 62 \$2,100 70%/.test(compare[0]) && /At 67 \$3,000 full/.test(compare[1])
+        && /At 70 \$3,720 124%/.test(compare[2]), compare.join(" / "));
+
+      check("and the month it starts is marked on the chart",
+        (await fc.locator("svg text").allTextContents()).some((t) => /Social Security at 67/.test(t)));
+
+      // Claiming early is more money sooner and less money in total, which is
+      // the entire trade-off and the reason this is a dial rather than a
+      // fixed monthly figure.
+      const atRetirement = () => fc.evaluate(() => document.querySelector(".nw-total")?.innerText ?? "");
+      const late = { end: await leftAtEnd(), at65: money(await atRetirement()) };
+      if (await tryStep("a different claiming age can be chosen", async () => {
+        await fc.locator(".ss-claim").first().click({ timeout: 8000 });
+        await fc.waitForTimeout(900);
+      })) {
+        const early = { end: await leftAtEnd(), at65: money(await atRetirement()) };
+        check("claiming at 62 is more in hand by 65",
+          early.at65 > late.at65, `${late.at65} at 67 against ${early.at65} at 62`);
+        check("and less by the end, which is the trade being made",
+          early.end < late.end, `${late.end} at 67 against ${early.end} at 62`);
+        await fc.locator(".ss-claim").nth(1).click();
+        await fc.waitForTimeout(700);
+      }
+
+      // A spouse takes their own record or half of yours, never both.
+      if (await tryStep("a spouse can be added", async () => {
+        await fc.locator(".ss-card .switch").click({ timeout: 8000 });
+        await fc.waitForTimeout(500);
+        await fc.locator(".ss-card .fc-grid").last().locator("input").first().fill("900");
+        await fc.keyboard.press("Tab");
+        await fc.waitForTimeout(900);
+      })) {
+        const note = await fc.evaluate(() =>
+          document.querySelector(".ss-card .fc-foot")?.innerText ?? "");
+        check("and a small record of their own is beaten by half of yours",
+          /half of your record/.test(note) && /\$1,500/.test(note), note.slice(0, 110) || "no note");
+        check("which is not the two added together",
+          (await leftAtEnd()) < beforeSS * 10, `${await leftAtEnd()}`);
+      }
+    }
 
     // The earliest retirement age is bisected over the same walk. Lengthening
     // the horizon means more years to pay for, so the answer has to move.

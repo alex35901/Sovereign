@@ -12,6 +12,11 @@ import {
   SelectInput, TextInput, Toggle, cx,
 } from "../components/ui";
 import type { Assumptions, EventKind, ForecastEvent, Scenario, TaxTreatment } from "../lib/forecast";
+import type { SocialSecurity as SS } from "../lib/social-security";
+import {
+  DEFAULT_SOCIAL_SECURITY, EARLIEST_CLAIM, LATEST_CLAIM, firstClaimAge,
+  fullRetirementAge, hasBenefit, ownBenefit, spousalFactor,
+} from "../lib/social-security";
 import {
   DEBT_DEFAULTS, activeScenario, blankPlan, defaultTreatment, earliestRetirement,
   levelPayment, measuredFlows, monthAtAge, runBand, startingPosition, withDebtDefaults,
@@ -103,8 +108,14 @@ export default function Forecast() {
     idx.findIndex((i) => mid[i].month >= month);
 
   const retireMonth = monthAtAge(a.birthYear, a.retireAge);
+  // Whichever of the two claims first, since that is the month the line bends.
+  const claim = a.socialSecurity && hasBenefit(a.socialSecurity)
+    ? firstClaimAge(a.socialSecurity) : null;
   const marks = [
     { index: markAt(retireMonth), label: `Retire at ${a.retireAge}`, tone: "--accent" },
+    ...(claim !== null
+      ? [{ index: markAt(monthAtAge(a.birthYear, claim)), label: `Social Security at ${claim}`, tone: "--c3" }]
+      : []),
     ...events.map((e) => ({ index: markAt(e.at), label: e.name, tone: "--muted" })),
   ].filter((m) => m.index > 0);
 
@@ -209,6 +220,7 @@ export default function Forecast() {
         </Card>
 
         <AssumptionsCard a={a} onChange={actions.setAssumptions} />
+        <SocialSecurityCard a={a} />
         <AccountsCard a={a} />
       </div>
 
@@ -378,6 +390,129 @@ function AssumptionsCard({ a, onChange }: {
             : "Figures are in the money of the year they fall in, which is a larger number for the same groceries."}
         </span>
       </div>
+    </Card>
+  );
+}
+
+/**
+ * What the state pays, and from when.
+ *
+ * For most households this is the largest single line in retirement, and the
+ * forecast did not have it: the walk stopped the pay at the retirement age and
+ * put nothing back, which draws a cliff nobody's life actually has.
+ *
+ * The figure has to be typed in, because it is worked out from a lifetime of
+ * earnings this app has never seen and never will. Everything after that is
+ * rules, and they are worth being exact about: the reason to model this at all
+ * is to compare claiming early against claiming late, and an approximation
+ * would answer that question wrong.
+ */
+function SocialSecurityCard({ a }: { a: Assumptions }) {
+  const { actions } = useStore();
+  const ss: SS = { ...DEFAULT_SOCIAL_SECURITY, ...a.socialSecurity };
+  const fra = fullRetirementAge(a.birthYear);
+  const fraLabel = Number.isInteger(fra) ? `${fra}` : `${Math.floor(fra)} and ${Math.round((fra % 1) * 12)} months`;
+  const at = (age: number) => ownBenefit(ss.monthlyAtFRA, a.birthYear, age);
+  const spouse = ss.spouse;
+
+  return (
+    // Named, so a test can tell it from the chart card above it: once a
+    // benefit exists the chart carries a "Social Security at 67" marker and
+    // matching on the words alone finds both.
+    <Card pad={false} className="ss-card">
+      <CardHead
+        flush title="Social Security"
+        sub="The one figure here that has to come off your statement at ssa.gov, because it is worked out from what you have earned"
+      />
+      <div className="fc-grid">
+        <Field label="Your benefit" hint={`A month at full retirement age, which for you is ${fraLabel}`}>
+          <MoneyInput
+            value={ss.monthlyAtFRA}
+            onChange={(monthlyAtFRA) => actions.setSocialSecurity({ monthlyAtFRA })}
+          />
+        </Field>
+        <Field label="Claim at" hint={`Between ${EARLIEST_CLAIM} and ${LATEST_CLAIM}`}>
+          <NumInput
+            value={ss.claimAge} min={EARLIEST_CLAIM} max={LATEST_CLAIM}
+            onChange={(claimAge) => actions.setSocialSecurity({ claimAge })}
+          />
+        </Field>
+        <Field label="Taxed on" hint="How much of it counts as income. Most households with savings land at 85%.">
+          <PercentInput
+            value={ss.taxablePct}
+            onChange={(taxablePct) => actions.setSocialSecurity({ taxablePct })}
+          />
+        </Field>
+      </div>
+
+      {/* The comparison, which is the whole reason to model this rather than
+          add it as a flat monthly figure. Claiming is a one-time, permanent
+          decision and these three numbers are what it is worth. */}
+      {ss.monthlyAtFRA > 0 ? (
+        <div className="ss-compare">
+          {[EARLIEST_CLAIM, Math.round(fra), LATEST_CLAIM].map((age) => (
+            <button
+              key={age}
+              className={cx("ss-claim", age === ss.claimAge && "on")}
+              aria-pressed={age === ss.claimAge}
+              onClick={() => actions.setSocialSecurity({ claimAge: age })}
+            >
+              <span className="tiny faint">At {age}</span>
+              <span className="num bold"><Money value={at(age)} cents={false} /></span>
+              <span className="tiny faint">
+                {age === Math.round(fra) ? "full" : `${Math.round((at(age) / (at(Math.round(fra)) || 1)) * 100)}%`}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="est-clears">
+        <Toggle
+          on={Boolean(spouse)}
+          onChange={(on) => actions.setSocialSecurity({
+            spouse: on ? { monthlyAtFRA: 0, claimAge: 67, birthYear: a.birthYear } : undefined,
+          })}
+          label={<span className="small">A spouse or partner claims too</span>}
+        />
+      </div>
+
+      {spouse ? (
+        <div className="fc-grid">
+          <Field label="Their benefit" hint="A month at their own full retirement age">
+            <MoneyInput
+              value={spouse.monthlyAtFRA}
+              onChange={(monthlyAtFRA) => actions.setSocialSecurity({ spouse: { ...spouse, monthlyAtFRA } })}
+            />
+          </Field>
+          <Field label="They were born" hint="Their full retirement age depends on it">
+            <NumInput
+              value={spouse.birthYear} min={1900} max={new Date().getFullYear()}
+              onChange={(birthYear) => actions.setSocialSecurity({ spouse: { ...spouse, birthYear } })}
+            />
+          </Field>
+          <Field label="They claim at" hint={`Between ${EARLIEST_CLAIM} and ${LATEST_CLAIM}`}>
+            <NumInput
+              value={spouse.claimAge} min={EARLIEST_CLAIM} max={LATEST_CLAIM}
+              onChange={(claimAge) => actions.setSocialSecurity({ spouse: { ...spouse, claimAge } })}
+            />
+          </Field>
+        </div>
+      ) : null}
+
+      {spouse && ss.monthlyAtFRA > 0 ? (
+        <div className="fc-foot">
+          <span className="tiny faint">
+            {(() => {
+              const own = ownBenefit(spouse.monthlyAtFRA, spouse.birthYear, spouse.claimAge);
+              const onYours = ss.monthlyAtFRA * spousalFactor(fullRetirementAge(spouse.birthYear), spouse.claimAge);
+              return onYours > own
+                ? `They do better on half of your record: ${fmt0(onYours)} a month rather than ${fmt0(own)} of their own. A spousal benefit earns nothing for waiting past full retirement age, unlike your own.`
+                : `They do better on their own record: ${fmt0(own)} a month, against ${fmt0(onYours)} as half of yours.`;
+            })()}
+          </span>
+        </div>
+      ) : null}
     </Card>
   );
 }

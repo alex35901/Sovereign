@@ -79,6 +79,7 @@ await build({
       export * as FC from "./src/lib/forecast.ts";
       export * as ES from "./src/lib/estate.ts";
       export * as FD from "./src/lib/funds.ts";
+      export * as SS from "./src/lib/social-security.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4466,6 +4467,110 @@ await test("running out is reported, and not running out is not", () => {
   assert.equal(fine.ranOutAt, null);
 });
 
+await test("social security reaches the walk, and only from the month it is claimed", () => {
+  // Deliberately solvent: a household that runs out has a net worth of zero
+  // from then on and every variant of this looks identical.
+  const still = {
+    birthYear: 1990, retireAge: 65, endAge: 70, inflationPct: 0, wageGrowthPct: 0,
+    retirementSpendPct: 100, taxRatePct: 0,
+    socialSecurity: { monthlyAtFRA: 2_000_00, claimAge: 67, taxablePct: 0 },
+  };
+  const pos = { cash: 3_000_000_00, monthlyIncome: 0, monthlySpend: 3_000_00 };
+  const out = run(pos, still, [], 0);
+  assert.equal(out.ranOutAt, null, "or this is a test about something else");
+  const fallAt = (age) => {
+    const i = out.points.findIndex((p) => p.age >= age);
+    return out.points[i].net - out.points[i + 1].net;
+  };
+  // Before 67 the household spends 3,000 a month out of savings.
+  assert.ok(Math.abs(fallAt(50) - 3_000_00) < 100, `${fallAt(50)}`);
+  // From 67 the state pays 2,000 of it, so only 1,000 comes out.
+  assert.ok(Math.abs(fallAt(68) - 1_000_00) < 100, `${fallAt(68)}`);
+
+  // And a plan that has never been told about it walks exactly as it did
+  // before any of this existed.
+  const without = run(pos, { ...still, socialSecurity: undefined }, [], 0);
+  const i = without.points.findIndex((p) => p.age >= 68);
+  assert.ok(Math.abs((without.points[i].net - without.points[i + 1].net) - 3_000_00) < 100,
+    "still spending the whole three thousand");
+  assert.ok(without.atEnd < out.atEnd, "and it ends up poorer for it");
+});
+
+await test("claiming earlier is a smaller cheque for ever, and the walk shows both sides", () => {
+  const base = {
+    birthYear: 1990, retireAge: 62, endAge: 95, inflationPct: 0, wageGrowthPct: 0,
+    retirementSpendPct: 100, taxRatePct: 0,
+  };
+  const endAt = (claimAge, endAge) => {
+    const out = run(
+      { cash: 6_000_000_00, monthlyIncome: 0, monthlySpend: 5_000_00 },
+      { ...base, endAge, socialSecurity: { monthlyAtFRA: 3_000_00, claimAge, taxablePct: 0 } },
+      [], 0,
+    );
+    assert.equal(out.ranOutAt, null, `ran out at ${claimAge}/${endAge}`);
+    return out.atEnd;
+  };
+  // Live long enough and waiting wins: 124% of the cheque from 70 makes up for
+  // eight years of not being paid at all.
+  assert.ok(endAt(70, 95) > endAt(67, 95), `70 -> ${endAt(70, 95)}, 67 -> ${endAt(67, 95)}`);
+  assert.ok(endAt(67, 95) > endAt(62, 95), `67 -> ${endAt(67, 95)}, 62 -> ${endAt(62, 95)}`);
+  // Do not, and it does not. Which is the whole reason to be able to compare
+  // the two rather than be told an answer.
+  assert.ok(endAt(62, 72) > endAt(70, 72), `62 -> ${endAt(62, 72)}, 70 -> ${endAt(70, 72)}`);
+});
+
+await test("the benefit keeps pace with prices, which is what a COLA is", () => {
+  // Nothing but the benefit: no spending, no other income, no growth. Net
+  // worth then rises by exactly one month's cheque each month, so the cheque
+  // itself can be read straight off the walk.
+  const out = run(
+    { cash: 0, monthlyIncome: 0, monthlySpend: 0 },
+    {
+      birthYear: 1990, retireAge: 62, endAge: 80, inflationPct: 4, wageGrowthPct: 0,
+      retirementSpendPct: 100, taxRatePct: 0, realDollars: false,
+      socialSecurity: { monthlyAtFRA: 1_000_00, claimAge: 62, taxablePct: 0 },
+    }, [], 0,
+  );
+  const cheque = out.points.map((p, i) => (i ? p.net - out.points[i - 1].net : 0));
+  const first = cheque.findIndex((v) => v > 0);
+  assert.ok(first > 0, "nothing is paid before it is claimed");
+  // A year later the same cheque is worth four percent more, because that is
+  // what the plan says prices did.
+  assert.ok(Math.abs(cheque[first + 12] / cheque[first] - 1.04) < 0.005,
+    `${cheque[first]} then ${cheque[first + 12]}`);
+  // And the first cheque is the right size: a 1990 birth year has a full
+  // retirement age of 67, so claiming at 62 is 70% of the 1,000. In the
+  // dollars of 2052 rather than today's, because this run is nominal and
+  // twenty-two years of 4% is most of a doubling. Same cheque, bigger number.
+  const nominal = 700_00 * Math.pow(1.04, 22);
+  assert.ok(Math.abs(cheque[first] - nominal) < 200, `${cheque[first]} against ${Math.round(nominal)}`);
+});
+
+await test("a younger spouse starts drawing on their own birthday, not yours", () => {
+  // Nothing but the two benefits, so net worth rises by exactly what is being
+  // paid that month and the cheques can be read straight off the walk.
+  const out = run(
+    { cash: 0, monthlyIncome: 0, monthlySpend: 0 },
+    {
+      birthYear: 1990, retireAge: 62, endAge: 80, inflationPct: 0, wageGrowthPct: 0,
+      retirementSpendPct: 100, taxRatePct: 0, realDollars: false,
+      socialSecurity: {
+        monthlyAtFRA: 1_000_00, claimAge: 62, taxablePct: 0,
+        // Ten years younger, so ten years later.
+        spouse: { monthlyAtFRA: 1_000_00, claimAge: 62, birthYear: 2000 },
+      },
+    }, [], 0,
+  );
+  const cheque = out.points.map((p, i) => (i ? p.net - out.points[i - 1].net : 0));
+  // Both have a full retirement age of 67 and claim at 62, so each is at 70%.
+  // One record pays from the subject's 62nd birthday; both from the spouse's,
+  // a decade later. Their own 700 beats 325 as half of the other, so neither
+  // is topped up.
+  assert.equal(cheque[250], 0, "nothing before either of them is 62");
+  assert.ok(Math.abs(cheque[300] - 700_00) < 100, `${cheque[300]}`);
+  assert.ok(Math.abs(cheque[400] - 1_400_00) < 100, `${cheque[400]}`);
+});
+
 await test("today's money is the same walk, deflated", () => {
   const pos = { taxable: 100_000_00 };
   const assume = { birthYear: 1990, retireAge: 95, endAge: 50, inflationPct: 3 };
@@ -4876,6 +4981,143 @@ await test("an empty section is left out, but no debts is worth saying", () => {
   const keys = M.ES.estateSummary(db, "2030-06-01").map((x) => x.key);
   assert.deepEqual(keys, ["assets", "owed"]);
   assert.equal(M.ES.estateSummary(db, "2030-06-01")[1].lines.length, 0);
+});
+
+/* ── social security ───────────────────────────────────────────────────── */
+
+await test("full retirement age steps two months a year through each change", () => {
+  const { fullRetirementAge: fra } = M.SS;
+  assert.equal(fra(1930), 65);
+  assert.equal(fra(1937), 65);
+  assert.ok(Math.abs(fra(1938) - (65 + 2 / 12)) < 1e-9, `${fra(1938)}`);
+  assert.ok(Math.abs(fra(1942) - (65 + 10 / 12)) < 1e-9, `${fra(1942)}`);
+  assert.equal(fra(1943), 66);
+  assert.equal(fra(1954), 66);
+  assert.ok(Math.abs(fra(1955) - (66 + 2 / 12)) < 1e-9, `${fra(1955)}`);
+  assert.ok(Math.abs(fra(1959) - (66 + 10 / 12)) < 1e-9, `${fra(1959)}`);
+  assert.equal(fra(1960), 67);
+  assert.equal(fra(1990), 67);
+});
+
+await test("the published headline numbers fall out of the rules", () => {
+  const { ownFactor } = M.SS;
+  // The two figures everybody quotes: 70% at 62 and 124% at 70, on a full
+  // retirement age of 67. Neither is written down anywhere in the module.
+  assert.ok(Math.abs(ownFactor(67, 62) - 0.70) < 1e-9, `${ownFactor(67, 62)}`);
+  assert.ok(Math.abs(ownFactor(67, 70) - 1.24) < 1e-9, `${ownFactor(67, 70)}`);
+  assert.equal(ownFactor(67, 67), 1, "and full retirement age is the whole of it");
+  // And the same rules on the older full retirement age of 66.
+  assert.ok(Math.abs(ownFactor(66, 62) - 0.75) < 1e-9, `${ownFactor(66, 62)}`);
+  assert.ok(Math.abs(ownFactor(66, 70) - 1.32) < 1e-9, `${ownFactor(66, 70)}`);
+});
+
+await test("the second early rate is not a rounding detail", () => {
+  const { ownFactor } = M.SS;
+  // Three years early is penalised at 5/9 of a percent a month, everything
+  // beyond that at the gentler 5/12. Exactly three years early is the first
+  // rate alone: 20% off.
+  assert.ok(Math.abs(ownFactor(67, 64) - 0.80) < 1e-9, `${ownFactor(67, 64)}`);
+  // Five years early has to sit strictly between the two ways of getting it
+  // wrong: the harsh rate throughout is 66.7%, the gentle rate throughout is
+  // 75%, and the answer is 70%. Either mistake is several percent of
+  // somebody's retirement, for ever.
+  const harshThroughout = 1 - (60 * 5 / 9) / 100;
+  const gentleThroughout = 1 - (60 * 5 / 12) / 100;
+  assert.ok(Math.abs(harshThroughout - 0.6667) < 1e-3, `${harshThroughout}`);
+  assert.ok(Math.abs(gentleThroughout - 0.75) < 1e-9, `${gentleThroughout}`);
+  assert.ok(ownFactor(67, 62) > harshThroughout + 0.02 && ownFactor(67, 62) < gentleThroughout - 0.02,
+    `${ownFactor(67, 62)} is not between ${harshThroughout} and ${gentleThroughout}`);
+});
+
+await test("claiming outside 62 to 70 is clamped rather than extrapolated", () => {
+  const { ownFactor, EARLIEST_CLAIM, LATEST_CLAIM } = M.SS;
+  assert.equal(EARLIEST_CLAIM, 62);
+  assert.equal(LATEST_CLAIM, 70);
+  assert.equal(ownFactor(67, 55), ownFactor(67, 62), "there is no claiming at 55");
+  assert.equal(ownFactor(67, 80), ownFactor(67, 70), "and nothing is earned after 70");
+});
+
+await test("a spousal benefit is half, reduced for early, and never grows past full age", () => {
+  const { spousalFactor } = M.SS;
+  assert.ok(Math.abs(spousalFactor(67, 67) - 0.5) < 1e-9, `${spousalFactor(67, 67)}`);
+  // 25/36 of a percent for the first 36 months and 5/12 after: 35% off at 62.
+  assert.ok(Math.abs(spousalFactor(67, 62) - 0.325) < 1e-9, `${spousalFactor(67, 62)}`);
+  // The expensive mistake: waiting past full retirement age earns nothing on
+  // a spousal benefit, unlike a worker's own.
+  assert.equal(spousalFactor(67, 70), spousalFactor(67, 67));
+  assert.ok(M.SS.ownFactor(67, 70) > M.SS.ownFactor(67, 67), "where a worker's own does grow");
+});
+
+await test("nobody draws before the age they said, and the household adds up", () => {
+  const { benefitAt } = M.SS;
+  const ss = { monthlyAtFRA: 3_000_00, claimAge: 67, taxablePct: 0 };
+  assert.equal(benefitAt(ss, 1990, 66, 0, 22), 0, "not a month early");
+  assert.equal(benefitAt(ss, 1990, 67, 0, 22), 3_000_00);
+  assert.equal(benefitAt(ss, 1990, 90, 0, 22), 3_000_00, "and it does not stop");
+  // Claimed early, it is permanently smaller.
+  const early = { ...ss, claimAge: 62 };
+  assert.ok(Math.abs(benefitAt(early, 1990, 62, 0, 22) - 3_000_00 * 0.7) < 1, `${benefitAt(early, 1990, 62, 0, 22)}`);
+});
+
+await test("a spouse takes their own benefit or half of yours, never both", () => {
+  const { benefitAt } = M.SS;
+  // A spouse with a small record of their own does better on half of yours.
+  const withSmall = {
+    monthlyAtFRA: 3_000_00, claimAge: 67, taxablePct: 0,
+    spouse: { monthlyAtFRA: 400_00, claimAge: 67, birthYear: 1990 },
+  };
+  // Half of 3,000 is 1,500, which beats their own 400.
+  assert.equal(benefitAt(withSmall, 1990, 67, 67, 22), 3_000_00 + 1_500_00);
+
+  // A spouse with a bigger record of their own keeps it.
+  const withBig = { ...withSmall, spouse: { monthlyAtFRA: 2_000_00, claimAge: 67, birthYear: 1990 } };
+  assert.equal(benefitAt(withBig, 1990, 67, 67, 22), 3_000_00 + 2_000_00);
+  // Never the sum of the two.
+  assert.ok(benefitAt(withSmall, 1990, 67, 67, 22) < 3_000_00 + 1_500_00 + 400_00);
+});
+
+await test("a spousal benefit waits for the worker to file", () => {
+  const { benefitAt } = M.SS;
+  // The spouse is older and claims first. Until the worker files there is no
+  // half-of-yours to be had, so the spouse gets their own record and no more.
+  const ss = {
+    monthlyAtFRA: 3_000_00, claimAge: 70, taxablePct: 0,
+    spouse: { monthlyAtFRA: 400_00, claimAge: 67, birthYear: 1990 },
+  };
+  assert.equal(benefitAt(ss, 1990, 67, 67, 22), 400_00, "their own and nothing else yet");
+  assert.equal(benefitAt(ss, 1990, 70, 70, 22), 3_000_00 * 1.24 + 1_500_00,
+    "and the half arrives when the worker files");
+});
+
+await test("tax comes off, and how much of it is taxed is a number on the page", () => {
+  const { benefitAt } = M.SS;
+  const at = (taxablePct, taxRatePct) =>
+    benefitAt({ monthlyAtFRA: 3_000_00, claimAge: 67, taxablePct }, 1990, 67, 0, taxRatePct);
+  assert.equal(at(0, 22), 3_000_00, "none of it taxed is all of it kept");
+  // 85% of it taxed at 22% is 18.7% off.
+  assert.ok(Math.abs(at(85, 22) - 3_000_00 * (1 - 0.85 * 0.22)) < 1, `${at(85, 22)}`);
+  assert.equal(at(85, 0), 3_000_00, "and a rate of nothing takes nothing");
+  assert.ok(at(100, 22) < at(85, 22), "more of it taxable is less of it kept");
+});
+
+await test("a plan with nothing entered is left alone entirely", () => {
+  const { hasBenefit, benefitAt, DEFAULT_SOCIAL_SECURITY, firstClaimAge } = M.SS;
+  assert.equal(hasBenefit(undefined), false);
+  assert.equal(hasBenefit(DEFAULT_SOCIAL_SECURITY), false, "the default is off");
+  assert.equal(DEFAULT_SOCIAL_SECURITY.monthlyAtFRA, 0);
+  assert.equal(benefitAt(DEFAULT_SOCIAL_SECURITY, 1990, 90, 90, 22), 0);
+  assert.equal(firstClaimAge(DEFAULT_SOCIAL_SECURITY), null);
+  // And a spouse alone is enough to turn it on.
+  assert.equal(hasBenefit({ ...DEFAULT_SOCIAL_SECURITY, spouse: { monthlyAtFRA: 900_00, claimAge: 67, birthYear: 1992 } }), true);
+});
+
+await test("the chart is marked at whichever of them claims first", () => {
+  const { firstClaimAge } = M.SS;
+  const ss = { monthlyAtFRA: 3_000_00, claimAge: 70, taxablePct: 85 };
+  assert.equal(firstClaimAge(ss), 70);
+  assert.equal(firstClaimAge({ ...ss, spouse: { monthlyAtFRA: 900_00, claimAge: 64, birthYear: 1992 } }), 64);
+  // A spouse with no record of their own is not claiming anything.
+  assert.equal(firstClaimAge({ ...ss, spouse: { monthlyAtFRA: 0, claimAge: 62, birthYear: 1992 } }), 70);
 });
 
 /* ── two sets of books ─────────────────────────────────────────────────── */
