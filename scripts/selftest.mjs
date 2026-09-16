@@ -37,6 +37,7 @@ await build({
     contents: `
       export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
+      export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { occurrences, recurringSpend, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
@@ -4875,6 +4876,129 @@ await test("an empty section is left out, but no debts is worth saying", () => {
   const keys = M.ES.estateSummary(db, "2030-06-01").map((x) => x.key);
   assert.deepEqual(keys, ["assets", "owed"]);
   assert.equal(M.ES.estateSummary(db, "2030-06-01")[1].lines.length, 0);
+});
+
+/* ── two sets of books ─────────────────────────────────────────────────── */
+
+const bkAcct = (id, name, over = {}) =>
+  ({ id, name, type: "checking", balance: 0, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0, ...over });
+const bkTxn = (id, accountId, amount, categoryId, over = {}) =>
+  ({ id, accountId, date: "2030-03-10", merchant: id, amount, categoryId, tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "2030-03-10", ...over });
+
+/** A document with a personal card, a business card and a rental account. */
+const booksDB = () => ({
+  ...M.emptyDB(),
+  groups: [
+    { id: "g_inc", name: "Income", kind: "income", order: 0 },
+    { id: "g_exp", name: "Expenses", kind: "expense", order: 1 },
+  ],
+  categories: [
+    { id: "c_pay", name: "Paycheck", groupId: "g_inc", icon: "", order: 0 },
+    { id: "c_food", name: "Groceries", groupId: "g_exp", icon: "", order: 1 },
+    { id: "c_rent", name: "Rent received", groupId: "g_inc", icon: "", order: 2 },
+  ],
+  accounts: [
+    bkAcct("personal", "Everyday"),
+    bkAcct("biz", "Business card", { type: "credit", bucket: "business" }),
+    bkAcct("rent", "Rental account", { bucket: "rental" }),
+  ],
+  transactions: [
+    bkTxn("t1", "personal", -100_00, "c_food"),
+    bkTxn("t2", "personal", 5_000_00, "c_pay"),
+    bkTxn("t3", "biz", -300_00, "c_food"),
+    bkTxn("t4", "rent", 2_000_00, "c_rent"),
+    // The whole reason an override exists: a client lunch on a personal card.
+    bkTxn("t5", "personal", -60_00, "c_food", { bucket: "business" }),
+  ],
+});
+
+await test("a transaction keeps its account's books unless it says otherwise", () => {
+  const db = booksDB();
+  const accounts = M.bucketIndex(db);
+  const at = (id) => M.bucketOf(db.transactions.find((t) => t.id === id), accounts);
+  assert.equal(at("t1"), "personal", "an account with no books set is personal");
+  assert.equal(at("t3"), "business");
+  assert.equal(at("t4"), "rental");
+  assert.equal(at("t5"), "business", "and a row may say otherwise");
+});
+
+await test("a scope filters what a report counts, and everything is still everything", () => {
+  const db = booksDB();
+  const spend = (scope) => M.categoryTotals(db, "2030-01-01", "2030-12-31", "expense", scope)
+    .reduce((n, c) => n + c.total, 0);
+  assert.equal(spend("all"), 100_00 + 300_00 + 60_00);
+  assert.equal(spend("personal"), 100_00, "the client lunch left with the business");
+  assert.equal(spend("business"), 300_00 + 60_00);
+  assert.equal(spend("rental"), 0);
+
+  const income = (scope) => M.cashFlowSeries(db, ["2030-03"], scope)[0].income;
+  assert.equal(income("all"), 5_000_00 + 2_000_00);
+  assert.equal(income("personal"), 5_000_00);
+  assert.equal(income("rental"), 2_000_00);
+});
+
+await test("leaving the scope out is what every caller written before this did", () => {
+  // The whole reason this is a third argument with a default: twenty-odd call
+  // sites pass two and must keep behaving exactly as they always have.
+  const db = booksDB();
+  const muted = M.mutedAccountIds(db);
+  const t = db.transactions[0];
+  assert.equal(M.counts(t, muted), true);
+  assert.equal(M.counts(t, muted, null), true);
+  assert.equal(M.counts(t, muted, M.scopeFilter(db, "all")), true, "'all' is no filter at all");
+  assert.equal(M.counts(t, muted, M.scopeFilter(db, "business")), false);
+  // And the things that always excluded a row still do, scope or no scope.
+  const hidden = { ...t, hideFromReports: true };
+  assert.equal(M.counts(hidden, muted, M.scopeFilter(db, "personal")), false);
+});
+
+await test("a budget is the household's, so other books stay out of it", () => {
+  const db = booksDB();
+  // Groceries: 100 personal, 300 on the business card, 60 of client lunch.
+  // Only the first is something anybody budgets against the grocery line.
+  assert.equal(M.actualsFor(db, "2030-03").get("c_food"), 100_00);
+  assert.equal(M.categoryHistory(db, "c_food", ["2030-03"])[0].actual, 100_00);
+
+  // And a document that keeps no other books is untouched, which is what made
+  // it safe to change the behaviour of every budget in the app at once.
+  const plain = {
+    ...booksDB(),
+    accounts: [bkAcct("personal", "Everyday"), bkAcct("biz", "Card", { type: "credit" }), bkAcct("rent", "Other")],
+    transactions: booksDB().transactions.map((t) => ({ ...t, bucket: undefined })),
+  };
+  assert.equal(M.hasBuckets(plain), false);
+  assert.equal(M.actualsFor(plain, "2030-03").get("c_food"), 100_00 + 300_00 + 60_00);
+});
+
+await test("a row marked on its own is kept out of the budget too", () => {
+  // The case that made the budget filter unconditional. `hasBuckets` reads
+  // accounts, and a row can carry its own books: gated on it, a business lunch
+  // marked on an otherwise personal document was counted by the budget and
+  // left out of the personal report, which is the same money in two places.
+  const db = {
+    ...booksDB(),
+    accounts: [bkAcct("personal", "Everyday")],
+    transactions: [
+      bkTxn("t1", "personal", -100_00, "c_food"),
+      bkTxn("t5", "personal", -60_00, "c_food", { bucket: "business" }),
+    ],
+  };
+  assert.equal(M.hasBuckets(db), false, "no account says anything");
+  assert.equal(M.actualsFor(db, "2030-03").get("c_food"), 100_00, "and the budget still leaves it out");
+  const spend = (scope) => M.categoryTotals(db, "2030-01-01", "2030-12-31", "expense", scope)
+    .reduce((n, c) => n + c.total, 0);
+  assert.equal(spend("personal"), 100_00, "the report agrees with the budget");
+  assert.equal(spend("business"), 60_00);
+  assert.equal(spend("all"), 160_00, "and between them they are all of it");
+});
+
+await test("the books a document keeps are noticed, and personal does not count", () => {
+  assert.equal(M.hasBuckets(M.emptyDB()), false);
+  assert.equal(M.hasBuckets(booksDB()), true);
+  // Marking something personal explicitly is not keeping a second set of books,
+  // or one stray click would quietly change every budget in the app.
+  const marked = { ...M.emptyDB(), accounts: [bkAcct("a", "Everyday", { bucket: "personal" })] };
+  assert.equal(M.hasBuckets(marked), false);
 });
 
 /* ── what a fund is actually made of ───────────────────────────────────── */

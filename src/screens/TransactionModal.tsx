@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, CircleHelp, Plus, Trash2 } from "lucide-react";
-import type { Transaction } from "../types";
+import type { Bucket, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { longDate, today } from "../lib/date";
 import { fmt, parseMoney, toInput } from "../lib/money";
@@ -11,7 +11,7 @@ import { CategoryPicker } from "../components/pickers";
 import { ActivityLog } from "../components/ActivityLog";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { MerchantAvatar } from "./Transactions";
-import { accountOptions } from "../lib/select";
+import { accountOptions, bucketIndex, bucketOf, hasBuckets } from "../lib/select";
 import { cachedExplanation, explainFacts, explainTransaction, rememberExplanation } from "../lib/hopper/explain";
 import type { ExplainFacts } from "../lib/hopper/explain";
 
@@ -125,6 +125,11 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   // with no way back. It is a switch now.
   const [reviewed, setReviewed] = useState(txn?.reviewed ?? true);
   const [hideFromReports, setHide] = useState(txn?.hideFromReports ?? false);
+  const [bucket, setBucket] = useState<Bucket | "">(txn?.bucket ?? "");
+  // Named rather than left blank: "Follow the account" is only a useful answer
+  // if it says which one that is, and the account can be changed in this same
+  // dialog a row above.
+  const inherited = bucketOf({ accountId, bucket: undefined } as Transaction, bucketIndex(db));
   const [splits, setSplits] = useState(txn?.splits?.map((s) => ({ categoryId: s.categoryId, amount: s.amount })) ?? []);
   const [explaining, setExplaining] = useState<ExplainFacts | null>(null);
 
@@ -137,6 +142,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
     const payload = {
       date, merchant: merchant.trim() || "Unknown", amount, accountId, categoryId,
       notes: notes.trim() || undefined, tags, hideFromReports,
+      bucket: bucket || undefined,
       pending: txn?.pending ?? false, reviewed,
       splits: splits.length ? splits.map((s, i) => ({ ...s, id: txn?.splits?.[i]?.id ?? `s${i}` })) : undefined,
     };
@@ -290,6 +296,25 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
       <DetailRow label="Hide from reports and budget">
         <Toggle on={hideFromReports} onChange={setHide} />
       </DetailRow>
+      {/* Only once there is more than one set of books to choose between. The
+          case this exists for is a client lunch on a personal card, which is
+          also why the default is "whatever the account says" rather than a
+          value: an override that has to be set on every row is one nobody
+          sets on any row. */}
+      {hasBuckets(db) ? (
+        <DetailRow label="Books">
+          <SelectInput<Bucket | "">
+            value={bucket}
+            onChange={setBucket}
+            options={[
+              { value: "", label: `Follow the account (${inherited})` },
+              { value: "personal", label: "Personal" },
+              { value: "business", label: "Business" },
+              { value: "rental", label: "Rental" },
+            ]}
+          />
+        </DetailRow>
+      ) : null}
 
       <div className="drow-block">
         <div className="spread">

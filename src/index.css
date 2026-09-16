@@ -1093,6 +1093,10 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .fc-acc .select { width: auto; }
 .fc-terms { width: 74px; flex: none; }
 
+/* Named so a test can tell it from the range picker beside it, which is also
+   a bare select in the same bar. */
+.scope-select { display: inline-flex; flex: none; }
+
 /* ── estate ───────────────────────────────────────────────────────────────
  *
  * Two pages in one: the survivor forecast, which is the app, and the summary,

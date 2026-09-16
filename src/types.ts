@@ -5,6 +5,19 @@ export type ID = string;
 export type ISODate = string; // YYYY-MM-DD
 export type MonthKey = string; // YYYY-MM
 
+/**
+ * Which set of books a thing belongs in.
+ *
+ * Absent means personal, deliberately: every document that existed before this
+ * did is entirely personal, and a field that has to be filled in before
+ * anything works is a field most people will never fill in.
+ *
+ * A rental is its own bucket rather than a kind of business because the two
+ * answer different questions at tax time and because most landlords do not
+ * think of themselves as running a business.
+ */
+export type Bucket = "personal" | "business" | "rental";
+
 export type AccountType =
   | "checking" | "savings" | "credit" | "investment" | "retirement"
   | "loan" | "mortgage" | "real_estate" | "vehicle" | "crypto" | "other_asset" | "other_liability";
@@ -55,6 +68,13 @@ export interface Account {
    * Roth IRA right without anybody being asked.
    */
   taxTreatment?: "taxable" | "traditional" | "roth";
+  /**
+   * Which books this account keeps. Absent is personal.
+   *
+   * Every transaction on it inherits this unless it says otherwise, which is
+   * what makes a business card work without touching a single row.
+   */
+  bucket?: Bucket;
   /**
    * What the estate summary needs to say about this account, and nothing else.
    *
@@ -134,6 +154,14 @@ export interface Transaction {
   pending: boolean;
   reviewed: boolean;
   hideFromReports: boolean;
+  /**
+   * Overrides the account's books, for this row only.
+   *
+   * The case this exists for is the one that makes the whole feature usable: a
+   * client lunch on a personal card. Without it a household with a business
+   * has to open a second card before any of this means anything.
+   */
+  bucket?: Bucket;
   recurringId?: ID;
   splits?: Split[];
   /** Stable hash of source fields, used to de-duplicate imports. */

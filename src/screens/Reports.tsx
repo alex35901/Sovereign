@@ -5,7 +5,8 @@ import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { lastMonths, monthEnd, monthLabel, monthOf, monthStart } from "../lib/date";
 import { fmt0, fmtPct, pct } from "../lib/money";
-import { cashFlowSeries } from "../lib/select";
+import type { Scope } from "../lib/select";
+import { SCOPES, cashFlowSeries, hasBuckets } from "../lib/select";
 import { breakdown, flowBuckets, sankeyData, summarise } from "../lib/reports";
 import type { Facet, Grain, Side, Slice } from "../lib/reports";
 import { Donut, FlowChart, Sankey } from "../components/charts";
@@ -23,6 +24,15 @@ const LEGEND = 6;
 export default function Reports() {
   const db = useDB();
   const [tab, setTab] = useState<Tab>("flow");
+  /**
+   * Which set of books this page is reporting on.
+   *
+   * Absent from the page entirely until an account is marked as keeping
+   * others, which is the point: a household with one set of books should
+   * never see a control offering to filter by a distinction it does not draw.
+   */
+  const [scope, setScope] = useState<Scope>("all");
+  const books = hasBuckets(db);
   const [range, setRange] = useState<RangeKey>("1y");
   const [shape, setShape] = useState<Shape>("bar");
   const [grain, setGrain] = useState<Grain>("monthly");
@@ -45,7 +55,22 @@ export default function Reports() {
 
   return (
     <>
-      <TopBar title="Reports" actions={<RangePicker value={range} onChange={setRange} />} />
+      <TopBar
+        title="Reports"
+        actions={
+          <>
+            {books ? (
+              <span className="scope-select">
+                <SelectInput<Scope>
+                  value={scope} onChange={setScope} options={SCOPES}
+                  style={{ width: "auto", minWidth: 132 }}
+                />
+              </span>
+            ) : null}
+            <RangePicker value={range} onChange={setRange} />
+          </>
+        }
+      />
       <div className="page stack">
         <Segmented
           value={tab} onChange={setTab} spread
@@ -58,13 +83,13 @@ export default function Reports() {
 
         {tab === "flow" ? (
           <FlowTab
-            from={from} to={to} months={months} span={span}
+            from={from} to={to} months={months} span={span} scope={scope}
             shape={shape} onShape={setShape}
             grain={grain} onGrain={setGrain}
             facet={facet} onFacet={setFacet}
           />
         ) : (
-          <SideTab side={tab === "income" ? "income" : "expense"} from={from} to={to} span={span} />
+          <SideTab side={tab === "income" ? "income" : "expense"} from={from} to={to} span={span} scope={scope} />
         )}
       </div>
     </>
@@ -73,21 +98,21 @@ export default function Reports() {
 
 /* ── cash flow ────────────────────────────────────────────────────────── */
 
-function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet, onFacet }: {
-  from: string; to: string; months: string[]; span: string;
+function FlowTab({ from, to, months, span, scope, shape, onShape, grain, onGrain, facet, onFacet }: {
+  from: string; to: string; months: string[]; span: string; scope: Scope;
   shape: Shape; onShape: (s: Shape) => void;
   grain: Grain; onGrain: (g: Grain) => void;
   facet: Facet; onFacet: (f: Facet) => void;
 }) {
   const db = useDB();
-  const flow = useMemo(() => cashFlowSeries(db, months), [db, months]);
+  const flow = useMemo(() => cashFlowSeries(db, months, scope), [db, months, scope]);
   const buckets = useMemo(
     () => flowBuckets(flow, grain).map((b) => ({
       ...b, label: grain === "monthly" ? monthLabel(b.key, true) : b.key,
     })),
     [flow, grain],
   );
-  const sankey = useMemo(() => sankeyData(db, from, to, facet), [db, from, to, facet]);
+  const sankey = useMemo(() => sankeyData(db, from, to, facet, scope), [db, from, to, facet, scope]);
   // Height is set by the busiest column, not by the node count: the three
   // columns stack independently, so ten expense bands need ten bands' worth of
   // room whether or not there is one income source or six. Bands are drawn in
@@ -172,8 +197,8 @@ function FlowTab({ from, to, months, span, shape, onShape, grain, onGrain, facet
         </div>
       </Card>
 
-      <BreakdownCard title="Income" side="income" from={from} to={to} />
-      <BreakdownCard title="Expenses" side="expense" from={from} to={to} />
+      <BreakdownCard title="Income" side="income" from={from} to={to} scope={scope} />
+      <BreakdownCard title="Expenses" side="expense" from={from} to={to} scope={scope} />
     </>
   );
 }
@@ -191,11 +216,13 @@ function SumRow({ label, value, tone }: { label: string; value: number; tone: st
  * One side of the ledger, ranked, with the bar behind each row showing its
  * share of the whole — which is the comparison the figure alone cannot make.
  */
-function BreakdownCard({ title, side, from, to }: { title: string; side: Side; from: string; to: string }) {
+function BreakdownCard({ title, side, from, to, scope }: {
+  title: string; side: Side; from: string; to: string; scope: Scope;
+}) {
   const db = useDB();
   const [facet, setFacet] = useState<Facet>("category");
   const [all, setAll] = useState(false);
-  const rows = useMemo(() => breakdown(db, from, to, side, facet), [db, from, to, side, facet]);
+  const rows = useMemo(() => breakdown(db, from, to, side, facet, scope), [db, from, to, side, facet, scope]);
   const total = rows.reduce((s, r) => s + r.total, 0);
   const shown = all ? rows : rows.slice(0, 6);
 
@@ -260,12 +287,14 @@ const fmtShare = (share: number): string => {
 
 /* ── spending and income ──────────────────────────────────────────────── */
 
-function SideTab({ side, from, to, span }: { side: Side; from: string; to: string; span: string }) {
+function SideTab({ side, from, to, span, scope }: {
+  side: Side; from: string; to: string; span: string; scope: Scope;
+}) {
   const db = useDB();
   const [facet, setFacet] = useState<Facet>("category");
   const [all, setAll] = useState(false);
-  const rows = useMemo(() => breakdown(db, from, to, side, facet), [db, from, to, side, facet]);
-  const sum = useMemo(() => summarise(db, from, to, side), [db, from, to, side]);
+  const rows = useMemo(() => breakdown(db, from, to, side, facet, scope), [db, from, to, side, facet, scope]);
+  const sum = useMemo(() => summarise(db, from, to, side, scope), [db, from, to, side, scope]);
 
   /**
    * The ring and its key, with the long tail folded into one band.
@@ -343,7 +372,7 @@ function SideTab({ side, from, to, span }: { side: Side; from: string; to: strin
         </div>
       </Card>
 
-      <BreakdownCard title={side === "income" ? "Income" : "Expenses"} side={side} from={from} to={to} />
+      <BreakdownCard title={side === "income" ? "Income" : "Expenses"} side={side} from={from} to={to} scope={scope} />
     </>
   );
 }

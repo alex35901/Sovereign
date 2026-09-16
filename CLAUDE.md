@@ -65,6 +65,18 @@ it. Restore between mutations. Things learned doing this here:
 
 ---
 
+**A mutation that does not compile is not a caught mutation.** It is a
+mutation that never ran: `npm run build` fails, `dist` keeps the previous
+bundle, and the browser checks then pass against code that was never changed.
+`scripts/_mutlib.mjs` (written ad hoc, delete it when done) reports that as its
+own outcome rather than as a catch. Watch for it especially when a mutation
+removes the last use of an import, which trips TS6133.
+
+**A crash is not a catch either.** `scripts/breakpoints.mjs` prints its results
+at the end, so any locator that throws takes the whole list with it. Read
+through `page.evaluate` when the thing being read might legitimately be absent
+under the mutation, and keep raw locators inside `tryStep`.
+
 ## Running things
 
 ```bash
@@ -74,7 +86,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~617)
+### Unit tests — `scripts/selftest.mjs` (~623)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -102,7 +114,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~406)
+### Browser tests — `scripts/breakpoints.mjs` (~419)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -230,6 +242,19 @@ comments and fails on any that come back.
   is taxed in, which is why `Assumptions.debts` and `Account.taxTreatment`
   exist. The plan is built on first edit, never on load: opening any other
   screen must not write one.
+- **Two sets of books** live on `Account.bucket` and `Transaction.bucket`
+  (absent means personal, so every document that predates the feature is
+  unchanged). `bucketOf` resolves a row against its account; the override
+  exists for the one case that makes the whole thing usable, a client lunch on
+  a personal card. Scoping goes through the existing chokepoint: `counts(t,
+  muted, scope?)` takes an optional third argument, so the twenty-odd call
+  sites written before it keep their behaviour and only the ones that opt in
+  change. `householdOnly` keeps other books out of the **budget** and is
+  deliberately unconditional: gating it on `hasBuckets` (which reads accounts)
+  meant a row marked business on an unmarked account was counted by the budget
+  and left out of the personal report, the same money in two places. Net worth
+  and the reports still count everything; only the budget is the household's
+  alone. The picker is absent from Reports entirely until something is marked.
 - `src/lib/funds.ts` — what a fund is actually made of. A portfolio of four
   tickers has four slices and answers nothing, because three of them are funds
   and a fund is a portfolio of its own: VT tagged "US Stocks" is forty percent

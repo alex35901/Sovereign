@@ -1,4 +1,4 @@
-import type { Account, Category, DB, ISODate, MonthKey, Recurring, Transaction } from "../types";
+import type { Account, Bucket, Category, DB, ISODate, MonthKey, Recurring, Transaction } from "../types";
 import { addMonths, addMonthsDate, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
 import { goalSaved } from "./goal-funding.js";
 
@@ -270,9 +270,60 @@ export function mutedAccountIds(db: DB): Set<string> {
   return new Set(db.accounts.filter((a) => a.hideTransactions).map((a) => a.id));
 }
 
-/** Whether a transaction should count towards budgets, cash flow and reports. */
-export function counts(t: Transaction, muted: Set<string>): boolean {
-  return !t.hideFromReports && !muted.has(t.accountId);
+/**
+ * Which books a transaction belongs in.
+ *
+ * Its own answer if it has one, otherwise its account's, otherwise personal.
+ * The override is the whole reason this is a function rather than a field
+ * read: a client lunch on a personal card is the case that makes keeping two
+ * sets of books worth doing at all.
+ */
+export function bucketOf(t: Transaction, accounts: Map<string, Account>): Bucket {
+  return t.bucket ?? accounts.get(t.accountId)?.bucket ?? "personal";
+}
+
+/** Account id to its books, for asking the question a few thousand times. */
+export const bucketIndex = (db: DB): Map<string, Account> => byId(db.accounts);
+
+export type Scope = Bucket | "all";
+
+export const SCOPES: { value: Scope; label: string }[] = [
+  { value: "all", label: "Everything" },
+  { value: "personal", label: "Personal" },
+  { value: "business", label: "Business" },
+  { value: "rental", label: "Rental" },
+];
+
+/**
+ * A test for "is this in the set of books I am looking at".
+ *
+ * Null for "everything", so the common case costs nothing and every existing
+ * caller that does not pass one behaves exactly as it always has.
+ */
+export function scopeFilter(db: DB, scope: Scope): ((t: Transaction) => boolean) | null {
+  if (scope === "all") return null;
+  const accounts = bucketIndex(db);
+  return (t) => bucketOf(t, accounts) === scope;
+}
+
+/** Whether any account keeps books other than the personal ones. */
+export const hasBuckets = (db: DB): boolean =>
+  db.accounts.some((a) => a.bucket && a.bucket !== "personal");
+
+/**
+ * Whether a transaction should count towards budgets, cash flow and reports.
+ *
+ * `scope` is optional and additive: everything that was written before books
+ * existed passes two arguments and keeps its behaviour, which is what made it
+ * safe to put this in front of twenty-odd call sites at once.
+ */
+export function counts(
+  t: Transaction,
+  muted: Set<string>,
+  scope?: ((t: Transaction) => boolean) | null,
+): boolean {
+  if (t.hideFromReports || muted.has(t.accountId)) return false;
+  return !scope || scope(t);
 }
 
 /**
@@ -350,12 +401,13 @@ export function budgetedSum(
 
 export interface FlowPoint { month: MonthKey; income: number; expense: number; net: number }
 
-export function cashFlowSeries(db: DB, months: MonthKey[]): FlowPoint[] {
+export function cashFlowSeries(db: DB, months: MonthKey[], scope: Scope = "all"): FlowPoint[] {
   const kind = new Map(db.categories.map((c) => [c.id, categoryKind(db, c.id)]));
   const acc = new Map(months.map((m) => [m, { income: 0, expense: 0 }]));
   const muted = mutedAccountIds(db);
+  const inScope = scopeFilter(db, scope);
   for (const t of db.transactions) {
-    if (!counts(t, muted)) continue;
+    if (!counts(t, muted, inScope)) continue;
     const bucket = acc.get(monthOf(t.date));
     if (!bucket) continue;
     for (const l of lines(t)) {
@@ -375,12 +427,14 @@ export interface CatTotal { categoryId: string; category: Category; total: numbe
 
 export function categoryTotals(
   db: DB, from: ISODate, to: ISODate, kind: "income" | "expense" | "all" = "expense",
+  scope: Scope = "all",
 ): CatTotal[] {
   const cats = byId(db.categories);
   const tally = new Map<string, { total: number; count: number }>();
   const muted = mutedAccountIds(db);
+  const inScope = scopeFilter(db, scope);
   for (const t of db.transactions) {
-    if (!counts(t, muted) || t.date < from || t.date > to) continue;
+    if (!counts(t, muted, inScope) || t.date < from || t.date > to) continue;
     for (const l of lines(t)) {
       const k = categoryKind(db, l.categoryId);
       if (k === "transfer") continue;
@@ -398,11 +452,12 @@ export function categoryTotals(
     .sort((a, b) => b.total - a.total);
 }
 
-export function merchantTotals(db: DB, from: ISODate, to: ISODate, limit = 10) {
+export function merchantTotals(db: DB, from: ISODate, to: ISODate, limit = 10, scope: Scope = "all") {
   const tally = new Map<string, { total: number; count: number }>();
   const muted = mutedAccountIds(db);
+  const inScope = scopeFilter(db, scope);
   for (const t of db.transactions) {
-    if (!counts(t, muted) || t.date < from || t.date > to || t.amount >= 0) continue;
+    if (!counts(t, muted, inScope) || t.date < from || t.date > to || t.amount >= 0) continue;
     if (categoryKind(db, t.categoryId) === "transfer") continue;
     const cur = tally.get(t.merchant) ?? { total: 0, count: 0 };
     cur.total += -t.amount;
@@ -488,12 +543,31 @@ export function applyToFuture(db: DB, month: MonthKey, categoryId: string, amoun
   return { ...db, budgets };
 }
 
+/**
+ * Money kept apart from the household books.
+ *
+ * A budget is a household plan. A rental's mortgage and a business's stock are
+ * real money and belong in net worth and in the reports, but they are not
+ * something anybody budgets against the grocery line, and letting them in
+ * means one rental turns every category red.
+ *
+ * Unconditional, deliberately. Gating it on `hasBuckets` looked like a way to
+ * leave existing documents alone, but `hasBuckets` reads accounts and a row
+ * can carry its own books: a transaction marked business on an unmarked
+ * account would have been counted by the budget and left out of the personal
+ * report, which is the same money in two places. With nothing marked anywhere
+ * every transaction is personal and this filters nothing, so the guarantee
+ * holds by construction rather than by a condition.
+ */
+const householdOnly = (db: DB) => scopeFilter(db, "personal");
+
 /** Actual totals for one category over the given months, oldest first. */
 export function categoryHistory(db: DB, categoryId: string, months: MonthKey[]): { month: MonthKey; actual: number }[] {
   const totals = new Map<MonthKey, number>(months.map((m) => [m, 0]));
   const muted = mutedAccountIds(db);
+  const household = householdOnly(db);
   for (const t of db.transactions) {
-    if (!counts(t, muted)) continue;
+    if (!counts(t, muted, household)) continue;
     const month = monthOf(t.date);
     if (!totals.has(month)) continue;
     for (const l of lines(t)) {
@@ -517,8 +591,9 @@ export function categoryAverage(history: { actual: number }[]): number {
 export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
   const out = new Map<string, number>();
   const muted = mutedAccountIds(db);
+  const household = householdOnly(db);
   for (const t of db.transactions) {
-    if (!counts(t, muted) || monthOf(t.date) !== month) continue;
+    if (!counts(t, muted, household) || monthOf(t.date) !== month) continue;
     for (const l of lines(t)) out.set(l.categoryId, (out.get(l.categoryId) ?? 0) + Math.abs(l.amount));
   }
   return out;

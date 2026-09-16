@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -4146,6 +4146,158 @@ try {
     check("Estate sits after Forecast in the rail",
       order.indexOf("/estate") === order.indexOf("/forecast") + 1, order.join(" "));
     await rail.close();
+  }
+
+  if (want("books")) {
+    // ── two sets of books ──
+    //
+    // Nothing in the demo keeps any, which is the point and also the trap:
+    // every way of getting this wrong looks identical until an account is
+    // actually marked, so this marks one and then checks that the figures
+    // move by exactly what was moved.
+    const bk = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await bk.goto(`${BASE}/reports`, { waitUntil: "networkidle" });
+    await bk.waitForTimeout(900);
+
+    const money = (t) => Number((/-?\$([\d,]+)/.exec(t ?? "")?.[1] ?? "").replace(/,/g, ""));
+    check("a household with one set of books is never asked which",
+      (await bk.locator(".scope-select").count()) === 0,
+      `${await bk.locator(".scope-select").count()} scope pickers in the bar`);
+
+    /**
+     * The spending tab's total, and the ring's own rows.
+     *
+     * Both, because they come from different functions over the same
+     * transactions: the figure in the middle is `summarise` and the bands
+     * around it are `breakdown`. Scoping one and not the other draws a ring
+     * whose slices do not add up to the number inside it, and reading only
+     * the total will not notice.
+     */
+    const spendView = async () => {
+      await bk.locator(".page > .seg button", { hasText: "Spending" }).click({ timeout: 8000 }).catch(() => {});
+      await bk.waitForTimeout(700);
+      return bk.evaluate(() => ({
+        total: Number(((/-?\$([\d,]+)/.exec(
+          [...document.querySelectorAll(".donut-wrap .num.bold")].map((n) => n.innerText).join(" ")) ?? [])[1] ?? "0")
+          .replace(/,/g, "")),
+        // Two separate readings that both have to move. The ring's own key
+        // comes from `breakdown`; the list of rows below it comes from a
+        // second BreakdownCard that calls `breakdown` again with its own
+        // arguments. Scoping one and not the other is invisible in the total.
+        key: [...document.querySelectorAll(".donut-key")]
+          .map((k) => k.innerText.replace(/\s+/g, " ").trim()).join(" || "),
+        rows: [...document.querySelectorAll(".report-row")]
+          .map((r) => r.innerText.replace(/\s+/g, " ").trim()).join(" | "),
+      }));
+    };
+    const everything = await spendView();
+
+    // Mark the card the demo puts most of its subscriptions on.
+    const marked = await tryStep("an account can be told which books it keeps", async () => {
+      await bk.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
+      await bk.waitForTimeout(700);
+      await bk.locator(".list-row.click", { hasText: "Sapphire Reserve" }).click({ timeout: 5000 });
+      await bk.waitForTimeout(800);
+      // Behind the More menu on the account's own page, with the visibility
+      // switches it belongs beside.
+      await bk.getByTitle("More").click({ timeout: 5000 });
+      await bk.waitForTimeout(300);
+      await bk.getByRole("button", { name: /Visibility and actions/ }).click({ timeout: 5000 });
+      await bk.waitForTimeout(600);
+      await bk.locator(".setting-row", { hasText: "Which books" }).locator("select")
+        .selectOption("business", { timeout: 5000 });
+      await bk.waitForTimeout(600);
+      await bk.keyboard.press("Escape");
+      await bk.waitForTimeout(400);
+    });
+
+    if (marked) {
+      await bk.goto(`${BASE}/reports`, { waitUntil: "networkidle" });
+      await bk.waitForTimeout(900);
+      check("and then the reports offer to show one set at a time",
+        (await bk.locator(".scope-select").count()) === 1);
+      const scope = bk.locator(".scope-select select").first();
+      const options = await bk.evaluate(() =>
+        [...document.querySelectorAll(".scope-select option")].map((o) => o.textContent).join("/"));
+      check("naming all four, everything first",
+        options === "Everything/Personal/Business/Rental", options || "no options");
+
+      const stillEverything = await spendView();
+      check("marking an account does not change what everything adds up to",
+        stillEverything.total === everything.total, `${everything.total} -> ${stillEverything.total}`);
+
+      const pick = async (v) => {
+        await scope.selectOption(v, { timeout: 8000 }).catch(() => {});
+        await bk.waitForTimeout(800);
+        return spendView();
+      };
+      const personal = await pick("personal");
+      const business = await pick("business");
+
+      check("the business books are not empty, or nothing was actually moved",
+        business.total > 0, `${business.total}`);
+      check("and the two sets add up to the one",
+        Math.abs(personal.total + business.total - everything.total) <= 2,
+        `${personal.total} + ${business.total} against ${everything.total}`);
+      check("neither being the whole of it",
+        personal.total > 0 && personal.total < everything.total && business.total < everything.total,
+        `${personal.total} and ${business.total} of ${everything.total}`);
+      // The bands too, not only the figure in the middle: scoping the total
+      // and not the breakdown draws a ring that disagrees with itself.
+      check("and the ring's own bands change with it, not just the figure inside",
+        personal.key !== business.key && personal.key.length > 0,
+        `${personal.key.slice(0, 70)} :: ${business.key.slice(0, 70)}`);
+      check("as do the rows listed under it",
+        personal.rows !== business.rows && personal.rows.length > 0,
+        `${personal.rows.slice(0, 70)} :: ${business.rows.slice(0, 70)}`);
+
+      // A budget is the household's plan. A business card's spending is real
+      // money and belongs in the reports, but letting it into the grocery line
+      // turns every category red.
+      // Read through the DOM, not through a locator: if the figure is not
+      // there that is a result, and a locator timing out here would abandon
+      // the run one line before it prints what passed.
+      const budgetSpent = async () => {
+        await bk.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+        await bk.waitForTimeout(900);
+        // The actual line under the plan, not the plan: the plan is a number
+        // somebody typed and cannot move when an account changes books.
+        return money(await bk.evaluate(() =>
+          [...document.querySelectorAll(".budget-stats > *")]
+            .find((el) => /Planned expenses/i.test(el.innerText))
+            ?.querySelector(".tiny")?.innerText ?? ""));
+      };
+      const afterBudget = await budgetSpent();
+      check("and the household budget counts the household's spending only",
+        afterBudget > 0, `${afterBudget}`);
+
+      // Put it back, and the budget has to come back with it: this is the one
+      // change here that alters a figure somebody was already looking at.
+      if (await tryStep("the books can be set back", async () => {
+        await bk.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
+        await bk.waitForTimeout(700);
+        await bk.locator(".list-row.click", { hasText: "Sapphire Reserve" }).click({ timeout: 8000 });
+        await bk.waitForTimeout(800);
+        await bk.getByTitle("More").click({ timeout: 8000 });
+        await bk.waitForTimeout(300);
+        await bk.getByRole("button", { name: /Visibility and actions/ }).click({ timeout: 8000 });
+        await bk.waitForTimeout(600);
+        await bk.locator(".setting-row", { hasText: "Which books" }).locator("select")
+          .selectOption("personal", { timeout: 8000 });
+        await bk.waitForTimeout(600);
+        await bk.keyboard.press("Escape");
+        await bk.waitForTimeout(400);
+      })) {
+        const restored = await budgetSpent();
+        check("putting it back puts the budget back",
+          restored > afterBudget, `${afterBudget} -> ${restored}`);
+        await bk.goto(`${BASE}/reports`, { waitUntil: "networkidle" });
+        await bk.waitForTimeout(800);
+        check("and the control goes away again with the last set of books",
+          (await bk.locator(".scope-select").count()) === 0);
+      }
+    }
+    await bk.close();
   }
 
 } finally {

@@ -1,6 +1,7 @@
 import type { DB, ISODate, MonthKey } from "../types.js";
 import { monthOf } from "./date.js";
-import { categoryKind, counts, lines, merchantKey, mutedAccountIds } from "./select.js";
+import type { Scope } from "./select.js";
+import { categoryKind, counts, lines, merchantKey, mutedAccountIds, scopeFilter } from "./select.js";
 
 /**
  * What the Reports screen is made of.
@@ -31,12 +32,13 @@ export interface Slice {
 /** One line of one transaction, once it has earned its place in a report. */
 interface Line { categoryId: string; amount: number; merchant: string }
 
-function reportable(db: DB, from: ISODate, to: ISODate, side: Side): Line[] {
+function reportable(db: DB, from: ISODate, to: ISODate, side: Side, scope: Scope = "all"): Line[] {
   const muted = mutedAccountIds(db);
+  const inScope = scopeFilter(db, scope);
   const kind = new Map(db.categories.map((c) => [c.id, categoryKind(db, c.id)]));
   const out: Line[] = [];
   for (const t of db.transactions) {
-    if (t.date < from || t.date > to || !counts(t, muted)) continue;
+    if (t.date < from || t.date > to || !counts(t, muted, inScope)) continue;
     for (const l of lines(t)) {
       if (kind.get(l.categoryId) === "transfer") continue;
       // Which side a line falls on is its own sign, not its category's. A
@@ -49,12 +51,12 @@ function reportable(db: DB, from: ISODate, to: ISODate, side: Side): Line[] {
   return out;
 }
 
-export function breakdown(db: DB, from: ISODate, to: ISODate, side: Side, facet: Facet): Slice[] {
+export function breakdown(db: DB, from: ISODate, to: ISODate, side: Side, facet: Facet, scope: Scope = "all"): Slice[] {
   const cats = new Map(db.categories.map((c) => [c.id, c]));
   const groups = new Map(db.groups.map((g) => [g.id, g]));
   const tally = new Map<string, { total: number; count: number; label: string; icon?: string; tone: string; to: string | null }>();
 
-  for (const l of reportable(db, from, to, side)) {
+  for (const l of reportable(db, from, to, side, scope)) {
     let key = l.categoryId;
     let label = cats.get(l.categoryId)?.name ?? "Uncategorized";
     let icon = cats.get(l.categoryId)?.icon;
@@ -98,8 +100,8 @@ export interface Summary {
   average: number;
 }
 
-export function summarise(db: DB, from: ISODate, to: ISODate, side: Side): Summary {
-  const ls = reportable(db, from, to, side);
+export function summarise(db: DB, from: ISODate, to: ISODate, side: Side, scope: Scope = "all"): Summary {
+  const ls = reportable(db, from, to, side, scope);
   const total = ls.reduce((s, l) => s + l.amount, 0);
   return {
     total,
@@ -183,10 +185,10 @@ export const SANKEY_TAIL = 0.04;
  * readable long before the bands do.
  */
 export function sankeyData(
-  db: DB, from: ISODate, to: ISODate, facet: Facet = "group",
+  db: DB, from: ISODate, to: ISODate, facet: Facet = "group", scope: Scope = "all",
 ): { nodes: SankeyNode[]; links: SankeyLink[] } {
-  const sources = breakdown(db, from, to, "income", facet);
-  const sinks = breakdown(db, from, to, "expense", facet);
+  const sources = breakdown(db, from, to, "income", facet, scope);
+  const sinks = breakdown(db, from, to, "expense", facet, scope);
   const totalIn = sources.reduce((s, x) => s + x.total, 0);
   const totalOut = sinks.reduce((s, x) => s + x.total, 0);
 
