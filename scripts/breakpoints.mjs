@@ -25,9 +25,18 @@
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
 const CHROME = process.env.CHROME_PATH;
 
-// Playwright is not a dependency of this project — it pulls a browser down with
-// it and every Vercel build would pay for that. Skipped rather than failed when
-// it is absent, the same way the database tests skip without a DATABASE_URL.
+// Playwright is a devDependency, and checked for anyway.
+//
+// It used to be kept out of package.json on the grounds that it pulls a browser
+// down on install and every Vercel build would pay for that. That stopped being
+// true: since 1.5x the package ships no postinstall, the browsers come down
+// only when somebody runs `npx playwright install`, and a clean `npm ci` here
+// takes ten seconds. The comment outlived the fact and said the opposite of it,
+// which is worse than saying nothing.
+//
+// Still skipped rather than failed when it is absent, the same way the database
+// tests skip without a DATABASE_URL: a checkout that has not installed it, or a
+// runner with no browser, should report that it did not look rather than fail.
 let chromium;
 /**
  * Which sections to run.
