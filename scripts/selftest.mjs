@@ -77,6 +77,7 @@ await build({
       export * as HG from "./src/lib/holdings.ts";
       export * as FC from "./src/lib/forecast.ts";
       export * as ES from "./src/lib/estate.ts";
+      export * as FD from "./src/lib/funds.ts";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
@@ -4874,6 +4875,87 @@ await test("an empty section is left out, but no debts is worth saying", () => {
   const keys = M.ES.estateSummary(db, "2030-06-01").map((x) => x.key);
   assert.deepEqual(keys, ["assets", "owed"]);
   assert.equal(M.ES.estateSummary(db, "2030-06-01")[1].lines.length, 0);
+});
+
+/* ── what a fund is actually made of ───────────────────────────────────── */
+
+const hold = (ticker, quantity, price, assetClass = "us_equity") =>
+  ({ id: `h_${ticker}`, accountId: "a1", ticker, name: ticker, quantity, price, costBasis: price, assetClass });
+
+await test("a fund is opened up, and one nobody has heard of is not pretended about", () => {
+  const { lookThrough } = M.FD;
+  // 1,000 of VT is 630 US and 370 international, not 1,000 of whichever one
+  // somebody happened to tag it.
+  const out = lookThrough([hold("VT", 10, 100_00, "us_equity")]);
+  const by = Object.fromEntries(out.slices.map((x) => [x.key, x.value]));
+  assert.equal(by.us_equity, 630_00);
+  assert.equal(by.intl_equity, 370_00);
+  assert.equal(out.seen, 1_000_00);
+  assert.equal(out.faceValue, 0);
+  assert.deepEqual(out.unknown, []);
+
+  // And a private fund the table has never met keeps the tag it was given,
+  // which is exactly what the chart did before any of this existed.
+  const odd = lookThrough([hold("XYZZY", 10, 100_00, "real_estate")]);
+  assert.deepEqual(odd.slices, [{ key: "real_estate", value: 1_000_00 }]);
+  assert.equal(odd.seen, 0);
+  assert.equal(odd.faceValue, 1_000_00);
+  assert.deepEqual(odd.unknown.map((u) => u.ticker), ["XYZZY"]);
+});
+
+await test("nothing is lost or invented in the opening up", () => {
+  const { lookThrough, FUND_MIX } = M.FD;
+  const holdings = [
+    hold("VT", 10, 100_00), hold("BND", 20, 50_00, "bond"),
+    hold("VFIFX", 5, 200_00), hold("PRIVATE", 3, 333_33, "other"),
+  ];
+  const total = holdings.reduce((n, h) => n + h.quantity * h.price, 0);
+  const out = lookThrough(holdings);
+  const split = out.slices.reduce((n, x) => n + x.value, 0);
+  // Rounding is per slice, so the two can differ by a cent or so and no more.
+  assert.ok(Math.abs(split - total) <= out.slices.length, `${split} against ${total}`);
+  assert.equal(out.seen + out.faceValue, total);
+
+  // Every published mix adds to one, or a fund would quietly weigh more or
+  // less than the money in it.
+  for (const [ticker, mix] of Object.entries(FUND_MIX)) {
+    const sum = Object.values(mix).reduce((n, w) => n + w, 0);
+    assert.ok(Math.abs(sum - 1) < 0.005, `${ticker} adds to ${sum}`);
+  }
+});
+
+await test("a mix that does not add up cannot lose or invent money", () => {
+  // Not reachable through the table, which is checked above, but this is the
+  // guard that makes that check a style rule rather than a correctness one.
+  const { lookThrough, FUND_MIX } = M.FD;
+  const saved = FUND_MIX.VT;
+  try {
+    FUND_MIX.VT = { us_equity: 0.5, intl_equity: 0.25 };
+    const out = lookThrough([hold("VT", 10, 100_00)]);
+    assert.equal(out.slices.reduce((n, x) => n + x.value, 0), 1_000_00);
+    const by = Object.fromEntries(out.slices.map((x) => [x.key, x.value]));
+    assert.ok(Math.abs(by.us_equity - 666_67) < 2, `${by.us_equity}`);
+  } finally {
+    FUND_MIX.VT = saved;
+  }
+});
+
+await test("a symbol is matched however it was typed, and never guessed from a name", () => {
+  const { mixFor } = M.FD;
+  assert.deepEqual(mixFor(" vti "), { us_equity: 1 });
+  assert.deepEqual(mixFor("VTI"), { us_equity: 1 });
+  assert.equal(mixFor(""), undefined);
+  // The name says bond in every language and the table still says nothing,
+  // because "Total Bond Market Hedge Fund LP" is a real thing somebody owns
+  // and a wrong answer here looks exactly like a right one.
+  assert.equal(mixFor("Vanguard Total Bond Market"), undefined);
+});
+
+await test("a position worth nothing does not become a slice of nothing", () => {
+  const { lookThrough } = M.FD;
+  const out = lookThrough([hold("VT", 0, 100_00), hold("BND", 10, 50_00, "bond")]);
+  assert.deepEqual(out.slices, [{ key: "bond", value: 500_00 }]);
+  assert.deepEqual(out.unknown, []);
 });
 
 /* ── cutting a list of positions, and what each has done ───────────────── */

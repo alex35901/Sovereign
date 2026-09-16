@@ -9,11 +9,12 @@ import { fmtPct } from "../lib/money";
 import { ASSET_CLASS_LABEL, accountOptions, balanceAt, earliestHistoryDate, holdingCost, holdingValue, portfolioSummary, trendTone } from "../lib/select";
 import { Donut } from "../components/charts";
 import { BalanceChart, ScopeBar } from "../components/BalanceChart";
-import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, TextInput, cx } from "../components/ui";
+import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, Segmented, SelectInput, TextInput, cx } from "../components/ui";
 import { MAX_TICKERS } from "../lib/prices";
 import { isSymbol } from "../lib/symbol";
 import type { GroupBy } from "../lib/holdings";
 import { GROUPINGS, groupHoldings, groupReturn, holdingTickers, periodReturn } from "../lib/holdings";
+import { MIX_AS_OF, lookThrough } from "../lib/funds";
 import type { PriceHistory } from "../lib/benchmarks";
 import { BENCHMARKS, benchmarkByTicker, emptyHistory, fetchHistories, historyFloor, mergeCloses, needsFetch, nextTone, rebase, returnSeries } from "../lib/benchmarks";
 import { loadHistory, saveHistory } from "../lib/benchmark-store";
@@ -438,7 +439,23 @@ function Against({ picked, onToggle, state }: {
  * period, which is why they belong on this side of the switch and not beside
  * a chart with a date range on it.
  */
+/**
+ * What the portfolio is made of, with the funds opened up.
+ *
+ * Four tickers is four slices and answers nothing, because three of them are
+ * funds and a fund is a portfolio of its own. Looked through by default, since
+ * the true split is the answer to the question anybody is asking of a pie
+ * chart, with the recorded view a click away for anyone who wants to see the
+ * tickers as they hold them.
+ *
+ * The coverage line under it is not an apology, it is the reading: a chart
+ * built half from published weights and half from whatever somebody tagged a
+ * position is worth knowing about before anybody rebalances off it.
+ */
 function Allocation({ p }: { p: ReturnType<typeof portfolioSummary> }) {
+  const [through, setThrough] = useState(true);
+  const opened = useMemo(() => lookThrough(p.holdings), [p.holdings]);
+
   if (!p.byClass.length) {
     return (
       <div className="alloc-panel">
@@ -446,16 +463,49 @@ function Allocation({ p }: { p: ReturnType<typeof portfolioSummary> }) {
       </div>
     );
   }
+
+  const slices = through
+    ? opened.slices.map((c) => ({
+        label: ASSET_CLASS_LABEL[c.key] ?? c.key,
+        value: c.value,
+        tone: CLASS_TONES[c.key] ?? "--c10",
+      }))
+    : p.byClass.map((c) => ({ label: c.label, value: c.value, tone: CLASS_TONES[c.key] ?? "--c10" }));
+
+  const total = opened.seen + opened.faceValue;
+  const pctSeen = total > 0 ? (opened.seen / total) * 100 : 0;
+
   return (
     <div className="alloc-panel">
+      <div className="alloc-switch">
+        <Segmented
+          value={through ? "through" : "recorded"}
+          options={[
+            { value: "through", label: "What it holds" },
+            { value: "recorded", label: "As recorded" },
+          ]}
+          onChange={(v) => setThrough(v === "through")}
+        />
+      </div>
       <Donut
         size={190}
-        slices={p.byClass.map((c) => ({ label: c.label, value: c.value, tone: CLASS_TONES[c.key] ?? "--c10" }))}
+        slices={slices}
         center={<div className="col" style={{ gap: 0 }}>
           <span className="tiny muted">Holdings</span>
           <Money value={p.value} cents={false} className="bold" style={{ fontSize: 18 }} />
         </div>}
       />
+      {through ? (
+        <div className="alloc-note">
+          <span className="tiny faint">
+            {opened.seen === 0
+              ? "None of these are funds this app has published weights for, so every position counts as it was recorded."
+              : opened.faceValue === 0
+                ? `Every position opened up, using allocations published as of ${MIX_AS_OF}.`
+                : `${Math.round(pctSeen)}% opened up using allocations published as of ${MIX_AS_OF}. The rest counts as recorded: ${opened.unknown.slice(0, 4).map((u) => u.ticker).join(", ")}${opened.unknown.length > 4 ? ` and ${opened.unknown.length - 4} more` : ""}.`}
+          </span>
+        </div>
+      ) : null}
       <div className="alloc-foot spread small">
         <span className="muted">{p.holdings.length} position{p.holdings.length === 1 ? "" : "s"} across {p.invAccounts.length} account{p.invAccounts.length === 1 ? "" : "s"}</span>
         <span className="row" style={{ gap: 7 }}>

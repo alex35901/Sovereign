@@ -74,7 +74,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~612)
+### Unit tests — `scripts/selftest.mjs` (~617)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -102,7 +102,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~400)
+### Browser tests — `scripts/breakpoints.mjs` (~406)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -230,6 +230,18 @@ comments and fails on any that come back.
   is taxed in, which is why `Assumptions.debts` and `Account.taxTreatment`
   exist. The plan is built on first edit, never on load: opening any other
   screen must not write one.
+- `src/lib/funds.ts` — what a fund is actually made of. A portfolio of four
+  tickers has four slices and answers nothing, because three of them are funds
+  and a fund is a portfolio of its own: VT tagged "US Stocks" is forty percent
+  wrong. There is no free feed that decomposes funds, so `FUND_MIX` is a hand
+  read table of published allocations with `MIX_AS_OF` beside it, and the
+  screen says what proportion it could open up rather than pretending to a
+  precision it has not got. Three rules: a fund the table has never met counts
+  as recorded (so this can never draw a worse chart than the one before it),
+  weights are normalised on the way through (so a row that does not add to one
+  cannot lose or invent money), and **nothing is ever guessed from a name** -
+  "Vanguard Total Bond" parses to bonds until somebody holds "Total Bond Market
+  Hedge Fund LP", and a wrong answer here looks exactly like a right one.
 - `src/lib/estate.ts` — two halves of "what happens to the people who are
   left". The survivorship half re-uses the forecast rather than
   re-implementing it: a different starting position and a different set of

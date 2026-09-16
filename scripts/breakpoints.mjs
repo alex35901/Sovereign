@@ -2745,6 +2745,68 @@ try {
     check("with the same six periods and one chart",
       head.spans === 6 && head.chart === 1, `${head.spans} periods, ${head.chart} charts`);
 
+    // ── the funds are opened up ──
+    //
+    // Four tickers is four slices and answers nothing, because three of them
+    // are funds and a fund is a portfolio of its own. The two views have to
+    // actually differ: a look-through that quietly falls back to the recorded
+    // tags draws a chart that looks entirely correct and is wrong by however
+    // much international somebody holds through a world fund.
+    if (await tryStep("the allocation view opens", async () => {
+      await inv.locator(".nw-card .scope-pill", { hasText: "Allocation" }).click({ timeout: 5000 });
+      await inv.waitForTimeout(700);
+    })) {
+      const readKey = () => inv.evaluate(() => {
+        const rows = [...document.querySelectorAll(".donut-key .row, .donut-key > *")];
+        const text = document.querySelector(".donut-key")?.innerText ?? "";
+        return { text, rows: rows.length };
+      });
+      const slice = (text, label) =>
+        Number((new RegExp(`${label}\\s*\\n\\$([\\d,]+)`).exec(text) ?? [])[1]?.replace(/,/g, "") ?? 0);
+
+      const through = (await readKey()).text;
+      const buttons = (await inv.locator(".alloc-switch button").allInnerTexts()).join("/");
+      check("the allocation offers both what it holds and what was recorded",
+        buttons === "What it holds/As recorded", buttons);
+      check("and it opens on what the funds hold, not on the tickers as tagged",
+        (await inv.locator(".alloc-switch button.on").innerText().catch(() => "")) === "What it holds",
+        await inv.locator(".alloc-switch button.on").innerText().catch(() => "none lit"));
+      // Read through the DOM rather than through a locator: an absent caption
+      // is a result, not a reason to abandon the run with a stack trace one
+      // line before it prints what passed.
+      const note = await inv.evaluate(() => document.querySelector(".alloc-note")?.innerText ?? "");
+      check("and says how much of the portfolio it could open up, and as of when",
+        /opened up|counts as it was recorded/.test(note) && /\d{4}-\d{2}/.test(note), note || "no caption");
+
+      if (await tryStep("the recorded view opens", async () => {
+        await inv.locator(".alloc-switch button", { hasText: "As recorded" }).click({ timeout: 5000 });
+        await inv.waitForTimeout(600);
+      })) {
+        const recorded = (await readKey()).text;
+        check("and the two genuinely differ, or the look-through is doing nothing",
+          through !== recorded, `${through.replace(/\n/g, " ")}`);
+        // The direction is the point: a world fund tagged US stocks moves
+        // money out of US equity and into international, never the other way.
+        check("opening the funds moves money out of what they were tagged as",
+          slice(through, "International") > slice(recorded, "International")
+          && slice(through, "US Stocks") < slice(recorded, "US Stocks"),
+          `intl ${slice(recorded, "International")} -> ${slice(through, "International")}, `
+          + `us ${slice(recorded, "US Stocks")} -> ${slice(through, "US Stocks")}`);
+        // And no money is created or lost in the opening up.
+        const totals = (t) => ["US Stocks", "International", "Bonds", "Cash", "Crypto", "Real Estate", "Other"]
+          .reduce((n, k) => n + slice(t, k), 0);
+        check("without inventing or losing any of it",
+          Math.abs(totals(through) - totals(recorded)) <= 4,
+          `${totals(through)} against ${totals(recorded)}`);
+        // The centre figure is the portfolio either way.
+        check("and the ring still names the same portfolio in the middle",
+          (await inv.locator(".donut-wrap .bold").first().innerText())
+            === (await inv.evaluate(() => document.querySelector(".donut-wrap .bold")?.innerText)));
+      }
+      await inv.locator(".nw-card .scope-pill", { hasText: "Portfolio value" }).click();
+      await inv.waitForTimeout(500);
+    }
+
     // The figure has to be the portfolio, not the holdings: those differ when
     // an account carries cash that no position accounts for, and the chart is
     // drawn from account balances.
