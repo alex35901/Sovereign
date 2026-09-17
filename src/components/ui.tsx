@@ -179,6 +179,36 @@ export function MoneyInput({ value, onChange, placeholder, autoFocus }: {
 }
 
 /**
+ * One end of a range, which may simply not be given.
+ *
+ * Not MoneyInput with a flag: that one always has a figure, and showing 0.00
+ * in an empty box would make "nothing above nought" indistinguishable from
+ * "no filter". Here an empty box means empty, and a typed minus sign survives
+ * long enough to type a number after it.
+ */
+export function AmountBound({ value, onChange, placeholder }: {
+  value: number | null; onChange: (cents: number | null) => void; placeholder?: string;
+}) {
+  const [buf, setBuf] = useState<string | null>(null);
+  const shown = buf ?? (value === null ? "" : toInput(value));
+  return (
+    <input
+      className="input num" inputMode="decimal" placeholder={placeholder}
+      value={shown}
+      onChange={(e) => {
+        const text = e.target.value;
+        setBuf(text);
+        // A box with nothing in it, or with nothing but a sign in it yet, is
+        // not a bound of nought. It is somebody part way through typing.
+        onChange(/\d/.test(text) ? parseMoney(text) : null);
+      }}
+      onFocus={(e) => { setBuf(e.target.value); e.currentTarget.select(); }}
+      onBlur={() => setBuf(null)}
+    />
+  );
+}
+
+/**
  * A rate, typed as a percentage.
  *
  * Same free-text buffer trick as MoneyInput, for the same reason: "6." is a

@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -2254,7 +2254,7 @@ try {
       const fields = await fp.evaluate(() =>
         [...document.querySelectorAll(".filter-panel .field > label")].map((l) => l.innerText.trim()));
       check("every filter is in the panel, each with its own name",
-        fields.join(" / ") === "Show / Account / Category / Date / Tag", fields.join(" / "));
+        fields.join(" / ") === "Show / Account / Category / Amount / Date / Tag", fields.join(" / "));
 
       // All of them have to be reachable without scrolling one out of sight.
       const fits = await fp.evaluate(() => {
@@ -5366,6 +5366,118 @@ try {
         !foot.some((t) => /Duplicate/.test(t)), foot.join(" | "));
     }
     await du.close();
+  }
+
+
+  if (want("amounts")) {
+    // ── finding a transaction by what it cost ──
+    const am = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await am.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await am.waitForTimeout(1200);
+
+    const count = () => am.evaluate(() => {
+      const m = /([\d,]+) transaction/.exec(document.body.innerText);
+      return m ? Number(m[1].replace(/,/g, "")) : null;
+    });
+    const amounts = () => am.evaluate(() =>
+      [...document.querySelectorAll(".list-row.tx-grid:not(.head) .tx-amount")]
+        .map((e) => Number(e.innerText.replace(/[^0-9.-]/g, "")) * 100)
+        .filter((n) => Number.isFinite(n)));
+    const search = async (text) => {
+      await am.locator(".search input").fill(text);
+      await am.waitForTimeout(650);
+    };
+
+    const all = await count();
+    check("the page starts with everything", all !== null && all > 100, String(all));
+
+    // One of the amounts actually on screen, so this does not depend on the
+    // demo happening to contain a figure written down here.
+    const [one] = await amounts();
+    check("an amount could be read off a row", Number.isFinite(one) && one !== 0, String(one));
+
+    if (Number.isFinite(one) && one !== 0) {
+      const typed = (one / 100).toFixed(2);
+      await search(typed);
+      const found = await amounts();
+      check("typing a figure into the search box finds it",
+        found.length > 0 && found.every((n) => Math.abs(n) === Math.abs(one)),
+        `${found.length} rows for ${typed}: ${found.slice(0, 4).join(", ")}`);
+      check("and that is fewer than everything", (await count()) < all);
+
+      // A sign that was typed is meant.
+      const wrongWay = (one > 0 ? "-" : "") + Math.abs(one / 100).toFixed(2);
+      await search(one > 0 ? wrongWay : `+${Math.abs(one / 100).toFixed(2)}`);
+      const opposite = await amounts();
+      check("a sign that was typed is meant, so the other direction is not shown",
+        opposite.every((n) => Math.sign(n) !== Math.sign(one)),
+        opposite.slice(0, 4).join(", "));
+
+      // Words still search words.
+      await search("Starbucks");
+      const byName = await count();
+      check("and searching for a name still searches names", byName !== null && byName > 0, String(byName));
+      await search("");
+    }
+
+    // ── the range filter ──
+    if (await tryStep("the filter panel opens", async () => {
+      await am.locator(".filter-toggle").click({ timeout: 8000 });
+      await am.waitForTimeout(400);
+    })) {
+      const setBound = async (which, text) => {
+        await am.locator(`.filter-panel input[placeholder="${which}"]`).fill(text);
+        await am.waitForTimeout(700);
+      };
+
+      await setBound("At least", "-5000");
+      await setBound("At most", "-1000");
+      const between = await amounts();
+      // The list itself is paged, so the totals come off the count and only
+      // the bound is checked against the rows on screen. Comparing rendered
+      // row counts proves nothing once a page is full.
+      const betweenTotal = await count();
+      check("a range shows only what falls inside it",
+        between.length > 0 && between.every((n) => n >= -500000 && n <= -100000),
+        between.slice(0, 5).join(", "));
+      check("and it is narrower than no filter at all",
+        betweenTotal !== null && betweenTotal < all, `${betweenTotal} of ${all}`);
+      check("and the funnel counts it as one filter that is on",
+        (await am.evaluate(() => document.querySelector(".filter-count")?.innerText)) === "1");
+      check("and it is in the address bar, so the view is a link",
+        /min=-500000/.test(am.url()) && /max=-100000/.test(am.url()), new URL(am.url()).search);
+
+      // One end on its own is a half-open range.
+      await setBound("At most", "");
+      const overOnly = await amounts();
+      const overTotal = await count();
+      check("the lower bound on its own shows everything over it",
+        overTotal !== null && overTotal > betweenTotal && overOnly.every((n) => n >= -500000),
+        `${overTotal} over vs ${betweenTotal} between`);
+
+      // A hundred rather than a thousand, because the demo holds nothing
+      // below five thousand: an upper bound of -1000 would select exactly the
+      // same rows as the range did, and prove nothing about the bound.
+      await setBound("At least", "");
+      await setBound("At most", "-100");
+      const underOnly = await amounts();
+      const underTotal = await count();
+      check("and the upper bound on its own shows everything under it",
+        underOnly.length > 0 && underOnly.every((n) => n <= -10000)
+        && underTotal !== null && underTotal > betweenTotal && underTotal < all,
+        `${underTotal} under, ${betweenTotal} between, ${all} in all`);
+
+      // Clearing really clears, address bar included.
+      if (await tryStep("the filters can be cleared", async () => {
+        await am.locator(".filter-panel button", { hasText: "Clear all" }).click({ timeout: 8000 });
+        await am.waitForTimeout(700);
+      })) {
+        check("clearing puts everything back", (await count()) === all, `${await count()} of ${all}`);
+        check("and takes the range out of the address bar",
+          !/min=|max=/.test(am.url()), new URL(am.url()).search);
+      }
+    }
+    await am.close();
   }
 
 

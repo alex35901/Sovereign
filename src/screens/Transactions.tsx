@@ -13,9 +13,10 @@ import { accountOptions, budgetedCategoryIds, budgetedSum } from "../lib/select"
 import type { BudgetedSum } from "../lib/select";
 import { fmt } from "../lib/money";
 import { download } from "../lib/storage";
-import { Btn, Card, Empty, Field, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
+import { AmountBound, Btn, Card, Empty, Field, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import type { DateFilter } from "../lib/date-filter";
+import { amountMatches, hasAmountRange, inAmountRange, typedAmount } from "../lib/amount-filter";
 import { ALL, FILTER_KINDS, PARAM_KEYS, bounds, fromParams, isNarrowed, toParams } from "../lib/date-filter";
 import { TransactionModal } from "./TransactionModal";
 import { ImportModal } from "./ImportModal";
@@ -95,6 +96,18 @@ const PAGE = 120;
 
 type Preset = "all" | "unreviewed" | "uncategorized" | "income" | "expense" | "hidden";
 
+/**
+ * A bound out of the URL: cents, or nothing asked for.
+ *
+ * Zero is a bound somebody can mean, so this cannot lean on falsiness - "0" in
+ * the address bar is "nothing above nought", not "no filter".
+ */
+const fromParam = (raw: string | null): number | null => {
+  if (raw === null || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.round(n) : null;
+};
+
 export default function Transactions() {
   const db = useDB();
   const { actions, suggestRule } = useStore();
@@ -106,6 +119,10 @@ export default function Transactions() {
   const [categoryId, setCategoryId] = useState(params.get("category") ?? "");
   const [period, setPeriodState] = useState<DateFilter>(() => fromParams((k) => params.get(k)));
   const [tagId, setTagId] = useState("");
+  // Cents, signed, and null for "not asked". Read out of the URL like every
+  // other filter, so a narrowed view is still a link.
+  const [minAmount, setMinAmount] = useState<number | null>(() => fromParam(params.get("min")));
+  const [maxAmount, setMaxAmount] = useState<number | null>(() => fromParam(params.get("max")));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /**
    * Whether the list is in multi-select. Off by default: a checkbox on every
@@ -124,6 +141,10 @@ export default function Transactions() {
   // several thousand rows should not re-parse its own bounds for each one.
   const span = useMemo(() => bounds(period), [period]);
 
+  // Parsed once rather than per row, and only when the box holds a number.
+  const typed = useMemo(() => typedAmount(q), [q]);
+  const range = useMemo(() => ({ min: minAmount, max: maxAmount }), [minAmount, maxAmount]);
+
   const filtered = useMemo(() => {
     const needle = q.toLowerCase().trim();
     return db.transactions.filter((t) => {
@@ -136,13 +157,17 @@ export default function Transactions() {
       if (preset === "income" && t.amount <= 0) return false;
       if (preset === "expense" && t.amount >= 0) return false;
       if (preset === "hidden" && !t.hideFromReports) return false;
+      if (!inAmountRange(t.amount, range)) return false;
       if (needle) {
         const hay = `${t.merchant} ${t.statement ?? ""} ${t.notes ?? ""}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
+        // A figure typed into the box is a figure to find, as well as text to
+        // look for. Either can match: "3120" is both a merchant that might
+        // have it in its name and an amount somebody is hunting for.
+        if (!hay.includes(needle) && !(typed && amountMatches(t.amount, typed))) return false;
       }
       return true;
     });
-  }, [db.transactions, q, accountId, categoryId, span, tagId, preset]);
+  }, [db.transactions, q, typed, accountId, categoryId, span, tagId, preset, range]);
 
   const shown = filtered.slice(0, limit);
   const more = filtered.length > shown.length;
@@ -223,13 +248,20 @@ export default function Transactions() {
   const pickCategory = (id: string) => { setCategoryId(id); patchParams({ category: id }); };
   const pickAccount = (id: string) => { setAccountId(id); patchParams({ account: id }); };
 
+  const setAmount = (which: "min" | "max", cents: number | null) => {
+    if (which === "min") setMinAmount(cents); else setMaxAmount(cents);
+    patchParams({ [which]: cents === null ? "" : String(cents) });
+  };
+
   const clearFilters = () => {
     setQ(""); setPreset("all"); setAccountId(""); setCategoryId(""); setTagId("");
+    setMinAmount(null); setMaxAmount(null);
     setPeriodState(ALL);
     setParams({});
   };
   const filterCount = [accountId, categoryId, tagId].filter(Boolean).length
-    + (preset === "all" ? 0 : 1) + (isNarrowed(period) ? 1 : 0);
+    + (preset === "all" ? 0 : 1) + (isNarrowed(period) ? 1 : 0)
+    + (hasAmountRange(range) ? 1 : 0);
 
   return (
     <>
@@ -266,7 +298,7 @@ export default function Transactions() {
           <div className="row filter-bar" style={{ gap: 8 }}>
             <div className="search grow" style={{ minWidth: 0 }}>
               <Search size={14} />
-              <TextInput value={q} onChange={setQ} placeholder="Search merchants, notes, statements" />
+              <TextInput value={q} onChange={setQ} placeholder="Search merchants, notes, statements, or an amount" />
             </div>
             <Popover
               align="right" width={300} className="filter-panel"
@@ -324,6 +356,23 @@ export default function Transactions() {
                         </button>
                       )}
                     />
+                  </Field>
+
+                  {/* Signed, exactly as the rows show it, because that is the
+                      one convention the whole app uses. Either box on its own
+                      is a half-open range, which is what "anything over five
+                      hundred" actually asks for. */}
+                  <Field label="Amount" hint="As shown, so money going out is negative">
+                    <div className="row" style={{ gap: 8 }}>
+                      <AmountBound
+                        value={minAmount} onChange={(v) => setAmount("min", v)}
+                        placeholder="At least"
+                      />
+                      <AmountBound
+                        value={maxAmount} onChange={(v) => setAmount("max", v)}
+                        placeholder="At most"
+                      />
+                    </div>
                   </Field>
 
                   <Field label="Date">

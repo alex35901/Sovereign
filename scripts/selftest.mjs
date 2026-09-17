@@ -62,6 +62,7 @@ await build({
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
+      export * as AF from "./src/lib/amount-filter.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -10798,6 +10799,81 @@ await test("and a database asleep twice over gives up rather than looping", asyn
   const asleep = async () => { tries++; throw new Error("ETIMEDOUT"); };
   await assert.rejects(() => M.withWake(asleep), /ETIMEDOUT/);
   assert.equal(tries, 2, "one retry, then the truth");
+});
+
+
+/* ── money as something to search for ──────────────────────────────────── */
+
+await test("a figure typed into the search box is recognised as a figure", () => {
+  const cents = (raw) => M.AF.typedAmount(raw)?.cents;
+  assert.equal(cents("-3,120"), -312_000);
+  assert.equal(cents("-3120"), -312_000);
+  assert.equal(cents("3,120.50"), 312_050);
+  assert.equal(cents("$1,234.56"), 123_456);
+  assert.equal(cents("  14.49  "), 1_449);
+  assert.equal(cents("(45.10)"), -4_510);
+  assert.equal(cents("0"), 0);
+});
+
+await test("and anything that is not purely a figure is left to the merchant search", () => {
+  for (const raw of ["", "  ", "Netflix", "2026-09", "3120x", "12.345", "-", ".", "$", "1,2", "3 120", "5k"]) {
+    assert.equal(M.AF.typedAmount(raw), null, `"${raw}" is not an amount`);
+  }
+});
+
+await test("a sign that was typed is meant, and one that was not is not assumed", () => {
+  // "-3,120" is money that went out, and should not turn up rent coming in.
+  const out = M.AF.typedAmount("-3,120");
+  assert.equal(out.signed, true);
+  assert.equal(M.AF.amountMatches(-312_000, out), true);
+  assert.equal(M.AF.amountMatches(312_000, out), false);
+
+  // "14.49" finds the charge whichever direction it went.
+  const bare = M.AF.typedAmount("14.49");
+  assert.equal(bare.signed, false);
+  assert.equal(M.AF.amountMatches(-1_449, bare), true);
+  assert.equal(M.AF.amountMatches(1_449, bare), true);
+  assert.equal(M.AF.amountMatches(-1_450, bare), false);
+
+  // An explicit plus is a sign too.
+  const inbound = M.AF.typedAmount("+3120");
+  assert.equal(inbound.signed, true);
+  assert.equal(M.AF.amountMatches(312_000, inbound), true);
+  assert.equal(M.AF.amountMatches(-312_000, inbound), false);
+});
+
+await test("an amount range takes either end on its own", () => {
+  const between = (amount, min, max) => M.AF.inAmountRange(amount, { min, max });
+  // Both ends.
+  assert.equal(between(-300_00, -500_00, -100_00), true);
+  assert.equal(between(-600_00, -500_00, -100_00), false);
+  assert.equal(between(-50_00, -500_00, -100_00), false);
+  // Min alone is everything over it.
+  assert.equal(between(900_00, 500_00, null), true);
+  assert.equal(between(100_00, 500_00, null), false);
+  // Max alone is everything under it.
+  assert.equal(between(-900_00, null, -500_00), true);
+  assert.equal(between(-100_00, null, -500_00), false);
+  // Neither is no filter at all.
+  assert.equal(between(-1, null, null), true);
+  assert.equal(between(0, undefined, undefined), true);
+  // The ends are inclusive, which is what "between" means to anybody typing it.
+  assert.equal(between(-500_00, -500_00, -100_00), true);
+  assert.equal(between(-100_00, -500_00, -100_00), true);
+});
+
+await test("two ends the wrong way round are read the way they were meant", () => {
+  // An empty list is a worse answer than the obvious one.
+  assert.equal(M.AF.inAmountRange(-300_00, { min: -100_00, max: -500_00 }), true);
+  assert.equal(M.AF.inAmountRange(-600_00, { min: -100_00, max: -500_00 }), false);
+});
+
+await test("a range knows whether it is asking anything", () => {
+  assert.equal(M.AF.hasAmountRange({}), false);
+  assert.equal(M.AF.hasAmountRange({ min: null, max: null }), false);
+  assert.equal(M.AF.hasAmountRange({ min: 0 }), true, "zero is a bound somebody typed");
+  assert.equal(M.AF.hasAmountRange({ max: 0 }), true);
+  assert.equal(M.AF.hasAmountRange({ min: -500_00 }), true);
 });
 
 await rm(dir, { recursive: true, force: true });
