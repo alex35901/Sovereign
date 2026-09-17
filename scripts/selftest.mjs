@@ -10824,22 +10824,62 @@ await test("and anything that is not purely a figure is left to the merchant sea
 await test("a sign that was typed is meant, and one that was not is not assumed", () => {
   // "-3,120" is money that went out, and should not turn up rent coming in.
   const out = M.AF.typedAmount("-3,120");
-  assert.equal(out.signed, true);
+  assert.equal(out.sign, -1);
   assert.equal(M.AF.amountMatches(-312_000, out), true);
   assert.equal(M.AF.amountMatches(312_000, out), false);
 
   // "14.49" finds the charge whichever direction it went.
   const bare = M.AF.typedAmount("14.49");
-  assert.equal(bare.signed, false);
+  assert.equal(bare.sign, null);
   assert.equal(M.AF.amountMatches(-1_449, bare), true);
   assert.equal(M.AF.amountMatches(1_449, bare), true);
   assert.equal(M.AF.amountMatches(-1_450, bare), false);
 
   // An explicit plus is a sign too.
   const inbound = M.AF.typedAmount("+3120");
-  assert.equal(inbound.signed, true);
+  assert.equal(inbound.sign, 1);
   assert.equal(M.AF.amountMatches(312_000, inbound), true);
   assert.equal(M.AF.amountMatches(-312_000, inbound), false);
+});
+
+
+await test("a figure is matched as far as it has been typed", () => {
+  // The bug: searching a mortgage of -$3,132.84, "31" found it by its name
+  // ("3122 N Clifton…"), "313" matched neither the name nor $313.00, and the
+  // list emptied three characters into a figure that was really there.
+  const mortgage = -3_132_84;
+  for (const typed of ["3", "31", "313", "3132", "3132.", "3132.8", "3132.84", "-3132.84", "$3,132.84"]) {
+    const t = M.AF.typedAmount(typed);
+    assert.ok(t, `"${typed}" should read as a figure`);
+    assert.equal(M.AF.amountMatches(mortgage, t), true, `"${typed}" should still find it`);
+  }
+  // Every prefix of a real figure, in order, never drops it. That is the whole
+  // property: typing does not fall off what it is converging on.
+  const shown = "3132.84";
+  for (let i = 1; i <= shown.length; i++) {
+    const t = M.AF.typedAmount(shown.slice(0, i));
+    assert.ok(t && M.AF.amountMatches(mortgage, t), `dropped at "${shown.slice(0, i)}"`);
+  }
+});
+
+await test("but the decimal point is a real signal, not noise", () => {
+  const small = -31_32;
+  const big = -3_132_84;
+  const t = M.AF.typedAmount("31.32");
+  assert.equal(M.AF.amountMatches(small, t), true, "thirty-one dollars and thirty-two");
+  assert.equal(M.AF.amountMatches(big, t), false, "not three thousand");
+  // And without the point, both are still on the way to being typed.
+  const loose = M.AF.typedAmount("3132");
+  assert.equal(M.AF.amountMatches(big, loose), true);
+  assert.equal(M.AF.amountMatches(-31_320_00, loose), true, "and so is thirty-one thousand");
+});
+
+await test("a figure that is not what was typed is still not shown", () => {
+  const t = M.AF.typedAmount("313");
+  assert.equal(M.AF.amountMatches(-3_132_84, t), true);
+  assert.equal(M.AF.amountMatches(-31_00, t), false, "thirty-one dollars does not start 313");
+  assert.equal(M.AF.amountMatches(-2_846_12, t), false);
+  assert.equal(M.AF.amountMatches(-4_313_00, t), false, "not a match in the middle");
 });
 
 await test("an amount range takes either end on its own", () => {

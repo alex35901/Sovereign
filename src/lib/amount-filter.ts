@@ -1,4 +1,4 @@
-import { parseMoney } from "./money.js";
+import { parseMoney, toInput } from "./money.js";
 
 /**
  * Money as a thing to search on and to filter by.
@@ -9,14 +9,22 @@ import { parseMoney } from "./money.js";
  * something else would be a filter nobody could predict.
  */
 
-/** Anything that is a number and nothing else: "$1,234.56", "-3,120", "(45.10)". */
-const LOOKS_LIKE_MONEY = /^[-+]?\$?\s*(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?$|^\(\$?\s*(\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?\)$/;
+/**
+ * Anything that is a number and nothing else: "$1,234.56", "-3,120", "(45.10)".
+ *
+ * A trailing point and a single decimal are allowed because both are things
+ * somebody is halfway through typing. A box that stops matching between
+ * "3132" and "3132.8" is a box that flickers.
+ */
+const LOOKS_LIKE_MONEY = /^[-+]?\$?\s*(\d{1,3}(,\d{3})+|\d+)(\.\d{0,2})?$|^\(\$?\s*(\d{1,3}(,\d{3})+|\d+)(\.\d{0,2})?\)$/;
 
 export interface TypedAmount {
   /** The figure, in cents, signed as typed. */
   cents: number;
-  /** Whether a sign was actually given, rather than assumed. */
-  signed: boolean;
+  /** Which direction, when one was actually typed rather than assumed. */
+  sign: -1 | 1 | null;
+  /** The figure as a plain decimal with nothing else in it: "3132.8". */
+  digits: string;
 }
 
 /**
@@ -31,18 +39,34 @@ export function typedAmount(raw: string): TypedAmount | null {
   if (!text || !LOOKS_LIKE_MONEY.test(text)) return null;
   const cents = parseMoney(text);
   if (!Number.isFinite(cents)) return null;
-  return { cents, signed: /^[-+]/.test(text) || /^\(/.test(text) };
+  const negative = /^[-(]/.test(text);
+  return {
+    cents,
+    sign: negative ? -1 : /^\+/.test(text) ? 1 : null,
+    // Everything that is not the figure itself taken out, so what is left can
+    // be compared against a figure written the same way.
+    digits: text.replace(/[-+$,()\s]/g, ""),
+  };
 }
 
 /**
- * Whether a transaction is the figure that was typed.
+ * Whether a transaction is the figure being typed.
  *
- * A sign that was typed is meant: "-3,120" is money that went out and should
- * not turn up rent coming in. One that was not is not assumed either way, so
- * "14.49" finds the charge whichever direction it went.
+ * Matched as far as it has been typed rather than as a finished number. A
+ * search box is filled in one key at a time, and one that only matches the
+ * whole figure drops to nothing on the way to it: "31" found the mortgage by
+ * its name, "313" found neither the name nor $313.00, and the list emptied
+ * three characters into a figure that was really there.
+ *
+ * The decimal point counts, so "31.32" is thirty-one dollars and does not
+ * match three thousand. A sign that was typed is meant: "-3,120" is money that
+ * went out and should not turn up rent coming in. One that was not typed is
+ * not assumed either way, so "14.49" finds the charge whichever way it went.
  */
-export const amountMatches = (amount: number, typed: TypedAmount): boolean =>
-  typed.signed ? amount === typed.cents : Math.abs(amount) === Math.abs(typed.cents);
+export function amountMatches(amount: number, typed: TypedAmount): boolean {
+  if (typed.sign !== null && (amount < 0 ? -1 : 1) !== typed.sign) return false;
+  return toInput(Math.abs(amount)).startsWith(typed.digits);
+}
 
 export interface AmountRange {
   /** Cents, signed, and either end may be left out. */

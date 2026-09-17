@@ -5413,6 +5413,28 @@ try {
         opposite.every((n) => Math.sign(n) !== Math.sign(one)),
         opposite.slice(0, 4).join(", "));
 
+      // Typed one key at a time, the way a search box is actually filled in.
+      // The list must narrow towards the figure and never fall off it: "31"
+      // used to find a mortgage by its name, "313" matched neither the name
+      // nor $313.00, and the list emptied three characters into a figure that
+      // was really there.
+      const shown = Math.abs(one / 100).toFixed(2);
+      const steps = [];
+      let dropped = null;
+      for (let i = 1; i <= shown.length; i++) {
+        const part = shown.slice(0, i);
+        await search(part);
+        const n = await count();
+        const here = await amounts();
+        steps.push(`${part}:${n}`);
+        if (!here.some((v) => Math.abs(v) === Math.abs(one))) dropped ??= part;
+      }
+      check("typing a figure one key at a time never loses it",
+        dropped === null, `lost it at "${dropped}" — ${steps.join(" ")}`);
+      const counts = steps.map((x) => Number(x.split(":")[1]));
+      check("and each key narrows the list rather than widening it",
+        counts.every((n, i) => i === 0 || n <= counts[i - 1]), steps.join(" "));
+
       // Words still search words.
       await search("Starbucks");
       const byName = await count();
