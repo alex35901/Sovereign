@@ -18,6 +18,7 @@ import { AccountModal } from "./Accounts";
 import { PropertyValueCard } from "./PropertyValueCard";
 import { VehicleValueCard } from "./VehicleValueCard";
 import { BalanceImportModal } from "./BalanceImportModal";
+import { ImportModal } from "./ImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
 import { AccountControls } from "./AccountControls";
 import { ConnectionCard } from "./ConnectionCard";
@@ -41,6 +42,7 @@ export default function AccountDetail() {
   // same panels; they are just no longer between you and the transactions.
   const [points, setPoints] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [importTxns, setImportTxns] = useState(false);
 
   const account = db.accounts.find((a) => a.id === id);
   const mine = useMemo(
@@ -102,6 +104,12 @@ export default function AccountDetail() {
                 </button>
                 <button onClick={() => { setSettings(true); close(); }}>
                   <Settings2 size={14} /> Visibility and actions
+                </button>
+                {/* Above the balance one, because transactions are what a
+                    statement mostly is. Both open where they were asked from,
+                    with this account already chosen. */}
+                <button onClick={() => { setImportTxns(true); close(); }}>
+                  <Upload size={14} /> Import transactions
                 </button>
                 <button onClick={() => { setImporting(true); close(); }}>
                   <Upload size={14} /> Import balance history
@@ -170,6 +178,7 @@ export default function AccountDetail() {
 
       {editing ? <AccountModal account={account} onClose={() => setEditing(false)} /> : null}
       {importing ? <BalanceImportModal account={account} onClose={() => setImporting(false)} /> : null}
+      {importTxns ? <ImportModal into={account.id} onClose={() => setImportTxns(false)} /> : null}
       {editTxn ? <TransactionModal txn={editTxn} onClose={() => setEditTxn(null)} /> : null}
       {points ? (
         <Modal wide flush title="Edit balance history" onClose={() => setPoints(false)}>

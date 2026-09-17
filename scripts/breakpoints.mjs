@@ -5226,6 +5226,52 @@ try {
         seen.text.slice(0, 200).replace(/\n/g, " | "));
     }
     await im.close();
+
+    // ── and the same import, reached from an account ──
+    //
+    // The menu on an account offers it with that account already chosen, so a
+    // statement downloaded from a bank goes in from the page you were on
+    // rather than from Settings with a dropdown to find.
+    const acct = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    await acct.goto(`${BASE}/accounts/a_sapphire`, { waitUntil: "networkidle" });
+    await acct.waitForTimeout(900);
+    const wanted = await acct.evaluate(() => document.querySelector("h1")?.innerText ?? "");
+    check("the account page names the account it is on", wanted.length > 1, wanted);
+
+    if (await tryStep("its menu offers importing transactions", async () => {
+      await acct.locator('.topbar button[title="More"]').click({ timeout: 8000 });
+      await acct.waitForTimeout(400);
+      await acct.locator(".menu button", { hasText: "Import transactions" }).click({ timeout: 8000 });
+      await acct.waitForTimeout(500);
+    })) {
+      const name = wanted.replace(/\s*\(…\d+\)$/, "").trim();
+      // Before a file is chosen, because that is when it is reassuring.
+      const upfront = await acct.evaluate(() => document.querySelector(".import-into")?.innerText ?? "");
+      check("and says up front which account it is going into",
+        upfront.includes(name), `"${upfront}" for ${name}`);
+
+      // And the picker itself, which only exists once there is a file, agrees.
+      await acct.locator('.modal input[type="file"]').setInputFiles({
+        name: "plain.csv", mimeType: "text/csv",
+        buffer: Buffer.from("Date,Merchant,Amount\n2026-09-01,From The Account Page,-3.21"),
+      });
+      await acct.waitForTimeout(900);
+      const chosen = await acct.evaluate(() => {
+        const sel = document.querySelector(".modal select");
+        return sel ? (sel.options[sel.selectedIndex]?.text ?? "") : null;
+      });
+      check("and the picker is already on it, not on whichever account is first",
+        chosen !== null && chosen.startsWith(name), `${chosen} for ${name}`);
+      const going = await acct.evaluate(() => {
+        const t = document.querySelector(".modal")?.innerText ?? "";
+        const at = t.search(/going to/i);
+        return at < 0 ? "" : t.slice(at, at + 120);
+      });
+      check("so a file that names no account lands there",
+        going.includes(name), going.replace(/\n/g, " | "));
+      await acct.locator(".modal button", { hasText: "Cancel" }).first().click().catch(() => {});
+    }
+    await acct.close();
   }
 
 

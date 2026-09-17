@@ -1234,12 +1234,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    and the origin is set per chart in view-box units so it starts at the left
    edge of the plot area rather than at the edge of the SVG. */
 @keyframes chart-reveal { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-/* Four seconds, and eased at both ends rather than out of the gate. A curve
-   picked for a half-second wipe spends most of a four-second one crawling: it
-   would cover half the chart in the first fifth of the time and then inch. This
-   one is near-steady through the middle, which is what a pen drawing a line
-   looks like. */
-.chart-reveal { animation: chart-reveal 4s cubic-bezier(0.37, 0, 0.63, 1) both; }
+/* Two seconds, eased at both ends rather than out of the gate. A curve picked
+   for a half-second wipe spends most of a longer one crawling: it would cover
+   half the chart in the first fifth of the time and then inch. This one is
+   near-steady through the middle, which is what a pen drawing a line looks
+   like. */
+.chart-reveal { animation: chart-reveal 2s cubic-bezier(0.37, 0, 0.63, 1) both; }
 /* Asked for less of this: the chart is simply there, whole, at once. Not a
    faster wipe - the point of the setting is no movement, not brief movement. */
 @media (prefers-reduced-motion: reduce) { .chart-reveal { animation: none; } }

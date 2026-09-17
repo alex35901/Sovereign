@@ -22,7 +22,16 @@ const ROLES: { value: ColumnRole; label: string }[] = [
 ];
 
 /** Three-step CSV import: pick a file, confirm the column mapping, review the plan. */
-export function ImportModal({ onClose }: { onClose: () => void }) {
+export function ImportModal({ onClose, into }: {
+  onClose: () => void;
+  /**
+   * The account to start on, when this was opened from one.
+   *
+   * Preselected rather than fixed: it is still the wrong account sometimes,
+   * and a file that names its own accounts overrides it row by row anyway.
+   */
+  into?: string;
+}) {
   const db = useDB();
   const { actions, notify } = useStore();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -30,7 +39,7 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   const [rows, setRows] = useState<string[][] | null>(null);
   const [hasHeader, setHasHeader] = useState(true);
   const [roles, setRoles] = useState<ColumnRole[]>([]);
-  const [accountId, setAccountId] = useState(db.accounts[0]?.id ?? "");
+  const [accountId, setAccountId] = useState(into ?? db.accounts[0]?.id ?? "");
   const [flipSign, setFlipSign] = useState(false);
   // On by default: a CSV is a statement you have already been through, so its
   // rows are not the ones that want reviewing. Still a choice, for a messy file.
@@ -99,6 +108,16 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
           <div className="center">
             <div className="bold">Drop a CSV here</div>
             <div className="small muted">Exports from Monarch, Mint, YNAB or any bank work.</div>
+            {/* Said before the file is picked rather than after. Opened from
+                an account, the whole point is that the account is already
+                settled, and finding that out two steps later is not the same
+                thing as being told. */}
+            {into ? (
+              <div className="small muted import-into" style={{ marginTop: 6 }}>
+                Going into <span className="bold">{db.accounts.find((a) => a.id === into)?.name ?? "this account"}</span>
+                , unless the file names its own.
+              </div>
+            ) : null}
           </div>
           <Btn variant="primary" onClick={() => fileRef.current?.click()}>Choose file</Btn>
           <input
