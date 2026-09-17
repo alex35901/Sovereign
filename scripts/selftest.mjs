@@ -55,6 +55,7 @@ await build({
       export * as EX from "./src/lib/hopper/explain.ts";
       export * as NT from "./src/lib/notifications.ts";
       export * as RW from "./src/lib/runway.ts";
+      export * as PO from "./src/lib/payoff.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -4118,6 +4119,155 @@ await test("a year holds twelve of a monthly bill and four of a quarterly one", 
   // of them and not the twenty-six a division would suggest.
   assert.equal(count("biweekly", "2026-01-01"), 27);
   assert.equal(count("weekly", "2026-01-01"), 53, "and fifty-three weeks, for the same reason");
+});
+
+/* ── where the next spare dollar should go ─────────────────────────────── */
+
+const debt = (id, balance, apr, minimum, name = id) => ({ id, name, balance, apr, minimum });
+/** A card at a dear rate, a bigger loan at a cheap one, a small dear one. */
+const DEBTS = [
+  debt("card", 6_000_00, 22, 150_00, "Sapphire"),
+  debt("auto", 19_000_00, 7, 450_00, "Auto Loan"),
+  debt("store", 1_200_00, 26, 40_00, "Store Card"),
+];
+
+await test("the avalanche goes at the dearest rate and the snowball at the smallest balance", () => {
+  const { attackOrder } = M.PO;
+  assert.deepEqual(attackOrder(DEBTS, "avalanche").map((d) => d.id), ["store", "card", "auto"]);
+  assert.deepEqual(attackOrder(DEBTS, "snowball").map((d) => d.id), ["store", "card", "auto"]);
+  // Where they differ: a large balance at a dear rate against a small one that
+  // is nearly free.
+  const split = [debt("big", 20_000_00, 24, 400_00), debt("small", 500_00, 2, 25_00)];
+  assert.deepEqual(M.PO.attackOrder(split, "avalanche").map((d) => d.id), ["big", "small"]);
+  assert.deepEqual(M.PO.attackOrder(split, "snowball").map((d) => d.id), ["small", "big"]);
+  // Nothing owed is nothing to attack.
+  assert.deepEqual(M.PO.attackOrder([debt("paid", 0, 20, 50_00)], "avalanche"), []);
+});
+
+await test("the avalanche costs less, which is the only thing it promises", () => {
+  // Debts whose two orders genuinely differ, or there is nothing to compare:
+  // in DEBTS the dearest happens to also be the smallest, so both rules agree
+  // and every way of getting this wrong looks identical.
+  const split = [
+    debt("big", 12_000_00, 24, 300_00, "Big at a dear rate"),
+    debt("small", 800_00, 3, 50_00, "Small and nearly free"),
+  ];
+  const c = M.PO.compareOrders(split, 400_00, "2026-10");
+  // The order they are *attacked* in, which is what the two rules decide.
+  // Not the order they clear in: a small debt's own minimum can finish it
+  // first whether or not anything extra is aimed at it.
+  assert.deepEqual(M.PO.attackOrder(split, "avalanche").map((d) => d.id), ["big", "small"]);
+  assert.deepEqual(M.PO.attackOrder(split, "snowball").map((d) => d.id), ["small", "big"]);
+  assert.ok(c.avalanche.interest < c.snowball.interest,
+    `${c.avalanche.interest} against ${c.snowball.interest}`);
+  assert.equal(c.costsExtra, c.snowball.interest - c.avalanche.interest);
+  assert.ok(c.costsExtra > 0, "and it is the snowball that costs more, not the other way round");
+  // The snowball's compensation: an account closed sooner.
+  assert.ok(c.firstWinSooner > 0, `${c.firstWinSooner}`);
+  // Both at the same monthly outlay, and each says which rule it followed.
+  assert.equal(c.avalanche.monthly, c.snowball.monthly);
+  assert.equal(c.avalanche.order, "avalanche");
+  assert.equal(c.snowball.order, "snowball");
+
+  // On debts where the two rules agree, neither costs more than the other.
+  const same = M.PO.compareOrders(DEBTS, 500_00, "2026-10");
+  assert.equal(same.costsExtra, 0);
+  assert.ok(same.avalanche.debtFree !== null && same.snowball.debtFree !== null);
+});
+
+await test("a cleared debt's minimum rolls into the next one", () => {
+  // The whole mechanism, and it only shows on debts that clear at different
+  // times: two identical ones finish together and there is nothing to roll.
+  // 500 and 1,000, a hundred a month each, nothing spare, no interest.
+  const two = [debt("a", 500_00, 0, 100_00), debt("b", 1_000_00, 0, 100_00)];
+  const plan = M.PO.payoffPlan(two, "snowball", 0, "2026-10");
+  assert.equal(plan.cleared[0].id, "a");
+  assert.equal(plan.cleared[0].after, 5, "the small one takes five months");
+  // By then the big one has had 500 of its 1,000 and is getting 200 a month
+  // rather than 100, so it clears in three more rather than five.
+  assert.equal(plan.months, 8, `${plan.months}`);
+  assert.equal(plan.interest, 0, "at no interest, nothing is paid for the privilege");
+});
+
+await test("extra money makes it end sooner and cost less", () => {
+  const none = M.PO.payoffPlan(DEBTS, "avalanche", 0, "2026-10");
+  const some = M.PO.payoffPlan(DEBTS, "avalanche", 500_00, "2026-10");
+  assert.ok(some.months < none.months, `${some.months} against ${none.months}`);
+  assert.ok(some.interest < none.interest, `${some.interest} against ${none.interest}`);
+  assert.equal(some.monthly, none.monthly + 500_00);
+  // And a negative "extra" is not a way to pay less than the minimums.
+  const back = M.PO.payoffPlan(DEBTS, "avalanche", -900_00, "2026-10");
+  assert.equal(back.monthly, none.monthly);
+});
+
+await test("the last month it names is the month it is actually clear", () => {
+  const one = [debt("a", 1_200_00, 0, 100_00)];
+  const plan = M.PO.payoffPlan(one, "avalanche", 0, "2026-10");
+  assert.equal(plan.months, 12);
+  assert.equal(plan.debtFree, "2027-09", "twelve months from October is the following September");
+  assert.equal(plan.cleared.length, 1);
+  assert.equal(plan.cleared[0].month, "2027-09");
+  // The curve ends where the walk does, and ends at nothing owed.
+  assert.equal(plan.curve.length, 12);
+  assert.equal(plan.curve[plan.curve.length - 1].owed, 0);
+  assert.ok(plan.curve[0].owed < 1_200_00, "and falls from the first month");
+});
+
+await test("a minimum that does not cover the interest never clears, and says so", () => {
+  // Twenty-six percent on six thousand is about £130 a month of interest
+  // alone. A minimum of twenty is not a payment plan.
+  const stuck = [debt("card", 6_000_00, 26, 20_00)];
+  const plan = M.PO.payoffPlan(stuck, "avalanche", 0, "2026-10");
+  assert.equal(plan.debtFree, null);
+  assert.equal(plan.months, null);
+  assert.deepEqual(plan.cleared, []);
+  assert.ok(plan.interest > 0);
+  // And enough extra rescues it.
+  const rescued = M.PO.payoffPlan(stuck, "avalanche", 400_00, "2026-10");
+  assert.ok(rescued.months !== null && rescued.months < 20, `${rescued.months}`);
+
+  // The case that matters most: one that clears and one that never does. The
+  // month the first one goes must not be reported as the month you are free,
+  // which is exactly what reading the last cleared debt would say.
+  const mixed = [debt("small", 300_00, 0, 100_00), debt("card", 6_000_00, 26, 20_00)];
+  const part = M.PO.payoffPlan(mixed, "snowball", 0, "2026-10");
+  assert.equal(part.cleared.length, 1, "the small one goes");
+  assert.equal(part.cleared[0].id, "small");
+  assert.equal(part.debtFree, null, "and that is not the day you are debt free");
+  assert.equal(part.months, null);
+});
+
+await test("a month with enough spare can clear two small debts at once", () => {
+  const small = [debt("a", 100_00, 0, 10_00), debt("b", 150_00, 0, 10_00)];
+  const plan = M.PO.payoffPlan(small, "snowball", 1_000_00, "2026-10");
+  assert.equal(plan.months, 1, "both gone in the first month");
+  assert.equal(plan.cleared.length, 2);
+  assert.equal(plan.curve.length, 1);
+  assert.equal(plan.curve[0].owed, 0);
+});
+
+await test("the debts come off the document with the forecast's own terms", () => {
+  const acct = (id, name, type, balance) =>
+    ({ id, name, type, balance, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0 });
+  const db = {
+    ...M.emptyDB(),
+    accounts: [
+      acct("m", "Mortgage", "mortgage", -300_000_00),
+      acct("c", "Card", "credit", -2_000_00),
+      acct("chk", "Everyday", "checking", 5_000_00),
+      acct("gone", "Old card", "credit", 0),
+      acct("hid", "Hidden", "loan", -900_00),
+    ],
+  };
+  db.accounts[4].hidden = true;
+  const out = M.PO.debtsFrom(db);
+  assert.deepEqual(out.map((d) => d.id), ["m", "c"], "only what is owed, and only what is visible");
+  // The rate is the forecast's default for the kind, and the minimum is the
+  // same level payment the forecast screen prints.
+  assert.equal(out[0].apr, 6.5);
+  assert.equal(out[0].balance, 300_000_00);
+  assert.ok(Math.abs(out[0].minimum - M.FC.levelPayment(-300_000_00, 6.5, 300)) < 1);
+  assert.equal(out[1].apr, 22);
 });
 
 /* ── does the current account get you to payday ────────────────────────── */

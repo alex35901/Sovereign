@@ -92,7 +92,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~656)
+### Unit tests — `scripts/selftest.mjs` (~664)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -120,7 +120,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~456)
+### Browser tests — `scripts/breakpoints.mjs` (~469)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -261,6 +261,19 @@ comments and fails on any that come back.
   and left out of the personal report, the same money in two places. Net worth
   and the reports still count everything; only the budget is the household's
   alone. The picker is absent from Reports entirely until something is marked.
+- `src/lib/payoff.ts` — where the next spare dollar goes. Two orders, and the
+  app **does not pick**: the avalanche (dearest rate first) costs strictly
+  less, the snowball (smallest balance first) closes an account sooner, and
+  which matters more is not a thing arithmetic knows, so both are run and the
+  difference is printed. The mechanism is the roll-up: a cleared debt's minimum
+  is added to what attacks the next one, which is why either order beats paying
+  minimums for ever. Sorted **once**, not re-sorted each month, or a snowball
+  chases whichever debt is smallest this month instead of finishing what it
+  started. Two distinctions worth keeping straight: the order debts are
+  *attacked* in is what the rules decide, while the order they *clear* in can
+  differ, because a small debt's own minimum may finish it first either way;
+  and `debtFree` is null unless **every** debt clears, since the month the last
+  cleared one went is not the month you are free.
 - `src/lib/runway.ts` — whether the current account gets you to payday, which
   is the question people actually open a budgeting app to ask. Conservative in
   three places on purpose, because a "safe to spend" figure that turns out to

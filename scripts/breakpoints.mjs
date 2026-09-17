@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -101,7 +101,7 @@ const tryStep = async (what, fn) => {
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
-  "/recurring", "/goals", "/investments", "/forecast", "/estate", "/rules", "/categories", "/tags", "/settings",
+  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/rules", "/categories", "/tags", "/settings",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
@@ -126,6 +126,12 @@ const TX_COLUMNS = [
   { w: 390, cols: ["cb", "avatar", "merchant", "amount"] },
   { w: 320, cols: ["cb", "avatar", "merchant", "amount"] },
 ];
+
+/** The last dollar figure in a sentence, which is the interest in this one. */
+const lastMoney = (t) => {
+  const all = [...(t ?? "").matchAll(/\$([\d,]+)/g)].map((m) => Number(m[1].replace(/,/g, "")));
+  return all.length ? all[all.length - 1] : 0;
+};
 
 const nameOf = (el) => {
   const c = typeof el.className === "string" ? el.className : "";
@@ -4097,8 +4103,8 @@ try {
     await rail.waitForTimeout(500);
     const order = await rail.evaluate(() =>
       [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
-    check("Forecast sits at the end of the Plan group",
-      order.indexOf("/forecast") === order.indexOf("/investments") + 1, order.join(" "));
+    check("Forecast sits after Debt in the Plan group",
+      order.indexOf("/forecast") === order.indexOf("/payoff") + 1, order.join(" "));
     await rail.close();
   }
 
@@ -4640,6 +4646,90 @@ try {
         card.href === "/recurring", card.href);
     }
     await rw.close();
+  }
+
+  if (want("payoff")) {
+    // ── where the next spare dollar goes ──
+    const po = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    await po.goto(`${BASE}/payoff`, { waitUntil: "networkidle" });
+    await po.waitForTimeout(1000);
+
+    const money = (t) => Number((/\$([\d,]+)/.exec(t ?? "")?.[1] ?? "").replace(/,/g, ""));
+    const read = () => po.evaluate(() => ({
+      big: document.querySelector(".nw-total")?.innerText ?? "",
+      sub: document.querySelector(".fc-head .small.faint")?.innerText ?? "",
+      note: document.querySelector(".payoff-order .tiny")?.innerText ?? "",
+      rows: [...document.querySelectorAll(".payoff-row")].map((r) => r.innerText.replace(/\n/g, " | ")),
+      chart: document.querySelectorAll(".nw-card .chart-wrap svg").length,
+    }));
+
+    const base = await read();
+    check("the list names the rule it is following",
+      /Dearest rate first\./.test(await po.evaluate(() =>
+        [...document.querySelectorAll(".card-head")].map((h) => h.innerText).join(" "))));
+    check("the debt page says how long it takes and what it costs",
+      /\d+ months?/.test(base.big) && /interest/.test(base.sub), `${base.big} — ${base.sub}`);
+    check("with every debt in the order it gets cleared",
+      base.rows.length >= 3 && /1 \|/.test(base.rows[0]), base.rows.join(" // ").slice(0, 100));
+    check("and a curve of what is still owed", base.chart === 1);
+
+    // Paying more has to end it sooner and cost less. This is the entire
+    // reason the page exists, so it is the thing worth asserting.
+    const months = (t) => Number((/(\d+) month/.exec(t) ?? [])[1] ?? 0);
+    if (await tryStep("an extra payment can be entered", async () => {
+      await po.locator(".fc-grid input").first().fill("500", { timeout: 8000 });
+      await po.keyboard.press("Tab");
+      await po.waitForTimeout(900);
+    })) {
+      const more = await read();
+      check("putting more at it ends it sooner",
+        months(more.big) > 0 && months(more.big) < months(base.big),
+        `${base.big} -> ${more.big}`);
+      check("and costs less in interest",
+        lastMoney(more.sub) > 0 && lastMoney(more.sub) < lastMoney(base.sub),
+        `${lastMoney(base.sub)} -> ${lastMoney(more.sub)}`);
+      check("and the monthly outlay is the minimums plus what was added",
+        money(more.sub) === money(base.sub) + 500, `${money(base.sub)} -> ${money(more.sub)}`);
+    }
+
+    // Both orders are run and the difference between them is stated, rather
+    // than one being recommended.
+    const labels = await po.evaluate(() =>
+      [...document.querySelectorAll(".payoff-order .seg-spread button")].map((b) => b.innerText.trim()));
+    check("both orders are offered, neither preferred",
+      labels.join(" / ") === "Dearest rate first / Smallest balance first", labels.join(" / "));
+    const before = await read();
+    if (await tryStep("the other order can be chosen", async () => {
+      await po.locator(".payoff-order button", { hasText: "Smallest balance" }).click({ timeout: 8000 });
+      await po.waitForTimeout(800);
+    })) {
+      const snow = await read();
+      check("and choosing it says what it costs, or that it costs nothing",
+        /costs \$[\d,]+ more|cost the same/.test(snow.note), snow.note.slice(0, 110));
+      // Read off the plan that was rendered, not off the switch: this is what
+      // catches the wrong plan being drawn under the right label.
+      const ruleNow = await po.evaluate(() =>
+        [...document.querySelectorAll(".card-head")].map((h) => h.innerText).join(" "));
+      check("and the list says it is following that rule",
+        /Smallest balance first\./.test(ruleNow), ruleNow.slice(0, 120));
+      // Against the other order, not against itself: both are the same money
+      // a month, and the only things that differ are the order and the total.
+      check("at the same monthly outlay as the other order",
+        money(snow.sub) === money(before.sub), `${money(before.sub)} then ${money(snow.sub)}`);
+      check("and never cheaper than paying the dearest rate first",
+        lastMoney(snow.sub) >= lastMoney(before.sub),
+        `${lastMoney(before.sub)} then ${lastMoney(snow.sub)}`);
+    }
+    await po.close();
+
+    const rail = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rail.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await rail.waitForTimeout(500);
+    const order = await rail.evaluate(() =>
+      [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
+    check("Debt sits before Forecast in the rail",
+      order.indexOf("/payoff") === order.indexOf("/forecast") - 1, order.join(" "));
+    await rail.close();
   }
 
 } finally {

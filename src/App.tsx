@@ -19,6 +19,7 @@ import GoalDetail from "./screens/GoalDetail";
 import Investments from "./screens/Investments";
 import Forecast from "./screens/Forecast";
 import Estate from "./screens/Estate";
+import Payoff from "./screens/Payoff";
 import Settings from "./screens/Settings";
 import Rules from "./screens/Rules";
 import Categories from "./screens/Categories";
@@ -52,6 +53,7 @@ export default function App() {
           <Route path="/investments" element={<Investments />} />
           <Route path="/forecast" element={<Forecast />} />
           <Route path="/estate" element={<Estate />} />
+          <Route path="/payoff" element={<Payoff />} />
           <Route path="/rules" element={<Rules />} />
           <Route path="/categories" element={<Categories />} />
           <Route path="/categories/:id" element={<CategoryDetail />} />
