@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price, year.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -101,7 +101,7 @@ const tryStep = async (what, fn) => {
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
-  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/tax", "/rules", "/categories", "/tags", "/settings",
+  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/tax", "/year", "/rules", "/categories", "/tags", "/settings",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
@@ -4635,10 +4635,14 @@ try {
       check("with the three figures it is built from",
         card.labels.join(" / ") === "In checking / Bills to come / A day",
         card.labels.join(" / "));
-      // The whole point: these have to agree.
+      // The whole point: these have to agree. Within a dollar, because all
+      // three are read off the screen and each one was rounded to whole
+      // dollars on its way there: three separate roundings do not have to add
+      // up to the fourth. The cents are asserted exactly in the unit tests,
+      // where the figures have not been through a formatter.
       check("and what is there less what is going is what is left",
         card.cash !== null && card.bills !== null
-        && card.cash + card.bills === card.headline,
+        && Math.abs(card.cash + card.bills - card.headline) <= 1,
         `${card.cash} + ${card.bills} should be ${card.headline}`);
       check("the bills it counted are listed underneath",
         card.rows >= 1 || card.bills === 0, `${card.rows} rows for ${card.bills}`);
@@ -4851,6 +4855,85 @@ try {
         watch.rows.map((r) => r.text.split(" | ")[0]).join(", "));
     }
     await pw.close();
+  }
+
+
+  if (want("year")) {
+    // ── the year, told back to you ──
+    const yr = await browser.newPage({ viewport: { width: 1280, height: 1400 } });
+    await yr.goto(`${BASE}/year`, { waitUntil: "networkidle" });
+    await yr.waitForTimeout(1200);
+
+    const readYear = () => yr.evaluate(() => ({
+      heading: document.querySelector(".yr-print h2")?.innerText ?? "",
+      intro: document.querySelector(".est-print-head .small")?.innerText ?? "",
+      big: document.querySelector(".nw-total")?.innerText ?? "",
+      sub: document.querySelector(".fc-head .small.faint")?.innerText ?? "",
+      tiles: [...document.querySelectorAll(".yr-tiles .card")].map((t) => t.innerText.replace(/\n/g, " | ")),
+      bars: document.querySelectorAll(".chart-wrap svg g, .chart-wrap svg rect").length,
+      monthNote: [...document.querySelectorAll(".card-head")]
+        .map((h) => h.innerText).find((t) => /Month by month/.test(t)) ?? "",
+      cats: [...document.querySelectorAll(".bar")].length,
+      catRows: [...document.querySelectorAll(".card")]
+        .filter((c) => /Where it went/.test(c.innerText))
+        .flatMap((c) => [...c.querySelectorAll(".spread")].map((r) => r.innerText.replace(/\n/g, " "))),
+      merchants: [...document.querySelectorAll(".card")]
+        .filter((c) => /Who got it/.test(c.innerText))
+        .flatMap((c) => [...c.querySelectorAll(".est-line")].map((r) => r.innerText.replace(/\n/g, " | "))),
+    }));
+
+    const y = await readYear();
+    check("the year page says which year, and how much of it has run",
+      /^(Your )?\d{4}( so far)?$/.test(y.heading) && /transactions/.test(y.intro),
+      `${y.heading} — ${y.intro.slice(0, 90)}`);
+    check("the headline is what was kept, against what came in and went out",
+      lastMoney(y.big) !== 0 && /came in and .* went out/.test(y.sub), `${y.big} — ${y.sub.slice(0, 90)}`);
+    check("four tiles: in, out, net worth and debt",
+      y.tiles.length === 4 && /Money in/i.test(y.tiles[0]) && /Money out/i.test(y.tiles[1]),
+      y.tiles.map((t) => t.split(" | ")[0]).join(", "));
+    check("and each one is put beside the year before",
+      y.tiles.slice(0, 2).every((t) => /than last year|the same as last year|nothing to compare/.test(t)),
+      y.tiles[0].slice(0, 90));
+
+    // The month still running is short, not thrifty. Naming it the leanest
+    // month of the year is the mistake this page is most likely to make.
+    const now = await yr.evaluate(() => new Date().toISOString().slice(0, 7));
+    const running = new Date(`${now}-01T12:00:00Z`).toLocaleString("en-US", { month: "long", year: "numeric" });
+    check("the month that is still running is not called the leanest",
+      !new RegExp(`${running} kept the least`).test(y.monthNote), `${running} / ${y.monthNote.slice(0, 110)}`);
+    check("but the best and the leanest finished months are named",
+      /kept the most, \$/.test(y.monthNote) && /kept the least, -?\$/.test(y.monthNote),
+      y.monthNote.slice(0, 120));
+
+    check("the biggest categories are listed largest first, with their share",
+      y.catRows.length >= 3 && /%/.test(y.catRows[0]), y.catRows[0]?.slice(0, 90) ?? "");
+    const catMoney = y.catRows.map((r) => lastMoney(r));
+    check("and each one is smaller than the one above it",
+      catMoney.every((n, i) => i === 0 || catMoney[i - 1] >= n), catMoney.join(" "));
+
+    const merchMoney = y.merchants.map((r) => lastMoney(r));
+    check("who got the money, most first",
+      merchMoney.length >= 3 && merchMoney.every((n, i) => i === 0 || merchMoney[i - 1] >= n),
+      merchMoney.join(" "));
+    check("and how many times each one was paid",
+      y.merchants.every((r) => /\d+ times?/.test(r)), y.merchants[0]?.slice(0, 90) ?? "");
+
+    // A different year is a different set of figures, not the same page with a
+    // new number at the top.
+    const options = await yr.evaluate(() =>
+      [...document.querySelectorAll(".topbar select option")].map((o) => o.value));
+    if (options.length > 1 && await tryStep("an earlier year can be chosen", async () => {
+      await yr.locator(".topbar select").selectOption(options[1], { timeout: 8000 });
+      await yr.waitForTimeout(900);
+    })) {
+      const prior = await readYear();
+      check("choosing an earlier year redraws it",
+        prior.heading !== y.heading && prior.big !== y.big,
+        `${y.heading} ${y.big} -> ${prior.heading} ${prior.big}`);
+      check("and a year that is over is not labelled as still running",
+        !/so far/.test(prior.heading), prior.heading);
+    }
+    await yr.close();
   }
 
 

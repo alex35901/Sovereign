@@ -58,6 +58,7 @@ await build({
       export * as PO from "./src/lib/payoff.ts";
       export * as TX from "./src/lib/tax.ts";
       export * as PW from "./src/lib/price-watch.ts";
+      export * as YR from "./src/lib/year-review.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -9870,14 +9871,19 @@ await test("a pay rise is not a subscription going up", () => {
 });
 
 await test("a refund is not a price", () => {
+  // The refund sits between the settled price and the rise, so counting it
+  // would make it the price the new one is compared against, and there would
+  // be no settled run behind it at all.
   const db = pwDB([pwRec("Netflix", -15_49)], [
     ...netflix.slice(0, 3),
-    pwTxn("Netflix", "2026-08-20", 15_49),
+    pwTxn("Netflix", "2026-09-10", 25_00),
     netflix[3],
   ]);
   const [c] = M.PW.priceChanges(db, NOW);
+  assert.ok(c, "the rise is still found");
   assert.equal(c.was, 15_49, "the money coming back is not one of the prices charged");
   assert.equal(c.now, 17_99);
+  assert.equal(c.held, 3);
 });
 
 await test("two charges at the new price date the change to the first of them", () => {
@@ -9932,6 +9938,185 @@ await test("a charge older than the window is not one of the prices", () => {
     pwTxn("Netflix", "2024-02-12", -9_99),
     pwTxn("Netflix", "2024-03-12", -12_99),
   ]), NOW), []);
+});
+
+
+/* ── the year, told back to you ────────────────────────────────────────── */
+
+const yrDB = (over = {}) => ({ ...taxDB({ transactions: [] }), ...over });
+const pay = (date, amount) => taxTxn(`in-${date}`, "chk", date, amount, "rent");
+const spend = (id, date, amount, cat = "food") => taxTxn(id, "chk", date, amount, cat);
+
+await test("the year adds up what came in, what went out and what was left", () => {
+  const db = yrDB({ transactions: [
+    pay("2025-01-31", 5_000_00),
+    pay("2025-02-28", 5_000_00),
+    spend("a", "2025-01-10", -1_200_00),
+    spend("b", "2025-02-10", -800_00),
+    spend("c", "2025-03-10", -1_000_00, "repair"),
+  ] });
+  const r = M.YR.yearReview(db, 2025, "2026-01-05");
+  assert.equal(r.totals.income, 10_000_00);
+  assert.equal(r.totals.spending, 3_000_00);
+  assert.equal(r.totals.saved, 7_000_00);
+  assert.equal(r.totals.rate, 70);
+  assert.equal(r.count, 5);
+  assert.equal(r.complete, true, "the year is over");
+  assert.equal(r.through, "2025-12-31");
+});
+
+await test("a year still running stops today, and last year stops on the same day", () => {
+  const db = yrDB({ transactions: [
+    spend("a", "2025-03-01", -100_00),
+    spend("b", "2025-11-01", -900_00),
+    spend("c", "2026-03-01", -200_00),
+    spend("d", "2026-11-01", -50_00),
+  ] });
+  const r = M.YR.yearReview(db, 2026, "2026-06-30");
+  assert.equal(r.complete, false);
+  assert.equal(r.through, "2026-06-30");
+  assert.equal(r.totals.spending, 200_00, "November has not happened yet");
+  // The comparison is the same stretch of the calendar. Measured against a
+  // whole 2025 this would say spending fell, every single time.
+  assert.equal(r.last.spending, 100_00);
+});
+
+await test("moving money between your own accounts is not income and not spending", () => {
+  const db = yrDB({ transactions: [
+    pay("2025-01-31", 5_000_00),
+    taxTxn("mv", "chk", "2025-02-01", -2_000_00, "move"),
+  ] });
+  const r = M.YR.yearReview(db, 2025, "2026-01-05");
+  assert.equal(r.totals.spending, 0);
+  assert.equal(r.totals.income, 5_000_00);
+});
+
+await test("the best and worst months are months the year actually reached", () => {
+  const db = yrDB({ transactions: [
+    pay("2026-01-31", 5_000_00),
+    spend("a", "2026-01-10", -1_000_00),
+    pay("2026-02-28", 5_000_00),
+    spend("b", "2026-02-10", -6_000_00),
+  ] });
+  const r = M.YR.yearReview(db, 2026, "2026-03-15");
+  assert.equal(r.best.month, "2026-01");
+  assert.equal(r.best.net, 4_000_00);
+  assert.equal(r.worst.net, -1_000_00);
+  assert.equal(r.worst.month, "2026-02");
+  // March is empty and has happened; April onwards has not, and an unrun
+  // December is not the thriftiest month of the year.
+  assert.equal(r.months.length, 12, "the chart still draws the whole year");
+  assert.ok(r.worst.month !== "2026-12");
+});
+
+await test("and the half month that is still running is not the leanest of them", () => {
+  const db = yrDB({ transactions: [
+    pay("2026-01-31", 5_000_00),
+    spend("a", "2026-01-10", -1_000_00),
+    pay("2026-02-28", 5_000_00),
+    spend("b", "2026-02-10", -6_000_00),
+    // March has had its rent and has not had its payday. Halfway through it is
+    // five thousand down, which is a month that is short rather than a month
+    // anybody had a bad time in.
+    spend("c", "2026-03-02", -5_000_00),
+    pay("2026-03-31", 5_000_00),
+  ] });
+  const r = M.YR.yearReview(db, 2026, "2026-03-15");
+  assert.equal(r.worst.month, "2026-02", "February is the leanest month that actually finished");
+  assert.equal(r.best.month, "2026-01");
+  // And once March is over it stands on its own figures, which are level.
+  // And the bar for the month still running shows what has happened, not what
+  // the calendar month will come to once the payday lands.
+  assert.equal(r.months.find((m) => m.month === "2026-03").net, -5_000_00);
+  const done = M.YR.yearReview(db, 2026, "2026-03-31");
+  assert.equal(done.worst.month, "2026-02");
+  assert.equal(done.months.find((m) => m.month === "2026-03").net, 0);
+});
+
+await test("the biggest categories carry their share and what they did last year", () => {
+  const db = yrDB({ transactions: [
+    spend("a", "2025-05-01", -1_000_00, "food"),
+    spend("b", "2026-05-01", -1_500_00, "food"),
+    spend("c", "2026-06-01", -500_00, "repair"),
+  ] });
+  const r = M.YR.yearReview(db, 2026, "2026-12-31");
+  assert.deepEqual(r.categories.map((c) => c.name), ["Groceries", "Repairs"]);
+  assert.equal(r.categories[0].total, 1_500_00);
+  assert.equal(r.categories[0].share, 75);
+  assert.equal(r.categories[0].last, 1_000_00);
+  assert.equal(r.categories[0].delta, 500_00);
+  // A category that is new this year is compared against nothing, not against
+  // an absence dressed up as a number.
+  assert.equal(r.categories[1].last, 0);
+  assert.equal(r.categories[1].delta, 500_00);
+});
+
+await test("with no year before it, nothing is compared", () => {
+  const db = yrDB({ transactions: [spend("a", "2026-05-01", -1_000_00)] });
+  const r = M.YR.yearReview(db, 2026, "2026-12-31");
+  assert.equal(r.last, null);
+  assert.equal(r.categories[0].last, null);
+  assert.equal(r.categories[0].delta, null);
+});
+
+await test("a merchant seen this year and never before is a first time", () => {
+  const db = yrDB({ transactions: [
+    { ...spend("a", "2025-05-01", -40_00), merchant: "Costco" },
+    { ...spend("b", "2026-05-01", -40_00), merchant: "Costco" },
+    { ...spend("c", "2026-06-01", -80_00), merchant: "Sushi Yasu" },
+    { ...spend("d", "2026-07-01", -20_00), merchant: "sushi yasu" },
+  ] });
+  const r = M.YR.yearReview(db, 2026, "2026-12-31");
+  assert.deepEqual(r.firstTime, ["Sushi Yasu"], "the same name twice is one merchant, whatever the case");
+  assert.equal(r.merchants[0].name, "Sushi Yasu");
+  assert.equal(r.merchants[0].count, 2);
+  assert.equal(r.merchants[0].total, 100_00);
+});
+
+await test("net worth is read where the year started and where it got to", () => {
+  const acct = (id, name, type, history) =>
+    ({ ...txAcct(id, name), type, balance: history[history.length - 1].balance, history });
+  const db = yrDB({ accounts: [
+    acct("chk", "Everyday", "checking", [
+      { date: "2025-12-31", balance: 10_000_00 },
+      { date: "2026-06-30", balance: 18_000_00 },
+    ]),
+    acct("loan", "Car Loan", "loan", [
+      { date: "2025-12-31", balance: -20_000_00 },
+      { date: "2026-06-30", balance: -14_000_00 },
+    ]),
+  ] });
+  const r = M.YR.yearReview(db, 2026, "2026-06-30");
+  assert.equal(r.netWorth.start, -10_000_00);
+  assert.equal(r.netWorth.end, 4_000_00);
+  assert.equal(r.netWorth.change, 14_000_00);
+  assert.equal(r.debt.paid, 6_000_00, "liabilities are held negative, so paying one off is a rise");
+});
+
+await test("spending a day is measured over the days that have run", () => {
+  const db = yrDB({ transactions: [spend("a", "2026-01-05", -310_00)] });
+  const r = M.YR.yearReview(db, 2026, "2026-01-31");
+  assert.equal(r.days, 31);
+  assert.equal(r.perDay, 1_000);
+  const whole = M.YR.yearReview(db, 2026, "2026-12-31");
+  assert.equal(whole.days, 365);
+});
+
+await test("the months add up to the year", () => {
+  // Two walks over the same transactions produce the headline and the bars.
+  // If they ever disagree the page contradicts itself in the same eyeful.
+  const r = M.YR.yearReview(M.buildDemoDB(), Number(M.thisMonth().slice(0, 4)));
+  assert.equal(r.months.reduce((n, m) => n + m.income, 0), r.totals.income);
+  assert.equal(r.months.reduce((n, m) => n + m.spending, 0), r.totals.spending);
+});
+
+await test("the years offered for review are the years with something in them", () => {
+  const db = yrDB({ transactions: [
+    spend("a", "2024-01-05", -1_00),
+    spend("b", "2026-01-05", -1_00),
+    spend("c", "2026-02-05", -1_00),
+  ] });
+  assert.deepEqual(M.YR.reviewYears(db), [2026, 2024]);
 });
 
 await rm(dir, { recursive: true, force: true });

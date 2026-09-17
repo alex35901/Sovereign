@@ -1205,6 +1205,17 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    is rebuilt for paper: the app's chrome goes, the colours invert to ink on
    white whatever theme is on screen, and every card becomes a block that will
    not be split across a page break. */
+/* ── year in review ───────────────────────────────────────────────────── */
+
+.yr-print { display: flex; flex-direction: column; gap: 12px; }
+/* Somewhere new, as a name rather than a row: there can be forty of them and
+   a list that long stops being a nice thing to read. */
+.yr-new { flex-wrap: wrap; gap: 6px; }
+.yr-chip {
+  padding: 3px 9px; border-radius: 999px; font-size: 12px;
+  background: var(--surface-3); color: var(--muted); border: 1px solid var(--line-soft);
+}
+
 /* ── price watch ──────────────────────────────────────────────────────── */
 
 .price-row { gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line-soft); }
@@ -1238,17 +1249,18 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
      the ownership editor. All of it is for deciding, none of it for keeping. */
   .est-screen > *:not(.est-print) { display: none !important; }
   .tax-screen > *:not(.tax-print) { display: none !important; }
+  .yr-screen > *:not(.yr-print) { display: none !important; }
   /* Light tokens on the page itself, so a reader printing in dark mode does
      not empty a cartridge on the background. Named rather than hard-coded:
      these are the same values :root[data-theme="light"] already uses. */
-  .est-screen, .tax-screen {
+  .est-screen, .tax-screen, .yr-screen {
     --bg: #fff; --surface: #fff; --surface-2: #fff; --surface-3: #fff;
     --line: #c8ced6; --line-soft: #dfe4ea;
     --text: #000; --muted: #333; --faint: #555;
     --pos: #000; --neg: #000; --accent: #000;
   }
-  .est-screen, .est-screen *, .tax-screen, .tax-screen * { color: var(--text) !important; background: #fff !important; }
-  .est-print, .tax-print { gap: 18px; }
+  .est-screen, .est-screen *, .tax-screen, .tax-screen *, .yr-screen, .yr-screen * { color: var(--text) !important; background: #fff !important; }
+  .est-print, .tax-print, .yr-print { gap: 18px; }
   .est-print-head h2 { font-size: 20px; }
   .tax-head .nw-total { font-size: 26px; }
   .est-section { border: 1px solid var(--line); break-inside: avoid; }
