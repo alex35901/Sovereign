@@ -10432,6 +10432,92 @@ await test("losing the local copy makes the browser fetch the stored one, not ov
   assert.equal(M.cloudState().dirty, true, "a browser that never synced keeps its unsent flag");
 });
 
+
+/* ── an import goes where the file says ────────────────────────────────── */
+
+const impHead = ["Date", "Merchant", "Account", "Amount"];
+const impRows = [
+  ["2026-09-01", "Whole Foods", "Everyday Checking", "-82.40"],
+  ["2026-09-02", "Netflix", "Sapphire Reserve", "-22.99"],
+  ["2026-09-03", "Payroll", "Everyday Checking", "5000.00"],
+  ["2026-09-04", "Mystery", "Some Other Bank", "-10.00"],
+  ["2026-09-05", "No Account Named", "", "-5.00"],
+];
+const impAccounts = [
+  { id: "a_checking", name: "Everyday Checking" },
+  { id: "a_sapphire", name: "Sapphire Reserve" },
+];
+const impPlan = (over = {}) => M.buildPlan(impRows, M.guessColumns(impHead), {
+  flipSign: false, accountId: "a_checking", existing: [], accounts: impAccounts, ...over,
+});
+
+await test("a file that names its accounts is split between them", () => {
+  // The column was read and then dropped, so a Monarch export covering ten
+  // accounts landed entirely in whichever one was picked from the dropdown.
+  assert.deepEqual(M.guessColumns(impHead), ["date", "merchant", "account", "amount"]);
+  const plan = impPlan();
+  assert.equal(plan.rows.length, 5);
+  assert.deepEqual(
+    plan.rows.map((r) => [r.merchant, r.accountId]),
+    [
+      ["Whole Foods", "a_checking"],
+      ["Netflix", "a_sapphire"],
+      ["Payroll", "a_checking"],
+      // No account here by that name, and no guessing at a near one: it falls
+      // back to the account the person chose.
+      ["Mystery", "a_checking"],
+      ["No Account Named", "a_checking"],
+    ],
+  );
+  assert.deepEqual(plan.unmatched, ["Some Other Bank"]);
+  assert.deepEqual(plan.byAccount, [
+    { accountId: "a_checking", name: "Everyday Checking", count: 4 },
+    { accountId: "a_sapphire", name: "Sapphire Reserve", count: 1 },
+  ]);
+});
+
+await test("the account name is matched on the name, not on something like it", () => {
+  const spaced = [["2026-09-01", "X", "  everyday checking  ", "-1.00"]];
+  const [row] = M.buildPlan(spaced, M.guessColumns(impHead), {
+    flipSign: false, accountId: "a_sapphire", existing: [], accounts: impAccounts,
+  }).rows;
+  assert.equal(row.accountId, "a_checking", "case and spacing do not make it a different account");
+
+  // But nothing fuzzier. Putting a mortgage in a current account because the
+  // names looked similar is not a mistake anybody can undo.
+  const near = [["2026-09-01", "X", "Everyday Checking 2", "-1.00"]];
+  const plan = M.buildPlan(near, M.guessColumns(impHead), {
+    flipSign: false, accountId: "a_sapphire", existing: [], accounts: impAccounts,
+  });
+  assert.equal(plan.rows[0].accountId, "a_sapphire");
+  assert.deepEqual(plan.unmatched, ["Everyday Checking 2"]);
+});
+
+await test("importing the same file twice brings nothing in the second time", () => {
+  // The duplicate key has to be built from where the row actually went. Keyed
+  // on the chosen account instead, every row bound for another account would
+  // compare against the wrong one and come in again.
+  const first = impPlan();
+  const landed = M.rowsToTransactions(M.emptyDB(), first, "a_checking", {});
+  assert.deepEqual(
+    landed.map((t) => t.accountId),
+    ["a_checking", "a_sapphire", "a_checking", "a_checking", "a_checking"],
+  );
+  const second = impPlan({ existing: landed });
+  assert.equal(second.rows.length, 0, "nothing new");
+  assert.equal(second.duplicates, 5, "all five recognised");
+});
+
+await test("without an account column everything goes where it was told to", () => {
+  const plain = [["2026-09-01", "Whole Foods", "-82.40"]];
+  const plan = M.buildPlan(plain, M.guessColumns(["Date", "Merchant", "Amount"]), {
+    flipSign: false, accountId: "a_sapphire", existing: [], accounts: impAccounts,
+  });
+  assert.equal(plan.rows[0].accountId, "a_sapphire");
+  assert.deepEqual(plan.unmatched, []);
+  assert.deepEqual(plan.byAccount, [{ accountId: "a_sapphire", name: "Sapphire Reserve", count: 1 }]);
+});
+
 await rm(dir, { recursive: true, force: true });
 
 for (const [status, name, msg] of results) console.log(status.padEnd(5), name, msg ? `— ${msg}` : "");

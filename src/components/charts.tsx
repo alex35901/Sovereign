@@ -637,15 +637,22 @@ export function FlowChart({ buckets, height = 240, onPick }: {
           />
         </defs>
 
-        <g clipPath={`url(#flow-${flowId})`}>
+        {/* The hit areas sit outside the wipe. Inside it, a month the sweep had
+            not reached yet could not be pointed at, and at four seconds that is
+            long enough to try to. */}
         {buckets.map((b, i) => (
-          <g
-            key={b.key}
+          <rect
+            key={`hit-${b.key}`}
+            x={x(i) - slot / 2} y={padT} width={slot} height={innerH} fill="transparent"
             onMouseEnter={() => setHover(i)}
             onClick={onPick ? () => onPick(b.key) : undefined}
             style={onPick ? { cursor: "pointer" } : undefined}
-          >
-            <rect x={x(i) - slot / 2} y={padT} width={slot} height={innerH} fill="transparent" />
+          />
+        ))}
+
+        <g clipPath={`url(#flow-${flowId})`} style={{ pointerEvents: "none" }}>
+        {buckets.map((b, i) => (
+          <g key={b.key}>
             <rect
               x={x(i) - barW / 2} y={y(b.income)} width={barW} height={Math.max(1, mid - y(b.income))}
               rx={3} fill={color("--pos")} opacity={hover === null || hover === i ? 0.85 : 0.4}

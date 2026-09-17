@@ -84,7 +84,10 @@ export interface ImportRow {
   /** Tag names as written in the file; resolved to ids when the rows land. */
   tagNames?: string[];
   notes?: string;
+  /** The account column as the file wrote it, kept for saying where a row went. */
   accountName?: string;
+  /** The account this row lands in: matched from that name, or the one chosen. */
+  accountId: string;
 }
 
 /** "Business, Reimbursable" or "business;reimbursable" or "a|b". */
@@ -95,6 +98,17 @@ export interface ImportPlan {
   rows: ImportRow[];
   skipped: number;
   duplicates: number;
+  /**
+   * Where the rows are going, most first.
+   *
+   * A file that names its accounts is routed by those names. This is here so
+   * the split is on screen before anybody commits to it: an export covering
+   * ten accounts landing wholly in one is the sort of thing you want to see
+   * beforehand rather than discover afterwards.
+   */
+  byAccount: { accountId: string; name: string; count: number }[];
+  /** Names in the file that match no account. Their rows go to the chosen one. */
+  unmatched: string[];
 }
 
 const cents = (s: string): number => {
@@ -106,10 +120,32 @@ const cents = (s: string): number => {
 export const importKeyFor = (accountId: string, date: string, amount: number, merchant: string): string =>
   hash(`${accountId}|${date}|${amount}|${merchant.toLowerCase().trim()}`);
 
+/**
+ * Where a row goes when the file says which account it came from.
+ *
+ * Matched on the name as written, ignoring case and surrounding space, and
+ * nothing cleverer: a near-match that guessed wrong would put somebody's
+ * mortgage in their current account, and there is no undo for an import that
+ * looked right.
+ */
+const accountByName = (accounts: readonly { id: string; name: string }[]): Map<string, string> =>
+  new Map(accounts.map((a) => [a.name.trim().toLowerCase(), a.id]));
+
 export function buildPlan(
-  rows: string[][], roles: ColumnRole[], opts: { flipSign: boolean; accountId: string; existing: Transaction[] },
+  rows: string[][],
+  roles: ColumnRole[],
+  opts: {
+    flipSign: boolean;
+    accountId: string;
+    existing: Transaction[];
+    /** Every account the file could name. Absent means everything goes to `accountId`. */
+    accounts?: readonly { id: string; name: string }[];
+  },
 ): ImportPlan {
   const col = (role: ColumnRole) => roles.indexOf(role);
+  const byName = accountByName(opts.accounts ?? []);
+  const names = new Map<string, string>((opts.accounts ?? []).map((a) => [a.id, a.name]));
+  const unmatched = new Set<string>();
 
   /**
    * How many of each key are already held, counted rather than merely seen.
@@ -143,19 +179,38 @@ export function buildPlan(
     }
     if (opts.flipSign) amount = -amount;
     if (amount === 0) { skipped++; continue; }
-    const key = importKeyFor(opts.accountId, date, amount, merchant);
+
+    // The file's own account column, when it has one and it names something
+    // this document holds. The column used to be read and then dropped, so an
+    // export covering ten accounts landed entirely in whichever one was picked
+    // from the dropdown.
+    const accountName = col("account") >= 0 ? r[col("account")]?.trim() || undefined : undefined;
+    const matched = accountName ? byName.get(accountName.toLowerCase()) : undefined;
+    if (accountName && !matched) unmatched.add(accountName);
+    const accountId = matched ?? opts.accountId;
+
+    // Keyed on where the row is actually going, or a second import of the same
+    // file would compare every row against the wrong account and bring them
+    // all in again.
+    const key = importKeyFor(accountId, date, amount, merchant);
     const already = held.get(key) ?? 0;
     if (already > 0) { held.set(key, already - 1); duplicates++; continue; }
     out.push({
-      date, merchant, amount,
+      date, merchant, amount, accountId, accountName,
       statement: col("statement") >= 0 ? r[col("statement")]?.trim() || undefined : undefined,
       categoryName: col("category") >= 0 ? r[col("category")]?.trim() : undefined,
       tagNames: col("tags") >= 0 ? splitTags(r[col("tags")]) : undefined,
       notes: col("notes") >= 0 ? r[col("notes")]?.trim() : undefined,
-      accountName: col("account") >= 0 ? r[col("account")]?.trim() : undefined,
     });
   }
-  return { rows: out, skipped, duplicates };
+
+  const tally = new Map<string, number>();
+  for (const r of out) tally.set(r.accountId, (tally.get(r.accountId) ?? 0) + 1);
+  const byAccount = [...tally.entries()]
+    .map(([id, count]) => ({ accountId: id, name: names.get(id) ?? "the chosen account", count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+  return { rows: out, skipped, duplicates, byAccount, unmatched: [...unmatched].sort() };
 }
 
 /** Matches an imported category name to an existing category, case-insensitively. */
@@ -191,7 +246,9 @@ export function rowsToTransactions(
 ): Transaction[] {
   return plan.rows.map((r) => ({
     id: uid("t"),
-    accountId,
+    // Where the plan put it, which is the file's own account when it named one
+    // this document holds, and the chosen account otherwise.
+    accountId: r.accountId || accountId,
     date: r.date,
     merchant: r.merchant,
     // The file's own raw column when it has one; otherwise the merchant, which
@@ -206,7 +263,7 @@ export function rowsToTransactions(
     pending: false,
     reviewed: opts.reviewed ?? false,
     hideFromReports: false,
-    importKey: importKeyFor(accountId, r.date, r.amount, r.merchant),
+    importKey: importKeyFor(r.accountId || accountId, r.date, r.amount, r.merchant),
     createdAt: new Date().toISOString(),
   }));
 }

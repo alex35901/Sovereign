@@ -49,8 +49,8 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   const body = useMemo(() => (rows ? (hasHeader ? rows.slice(1) : rows) : []), [rows, hasHeader]);
   const plan = useMemo(() => {
     if (!rows || !accountId) return null;
-    return buildPlan(body, roles, { flipSign, accountId, existing: db.transactions });
-  }, [rows, body, roles, flipSign, accountId, db.transactions]);
+    return buildPlan(body, roles, { flipSign, accountId, existing: db.transactions, accounts: db.accounts });
+  }, [rows, body, roles, flipSign, accountId, db.transactions, db.accounts]);
 
   const freshTags = useMemo(
     () => (plan ? newTagNames(plan, db.tags) : []),
@@ -169,6 +169,35 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
                   <Money value={plan.rows.reduce((s, r) => s + r.amount, 0)} colored className="bold" />
                 </div>
               </div>
+              {/* Where they are going, before anybody commits to it. A file
+                  that names its accounts is routed by those names; one that
+                  does not lands wholly in the account chosen above, and seeing
+                  that said plainly is the point. */}
+              {plan.byAccount.length ? (
+                <>
+                  <div className="divider" />
+                  <div className="col" style={{ gap: 4 }}>
+                    <span className="tile-label">Going to</span>
+                    {plan.byAccount.map((a) => (
+                      <div key={a.accountId} className="spread small">
+                        <span className="grow truncate">{a.name}</span>
+                        <span className="num faint">
+                          {a.count} row{a.count === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                    ))}
+                    {plan.unmatched.length ? (
+                      <span className="tiny warn">
+                        {plan.unmatched.length === 1
+                          ? "One name in the file matches no account here"
+                          : `${plan.unmatched.length} names in the file match no account here`}
+                        {" "}({plan.unmatched.slice(0, 3).join(", ")}
+                        {plan.unmatched.length > 3 ? ", …" : ""}). Those rows go to the account chosen above.
+                      </span>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
               {plan.rows.length ? (
                 <>
                   <div className="divider" />

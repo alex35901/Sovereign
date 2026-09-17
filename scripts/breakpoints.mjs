@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -5073,13 +5073,29 @@ try {
     });
     const running = () => dr.evaluate(() =>
       document.getAnimations().filter((a) => a.animationName === "chart-reveal" && a.playState === "running").length);
+    // Read off the stylesheet rather than written down here, so the checks
+    // follow the animation instead of having to be edited alongside it.
+    const duration = () => dr.evaluate(() => {
+      const el = document.querySelector(".chart-reveal");
+      const d = el ? getComputedStyle(el).animationDuration : "0s";
+      return d.endsWith("ms") ? Number.parseFloat(d) : Number.parseFloat(d) * 1000;
+    });
+    const settle = async () => dr.waitForTimeout((await duration()) + 400);
 
     await dr.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
-    await dr.waitForTimeout(220);
-    const early = await across();
-    check("the chart starts part-drawn rather than simply appearing",
-      early !== null && early > 0 && early < 0.97, String(early));
-    await dr.waitForTimeout(1200);
+    await dr.waitForTimeout(200);
+    const first = await across();
+    await dr.waitForTimeout(500);
+    const second = await across();
+    // Two readings rather than one magnitude: this says it is being drawn,
+    // which a single number under a threshold does not.
+    check("the chart is drawn in rather than simply appearing",
+      first !== null && second !== null && first < second && second < 0.97,
+      `${first} then ${second}`);
+    // Long enough to watch, which is the point of asking for four seconds.
+    const ms = await duration();
+    check("and takes its time over it", ms >= 1000, `${ms}ms`);
+    await settle();
     const settled = await across();
     check("and finishes drawn all the way across",
       settled !== null && Math.abs(settled - 1) < 0.001, String(settled));
@@ -5095,7 +5111,7 @@ try {
       const again = await across();
       check("changing the period draws it again",
         again !== null && again < 0.97, String(again));
-      await dr.waitForTimeout(1200);
+      await settle();
       check("and that one finishes too", Math.abs((await across()) - 1) < 0.001);
     }
 
@@ -5107,7 +5123,7 @@ try {
       const sliced = await across();
       check("changing which accounts are drawn draws it again",
         sliced !== null && sliced < 0.97, String(sliced));
-      await dr.waitForTimeout(1200);
+      await settle();
     }
 
     // And dragging a finger along it does not. A chart that redrew itself
@@ -5149,6 +5165,67 @@ try {
       check(`${what} draws itself in too`, n > 0, `${n} on ${path}`);
     }
     await others.close();
+  }
+
+
+  if (want("import-route")) {
+    // ── a CSV that names its accounts goes to them ──
+    //
+    // The Account column was detected, mapped, read into every row, and then
+    // dropped: a Monarch export covering ten accounts landed entirely in
+    // whichever account was picked from the dropdown.
+    const im = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    await im.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await im.waitForTimeout(900);
+
+    // Two of the demo's own accounts by name, plus one it has never heard of.
+    const named = await im.evaluate(() => {
+      const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+      const live = db.accounts.filter((a) => !a.hidden && !a.closedAt);
+      return [live[0].name, live[1].name];
+    });
+    const csv = [
+      "Date,Merchant,Account,Amount",
+      `2026-09-01,Test Alpha,${named[0]},-12.34`,
+      `2026-09-02,Test Beta,${named[1]},-56.78`,
+      `2026-09-03,Test Gamma,${named[1]},-9.10`,
+      "2026-09-04,Test Delta,A Bank That Is Not Here,-1.00",
+    ].join("\n");
+
+    if (await tryStep("the import dialog opens and takes a file", async () => {
+      await im.locator("button", { hasText: "Import CSV" }).first().click({ timeout: 8000 });
+      await im.waitForTimeout(400);
+      await im.locator('.modal input[type="file"]').setInputFiles({
+        name: "monarch.csv", mimeType: "text/csv", buffer: Buffer.from(csv),
+      });
+      await im.waitForTimeout(900);
+    })) {
+      const seen = await im.evaluate(() => {
+        const modal = document.querySelector(".modal");
+        const text = modal?.innerText ?? "";
+        // The heading is uppercased by the stylesheet, and innerText reports
+        // what is rendered, so this reads it back the way it is drawn.
+        const from = text.search(/going to/i);
+        return { text, going: from < 0 ? "" : text.slice(from) };
+      });
+      check("the column is recognised as the account name",
+        /Account name/.test(seen.text), seen.text.slice(0, 160).replace(/\n/g, " | "));
+      check("and the review says where the rows are going, by name",
+        seen.going.includes(named[0]) && seen.going.includes(named[1]),
+        seen.going.slice(0, 160).replace(/\n/g, " | "));
+      // Really split, rather than every row under one heading. Four rows go
+      // in; the unmatched one falls back to the chosen account, so it is two
+      // and two, and neither account may hold all four.
+      const counts = [...seen.going.matchAll(/(\d+) rows?/g)].map((m) => Number(m[1]));
+      check("split the way the file says, not all into one",
+        counts.length === 2 && counts.reduce((a, b) => a + b, 0) === 4 && !counts.includes(4),
+        `${counts.join(" + ")} from: ${seen.going.slice(0, 120).replace(/\n/g, " | ")}`);
+      check("and says plainly that one name matched nothing here",
+        /matches no account|match no account/.test(seen.text)
+        && /A Bank That Is Not Here/.test(seen.text),
+        seen.text.slice(0, 200).replace(/\n/g, " | "));
+    }
+    await im.close();
   }
 
 
