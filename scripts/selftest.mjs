@@ -70,7 +70,7 @@ await build({
       export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE } from "./api/_plaid.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { findConnection } from "./api/_store.ts";
-      export { retryDelay, mayPush, isBlocking, RETRY_MS } from "./src/lib/cloud.ts";
+      export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
@@ -10349,6 +10349,87 @@ await test("the app's idea of today is the date on the wall, in any timezone", a
   }
   // And the two zones really were on different days, or this proved nothing.
   assert.notEqual(days[0], days[1], `both zones landed on ${days[0]}, so nothing was tested`);
+});
+
+
+/* ── a month ago is a month ago ────────────────────────────────────────── */
+
+await test("a range that ends on the 31st still starts a whole month back", async () => {
+  // rangeStart used to build its answer by gluing today's day-of-month onto an
+  // earlier month: "2026-03-31" minus a month became the string "2026-02-31",
+  // which JavaScript quietly rolls forward to the 3rd of March. The window was
+  // short and started in the wrong month, under a label still saying "1 month".
+  const { execFileSync } = await import("node:child_process");
+  const { pathToFileURL } = await import("node:url");
+  const rangeOnly = join(dir, "range-only.mjs");
+  await build({
+    stdin: {
+      contents: 'export { rangeStart } from "./src/lib/range.ts";'
+        + 'export { addMonthsDate, parseISO } from "./src/lib/date.ts";',
+      resolveDir: process.cwd(), loader: "ts",
+    },
+    bundle: true, format: "esm", platform: "node", outfile: rangeOnly, logLevel: "silent",
+  });
+
+  // Run with the clock pinned to each awkward day in turn, because rangeStart
+  // reads today() for itself.
+  const days = ["2026-03-31", "2026-03-30", "2026-05-31", "2026-07-31", "2026-08-31", "2026-01-15"];
+  const probe = (day) => `
+    const real = Date;
+    const at = new real("${day}T12:00:00");
+    globalThis.Date = class extends real {
+      constructor(...a) { super(...(a.length ? a : [at.getTime()])); }
+      static now() { return at.getTime(); }
+    };
+    const m = await import(${JSON.stringify(pathToFileURL(rangeOnly).href)});
+    const out = {};
+    for (const [k, n] of [["1m", 1], ["3m", 3], ["6m", 6], ["1y", 12]]) {
+      out[k] = [m.rangeStart(k), m.addMonthsDate("${day}", -n)];
+    }
+    console.log(JSON.stringify(out));
+  `;
+
+  for (const day of days) {
+    const raw = execFileSync(process.execPath, ["--input-type=module", "-e", probe(day)], { encoding: "utf8" });
+    const got = JSON.parse(raw.trim().split("\n").pop());
+    for (const [key, [start, want]] of Object.entries(got)) {
+      assert.equal(start, want, `on ${day}, ${key} should start ${want}`);
+      // And it really is in the month a person would name, not the one after.
+      assert.ok(start < day, `on ${day}, ${key} started at ${start}, which is not in the past`);
+    }
+  }
+});
+
+
+/* ── a document this browser made up is not in step with anything ──────── */
+
+await test("losing the local copy makes the browser fetch the stored one, not overwrite it", () => {
+  // The document and the version this browser last agreed with live under two
+  // different localStorage keys, and one can outlive the other. If the
+  // document goes and the version stays, the app seeds a fresh demo budget and
+  // reconcile sees a browser already in step: it pulls nothing, and the first
+  // edit pushes the demo over the real thing. Nobody gets that back.
+  M.setCloudState({ version: 41, dirty: false });
+  M.forgetCloudVersion();
+  const after = M.cloudState();
+  // Nothing stored can be older than nothing, so the next reconcile pulls.
+  assert.equal(after.version, 0);
+  // And an invented document is not unsent work, so it must not be stashed as
+  // a conflict over the top of the real one.
+  assert.equal(after.dirty, false);
+
+  // A browser that still has its document is left alone: this only fires when
+  // there was nothing to load.
+  M.setCloudState({ version: 41, dirty: true, failures: 2 });
+  const untouched = M.cloudState();
+  M.forgetCloudVersion();
+  assert.equal(M.cloudState().version, 0, "a lost document always forgets its version");
+  assert.equal(untouched.failures, 2, "and the rest of the state is left as it was");
+
+  // Nothing to forget is a no-op rather than a write.
+  M.setCloudState({ version: 0, dirty: true });
+  M.forgetCloudVersion();
+  assert.equal(M.cloudState().dirty, true, "a browser that never synced keeps its unsent flag");
 });
 
 await rm(dir, { recursive: true, force: true });

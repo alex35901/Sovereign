@@ -34,6 +34,45 @@ function Tip({ x, y, width, children }: { x: number; y: number; width: number; c
  * maximum of the period — the range is the information on a balance chart, and
  * rounding to "nice" numbers hides it.
  */
+/**
+ * The wipe that draws a chart in, left to right.
+ *
+ * One mechanism for every chart with an x-axis, so they all arrive the same
+ * way. A clip rectangle over the plot area is scaled from nothing to full
+ * width; everything inside the clipped group appears as it passes - the line,
+ * its fill, the band, the comparison runs - rather than the line drawing
+ * itself while its shading sits there already finished.
+ *
+ * `signature` is what makes it run again. It has to change when the series
+ * changes and stay still when a finger moves over it: pass the shape of the
+ * data, never the hover. React remounts the rectangle when the key changes,
+ * and a remounted element starts its animation from the beginning, which is
+ * the whole trick. Nothing is stored and nothing is timed.
+ *
+ * The rectangle is keyed on the measured width too. The first paint happens
+ * before the chart knows how wide it is, and a sweep across a placeholder
+ * width would be over before the real one arrived.
+ */
+export function Reveal({ id, x, width, height, signature }: {
+  id: string; x: number; width: number; height: number; signature: string;
+}) {
+  return (
+    <clipPath id={id}>
+      <rect
+        key={signature}
+        className="chart-reveal"
+        x={x} y={0} width={width} height={height}
+        // In view-box units, so no transform-box is needed and the origin is
+        // the left-hand edge of the plot area on every chart.
+        style={{ transformOrigin: `${x}px 0px` }}
+      />
+    </clipPath>
+  );
+}
+
+/** What the drawn series looks like, for deciding whether to run the wipe again. */
+export const revealKey = (parts: (string | number | null | undefined)[]): string => parts.join(":");
+
 export const rangeTicks = (lo: number, hi: number, count = 4): number[] =>
   Array.from({ length: count + 1 }, (_, i) => lo + ((hi - lo) * i) / count);
 
@@ -293,6 +332,14 @@ export function AreaChart({
           <clipPath id={`below-${uid}`}>
             <rect x={padL} y={zeroY} width={innerW} height={Math.max(0, padT + innerH - zeroY)} />
           </clipPath>
+          <Reveal
+            id={`reveal-${uid}`} x={padL} width={innerW} height={height}
+            signature={revealKey([
+              points.length, points[0]?.value, points[points.length - 1]?.value,
+              points[0]?.label, points[points.length - 1]?.label,
+              tone, bandPath ? 1 : 0, compareRuns.length, w > 0 ? 1 : 0,
+            ])}
+          />
         </defs>
 
         {bare ? null : ticks.map((t, i) => (
@@ -302,6 +349,10 @@ export function AreaChart({
           </g>
         ))}
 
+        {/* Everything drawn from the data sits inside the wipe. The grid, the
+            axis and the tick labels do not: they are the paper, and paper does
+            not arrive a bit at a time. */}
+        <g clipPath={`url(#reveal-${uid})`}>
         {/* The band replaces the gradient rather than joining it: two fills of
             the same colour over each other read as one muddy shape, and the
             one that carries meaning is the band. */}
@@ -330,6 +381,7 @@ export function AreaChart({
             strokeLinejoin="round" strokeLinecap="round" opacity={0.95}
           />
         ))}
+        </g>
 
         {showZeroLine ? (
           <line x1={padL} x2={padL + innerW} y1={zeroY} y2={zeroY} stroke={color("--muted")} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
@@ -533,6 +585,7 @@ export function FlowChart({ buckets, height = 240, onPick }: {
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+  const flowId = useId().replace(/[^a-zA-Z0-9]/g, "");
   if (!buckets.length) return <div ref={ref} style={{ height }} />;
 
   const padL = 52;
@@ -574,6 +627,17 @@ export function FlowChart({ buckets, height = 240, onPick }: {
         ))}
         <line x1={padL} x2={padL + innerW} y1={mid} y2={mid} stroke={color("--line")} strokeWidth={1} />
 
+        <defs>
+          <Reveal
+            id={`flow-${flowId}`} x={padL} width={innerW} height={height}
+            signature={revealKey([
+              buckets.length, buckets[0]?.key, buckets[buckets.length - 1]?.key,
+              buckets[0]?.net, buckets[buckets.length - 1]?.net, w > 0 ? 1 : 0,
+            ])}
+          />
+        </defs>
+
+        <g clipPath={`url(#flow-${flowId})`}>
         {buckets.map((b, i) => (
           <g
             key={b.key}
@@ -596,6 +660,7 @@ export function FlowChart({ buckets, height = 240, onPick }: {
         {/* What was left, across the top of the bars it came from. */}
         <path d={net} fill="none" stroke={color("--text")} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {buckets.map((b, i) => <circle key={b.key} cx={x(i)} cy={y(b.net)} r={2.5} fill={color("--text")} />)}
+        </g>
 
         {buckets.map((b, i) => (i % every ? null : (
           <text key={b.key} className="axis-text" x={x(i)} y={height - 6} textAnchor="middle">{b.label}</text>
@@ -633,6 +698,7 @@ export function BarChart({ groups, height = 200, showZero = true, compact = fals
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
+  const barId = useId().replace(/[^a-zA-Z0-9]/g, "");
   if (!groups.length) return <div ref={ref} style={{ height }} />;
 
   const padL = compact ? 36 : 52;
@@ -655,6 +721,16 @@ export function BarChart({ groups, height = 200, showZero = true, compact = fals
   return (
     <div ref={ref} className="chart-wrap" style={{ height }}>
       <svg width="100%" height={height} style={{ display: "block", overflow: "visible" }} onMouseLeave={() => setHover(null)}>
+        <defs>
+          <Reveal
+            id={`bars-${barId}`} x={padL} width={innerW} height={height}
+            signature={revealKey([
+              groups.length, groups[0]?.label, groups[groups.length - 1]?.label,
+              groups[0]?.bars[0]?.value, groups[groups.length - 1]?.bars[0]?.value,
+              w > 0 ? 1 : 0,
+            ])}
+          />
+        </defs>
         {ticks.map((t) => (
           <g key={t}>
             <line className="grid-line" x1={padL} x2={padL + innerW} y1={y(t)} y2={y(t)} />
@@ -670,12 +746,14 @@ export function BarChart({ groups, height = 200, showZero = true, compact = fals
               style={{ cursor: onClickGroup ? "pointer" : "default" }}
             >
               <rect x={gx} y={padT} width={slot} height={innerH} fill={hover === gi ? color("--surface-2") : "transparent"} />
-              {g.bars.map((b, bi) => {
-                const bx = gx + gap + bi * (bw + 2);
-                const top = b.value >= 0 ? y(b.value) : y(0);
-                const h = Math.max(1, Math.abs(y(b.value) - y(0)));
-                return <rect key={b.key} x={bx} y={top} width={bw} height={h} rx={Math.min(3, bw / 2)} fill={color(b.tone)} />;
-              })}
+              <g clipPath={`url(#bars-${barId})`}>
+                {g.bars.map((b, bi) => {
+                  const bx = gx + gap + bi * (bw + 2);
+                  const top = b.value >= 0 ? y(b.value) : y(0);
+                  const h = Math.max(1, Math.abs(y(b.value) - y(0)));
+                  return <rect key={b.key} x={bx} y={top} width={bw} height={h} rx={Math.min(3, bw / 2)} fill={color(b.tone)} />;
+                })}
+              </g>
               {compact || gi % Math.ceil(groups.length / Math.max(2, Math.floor(innerW / 58))) === 0 ? (
                 <text className="axis-text" x={gx + slot / 2} y={height - 6} textAnchor="middle">{g.label}</text>
               ) : null}
@@ -909,6 +987,7 @@ export function Sankey({ data, height = 320, minWidth = 0 }: {
 export function Sparkline({ values, tone = "--accent", width = 88, height = 26, baseline = false }: {
   values: number[]; tone?: string; width?: number; height?: number; baseline?: boolean;
 }) {
+  const sparkId = useId().replace(/[^a-zA-Z0-9]/g, "");
   if (values.length < 2) return <svg width={width} height={height} />;
   const lo = Math.min(...values);
   const hi = Math.max(...values);
@@ -925,7 +1004,18 @@ export function Sparkline({ values, tone = "--accent", width = 88, height = 26, 
           stroke={color("--faint")} strokeWidth={1} strokeDasharray="2 3" opacity={0.75}
         />
       ) : null}
-      <path d={d} fill="none" stroke={color(tone)} strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+      <defs>
+        <Reveal
+          id={`spark-${sparkId}`} x={0} width={width} height={height}
+          signature={revealKey([values.length, values[0], values[values.length - 1], tone])}
+        />
+      </defs>
+      {/* The baseline stays put: it is the reference the line is read against,
+          so it has to be there before the line arrives. */}
+      <path
+        d={d} fill="none" stroke={color(tone)} strokeWidth={1.6}
+        strokeLinecap="round" strokeLinejoin="round" clipPath={`url(#spark-${sparkId})`}
+      />
     </svg>
   );
 }

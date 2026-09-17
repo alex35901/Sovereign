@@ -15,6 +15,7 @@ import { squashHistory } from "./lib/history";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
+import { forgetCloudVersion } from "./lib/cloud";
 import type { Assumptions, ForecastEvent, ForecastPlan, Scenario } from "./lib/forecast";
 import { activeScenario, blankPlan } from "./lib/forecast";
 import type { Survivorship } from "./lib/estate";
@@ -87,7 +88,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // but the demo did not, so a first run got whatever shape the seed happened
   // to be written in — and a goal that named an account showed nothing saved
   // until the page was next reloaded. Free when there is nothing to do.
-  const [db, setDb] = useState<DB>(() => withGroupColors(migrate(loadDB() ?? buildDemoDB())));
+  const [db, setDb] = useState<DB>(() => {
+    const stored = loadDB();
+    // Nothing readable in the cache, so what follows is invented rather than
+    // remembered. Say so before the cloud is asked anything: a browser holding
+    // a document it made up must not claim to be in step with a stored one.
+    if (!stored) forgetCloudVersion();
+    return withGroupColors(migrate(stored ?? buildDemoDB()));
+  });
   const [toast, setToast] = useState<string | null>(null);
   const undoStack = useRef<{ db: DB; label: string }[]>([]);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);

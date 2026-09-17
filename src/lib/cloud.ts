@@ -79,6 +79,26 @@ export const setCloudState = (s: CloudState): void => {
   try { localStorage.setItem(STATE_KEY, JSON.stringify(s)); } catch { /* storage full; next write retries */ }
 };
 
+/**
+ * Forget which stored version this browser last agreed with.
+ *
+ * Called when the app has had to invent a document - the cache was missing, or
+ * there but unreadable - because the two live under different keys and one can
+ * outlive the other. A browser that has lost its document but kept its version
+ * number looks, to `reconcile`, exactly like one that is already in step: it
+ * pulls nothing, and the first edit pushes a fresh demo budget over the real
+ * one. Nobody gets that back.
+ *
+ * Setting the version to nothing makes the stored copy newer by definition, so
+ * the next reconcile fetches it. Not dirty, because an invented document is
+ * not unsent work and must not be stashed as a conflict.
+ */
+export function forgetCloudVersion(): void {
+  const at = cloudState();
+  if (!at.version) return;
+  setCloudState({ ...at, version: 0, dirty: false });
+}
+
 export const passphrase = (): string => {
   try { return localStorage.getItem(PASS_KEY) ?? ""; } catch { return ""; }
 };

@@ -1,5 +1,5 @@
 import type { ISODate, MonthKey } from "../types";
-import { addDays, addMonths, diffMonths, monthOf, parseISO, thisMonth, today } from "./date";
+import { addDays, addMonths, addMonthsDate, diffMonths, monthOf, parseISO, thisMonth, today } from "./date";
 
 export type RangeKey = "1m" | "3m" | "6m" | "ytd" | "1y" | "5y" | "all";
 
@@ -25,13 +25,23 @@ export function rangeMonths(key: RangeKey, earliest?: MonthKey): number {
   return Math.max(1, diffMonths(earliest, thisMonth()) + 1);
 }
 
-/** First day a range covers. */
+/**
+ * First day a range covers.
+ *
+ * Stepped with addMonthsDate rather than by gluing today's day-of-month onto
+ * an earlier month. That string can overflow - "2026-02-31" - and JavaScript
+ * quietly rolls an overflowing date forward, so on the 30th of March "one
+ * month ago" came back as the 2nd of March and on the 31st of August "six
+ * months ago" came back as the 3rd. The window was short by a day or three and
+ * started in the wrong month, while the label beside it still said a month.
+ * addMonthsDate clamps to the length of the month it lands in, which is what
+ * anybody means by a month ago.
+ */
 export function rangeStart(key: RangeKey, earliest?: ISODate): ISODate {
   const end = today();
   if (key === "ytd") return `${end.slice(0, 4)}-01-01`;
   if (key === "all") return earliest ?? `${addMonths(monthOf(end), -23)}-01`;
-  const months = FIXED_MONTHS[key] ?? 6;
-  return addDays(`${addMonths(monthOf(end), -months)}-${end.slice(8, 10)}`, 0);
+  return addMonthsDate(end, -(FIXED_MONTHS[key] ?? 6));
 }
 
 /**

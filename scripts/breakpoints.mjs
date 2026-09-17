@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -5055,6 +5055,100 @@ try {
     });
     await reader.close();
     await sweep("on a document with nothing in it", emptied);
+  }
+
+
+  if (want("draw")) {
+    // ── a chart draws itself in, left to right ──
+    const dr = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+
+    // How far across the wipe has got: the scaleX out of the clip rect's own
+    // computed transform. 0 is nothing drawn, 1 is the whole series.
+    const across = () => dr.evaluate(() => {
+      const el = document.querySelector(".nw-card .chart-reveal");
+      if (!el) return null;
+      const t = getComputedStyle(el).transform;
+      if (!t || t === "none") return 1;
+      return Number(t.replace(/matrix\(([^,]+),.*/, "$1"));
+    });
+    const running = () => dr.evaluate(() =>
+      document.getAnimations().filter((a) => a.animationName === "chart-reveal" && a.playState === "running").length);
+
+    await dr.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
+    await dr.waitForTimeout(220);
+    const early = await across();
+    check("the chart starts part-drawn rather than simply appearing",
+      early !== null && early > 0 && early < 0.97, String(early));
+    await dr.waitForTimeout(1200);
+    const settled = await across();
+    check("and finishes drawn all the way across",
+      settled !== null && Math.abs(settled - 1) < 0.001, String(settled));
+    check("and stops animating once it is there", (await running()) === 0);
+
+    // Changing the period runs it again. This is the half that does not come
+    // free: the element has to be rebuilt, or the animation has already played
+    // and will not play a second time.
+    if (await tryStep("a different period can be chosen", async () => {
+      await dr.locator(".span-pill", { hasText: "1Y" }).click({ timeout: 8000 });
+    })) {
+      await dr.waitForTimeout(160);
+      const again = await across();
+      check("changing the period draws it again",
+        again !== null && again < 0.97, String(again));
+      await dr.waitForTimeout(1200);
+      check("and that one finishes too", Math.abs((await across()) - 1) < 0.001);
+    }
+
+    // So does changing which accounts are being shown.
+    if (await tryStep("a different slice can be chosen", async () => {
+      await dr.locator(".scope-pill", { hasText: "Cash" }).first().click({ timeout: 8000 });
+    })) {
+      await dr.waitForTimeout(160);
+      const sliced = await across();
+      check("changing which accounts are drawn draws it again",
+        sliced !== null && sliced < 0.97, String(sliced));
+      await dr.waitForTimeout(1200);
+    }
+
+    // And dragging a finger along it does not. A chart that redrew itself
+    // every time it was read would be unusable.
+    const box = await dr.locator(".nw-card .chart-wrap svg").first().boundingBox();
+    if (box) {
+      await dr.mouse.move(box.x + box.width * 0.3, box.y + box.height / 2);
+      await dr.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
+      await dr.waitForTimeout(140);
+      check("but reading the chart with a finger does not redraw it",
+        (await running()) === 0 && Math.abs((await across()) - 1) < 0.001);
+    }
+    await dr.close();
+
+    // Somebody who has asked for less movement gets the chart whole, at once.
+    const still = await browser.newPage({ viewport: { width: 1280, height: 1000 }, reducedMotion: "reduce" });
+    await still.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
+    await still.waitForTimeout(200);
+    const shown = await still.evaluate(() => {
+      const el = document.querySelector(".nw-card .chart-reveal");
+      if (!el) return null;
+      const t = getComputedStyle(el).transform;
+      return t === "none" ? 1 : Number(t.replace(/matrix\(([^,]+),.*/, "$1"));
+    });
+    check("reduced motion means no wipe at all, not a quicker one",
+      shown !== null && Math.abs(shown - 1) < 0.001, String(shown));
+    await still.close();
+
+    // Every chart with an x-axis arrives the same way.
+    const others = await browser.newPage({ viewport: { width: 1280, height: 1200 } });
+    for (const [path, what] of [
+      ["/categories/c_groceries", "the drill-down's bars"],
+      ["/reports", "the cash flow chart"],
+      ["/year", "the year in review"],
+    ]) {
+      await others.goto(BASE + path, { waitUntil: "domcontentloaded" });
+      await others.waitForTimeout(240);
+      const n = await others.evaluate(() => document.querySelectorAll(".chart-reveal").length);
+      check(`${what} draws itself in too`, n > 0, `${n} on ${path}`);
+    }
+    await others.close();
   }
 
 
