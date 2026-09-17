@@ -34,6 +34,52 @@ function ProbeReport({ probe: p }: { probe: Probe }) {
   );
 }
 
+/**
+ * Whether saves are actually getting through.
+ *
+ * The toast that says one failed is gone in three seconds and used to say
+ * nothing about why. This is where the answer lives afterwards: what the
+ * server said, when, and whether anything has got through since. Absent
+ * entirely when there is nothing to report, because a permanent green tick is
+ * something people stop reading.
+ */
+function SaveHealth() {
+  useSyncExternalStore(subscribeSync, syncEpoch);
+  const at = cloudState();
+  if (!at.lastError && !at.dirty) return null;
+
+  const when = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const since = at.lastError && at.okAt && at.okAt > at.lastError.at;
+  // Most of these messages already carry the status the server sent, so only
+  // add it when it is missing rather than printing "(504) (504)".
+  const said = at.lastError
+    ? at.lastError.message + (at.lastError.status && !at.lastError.message.includes(String(at.lastError.status))
+      ? ` (${at.lastError.status})` : "")
+    : "";
+
+  return (
+    <div className="col save-health" style={{ gap: 3 }}>
+      {at.lastError ? (
+        <span className={`small ${since ? "warn" : "neg"}`}>
+          {since || !at.dirty ? "A save failed at " : "Saves are failing. The last at "}
+          {when(at.lastError.at)}, and the reason given was: {said}
+        </span>
+      ) : null}
+      {at.dirty ? (
+        <span className="small neg">
+          This browser is holding changes the cloud copy does not have yet.
+          {at.nextTryAt && at.nextTryAt > Date.now() ? ` Next try at ${when(at.nextTryAt)}.` : ""}
+        </span>
+      ) : (
+        <span className="tiny faint">
+          Everything here has been saved{at.okAt ? `, last at ${when(at.okAt)}` : ""}.
+          {since ? " Whatever that was, it passed." : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** What the function sees of the database, in words rather than a stack trace. */
 function Diagnosis({ check }: { check: CloudDiagnosis }) {
   const lines: { ok: boolean; text: string }[] = [];
@@ -254,6 +300,7 @@ export function CloudCard() {
                 ? `Cloud copy is version ${remote.version}, saved ${remote.updatedAt ? new Date(remote.updatedAt).toLocaleString() : "recently"} by ${remote.updatedBy ?? "a browser"}.`
                 : "Nothing stored yet. Press Save now."}
           </span>
+          <SaveHealth />
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={() => void pullNow()} disabled={busy !== null}>
               {busy === "pull" ? "Loading…" : "Load the cloud copy"}

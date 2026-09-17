@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import {
   CloudError, cloudEnabled, cloudState, deviceName, head, isBlocking, mayPush, pull, push,
-  retryDelay, setCloudState,
+  retryDelay, setCloudState, shouldSay,
   stashConflict, subscribeSync,
 } from "../lib/cloud";
 import { drainQueue } from "../lib/sync/drain";
@@ -85,7 +85,13 @@ export function CloudSync() {
     busy.current = true;
     try {
       const res = await push(latest.current, at.version);
-      setCloudState({ version: res.version, dirty: false });
+      // The failure is kept through the success that follows it. An
+      // intermittent fault is the one worth being able to see, and clearing
+      // the record every time a save works is what hides it.
+      setCloudState({
+        version: res.version, dirty: false,
+        lastError: at.lastError, saidAt: at.saidAt, okAt: Date.now(),
+      });
     } catch (err) {
       if (err instanceof CloudError && err.status === 409) {
         const remote = await pull().catch(() => null);
@@ -102,15 +108,25 @@ export function CloudSync() {
       // is not more informative than a toast.
       const failures = (at.failures ?? 0) + 1;
       const blocked = err instanceof CloudError && isBlocking(err.status) ? err.message : undefined;
+      const status = err instanceof CloudError ? err.status : 0;
+      const reason = err instanceof CloudError ? err.message : "Could not reach the server.";
+      const before = cloudState();
+      const say = shouldSay(before, reason);
       setCloudState({
-        ...cloudState(), dirty: true, failures,
+        ...before, dirty: true, failures,
         nextTryAt: Date.now() + retryDelay(failures),
         blocked,
+        lastError: { status, message: reason, at: Date.now() },
+        saidAt: say ? Date.now() : before.saidAt,
       });
-      if (failures === 1) {
+      // Named rather than hinted at. The app knows the status and what the
+      // server said; a message that withholds both leaves nothing to act on
+      // and nothing to tell anybody. Settings carries it too, for after the
+      // toast has gone.
+      if (say) {
         act.current.notify(blocked
           ? `Not saving to the cloud: ${blocked}`
-          : "Could not save to the cloud. It will try again shortly.");
+          : `Could not save to the cloud: ${reason}. It will keep trying.`);
       }
     } finally {
       busy.current = false;

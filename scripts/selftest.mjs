@@ -69,8 +69,9 @@ await build({
       export { default as cronHandler, refreshPlaid } from "./api/cron/sync.ts";
       export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE } from "./api/_plaid.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
+      export { withWake } from "./api/_store.ts";
       export { findConnection } from "./api/_store.ts";
-      export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion } from "./src/lib/cloud.ts";
+      export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
@@ -10730,6 +10731,73 @@ await test("without an account column everything goes where it was told to", () 
   assert.equal(plan.rows[0].accountId, "a_sapphire");
   assert.deepEqual(plan.unmatched, []);
   assert.deepEqual(plan.byAccount, [{ accountId: "a_sapphire", name: "Sapphire Reserve", count: 1 }]);
+});
+
+
+/* ── a save that fails should say why, once ────────────────────────────── */
+
+await test("a failure is said out loud when it starts, and not every minute after", () => {
+  // The old message named nothing: "could not save, trying again shortly",
+  // with the status and whatever the server said both thrown away. There was
+  // nothing to act on and nothing to tell anybody.
+  const now = 1_000_000;
+  const quiet = { lastError: { status: 504, message: "Save failed (504)", at: now }, saidAt: now };
+  assert.equal(M.shouldSay({ version: 1, dirty: true }, "Save failed (504)", now), true, "the first one");
+  assert.equal(M.shouldSay(quiet, "Save failed (504)", now + 1000), false, "not again a second later");
+  assert.equal(M.shouldSay(quiet, "Save failed (504)", now + M.QUIET_MS), true, "but again after a while");
+  // A different reason wearing the same words is a different problem.
+  assert.equal(M.shouldSay(quiet, "Save failed (413)", now + 1000), true, "a new reason is always worth saying");
+  // Never said before, however quiet it has been.
+  assert.equal(M.shouldSay({ version: 1, dirty: true, lastError: quiet.lastError }, "Save failed (504)", now), true);
+});
+
+await test("what went wrong outlives the save that worked after it", () => {
+  // An intermittent fault is the one worth being able to see, and clearing
+  // the record every time a save succeeds is exactly what hides it.
+  M.setCloudState({ version: 3, dirty: true, lastError: { status: 504, message: "Save failed (504)", at: 500 }, saidAt: 500 });
+  const at = M.cloudState();
+  // What CloudSync writes on a success: the version moves, the record stays.
+  M.setCloudState({ version: 4, dirty: false, lastError: at.lastError, saidAt: at.saidAt, okAt: 900 });
+  const after = M.cloudState();
+  assert.equal(after.dirty, false);
+  assert.equal(after.version, 4);
+  assert.equal(after.lastError.message, "Save failed (504)");
+  assert.ok(after.okAt > after.lastError.at, "and it is clear a save has got through since");
+});
+
+
+/* ── a sleeping database is not a failed save ──────────────────────────── */
+
+await test("a database that was asleep gets one more chance, in the same request", () => {
+  // Serverless Postgres suspends itself after a few quiet minutes, and the
+  // request that wakes it can time out while it does. The first save after a
+  // quiet half hour was landing on that, taking the whole function's budget to
+  // find out, and coming back as "could not save" with no reason - while the
+  // retry a minute later worked, because by then the database was up.
+  const attempts = [];
+  const wakes = async () => {
+    attempts.push(1);
+    if (attempts.length === 1) throw new Error("Connection terminated due to connection timeout");
+    return "answered";
+  };
+  return M.withWake(wakes).then((out) => {
+    assert.equal(out, "answered");
+    assert.equal(attempts.length, 2, "asked twice, not once and not for ever");
+  });
+});
+
+await test("but a real error is reported rather than asked again", async () => {
+  let tries = 0;
+  const broken = async () => { tries++; throw new Error('relation "budget_document" does not exist'); };
+  await assert.rejects(() => M.withWake(broken), /does not exist/);
+  assert.equal(tries, 1, "a fault that will not fix itself is not worth a second round trip");
+});
+
+await test("and a database asleep twice over gives up rather than looping", async () => {
+  let tries = 0;
+  const asleep = async () => { tries++; throw new Error("ETIMEDOUT"); };
+  await assert.rejects(() => M.withWake(asleep), /ETIMEDOUT/);
+  assert.equal(tries, 2, "one retry, then the truth");
 });
 
 await rm(dir, { recursive: true, force: true });

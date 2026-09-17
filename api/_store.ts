@@ -191,6 +191,42 @@ async function loadPool(): Promise<new (config: unknown) => Pool> {
   }
 }
 
+/** Long enough for a database that is awake, short enough to leave a retry. */
+const CONNECT_MS = 4_000;
+
+/**
+ * Whether a failure is the database being asleep rather than wrong.
+ *
+ * Serverless Postgres suspends itself when nobody has asked it anything for a
+ * few minutes, and the request that wakes it can time out while it does. That
+ * is not an error to report, it is one to make again a moment later.
+ */
+const isColdStart = (err: unknown): boolean => {
+  const m = err instanceof Error ? `${err.message}` : String(err);
+  return /timeout|ETIMEDOUT|ECONNRESET|Connection terminated|starting up|not yet accepting/i.test(m);
+};
+
+/**
+ * Runs a query, and gives a sleeping database one more chance.
+ *
+ * Every write in here goes through this. The first save after a quiet half
+ * hour was landing on a suspended database, taking the whole function's budget
+ * to find out, and coming back as "could not save" with no reason - while the
+ * retry a minute later worked, because by then the database was up. One
+ * attempt more, inside the same request, turns that into a save that simply
+ * took a moment.
+ */
+export async function withWake<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (!isColdStart(err)) throw err;
+    // A pool that failed to connect holds no usable clients.
+    pool = null;
+    return run();
+  }
+}
+
 export async function db(): Promise<Pool> {
   const url = connectionString();
   if (!url) throw new Error("No database is configured.");
@@ -203,7 +239,13 @@ export async function db(): Promise<Pool> {
       ssl: /localhost|127\.0\.0\.1/.test(url) ? false : { rejectUnauthorized: false },
       max: 2,
       idleTimeoutMillis: 10_000,
-      connectionTimeoutMillis: 10_000,
+      // Shorter than the function is allowed to run, and deliberately so. It
+      // used to be ten seconds, which is exactly how long a serverless
+      // function gets on the free plan: the connection attempt could never
+      // give up before the platform killed the function, so a database that
+      // was slow to answer came back as a bare 504 with nothing in it. Failing
+      // at four leaves room to say what happened, and room to try again.
+      connectionTimeoutMillis: CONNECT_MS,
     });
     // An unhandled 'error' event on a pool takes the whole process down.
     pool.on("error", () => { pool = null; });
@@ -211,9 +253,14 @@ export async function db(): Promise<Pool> {
   return pool;
 }
 
-/** Idempotent, so first use of a fresh database just works. */
+/**
+ * Idempotent, so first use of a fresh database just works.
+ *
+ * Every read and every write goes through here first, which makes it the one
+ * place a sleeping database has to be woken. Nothing below it needs to know.
+ */
 async function ensureTable(): Promise<void> {
-  await (await db()).query(`
+  await withWake(async () => (await db()).query(`
     CREATE TABLE IF NOT EXISTS budget_document (
       id integer PRIMARY KEY,
       version integer NOT NULL,
@@ -221,7 +268,7 @@ async function ensureTable(): Promise<void> {
       updated_by text NOT NULL,
       doc jsonb NOT NULL
     )
-  `);
+  `));
 }
 
 export interface DocMeta {

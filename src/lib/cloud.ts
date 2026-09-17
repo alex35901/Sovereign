@@ -30,7 +30,23 @@ export interface CloudState {
   nextTryAt?: number;
   /** Set when the failure is one that waiting cannot fix. */
   blocked?: string;
+  /**
+   * Why the last save failed, and when.
+   *
+   * Kept rather than thrown away, and kept through the successes that follow.
+   * A save that fails, succeeds on the retry, then fails again leaves nothing
+   * behind if this is cleared each time it works - which is exactly the shape
+   * of an intermittent fault, and exactly the one worth being able to see.
+   */
+  lastError?: { status: number; message: string; at: number };
+  /** When a save last got through, so "is it syncing at all" has an answer. */
+  okAt?: number;
+  /** When the failure was last said out loud, so it is not said every minute. */
+  saidAt?: number;
 }
+
+/** How long to leave it before complaining about the same thing again. */
+export const QUIET_MS = 10 * 60 * 1000;
 
 /**
  * How long to wait before trying a failed save again.
@@ -58,6 +74,24 @@ export const retryDelay = (failures: number): number =>
  */
 export const isBlocking = (status: number): boolean =>
   status === 401 || status === 403 || status === 503;
+
+/**
+ * Whether this failure is worth saying out loud again.
+ *
+ * Said once when it starts, and then not again for a while unless the reason
+ * changes - a toast a minute is not more informative than a toast, and the
+ * Settings card carries the current truth for anybody who wants it. A new
+ * reason is always worth saying: "save failed (504)" becoming "save failed
+ * (413)" is a different problem wearing the same words.
+ */
+export function shouldSay(
+  before: CloudState,
+  reason: string,
+  now: number = Date.now(),
+): boolean {
+  if (before.lastError?.message !== reason) return true;
+  return !before.saidAt || now - before.saidAt >= QUIET_MS;
+}
 
 /** Whether a save may be attempted now. */
 export function mayPush(state: CloudState, now: number = Date.now()): boolean {
