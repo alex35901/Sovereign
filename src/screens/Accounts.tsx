@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Plus } from "lucide-react";
-import type { Account, AccountType, ISODate } from "../types";
+import type { Account, AccountType, Bucket, ISODate } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, sinceLabel, today } from "../lib/date";
@@ -155,18 +155,25 @@ export function AccountModal({ account, onClose }: { account?: Account; onClose:
   const [mask, setMask] = useState(account?.mask ?? "");
   const [includeInNetWorth, setInclude] = useState(account?.includeInNetWorth ?? true);
   const [hidden, setHidden] = useState(account?.hidden ?? false);
+  const [bucket, setBucket] = useState<Bucket>(account?.bucket ?? "personal");
 
   const liability = ["credit", "loan", "mortgage", "other_liability"].includes(type);
 
   const save = () => {
     const signed = liability ? -Math.abs(balance) : balance;
     if (account) {
-      actions.updateAccount(account.id, { name, institution, type, mask, includeInNetWorth, hidden });
+      actions.updateAccount(account.id, {
+        name, institution, type, mask, includeInNetWorth, hidden,
+        // Personal is absent rather than stored, so a document that keeps one
+        // set of books looks exactly as it did before books existed.
+        bucket: bucket === "personal" ? undefined : bucket,
+      });
       if (signed !== account.balance) actions.setAccountBalance(account.id, signed);
     } else {
       actions.addAccount({
         name: name.trim() || "New account", institution: institution.trim() || "Manual", type,
         balance: signed, mask, includeInNetWorth, hidden, syncSource: "manual",
+        bucket: bucket === "personal" ? undefined : bucket,
       });
     }
     onClose();
@@ -193,6 +200,24 @@ export function AccountModal({ account, onClose }: { account?: Account; onClose:
         <Field label="Type"><SelectInput value={type} onChange={setType} options={TYPE_OPTIONS} /></Field>
         <Field label="Last 4"><TextInput value={mask} onChange={setMask} placeholder="4412" /></Field>
       </div>
+      {/* Here rather than three levels down a menu called "Visibility and
+          actions": somebody marking an account as the business's goes looking
+          for what the account *is*, and this is where that lives. */}
+      <Field
+        label="Which books"
+        hint={bucket === "personal"
+          ? "Everything on it counts as household money."
+          : "Its transactions stay out of the household budget. Net worth and the reports still count them, and Reports can show one set at a time."}
+      >
+        <SelectInput<Bucket>
+          value={bucket} onChange={setBucket}
+          options={[
+            { value: "personal", label: "Personal" },
+            { value: "business", label: "Business" },
+            { value: "rental", label: "Rental" },
+          ]}
+        />
+      </Field>
       <Field label={liability ? "Amount owed" : "Current balance"} hint={liability ? "Entered as a positive number; stored as a liability." : undefined}>
         <MoneyInput value={liability ? Math.abs(balance) : balance} onChange={setBalance} />
       </Field>

@@ -1,4 +1,4 @@
-import type { DB, ISODate } from "../types.js";
+import type { DB, ID, ISODate } from "../types.js";
 import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recurringList } from "./select.js";
 import { integrations, healthOf } from "./integrations.js";
 import { connectionOf } from "./connection.js";
@@ -24,7 +24,7 @@ import { fmt0 } from "./money.js";
 
 export type NoticeKind =
   | "recurring" | "budget" | "connection" | "goal"
-  | "unusual" | "missing" | "review" | "integration";
+  | "unusual" | "missing" | "review" | "integration" | "swing";
 
 export interface Notice {
   /** Stable, and specific to what was true. See above. */
@@ -231,8 +231,95 @@ const TIER_WORDS: Record<string, string> = {
 };
 
 /** Everything worth saying, newest first. */
+/* ── a balance that did not so much move as vanish ─────────────────────── */
+
+/**
+ * How far a balance has to fall, or climb, before the app says something.
+ *
+ * A proportion and a floor, because either alone is wrong. A card cleared from
+ * three thousand to nothing is a hundred percent and completely ordinary; a
+ * brokerage down fifty thousand in a bad week is a lot of money and also
+ * ordinary. What is not ordinary is a balance that nearly disappears: a
+ * mortgage reported at four hundred and twenty thousand one morning and
+ * fourteen hundred the next.
+ *
+ * Nine tenths, which is deliberately far past anything a market does, and ten
+ * thousand dollars, which is deliberately far past a cleared credit card.
+ */
+export const SWING_SHARE = 0.9;
+export const SWING_FLOOR = 10_000_00;
+/** Old news is not news. A jump nobody looked at for a fortnight is history. */
+export const SWING_DAYS = 14;
+
+export interface Swing {
+  accountId: ID;
+  name: string;
+  from: number;
+  to: number;
+  at: ISODate;
+}
+
+/**
+ * Balances that changed by almost all of themselves in one step.
+ *
+ * Only on accounts a provider writes. A figure somebody typed in is a figure
+ * somebody meant, and telling them it surprised you is noise.
+ *
+ * The comparison is against the previous *recorded* point rather than
+ * yesterday, because history is squashed: an account that does not move writes
+ * nothing, so the point before a jump can be weeks old and is still the right
+ * thing to compare against.
+ */
+export function balanceSwings(db: DB, now: ISODate = today()): Swing[] {
+  const out: Swing[] = [];
+  for (const a of db.accounts) {
+    if (a.hidden || a.closedAt) continue;
+    if (!a.syncSource || a.syncSource === "manual" || a.syncSource === "csv") continue;
+    if (a.history.length < 2) continue;
+
+    const last = a.history[a.history.length - 1];
+    const prev = a.history[a.history.length - 2];
+    if (daysBetween(last.date, now) > SWING_DAYS || last.date > now) continue;
+
+    const before = Math.abs(prev.balance);
+    const after = Math.abs(last.balance);
+    if (Math.abs(after - before) < SWING_FLOOR) continue;
+    // Either direction: the morning it comes back is as worth knowing as the
+    // morning it went. Guarded against a previous balance of nothing, where
+    // no proportion exists and the floor has already had its say.
+    const vanished = before > 0 && after <= before * (1 - SWING_SHARE);
+    const appeared = after > 0 && before <= after * (1 - SWING_SHARE);
+    if (!vanished && !appeared) continue;
+
+    out.push({ accountId: a.id, name: a.name, from: prev.balance, to: last.balance, at: last.date });
+  }
+  return out;
+}
+
 export function notices(db: DB, now: ISODate = today()): Notice[] {
   const out: Notice[] = [];
+
+  // ── a synced balance that nearly vanished ──
+  //
+  // First, because it is the only notice here that says a figure the app is
+  // showing you may be wrong. Everything else reports something true.
+  for (const s of balanceSwings(db, now)) {
+    const gone = Math.abs(s.to) < Math.abs(s.from);
+    out.push({
+      // Dated, so a balance that jumps again later is a new notice rather than
+      // one already dismissed.
+      id: `swing:${s.accountId}:${s.at}`,
+      kind: "swing",
+      title: `${s.name} ${gone ? "nearly emptied" : "jumped"}`,
+      body: `It went from ${fmt0(s.from)} to ${fmt0(s.to)} in one sync. `
+        + `That is usually the provider reporting a different account, not money moving. `
+        + `Check it against the institution before trusting your net worth.`,
+      at: s.at,
+      when: sinceLabel(`${s.at}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
+      to: `/accounts/${s.accountId}`,
+      tone: "warn",
+    });
+  }
 
   // ── a subscription that has just shown its third charge ──
   for (const r of recurringList(db)) {

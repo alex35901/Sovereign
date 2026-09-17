@@ -92,7 +92,7 @@ npm run test:ui        # the browser suite; needs a preview server + CHROME_PATH
 npm run lint           # oxlint
 ```
 
-### Unit tests — `scripts/selftest.mjs` (~643)
+### Unit tests — `scripts/selftest.mjs` (~656)
 
 esbuild bundles the TS modules under test into ESM and asserts against them.
 No browser, no database. `localStorage` is shimmed. Runs in seconds; run it
@@ -120,7 +120,7 @@ DATABASE_URL="postgresql://postgres@localhost:5433/sovereign?host=/tmp" npm test
 
 `initdb` refuses to run as root — hence `su postgres`.
 
-### Browser tests — `scripts/breakpoints.mjs` (~448)
+### Browser tests — `scripts/breakpoints.mjs` (~456)
 
 Real Chromium against a built preview server. Asserts *outcomes* — which
 columns are visible at which width, whether anything runs off the edge — rather
@@ -261,6 +261,21 @@ comments and fails on any that come back.
   and left out of the personal report, the same money in two places. Net worth
   and the reports still count everything; only the budget is the household's
   alone. The picker is absent from Reports entirely until something is marked.
+- `src/lib/runway.ts` — whether the current account gets you to payday, which
+  is the question people actually open a budgeting app to ask. Conservative in
+  three places on purpose, because a "safe to spend" figure that turns out to
+  be optimistic is worse than none: **checking only** (savings is money
+  somebody decided not to spend), every bill in the window whether or not it
+  has cleared, and `paidOccurrences` to take off the ones already paid so
+  nothing is counted twice. The window runs to the next recurring income, or a
+  fortnight when nothing knows when pay lands - and it says which.
+- `balanceSwings` in `src/lib/notifications.ts` — a synced balance that moved
+  by almost all of itself in one step. A proportion **and** a floor, because
+  either alone is wrong: a card cleared from three thousand to nothing is a
+  hundred percent and ordinary, a brokerage down fifty thousand is a lot of
+  money and also ordinary. Only on accounts a provider writes, since a figure
+  somebody typed is a figure somebody meant. The notice id carries the date, so
+  a second jump is new rather than one already dismissed.
 - `src/lib/social-security.ts` — the published claiming rules, and nothing
   else. The benefit itself has to be typed in, because it is worked out from a
   lifetime of earnings the app has never seen; everything after that is exact.

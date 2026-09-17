@@ -54,6 +54,7 @@ await build({
       export { digest, SYSTEM } from "./src/lib/hopper/digest.ts";
       export * as EX from "./src/lib/hopper/explain.ts";
       export * as NT from "./src/lib/notifications.ts";
+      export * as RW from "./src/lib/runway.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -4093,6 +4094,233 @@ await test("a pattern that completed last week is news; one from last year is no
   // A date in the future is not "new", it is wrong; it must not go negative
   // and read as news for ever.
   assert.equal(M.NT.isNewRecurring(on("2026-10-01"), "2026-09-07"), false);
+});
+
+await test("a year holds twelve of a monthly bill and four of a quarterly one", () => {
+  // The property a day-stepped walk gets wrong: thirty days is not a month, so
+  // stepping by days gives thirteen payments a year and a yearly total eight
+  // percent high. Checked here rather than through the browser, where it used
+  // to be asserted as "the year is twelve times the month" against demo data
+  // that has since grown a quarterly bill and stopped being all monthly.
+  const bill = (cadence, nextDate) =>
+    ({ id: "r", merchant: "X", categoryId: "c", amount: -100_00, cadence, nextDate, kind: "bill", detected: false });
+  const count = (cadence, nextDate) =>
+    M.occurrences(bill(cadence, nextDate), "2026-01-01", "2026-12-31").length;
+  assert.equal(count("monthly", "2026-01-15"), 12);
+  assert.equal(count("quarterly", "2026-01-15"), 4);
+  assert.equal(count("yearly", "2026-01-15"), 1);
+  assert.equal(count("semiannual", "2026-01-15"), 2);
+  // The 31st is clamped to the length of each month on the way, rather than
+  // sliding forward a day at a time.
+  assert.equal(count("monthly", "2026-01-31"), 12);
+  // A fortnight is stepped in days. Starting on the 1st, the last one lands on
+  // the 31st of December exactly 364 days later, so the year holds twenty-seven
+  // of them and not the twenty-six a division would suggest.
+  assert.equal(count("biweekly", "2026-01-01"), 27);
+  assert.equal(count("weekly", "2026-01-01"), 53, "and fifty-three weeks, for the same reason");
+});
+
+/* ── does the current account get you to payday ────────────────────────── */
+
+const rwAcct = (id, name, type, balance, over = {}) =>
+  ({ id, name, type, balance, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0, ...over });
+const rwRec = (id, merchant, amount, nextDate, kind = "bill", over = {}) =>
+  ({ id, merchant, categoryId: "c", accountId: "chk", amount, cadence: "monthly", nextDate, kind, detected: false, ...over });
+
+const rwDB = (over = {}) => ({
+  ...M.emptyDB(),
+  accounts: [
+    rwAcct("chk", "Everyday", "checking", 3_200_00),
+    rwAcct("sav", "Savings", "savings", 40_000_00),
+  ],
+  recurring: [
+    rwRec("pay", "Payroll", 5_000_00, "2026-10-01", "income"),
+    rwRec("rent", "Mortgage", -2_100_00, "2026-09-25"),
+    rwRec("net", "Netflix", -15_99, "2026-09-22", "subscription"),
+    // Past the next payday, so outside the window.
+    rwRec("gym", "Equinox", -210_00, "2026-10-05"),
+  ],
+  ...over,
+});
+
+await test("the runway is checking, the bills before payday, and what is left", () => {
+  const r = M.RW.runway(rwDB(), "2026-09-17");
+  assert.equal(r.cash, 3_200_00, "checking only: savings is money already set aside");
+  assert.equal(r.nextIncome.date, "2026-10-01");
+  assert.equal(r.nextIncome.merchant, "Payroll");
+  assert.equal(r.until, "2026-10-01");
+  assert.equal(r.days, 14);
+  assert.deepEqual(r.bills.map((b) => b.merchant), ["Netflix", "Mortgage"], "soonest first");
+  assert.equal(r.billsTotal, 2_100_00 + 15_99);
+  assert.equal(r.free, 3_200_00 - 2_115_99);
+  assert.equal(r.perDay, Math.floor(r.free / 14));
+  assert.equal(r.guessed, false);
+});
+
+await test("a bill already paid this cycle is not counted twice", () => {
+  const db = rwDB();
+  const paid = {
+    ...db,
+    transactions: [{
+      id: "t1", accountId: "chk", date: "2026-09-22", merchant: "Netflix", amount: -15_99,
+      categoryId: "c", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: "2026-09-22",
+    }],
+  };
+  const before = M.RW.runway(db, "2026-09-17");
+  const after = M.RW.runway(paid, "2026-09-17");
+  assert.deepEqual(after.bills.map((b) => b.merchant), ["Mortgage"]);
+  assert.equal(after.billsTotal, before.billsTotal - 15_99);
+  assert.ok(after.free > before.free);
+});
+
+await test("with no pay in sight the window is a guess, and says so", () => {
+  const db = rwDB({ recurring: [rwRec("rent", "Mortgage", -2_100_00, "2026-09-25")] });
+  const r = M.RW.runway(db, "2026-09-17");
+  assert.equal(r.guessed, true);
+  assert.equal(r.nextIncome, null);
+  assert.equal(r.days, M.RW.DEFAULT_HORIZON_DAYS);
+  assert.equal(r.until, "2026-10-01", "a fortnight out");
+  assert.deepEqual(r.bills.map((b) => b.merchant), ["Mortgage"]);
+});
+
+await test("being short before payday is said plainly rather than rounded away", () => {
+  const db = rwDB({
+    accounts: [rwAcct("chk", "Everyday", "checking", 1_700_00)],
+  });
+  const r = M.RW.runway(db, "2026-09-17");
+  assert.ok(r.free < 0, `${r.free}`);
+  assert.equal(r.free, 1_700_00 - 2_115_99);
+  // Floored, not rounded: a per-day figure that rounds up runs out a day early.
+  assert.equal(r.perDay, Math.floor(r.free / 14));
+  assert.ok(r.perDay < 0);
+});
+
+await test("payday today leaves no days to divide by", () => {
+  const db = rwDB({ recurring: [rwRec("pay", "Payroll", 5_000_00, "2026-09-18", "income")] });
+  const r = M.RW.runway(db, "2026-09-17");
+  assert.equal(r.days, 1);
+  const same = M.RW.runway(rwDB({ recurring: [] }), "2026-09-17");
+  assert.equal(same.days, M.RW.DEFAULT_HORIZON_DAYS);
+  // Nothing recurring at all: the whole balance is free over the fortnight.
+  assert.equal(same.billsTotal, 0);
+  assert.equal(same.free, 3_200_00);
+});
+
+await test("accounts that are not spendable are not counted as spendable", () => {
+  const only = (accounts) => M.RW.runway(rwDB({ accounts }), "2026-09-17").cash;
+  assert.equal(only([rwAcct("chk", "Everyday", "checking", 3_200_00)]), 3_200_00);
+  assert.equal(only([rwAcct("s", "Savings", "savings", 40_000_00)]), 0);
+  assert.equal(only([rwAcct("b", "Brokerage", "investment", 90_000_00)]), 0);
+  assert.equal(only([rwAcct("c", "Card", "credit", -2_000_00)]), 0, "a card is not cash");
+  assert.equal(only([rwAcct("chk", "Everyday", "checking", 3_200_00, { hidden: true })]), 0);
+  assert.equal(only([rwAcct("chk", "Everyday", "checking", 3_200_00, { closedAt: "2026-01-01" })]), 0);
+  // Two current accounts add up.
+  assert.equal(only([
+    rwAcct("a", "One", "checking", 1_000_00),
+    rwAcct("b", "Two", "checking", 500_00),
+  ]), 1_500_00);
+});
+
+/* ── a balance that did not so much move as vanish ─────────────────────── */
+
+const swingAcct = (over = {}) => ({
+  id: "m", name: "Home Mortgage", type: "mortgage", institution: "NewRez",
+  balance: -1_400_00, includeInNetWorth: true, hidden: false, order: 0,
+  syncSource: "simplefin",
+  history: [{ date: "2026-09-08", balance: -420_000_00 }, { date: "2026-09-09", balance: -1_400_00 }],
+  ...over,
+});
+const swingDB = (over = {}) => ({ ...M.emptyDB(), accounts: [swingAcct(over)] });
+const swings = (over, now = "2026-09-10") => M.NT.balanceSwings(swingDB(over), now);
+
+await test("a synced balance that nearly vanishes is worth saying out loud", () => {
+  const [s] = swings();
+  assert.ok(s, "the mortgage that went to fourteen hundred");
+  assert.equal(s.from, -420_000_00);
+  assert.equal(s.to, -1_400_00);
+  assert.equal(s.at, "2026-09-09");
+
+  // And the morning it comes back is as worth knowing as the morning it went.
+  const back = swings({
+    balance: -420_000_00,
+    history: [{ date: "2026-09-09", balance: -1_400_00 }, { date: "2026-09-10", balance: -420_000_00 }],
+  });
+  assert.equal(back.length, 1, "a balance that reappears is a swing too");
+});
+
+await test("the ordinary large movements are left alone", () => {
+  // A card cleared in full: a hundred percent, and completely unremarkable.
+  assert.deepEqual(swings({
+    type: "credit", name: "Sapphire", balance: 0,
+    history: [{ date: "2026-09-08", balance: -3_000_00 }, { date: "2026-09-09", balance: 0 }],
+  }), [], "under the floor, whatever the proportion");
+
+  // A brokerage down fifty thousand in a bad week: a lot of money, and also
+  // not a sign that anything is broken.
+  assert.deepEqual(swings({
+    type: "investment", name: "Brokerage", balance: 200_000_00,
+    history: [{ date: "2026-09-08", balance: 250_000_00 }, { date: "2026-09-09", balance: 200_000_00 }],
+  }), [], "over the floor but nowhere near the proportion");
+
+  // Moving fifty thousand out of checking is over the floor and a long way
+  // down, but not the near-total disappearance this is looking for.
+  assert.deepEqual(swings({
+    type: "checking", name: "Everyday", balance: 10_000_00,
+    history: [{ date: "2026-09-08", balance: 60_000_00 }, { date: "2026-09-09", balance: 10_000_00 }],
+  }), []);
+});
+
+await test("a figure somebody typed in is a figure somebody meant", () => {
+  assert.deepEqual(swings({ syncSource: "manual" }), []);
+  assert.deepEqual(swings({ syncSource: "csv" }), []);
+  assert.deepEqual(swings({ syncSource: undefined }), []);
+  assert.equal(swings({ syncSource: "plaid" }).length, 1, "but a provider's figure is not");
+});
+
+await test("a swing nobody looked at for a fortnight is history, not news", () => {
+  assert.equal(swings({}, "2026-09-10").length, 1);
+  assert.equal(swings({}, "2026-09-22").length, 1, "still inside the window");
+  assert.equal(swings({}, "2026-09-30").length, 0, "and outside it, gone");
+  // A date in the future is wrong rather than new, and must not read as news
+  // for ever by going negative.
+  assert.equal(swings({}, "2026-09-01").length, 0);
+});
+
+await test("an account that is gone, or has barely any history, says nothing", () => {
+  assert.deepEqual(swings({ hidden: true }), []);
+  assert.deepEqual(swings({ closedAt: "2026-09-09" }), []);
+  assert.deepEqual(swings({ history: [{ date: "2026-09-09", balance: -1_400_00 }] }), [],
+    "one point is not a change");
+  // A balance that starts at nothing has no proportion to fall by, and the
+  // floor has already had its say.
+  assert.equal(swings({
+    history: [{ date: "2026-09-08", balance: 0 }, { date: "2026-09-09", balance: 50_000_00 }],
+  }).length, 1, "nothing to fifty thousand is still worth a word");
+});
+
+await test("the swing becomes a notice that points at the account", () => {
+  const db = swingDB();
+  const all = M.NT.notices(db, "2026-09-10");
+  const n = all.find((x) => x.kind === "swing");
+  assert.ok(n, "there is one");
+  assert.equal(n.to, "/accounts/m");
+  assert.equal(n.tone, "warn");
+  assert.ok(/420,000/.test(n.body) && /1,400/.test(n.body), n.body);
+  // Dated, so a second jump later raises a second notice rather than one that
+  // has already been dismissed.
+  assert.ok(n.id.includes("2026-09-09"), n.id);
+  const read = M.NT.markRead(db, [n.id]);
+  assert.equal(M.NT.unread(read, "2026-09-10").some((x) => x.kind === "swing"), false);
+  const again = { ...db, accounts: [swingAcct({
+    history: [
+      { date: "2026-09-08", balance: -420_000_00 },
+      { date: "2026-09-09", balance: -1_400_00 },
+      { date: "2026-09-10", balance: -900_000_00 },
+    ],
+  })] };
+  assert.equal(M.NT.unread({ ...again, settings: read.settings }, "2026-09-10").some((x) => x.kind === "swing"),
+    true, "and a new one is not silenced by the old one having been read");
 });
 
 await test("reading one notice leaves the others alone", () => {

@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1095,12 +1095,18 @@ try {
     check("both bars are drawn in the green the rest of the app fills with",
       fills.bars.length === 2 && fills.bars.every((c) => c === fills.want),
       `${fills.bars.join(" | ")} against ${fills.want}`);
-    // The year is twelve of the month, on a schedule that is all monthly —
-    // which is what the demo data is, and what a day-stepped walk gets wrong.
+    // The year is twelve of the month plus whatever is not monthly. It used to
+    // assert exactly twelve on the grounds that the demo was all monthly; the
+    // demo has since grown a quarterly bill, and the assertion was wrong
+    // rather than the arithmetic. The property actually worth guarding is that
+    // the year does not drift *upwards*: a walk that steps thirty days instead
+    // of a month gives thirteen payments a year and a total eight percent high.
+    // The exact cadence counts are checked in scripts/selftest.mjs.
     const [month, year] = top;
-    check("the year's total is twelve times the month's",
-      Math.abs(year.total - month.total * 12) <= 12,
-      `${year.total} against ${month.total} × 12`);
+    const ratio = month.total > 0 ? year.total / month.total : 0;
+    check("the year is twelve months of bills, not thirteen",
+      ratio >= 12 && ratio < 12.5,
+      `${year.total} is ${ratio.toFixed(2)} of ${month.total}`);
     await tiles.close();
 
     // A cell wide enough for a name shows one; a narrow one shows a dot.
@@ -2352,8 +2358,9 @@ try {
         c.querySelector(".nw-head") ? "net worth" : (c.querySelector("h2")?.innerText ?? "").trim()));
     // Lower-cased on both sides: this is about which cards are there rather
     // than about how any of them is typeset.
-    check("the dashboard is the six cards, in that order",
-      cards.join(" / ").toLowerCase() === "net worth / spending / budget / recurring / goals / investments",
+    check("the dashboard is the seven cards, in that order",
+      cards.join(" / ").toLowerCase()
+        === "safe to spend / net worth / spending / budget / recurring / goals / investments",
       cards.join(" / "));
     const body = await dash.evaluate(() => document.body.innerText);
     check("and recent transactions is not one of them", !/recent transactions/i.test(body));
@@ -2499,13 +2506,16 @@ try {
       await dash.waitForTimeout(700);
       return pressAt(dash.locator(".page > .card").nth(i).locator(sel).first());
     };
+    // Indexed by position, so this list moves when the dashboard does. The
+    // runway card went in at the top, which pushed every one of these along.
     for (const [name, i, sel, want] of [
-      ["net worth", 0, ".nw-value", "/accounts"],
-      ["spending", 1, "h2", "/reports"],
-      ["budget", 2, "h2", "/budget"],
-      ["recurring", 3, "h2", "/recurring"],
-      ["goals", 4, "h2", "/goals"],
-      ["investments", 5, "h2", "/investments"],
+      ["runway", 0, "h2", "/recurring"],
+      ["net worth", 1, ".nw-value", "/accounts"],
+      ["spending", 2, "h2", "/reports"],
+      ["budget", 3, "h2", "/budget"],
+      ["recurring", 4, "h2", "/recurring"],
+      ["goals", 5, "h2", "/goals"],
+      ["investments", 6, "h2", "/investments"],
     ]) {
       const at = await opens(i, sel);
       check(`clicking the ${name} widget anywhere opens ${want}`, at === want, at);
@@ -2515,22 +2525,22 @@ try {
     // layer: a chart, a progress bar. Those sit above ordinary text by the
     // rules of painting, so a sheet that only clears the text is not a sheet
     // over the card.
-    const onChart = await opens(1, ".chart-wrap");
+    const onChart = await opens(2, ".chart-wrap");
     check("even the spending chart itself opens reports", onChart === "/reports", onChart);
-    const onBar = await opens(2, ".bar");
+    const onBar = await opens(3, ".bar");
     check("and the budget's own bar opens the budget", onBar === "/budget", onBar);
 
     // A row inside a list goes to that row's own page, not the card's.
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await dash.waitForTimeout(700);
-    const recName = (await dash.locator(".page > .card").nth(3).locator(".list-row .truncate").first().innerText()).trim();
-    const recPath = await pressAt(dash.locator(".page > .card").nth(3).locator(".list-row").first());
+    const recName = (await dash.locator(".page > .card").nth(4).locator(".list-row .truncate").first().innerText()).trim();
+    const recPath = await pressAt(dash.locator(".page > .card").nth(4).locator(".list-row").first());
     check("a recurring row opens that merchant, the way the recurring page's rows do",
       recPath === `/merchants/${recName}`, `${recPath} for ${recName}`);
 
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await dash.waitForTimeout(700);
-    const goalPath = await pressAt(dash.locator(".page > .card").nth(4).locator(".goal-row").first());
+    const goalPath = await pressAt(dash.locator(".page > .card").nth(5).locator(".goal-row").first());
     check("a goal row opens that goal rather than the goals list",
       /^\/goals\/.+/.test(goalPath), goalPath);
 
@@ -4366,17 +4376,18 @@ try {
       await bk.waitForTimeout(700);
       await bk.locator(".list-row.click", { hasText: "Sapphire Reserve" }).click({ timeout: 5000 });
       await bk.waitForTimeout(800);
-      // Behind the More menu on the account's own page, with the visibility
-      // switches it belongs beside.
+      // In the edit dialog, with the rest of what the account *is*. It used to
+      // be three levels down a menu called "Visibility and actions", where
+      // nobody found it.
       await bk.getByTitle("More").click({ timeout: 5000 });
       await bk.waitForTimeout(300);
-      await bk.getByRole("button", { name: /Visibility and actions/ }).click({ timeout: 5000 });
+      await bk.getByRole("button", { name: /Edit account details/ }).click({ timeout: 5000 });
       await bk.waitForTimeout(600);
-      await bk.locator(".setting-row", { hasText: "Which books" }).locator("select")
+      await bk.locator(".modal .field", { hasText: "Which books" }).locator("select")
         .selectOption("business", { timeout: 5000 });
-      await bk.waitForTimeout(600);
-      await bk.keyboard.press("Escape");
-      await bk.waitForTimeout(400);
+      await bk.waitForTimeout(300);
+      await bk.locator(".modal").getByRole("button", { name: "Save" }).click();
+      await bk.waitForTimeout(700);
     });
 
     if (marked) {
@@ -4448,13 +4459,13 @@ try {
         await bk.waitForTimeout(800);
         await bk.getByTitle("More").click({ timeout: 8000 });
         await bk.waitForTimeout(300);
-        await bk.getByRole("button", { name: /Visibility and actions/ }).click({ timeout: 8000 });
+        await bk.getByRole("button", { name: /Edit account details/ }).click({ timeout: 8000 });
         await bk.waitForTimeout(600);
-        await bk.locator(".setting-row", { hasText: "Which books" }).locator("select")
+        await bk.locator(".modal .field", { hasText: "Which books" }).locator("select")
           .selectOption("personal", { timeout: 8000 });
-        await bk.waitForTimeout(600);
-        await bk.keyboard.press("Escape");
-        await bk.waitForTimeout(400);
+        await bk.waitForTimeout(300);
+        await bk.locator(".modal").getByRole("button", { name: "Save" }).click();
+        await bk.waitForTimeout(700);
       })) {
         const restored = await budgetSpent();
         check("putting it back puts the budget back",
@@ -4571,6 +4582,64 @@ try {
         (await names()).join() === order.join(), (await names()).join(" / "));
     }
     await ints.close();
+  }
+
+  if (want("runway")) {
+    // ── what is left before payday ──
+    //
+    // The figures come from whatever the demo happens to hold, so what is
+    // checked is the relationship between them rather than any one number:
+    // what is there, less what is going, is what is left. A card that reads
+    // plausibly and does not add up is the failure worth catching.
+    const rw = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rw.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await rw.waitForTimeout(1200);
+
+    const card = await rw.evaluate(() => {
+      const el = document.querySelector(".page > .dash-card");
+      if (!el) return null;
+      const money = (t) => {
+        const m = /(-?)\$([\d,]+)/.exec(t ?? "");
+        return m ? Number(m[2].replace(/,/g, "")) * (m[1] ? -1 : 1) : null;
+      };
+      // Kept on two lines: the label is the first, the figure the second, and
+      // splitting on " $" missed a negative one, which reads "-$10".
+      const sums = [...el.querySelectorAll(".runway-sums > *")].map((c) => c.innerText);
+      return {
+        first: el.className,
+        heading: el.querySelector("h2")?.innerText ?? "",
+        headline: money(el.querySelector(".dash-card-head .num")?.innerText),
+        window: el.querySelector(".dash-card-head .tiny")?.innerText ?? "",
+        labels: sums.map((t) => t.split("\n")[0].trim()),
+        cash: money(sums[0]),
+        bills: money(sums[1]),
+        perDay: money(sums[2]),
+        href: el.querySelector(".dash-sheet")?.getAttribute("href") ?? "",
+        rows: el.querySelectorAll(".runway-bill").length,
+      };
+    });
+
+    check("the dashboard opens with what is left before payday", Boolean(card),
+      card ? card.first : "no card at all");
+    if (card) {
+      check("headed as safe to spend, or short",
+        /Safe to spend|Short before payday/.test(card.heading), card.heading);
+      check("and it names the window it is talking about",
+        /Until|next \d+ days/.test(card.window), card.window);
+      check("with the three figures it is built from",
+        card.labels.join(" / ") === "In checking / Bills to come / A day",
+        card.labels.join(" / "));
+      // The whole point: these have to agree.
+      check("and what is there less what is going is what is left",
+        card.cash !== null && card.bills !== null
+        && card.cash + card.bills === card.headline,
+        `${card.cash} + ${card.bills} should be ${card.headline}`);
+      check("the bills it counted are listed underneath",
+        card.rows >= 1 || card.bills === 0, `${card.rows} rows for ${card.bills}`);
+      check("and the card goes to the page those bills live on",
+        card.href === "/recurring", card.href);
+    }
+    await rw.close();
   }
 
 } finally {

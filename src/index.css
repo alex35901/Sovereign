@@ -830,6 +830,20 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 .merchant-total { width: 110px; text-align: right; flex: none; }
 
+/* ── what is left before payday ──────────────────────────────────────────
+ * Three figures on one line: what is there, what is going, what that leaves
+ * a day. Even columns, because three amounts of different lengths left to
+ * find their own width never read as three of the same thing. */
+.runway-sums {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.runway-bills { padding: 4px 0 6px; }
+.runway-bill { gap: 10px; padding: 5px 16px; }
+
 /* A goal on the dashboard: its mark, then name, figures and bar stacked
    beside it, so the three lines share one left edge. */
 .goal-row {

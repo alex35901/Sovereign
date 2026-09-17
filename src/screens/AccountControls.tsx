@@ -1,9 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff, RotateCcw } from "lucide-react";
-import type { Account, Bucket } from "../types";
+import type { Account } from "../types";
 import { useStore } from "../store";
 import { dateLabel } from "../lib/date";
-import { Btn, Card, CardHead, ConfirmButton, SelectInput, Toggle } from "../components/ui";
+import { Btn, Card, CardHead, ConfirmButton, Toggle } from "../components/ui";
 
 /** One switch and the sentence explaining what it actually does. */
 function Row({ title, body, on, onChange }: {
@@ -52,30 +52,6 @@ export function AccountControls({ account }: { account: Account }) {
           on={Boolean(account.hideTransactions)}
           onChange={(v) => set({ hideTransactions: v })}
         />
-        {/* Not a switch, because there are three answers and because this one
-            changes what the rest of the app counts rather than what it shows.
-            Everything on the account inherits it, which is what lets a business
-            card work without a single row being touched. */}
-        <div className="setting-row">
-          <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
-            <span style={{ fontWeight: 500 }}>Which books</span>
-            <span className="small muted">
-              Its transactions inherit this. Anything other than personal stays out of the
-              household budget but still counts in net worth and in the reports, where you can
-              switch between them.
-            </span>
-          </div>
-          <SelectInput<Bucket>
-            value={account.bucket ?? "personal"}
-            onChange={(bucket) => set({ bucket: bucket === "personal" ? undefined : bucket })}
-            options={[
-              { value: "personal", label: "Personal" },
-              { value: "business", label: "Business" },
-              { value: "rental", label: "Rental" },
-            ]}
-            style={{ width: "auto", minWidth: 120 }}
-          />
-        </div>
       </div>
 
       <div className="divider" />
