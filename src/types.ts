@@ -109,6 +109,29 @@ export interface Account {
 
 export type GroupKind = "income" | "expense" | "transfer";
 
+/**
+ * Where a category's money lands on a tax return.
+ *
+ * Deliberately a short list of the lines a household actually hunts for in
+ * January, not a chart of accounts. Anything to do with a business or a
+ * rental is worked out from the books a transaction belongs to instead, so
+ * the same dollar never gets tagged twice.
+ */
+export type TaxLine =
+  | "charitable"
+  | "mortgage_interest"
+  | "property_tax"
+  | "state_local_tax"
+  | "medical"
+  | "childcare"
+  | "student_loan_interest"
+  | "hsa"
+  | "retirement"
+  | "education"
+  | "estimated_tax"
+  | "interest_income"
+  | "dividend_income";
+
 export interface CategoryGroup {
   id: ID;
   name: string;
@@ -136,6 +159,8 @@ export interface Category {
   rollover: boolean;
   order: number;
   archived?: boolean;
+  /** Which line of a tax return this category's money belongs on, if any. */
+  taxLine?: TaxLine;
 }
 
 export interface Split { id: ID; categoryId: ID; amount: number; notes?: string }

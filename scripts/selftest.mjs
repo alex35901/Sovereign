@@ -56,6 +56,7 @@ await build({
       export * as NT from "./src/lib/notifications.ts";
       export * as RW from "./src/lib/runway.ts";
       export * as PO from "./src/lib/payoff.ts";
+      export * as TX from "./src/lib/tax.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -9565,6 +9566,214 @@ await test("the manifest launches somewhere the app actually routes", () => {
   assert.equal(manifest.start_url, "/dashboard");
   const maskable = manifest.icons.filter((i) => (i.purpose ?? "").split(" ").includes("maskable"));
   assert.ok(maskable.length >= 2, "Android needs a maskable icon or it draws its own white background");
+});
+
+
+/* ── the year, arranged the way a tax return asks for it ───────────────── */
+
+const txGroup = (id, name, kind) => ({ id, name, kind, order: 0 });
+const txCat = (id, groupId, name, over = {}) =>
+  ({ id, groupId, name, icon: "tag", color: "#888", excludeFromBudget: false, rollover: false, order: 0, ...over });
+const txAcct = (id, name, over = {}) =>
+  ({ id, name, type: "checking", balance: 0, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0, ...over });
+const taxTxn = (id, accountId, date, amount, categoryId, over = {}) =>
+  ({ id, accountId, date, merchant: id, amount, categoryId, tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: `${date}T00:00:00Z`, ...over });
+
+const taxDB = (over = {}) => ({
+  ...M.emptyDB(),
+  groups: [txGroup("gi", "Income", "income"), txGroup("ge", "Expenses", "expense"), txGroup("gt", "Transfers", "transfer")],
+  categories: [
+    txCat("give", "ge", "Charity", { taxLine: "charitable" }),
+    txCat("ptax", "ge", "Property Tax", { taxLine: "property_tax" }),
+    txCat("stax", "ge", "State Tax", { taxLine: "state_local_tax" }),
+    txCat("med", "ge", "Medical", { taxLine: "medical" }),
+    txCat("int", "gi", "Interest", { taxLine: "interest_income" }),
+    txCat("food", "ge", "Groceries"),
+    txCat("rent", "gi", "Rent Collected"),
+    txCat("repair", "ge", "Repairs"),
+    txCat("move", "gt", "Transfer", { excludeFromBudget: true }),
+  ],
+  accounts: [txAcct("chk", "Everyday"), txAcct("biz", "Business", { bucket: "business" }), txAcct("rnt", "Rental", { bucket: "rental" })],
+  ...over,
+});
+
+await test("a tagged category adds up for the year, and only for that year", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "chk", "2025-03-01", -500_00, "give"),
+    taxTxn("b", "chk", "2025-11-20", -250_00, "give"),
+    taxTxn("c", "chk", "2024-12-31", -900_00, "give"),
+    taxTxn("d", "chk", "2026-01-01", -900_00, "give"),
+  ] });
+  const s = M.TX.taxSummary(db, 2025);
+  assert.equal(s.year, 2025);
+  assert.equal(s.from, "2025-01-01");
+  assert.equal(s.to, "2025-12-31");
+  const giving = s.lines.find((l) => l.line === "charitable");
+  // Outflows are negative in the document and positive on a tax line.
+  assert.equal(giving.total, 750_00, "the two 2025 gifts, and neither neighbour");
+  assert.equal(giving.count, 2);
+  assert.deepEqual(giving.categories, ["Charity"]);
+  assert.equal(giving.form, "Schedule A");
+  assert.equal(s.counted, 2);
+});
+
+await test("a refund reduces the line rather than adding to it", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "chk", "2025-03-01", -500_00, "give"),
+    taxTxn("b", "chk", "2025-04-01", 100_00, "give"),
+  ] });
+  const giving = M.TX.taxSummary(db, 2025).lines.find((l) => l.line === "charitable");
+  assert.equal(giving.total, 400_00);
+});
+
+await test("income lines count the way money actually moves", () => {
+  const db = taxDB({ transactions: [taxTxn("a", "chk", "2025-06-30", 312_45, "int")] });
+  const line = M.TX.taxSummary(db, 2025).lines.find((l) => l.line === "interest_income");
+  assert.equal(line.total, 312_45, "interest arrives, so a positive amount is a positive line");
+  assert.equal(line.form, "1099-INT");
+});
+
+await test("a split counts only the part that belongs on the line", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "chk", "2025-05-05", -200_00, "food", {
+      splits: [
+        { id: "s1", categoryId: "med", amount: -80_00 },
+        { id: "s2", categoryId: "food", amount: -120_00 },
+      ],
+    }),
+  ] });
+  const s = M.TX.taxSummary(db, 2025);
+  assert.equal(s.lines.find((l) => l.line === "medical").total, 80_00);
+  assert.equal(s.lines.length, 1, "groceries are not a tax line");
+});
+
+await test("a business and a rental come from the books, not from tagging", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "biz", "2025-02-01", 10_000_00, "rent"),
+    taxTxn("b", "biz", "2025-02-02", -1_500_00, "repair"),
+    taxTxn("c", "biz", "2025-03-02", -500_00, "food"),
+    taxTxn("d", "rnt", "2025-02-01", 2_400_00, "rent"),
+    taxTxn("e", "rnt", "2025-02-05", -600_00, "repair"),
+  ] });
+  const s = M.TX.taxSummary(db, 2025);
+  assert.deepEqual(s.books.map((b) => b.bucket), ["business", "rental"]);
+  const biz = s.books[0];
+  assert.equal(biz.form, "Schedule C");
+  assert.equal(biz.income, 10_000_00);
+  assert.equal(biz.expenses, 2_000_00);
+  assert.equal(biz.net, 8_000_00);
+  assert.deepEqual(biz.breakdown.map((r) => r.name), ["Repairs", "Groceries"], "largest first");
+  assert.deepEqual(biz.accounts, ["Business"]);
+  const rental = s.books[1];
+  assert.equal(rental.form, "Schedule E");
+  assert.equal(rental.net, 1_800_00);
+});
+
+await test("a rental's tax-tagged spending is not also a personal deduction", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "chk", "2025-04-01", -4_000_00, "ptax"),
+    taxTxn("b", "rnt", "2025-04-01", -3_000_00, "ptax"),
+  ] });
+  const s = M.TX.taxSummary(db, 2025);
+  // The same dollar on Schedule A and Schedule E is the mistake this avoids.
+  assert.equal(s.lines.find((l) => l.line === "property_tax").total, 4_000_00);
+  assert.equal(s.books.find((b) => b.bucket === "rental").expenses, 3_000_00);
+});
+
+await test("moving money between accounts is neither income nor an expense", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "biz", "2025-02-01", 5_000_00, "rent"),
+    taxTxn("b", "biz", "2025-02-02", -5_000_00, "move"),
+  ] });
+  const biz = M.TX.taxSummary(db, 2025).books[0];
+  assert.equal(biz.income, 5_000_00);
+  assert.equal(biz.expenses, 0, "a draw to a personal account is not a business cost");
+});
+
+await test("rows kept out of the reports are kept out of the summary", () => {
+  const hidden = taxDB({ transactions: [
+    taxTxn("a", "chk", "2025-03-01", -500_00, "give", { hideFromReports: true }),
+  ] });
+  assert.equal(M.TX.taxSummary(hidden, 2025).lines.length, 0);
+
+  const db = taxDB({ transactions: [taxTxn("a", "chk", "2025-03-01", -500_00, "give")] });
+  db.accounts[0].hideTransactions = true;
+  assert.equal(M.TX.taxSummary(db, 2025).lines.length, 0, "a muted account is muted here too");
+});
+
+await test("state and local tax is reported whole, with the cap beside it", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "chk", "2025-04-01", -9_000_00, "ptax"),
+    taxTxn("b", "chk", "2025-04-15", -4_000_00, "stax"),
+  ] });
+  const s = M.TX.taxSummary(db, 2025);
+  assert.equal(s.salt.total, 13_000_00, "what was paid, not what is deductible");
+  assert.equal(s.salt.cap, M.TX.SALT_CAP);
+  assert.equal(s.salt.over, 3_000_00);
+  const under = M.TX.taxSummary(taxDB({ transactions: [taxTxn("a", "chk", "2025-04-01", -2_000_00, "ptax")] }), 2025);
+  assert.equal(under.salt.over, 0);
+  assert.equal(M.TX.taxSummary(taxDB({ transactions: [] }), 2025).salt, null);
+});
+
+await test("a document with nothing tagged says so rather than showing nothing", () => {
+  const db = taxDB({ transactions: [taxTxn("a", "chk", "2025-03-01", -500_00, "food")] });
+  assert.equal(M.TX.taxSummary(db, 2025).untagged, false, "categories are tagged, this year just has none");
+  const bare = { ...db, categories: db.categories.map((c) => ({ ...c, taxLine: undefined })) };
+  assert.equal(M.TX.taxSummary(bare, 2025).untagged, true);
+});
+
+await test("the years offered are the years with something in them", () => {
+  const db = taxDB({ transactions: [
+    taxTxn("a", "chk", "2023-03-01", -1_00, "food"),
+    taxTxn("b", "chk", "2025-03-01", -1_00, "food"),
+    taxTxn("c", "chk", "2025-04-01", -1_00, "food"),
+  ] });
+  assert.deepEqual(M.TX.taxYears(db), [2025, 2023], "newest first, each year once");
+  assert.deepEqual(M.TX.taxYears(taxDB({ transactions: [] })), []);
+});
+
+await test("suggestions are offered narrowly, and never over an answer already given", () => {
+  const db = taxDB({ transactions: [] });
+  const bare = { ...db, categories: [
+    txCat("c1", "ge", "Charitable Giving"),
+    txCat("c2", "ge", "Daycare"),
+    txCat("c3", "ge", "Mortgage"),
+    txCat("c4", "ge", "Groceries"),
+    txCat("c5", "ge", "Charity", { taxLine: "charitable" }),
+    txCat("c6", "ge", "Donations", { archived: true }),
+  ] };
+  const out = M.TX.suggestLines(bare);
+  assert.deepEqual(out.map((s) => s.categoryId), ["c1", "c2"]);
+  assert.equal(out[0].line, "charitable");
+  assert.equal(out[1].line, "childcare");
+  // A mortgage category is usually the whole payment, and most of a payment is
+  // principal, so guessing it as interest would overstate the deduction.
+  assert.ok(!out.some((s) => s.line === "mortgage_interest"));
+});
+
+await test("a name that means two things is read from the group it sits in", () => {
+  const db = taxDB({ transactions: [] });
+  const bare = { ...db, categories: [txCat("i1", "gi", "Interest"), txCat("i2", "ge", "Interest")] };
+  const out = M.TX.suggestLines(bare);
+  // Interest under Income is interest earned; the same word under Expenses is
+  // interest paid, and the name alone cannot tell them apart.
+  assert.deepEqual(out.map((s) => s.categoryId), ["i1"]);
+  assert.equal(out[0].line, "interest_income");
+  // The default taxonomy is the case this exists for.
+  const named = M.TX.suggestLines(M.emptyDB()).map((s) => s.name);
+  for (const n of ["Charity", "Child Care", "Medical", "Dentist", "Interest"]) {
+    assert.ok(named.includes(n), `${n} is not offered`);
+  }
+  assert.ok(!named.includes("Mortgage"), "a mortgage payment is mostly principal");
+});
+
+await test("every tax line names a form and knows which way its money moves", () => {
+  for (const l of M.TX.TAX_LINES) {
+    assert.ok(l.label && l.form && l.note, `${l.id} is missing its words`);
+    assert.ok(l.direction === "in" || l.direction === "out", `${l.id} has no direction`);
+    assert.equal(M.TX.taxLineInfo(l.id).id, l.id);
+  }
+  assert.equal(new Set(M.TX.TAX_LINES.map((l) => l.id)).size, M.TX.TAX_LINES.length, "no line twice");
 });
 
 await rm(dir, { recursive: true, force: true });

@@ -1205,6 +1205,16 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    is rebuilt for paper: the app's chrome goes, the colours invert to ink on
    white whatever theme is on screen, and every card becomes a block that will
    not be split across a page break. */
+/* ── tax ──────────────────────────────────────────────────────────────── */
+
+/* The printed half of the screen, laid out like the estate record it borrows
+   its sections from. */
+.tax-print { display: flex; flex-direction: column; gap: 12px; }
+/* A line inside a total rather than a total itself: the same row, stepped in
+   and quieter, so a category reads as part of the figure above it. */
+.tax-sub { padding-left: 28px; }
+.tax-sub > .col > span:first-child { color: var(--muted); }
+
 @media print {
   .sidebar, .topbar, .mobile-tabs, .toast, .rule-prompt, .scrim { display: none !important; }
   .main { margin-left: 0; }
@@ -1217,18 +1227,20 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   /* Everything that is not the summary: the forecast card, the assumptions,
      the ownership editor. All of it is for deciding, none of it for keeping. */
   .est-screen > *:not(.est-print) { display: none !important; }
+  .tax-screen > *:not(.tax-print) { display: none !important; }
   /* Light tokens on the page itself, so a reader printing in dark mode does
      not empty a cartridge on the background. Named rather than hard-coded:
      these are the same values :root[data-theme="light"] already uses. */
-  .est-screen {
+  .est-screen, .tax-screen {
     --bg: #fff; --surface: #fff; --surface-2: #fff; --surface-3: #fff;
     --line: #c8ced6; --line-soft: #dfe4ea;
     --text: #000; --muted: #333; --faint: #555;
     --pos: #000; --neg: #000; --accent: #000;
   }
-  .est-screen, .est-screen * { color: var(--text) !important; background: #fff !important; }
-  .est-print { gap: 18px; }
+  .est-screen, .est-screen *, .tax-screen, .tax-screen * { color: var(--text) !important; background: #fff !important; }
+  .est-print, .tax-print { gap: 18px; }
   .est-print-head h2 { font-size: 20px; }
+  .tax-head .nw-total { font-size: 26px; }
   .est-section { border: 1px solid var(--line); break-inside: avoid; }
   .est-section .card-head.flush { border-bottom: 1px solid var(--line); }
   /* A row kept whole: half a bank account at the foot of a page is worse than

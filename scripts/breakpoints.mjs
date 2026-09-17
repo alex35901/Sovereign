@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -101,7 +101,7 @@ const tryStep = async (what, fn) => {
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
-  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/rules", "/categories", "/tags", "/settings",
+  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/tax", "/rules", "/categories", "/tags", "/settings",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
@@ -4731,6 +4731,75 @@ try {
       order.indexOf("/payoff") === order.indexOf("/forecast") - 1, order.join(" "));
     await rail.close();
   }
+
+  if (want("tax")) {
+    // ── the year, arranged the way a return asks for it ──
+    const tx = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    await tx.goto(`${BASE}/tax`, { waitUntil: "networkidle" });
+    await tx.waitForTimeout(1000);
+
+    const readTax = () => tx.evaluate(() => ({
+      heading: document.querySelector(".tax-print h2")?.innerText ?? "",
+      big: document.querySelector(".tax-head .nw-total")?.innerText ?? "",
+      sub: document.querySelector(".tax-head .small.faint")?.innerText ?? "",
+      lines: [...document.querySelectorAll(".tax-print .est-section .est-line")]
+        .map((r) => r.innerText.replace(/\n/g, " | ")),
+      suggestions: [...document.querySelectorAll(".card")]
+        .filter((c) => /These look like tax lines/.test(c.innerText))
+        .flatMap((c) => [...c.querySelectorAll(".est-line")].map((r) => r.innerText.split("\n")[0])),
+      editorInPrint: document.querySelectorAll(".tax-print select").length,
+      selects: document.querySelectorAll(".card select").length,
+    }));
+
+    const t0 = await readTax();
+    check("the tax page says what year it is summarising",
+      /^\d{4} tax summary$/.test(t0.heading), t0.heading);
+    check("and says plainly that it is not a return",
+      /not a return/.test(await tx.evaluate(() => document.querySelector(".est-print-head .small")?.innerText ?? "")));
+    check("a document with nothing tagged says so rather than showing an empty card",
+      /Nothing is tagged|No category has been put on a tax line/.test(`${t0.sub} ${t0.lines.join(" ")}`
+        + (await tx.evaluate(() => document.querySelector(".tax-print .est-section")?.innerText ?? ""))),
+      t0.sub.slice(0, 80));
+    check("the obvious categories are offered, and giving is one of them",
+      t0.suggestions.some((s) => /Charity/.test(s)), t0.suggestions.join(" / ").slice(0, 120));
+    check("a mortgage payment is never guessed as mortgage interest",
+      !t0.suggestions.some((s) => /^Mortgage$/.test(s)), t0.suggestions.join(" / ").slice(0, 120));
+
+    if (await tryStep("a suggestion can be accepted", async () => {
+      await tx.locator(".card", { hasText: "These look like tax lines" })
+        .locator(".est-line", { hasText: "Charity" }).getByText("Tag it").click({ timeout: 8000 });
+      await tx.waitForTimeout(900);
+    })) {
+      const t1 = await readTax();
+      check("tagging a category puts its year on the return",
+        t1.lines.some((l) => /Charitable giving/.test(l) && /\$[\d,]+/.test(l)),
+        t1.lines.join(" // ").slice(0, 140));
+      check("and names the form it belongs on",
+        t1.lines.some((l) => /Charitable giving/.test(l) && /Schedule A/.test(l)),
+        t1.lines.find((l) => /Charitable/.test(l))?.slice(0, 120) ?? "");
+      check("and the headline is no longer nothing",
+        lastMoney(t1.big) > 0, t1.big);
+      check("and it stops being offered as a guess",
+        !t1.suggestions.some((s) => /^Charity$/.test(s)), t1.suggestions.join(" / ").slice(0, 120));
+    }
+
+    check("the editor is not part of what prints",
+      (await readTax()).editorInPrint === 0);
+    check("but the editor is on the page",
+      (await readTax()).selects > 5);
+
+    await tx.close();
+
+    const rail = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rail.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await rail.waitForTimeout(500);
+    const order = await rail.evaluate(() =>
+      [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
+    check("Tax sits after Estate in the rail",
+      order.indexOf("/tax") === order.indexOf("/estate") + 1, order.join(" "));
+    await rail.close();
+  }
+
 
 } finally {
   await browser.close();
