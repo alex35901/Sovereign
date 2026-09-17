@@ -110,8 +110,8 @@ function Panel({ category, month, kind, onDone }: {
             label: monthLabel(h.month, true).split(" ")[0].toUpperCase(),
             bars: [{ key: verb, value: h.actual, tone: kind === "income" ? "--c3" : category.color }],
           }))}
-          onClickGroup={(label) => {
-            const hit = history.find((h) => monthLabel(h.month, true).split(" ")[0].toUpperCase() === label);
+          onClickGroup={(i) => {
+            const hit = history[i];
             if (hit) commit(hit.actual);
           }}
         />

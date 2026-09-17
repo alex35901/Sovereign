@@ -618,7 +618,18 @@ export function FlowChart({ buckets, height = 240, onPick }: {
 export interface BarGroup { label: string; bars: { key: string; value: number; tone: string }[]; }
 
 export function BarChart({ groups, height = 200, showZero = true, compact = false, onClickGroup }: {
-  groups: BarGroup[]; height?: number; showZero?: boolean; compact?: boolean; onClickGroup?: (label: string) => void;
+  groups: BarGroup[]; height?: number; showZero?: boolean; compact?: boolean;
+  /**
+   * Which bar was clicked, by position.
+   *
+   * By index rather than by label, and the label comes second so nothing can
+   * be matched on it by mistake. A label is not an identity: at a monthly
+   * grain over two years there are two bars called "Aug", and a caller looking
+   * its own key up by label got the first of them - so clicking last August
+   * selected the August before it, and the panel underneath filled with a
+   * month the user had not clicked.
+   */
+  onClickGroup?: (index: number, label: string) => void;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
@@ -653,9 +664,9 @@ export function BarChart({ groups, height = 200, showZero = true, compact = fals
         {groups.map((g, gi) => {
           const gx = padL + gi * slot;
           return (
-            <g key={g.label + gi}
+            <g key={g.label + gi} className="bar-group"
               onMouseEnter={() => setHover(gi)}
-              onClick={() => onClickGroup?.(g.label)}
+              onClick={() => onClickGroup?.(gi, g.label)}
               style={{ cursor: onClickGroup ? "pointer" : "default" }}
             >
               <rect x={gx} y={padT} width={slot} height={innerH} fill={hover === gi ? color("--surface-2") : "transparent"} />

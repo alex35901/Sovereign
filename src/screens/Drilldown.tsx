@@ -183,8 +183,8 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
             <BarChart
               groups={bars}
               height={210}
-              onClickGroup={(label) => {
-                const key = buckets.find((k) => bucketLabel(k, grain) === label);
+              onClickGroup={(i) => {
+                const key = buckets[i];
                 if (key) setSelected(key);
               }}
             />

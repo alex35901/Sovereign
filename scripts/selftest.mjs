@@ -10245,6 +10245,46 @@ await test("the years offered for review are the years with something in them", 
   assert.deepEqual(M.YR.reviewYears(db), [2026, 2024]);
 });
 
+
+/* ── a bar is not its label ────────────────────────────────────────────── */
+
+await test("a bar's label does not say which bar it is", () => {
+  // The fact that makes matching a clicked bar by its label wrong. Two years
+  // of months carry two bars called "Aug", so a caller looking its own key up
+  // by label got the first of them: clicking last August selected the August
+  // before it, and the panel underneath filled with a month nobody clicked.
+  const months = M.B.lastBuckets("2000-01-01", "2026-09-17", "month", 24);
+  assert.equal(months.length, 24);
+  const labels = months.map((m) => M.B.bucketLabel(m, "month"));
+  assert.ok(new Set(labels).size < labels.length, "month labels repeat inside the window");
+  assert.equal(labels.filter((l) => l === "Aug").length, 2);
+  // The titles underneath are the ones that are unique, and they are what the
+  // heading and the panel are drawn from.
+  const titles = months.map((m) => M.B.bucketTitle(m, "month"));
+  assert.equal(new Set(titles).size, titles.length, "titles carry the year");
+
+  // Quarterly is the other one broken at the size the app actually draws:
+  // twelve quarters is Q1 to Q4 three times over.
+  const quarters = M.B.lastBuckets("2000-01-01", "2026-09-17", "quarter", 12);
+  assert.deepEqual([...new Set(quarters.map((q) => M.B.bucketLabel(q, "quarter")))], ["Q4", "Q1", "Q2", "Q3"]);
+
+  // Daily and weekly escape it only because their windows are short, which is
+  // not a property anybody should rely on. Widen them and they collide too.
+  for (const [grain, safe, wide] of [["day", 60, 400], ["week", 26, 400]]) {
+    const near = M.B.lastBuckets("1990-01-01", "2026-09-17", grain, safe).map((k) => M.B.bucketLabel(k, grain));
+    assert.equal(new Set(near).size, near.length, `${grain} happens to be unique at ${safe}`);
+    const far = M.B.lastBuckets("1990-01-01", "2026-09-17", grain, wide).map((k) => M.B.bucketLabel(k, grain));
+    assert.ok(new Set(far).size < far.length, `${grain} collides at ${wide}`);
+  }
+
+  // Keys never collide, at any width, which is why the click is resolved by
+  // position into the key list rather than by anything drawn on the axis.
+  for (const grain of ["day", "week", "month", "quarter", "year"]) {
+    const keys = M.B.lastBuckets("1990-01-01", "2026-09-17", grain, 400);
+    assert.equal(new Set(keys).size, keys.length, `${grain} keys are unique`);
+  }
+});
+
 await rm(dir, { recursive: true, force: true });
 
 for (const [status, name, msg] of results) console.log(status.padEnd(5), name, msg ? `— ${msg}` : "");

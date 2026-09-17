@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price, year.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price, year, drill-pick.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -4934,6 +4934,100 @@ try {
         !/so far/.test(prior.heading), prior.heading);
     }
     await yr.close();
+  }
+
+
+  if (want("drill-pick")) {
+    // ── clicking a bar opens that bar ──
+    //
+    // The bug this exists for: the chart handed back the bar's label, and at a
+    // monthly grain over two years two bars are called "Aug". The caller
+    // matched on it and got the first, so clicking last August selected the
+    // August before it and the panel filled with a month nobody had clicked.
+    const dp = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+
+    const state = () => dp.evaluate(() => {
+      const groups = [...document.querySelectorAll(".bar-group")];
+      return {
+        count: groups.length,
+        title: document.querySelector(".period-title")?.innerText ?? "",
+        // The selected bar is drawn in the full tone; every other one is
+        // mixed down against the surface.
+        litUp: groups.findIndex((g) => {
+          const bar = g.querySelectorAll("rect")[1];
+          return bar && !/color-mix/.test(bar.getAttribute("fill") ?? "");
+        }),
+        heights: groups.map((g) => Number(g.querySelectorAll("rect")[1]?.getAttribute("height") ?? 0)),
+        empty: /Nothing in/.test(document.querySelector(".empty")?.innerText ?? ""),
+        counted: document.querySelector(".card-head .tiny.faint")?.innerText ?? "",
+      };
+    });
+    const clickBar = async (i) => {
+      await dp.locator(".bar-group").nth(i).click({ timeout: 8000 });
+      await dp.waitForTimeout(500);
+      return state();
+    };
+
+    await dp.goto(`${BASE}/categories/c_groceries?by=month`, { waitUntil: "networkidle" });
+    await dp.waitForTimeout(1200);
+
+    const start = await state();
+    check("two years of months are drawn", start.count === 24, String(start.count));
+
+    if (start.count === 24) {
+      const last = await clickBar(23);
+      const year = await dp.evaluate(() => new Date().getFullYear());
+      const thisMonthName = await dp.evaluate(() =>
+        new Date().toLocaleString("en-US", { month: "long", year: "numeric" }));
+      check("clicking the newest bar opens the newest month",
+        last.title === thisMonthName, `${last.title} should be ${thisMonthName}`);
+      check("and that bar is the one lit up", last.litUp === 23, String(last.litUp));
+
+      // The whole bug in one check: the bar a year earlier carries the same
+      // label and must open a different month.
+      const before = await clickBar(11);
+      check("the bar with the same label a year earlier opens the earlier year",
+        before.title.endsWith(String(year - 1)) && before.title !== last.title,
+        `${last.title} then ${before.title}`);
+      check("and it is that bar that lights up, not the one that shares its name",
+        before.litUp === 11, String(before.litUp));
+
+      // A bar with height has something behind it. An empty panel under a
+      // full bar is what the user sees when the wrong month was picked.
+      const tall = start.heights.indexOf(Math.max(...start.heights));
+      const opened = await clickBar(tall);
+      check("a bar with height opens a month with transactions in it",
+        !opened.empty && /[1-9]/.test(opened.counted),
+        `${opened.title}: ${opened.counted || "no count"}${opened.empty ? " (empty panel)" : ""}`);
+      check("and the tall bar is the one lit up", opened.litUp === tall, `${opened.litUp} should be ${tall}`);
+
+      // Every bar opens its own month: twenty-four clicks, twenty-four
+      // different headings.
+      const seen = [];
+      for (const i of [0, 5, 11, 17, 23]) seen.push((await clickBar(i)).title);
+      check("each bar opens a month of its own",
+        new Set(seen).size === seen.length, seen.join(" / "));
+    }
+
+    // Quarterly is the other grain broken at the width the app draws: twelve
+    // quarters is Q1 to Q4 three times over.
+    await dp.goto(`${BASE}/categories/c_groceries?by=quarter`, { waitUntil: "networkidle" });
+    await dp.waitForTimeout(1000);
+    const q = await state();
+    // However many the data reaches back for, up to the twelve it asks for.
+    check("enough quarters are drawn for a label to repeat", q.count >= 5, String(q.count));
+    if (q.count >= 5) {
+      const last = q.count - 1;
+      const yearBefore = q.count - 5;
+      const newest = await clickBar(last);
+      const oldest = await clickBar(yearBefore);
+      check("the same quarter in a different year is a different quarter",
+        newest.title !== oldest.title
+        && newest.title.slice(0, 2) === oldest.title.slice(0, 2)
+        && newest.litUp === last && oldest.litUp === yearBefore,
+        `${newest.title} (lit ${newest.litUp}) then ${oldest.title} (lit ${oldest.litUp})`);
+    }
+    await dp.close();
   }
 
 
