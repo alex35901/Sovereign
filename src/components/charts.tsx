@@ -1068,7 +1068,6 @@ export function MonthGrid({ year, month, marks, onPick }: {
   const first = new Date(year, month - 1, 1).getDay();
   const days = new Date(year, month, 0).getDate();
   const cells: (number | null)[] = [...Array(first).fill(null), ...Array.from({ length: days }, (_, i) => i + 1)];
-  const [hover, setHover] = useState<number | null>(null);
   return (
     <div>
       <div className="cal-grid" style={{ marginBottom: 6 }}>
@@ -1081,11 +1080,13 @@ export function MonthGrid({ year, month, marks, onPick }: {
           <div
             key={i}
             className={cx("cal-cell", Boolean(day && marks[day]?.length) && "on")}
-            onMouseEnter={() => day && setHover(day)}
-            onMouseLeave={() => setHover(null)}
             onClick={() => day && onPick?.(day)}
           >
-            {day ? <div className="tiny faint num">{day}</div> : null}
+            {/* Named, not just "the first number in the cell": the amounts
+                beside each item are numbers in this cell too, and anything
+                that found the day by position would find one of those the
+                moment they were reordered. */}
+            {day ? <div className="tiny faint num cal-day">{day}</div> : null}
             {/* Dots on a narrow screen, names once the cell is wide enough to
                 hold one: a full-width calendar that says only "something is
                 due" wastes the width it was given. */}
@@ -1114,27 +1115,21 @@ export function MonthGrid({ year, month, marks, onPick }: {
                         second line, and a name cut to "Bright Horiz…" is one
                         you have to hover to read. */}
                     <span className="cal-name-text">{m.label}</span>
+                    {/* Beside the name rather than in a card that appears over
+                        it. The card had to cover the rows underneath to show
+                        what it knew, which put it on top of the very things
+                        you were reaching for on a day with more than one. */}
+                    <span className="cal-name-amount num">{fmt0(m.amount)}</span>
                   </>
                 );
-                const title = `${m.label} ${fmt0(m.amount)}${m.paid ? " · paid" : ""}`;
                 return m.to
-                  ? <Link key={j} to={m.to} className="cal-name click" title={title}>{body}</Link>
-                  : <span key={j} className="cal-name" title={title}>{body}</span>;
+                  ? <Link key={j} to={m.to} className="cal-name click">{body}</Link>
+                  : <span key={j} className="cal-name">{body}</span>;
               })}
               {day && (marks[day]?.length ?? 0) > 3 ? (
                 <span className="tiny faint">+{marks[day]!.length - 3} more</span>
               ) : null}
             </div>
-            {hover === day && day && marks[day]?.length ? (
-              <div className="chart-tip" style={{ left: 0, top: 44, minWidth: 150 }}>
-                {marks[day].map((m, j) => (
-                  <div key={j} className="spread" style={{ gap: 10 }}>
-                    <span className="tiny truncate">{m.label}</span>
-                    <span className="num tiny bold">{fmt0(m.amount)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
           </div>
         ))}
       </div>

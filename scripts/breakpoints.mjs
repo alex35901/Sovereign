@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1248,7 +1248,7 @@ try {
       for (const r of rows) seen.set(r.querySelector(".truncate")?.innerText.trim(), true);
       return {
         marks: [...document.querySelectorAll(".cal-name")].map((n) => ({
-          day: Number(n.closest(".cal-cell").querySelector(".num")?.innerText.trim() ?? "0"),
+          day: Number(n.closest(".cal-cell").querySelector(".cal-day")?.innerText.trim() ?? "0"),
           name: (n.querySelector(".cal-name-text")?.textContent ?? "").trim(),
           paid: !!n.querySelector(".cal-tick"),
         })),
@@ -1420,7 +1420,7 @@ try {
           .find((n) => (n.querySelector(".cal-name-text")?.textContent ?? "").trim() === who);
         if (!el) return null;
         return {
-          day: Number(el.closest(".cal-cell").querySelector(".num")?.innerText.trim() ?? "0"),
+          day: Number(el.closest(".cal-cell").querySelector(".cal-day")?.innerText.trim() ?? "0"),
           paid: !!el.querySelector(".cal-tick"),
         };
       }, name);
@@ -5500,6 +5500,99 @@ try {
       }
     }
     await am.close();
+  }
+
+
+  if (want("calendar")) {
+    // ── a day with more than one bill on it ──
+    //
+    // The amounts used to live in a card that appeared on hover, positioned
+    // inside the cell and below the first row - which put it squarely over the
+    // second and third items on any day that had them. The things you were
+    // reaching for were underneath the thing that appeared when you reached.
+    const cal = await browser.newPage({ viewport: { width: 1400, height: 1200 } });
+    await cal.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await cal.waitForTimeout(1500);
+
+    // The demo puts its bills on separate days, so a busy one is made here.
+    const seed = await cal.evaluate(() => {
+      const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+      const day = `${new Date().toISOString().slice(0, 7)}-19`;
+      const bill = (id, merchant, amount) => ({
+        id, merchant, categoryId: "c_insurance", accountId: db.accounts[0].id,
+        amount, cadence: "monthly", nextDate: day, kind: "bill", detected: false,
+      });
+      db.recurring = [
+        ...(db.recurring ?? []),
+        bill("r_a", "Alpha Insurance", -184_50),
+        bill("r_b", "Beta Broadband Services", -99_99),
+        bill("r_c", "Gamma Gym", -210_00),
+      ];
+      return JSON.stringify(db);
+    });
+    await cal.close();
+
+    const busy = await browser.newPage({ viewport: { width: 1400, height: 1200 } });
+    await busy.addInitScript((d) => {
+      if (sessionStorage.getItem("bp-cal")) return;
+      localStorage.setItem("sovereign.db.v1", d);
+      sessionStorage.setItem("bp-cal", "1");
+    }, seed);
+    await busy.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await busy.waitForTimeout(1800);
+
+    const where = await busy.evaluate(() => {
+      const cells = [...document.querySelectorAll(".cal-cell")];
+      let at = -1;
+      let most = 0;
+      cells.forEach((c, i) => {
+        const n = c.querySelectorAll(".cal-name").length;
+        if (n > most) { most = n; at = i; }
+      });
+      return { at, most };
+    });
+    check("a day can carry more than one bill", where.most > 1, `${where.most} on one day`);
+
+    if (where.at >= 0 && where.most > 1) {
+      const cell = busy.locator(".cal-cell").nth(where.at);
+
+      // Every item says what it costs, in its own row.
+      const rows = await busy.evaluate((i) =>
+        [...document.querySelectorAll(".cal-cell")[i].querySelectorAll(".cal-name")].map((n) => ({
+          name: (n.querySelector(".cal-name-text")?.textContent ?? "").trim(),
+          amount: (n.querySelector(".cal-name-amount")?.textContent ?? "").trim(),
+        })), where.at);
+      check("each one shows its amount beside its name",
+        rows.length > 1 && rows.every((r) => r.name.length > 1 && /^-?\$[\d,]+/.test(r.amount)),
+        JSON.stringify(rows));
+
+      // And nothing appears over them when the cell is pointed at.
+      await cell.hover();
+      await busy.waitForTimeout(400);
+      check("and pointing at the day puts nothing on top of them",
+        (await busy.evaluate(() => document.querySelectorAll(".chart-tip").length)) === 0);
+
+      // Worth having, but not the regression test for this: .chart-tip is
+      // pointer-events:none, so a click at these coordinates always got
+      // through even when the card was drawn over the rows. What the card
+      // took away was the ability to see and aim at them, which is what the
+      // check above pins.
+      const links = cell.locator("a.cal-name");
+      const n = await links.count();
+      const went = [];
+      for (let i = 0; i < n; i++) {
+        const label = (await links.nth(i).innerText()).split("\n")[0].trim();
+        await links.nth(i).click({ timeout: 8000 });
+        await busy.waitForTimeout(600);
+        went.push({ label, at: decodeURIComponent(new URL(busy.url()).pathname) });
+        await busy.goBack();
+        await busy.waitForTimeout(700);
+      }
+      check("and every one of them opens its own merchant",
+        n > 1 && went.every((g) => g.at === `/merchants/${g.label}`),
+        went.map((g) => `${g.label} -> ${g.at}`).join(" | "));
+    }
+    await busy.close();
   }
 
 

@@ -1005,7 +1005,11 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   /* Aligned to the first line of a name rather than to the middle of however
      many lines it turned out to need. */
   .cal-name .dot, .cal-name .cal-tick { flex: none; margin-top: 3px; }
-  .cal-name-text { min-width: 0; overflow-wrap: anywhere; }
+  .cal-name-text { min-width: 0; overflow-wrap: anywhere; flex: 1 1 auto; }
+  /* Pushed to the right edge and never wrapped. The name gives way first,
+     because a name that has lost a word is still recognisable and a figure
+     that has lost a digit is a different figure. */
+  .cal-name-amount { flex: none; margin-left: auto; white-space: nowrap; color: var(--faint); }
   a.cal-name:hover { color: var(--text); }
   a.cal-name:hover .cal-name-text { text-decoration: underline; }
 }
