@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price, year, drill-pick.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -108,6 +108,8 @@ const PAGES = [
   "/merchants/Amazon", "/merchants/Amazon?by=year",
   // A goal's own page: a wide header, four tiles, a chart and two columns.
   "/goals/gl_efund", "/goals/gl_kitchen",
+  // The rest of the routes, so the sweep really is every page.
+  "/merchants", "/hopper", "/accounts/a_checking", "/accounts/a_mortgage",
 ];
 
 /**
@@ -2364,9 +2366,9 @@ try {
         c.querySelector(".nw-head") ? "net worth" : (c.querySelector("h2")?.innerText ?? "").trim()));
     // Lower-cased on both sides: this is about which cards are there rather
     // than about how any of them is typeset.
-    check("the dashboard is the seven cards, in that order",
+    check("the dashboard is the six cards, in that order",
       cards.join(" / ").toLowerCase()
-        === "safe to spend / net worth / spending / budget / recurring / goals / investments",
+        === "net worth / spending / budget / recurring / goals / investments",
       cards.join(" / "));
     const body = await dash.evaluate(() => document.body.innerText);
     check("and recent transactions is not one of them", !/recent transactions/i.test(body));
@@ -2513,15 +2515,15 @@ try {
       return pressAt(dash.locator(".page > .card").nth(i).locator(sel).first());
     };
     // Indexed by position, so this list moves when the dashboard does. The
-    // runway card went in at the top, which pushed every one of these along.
+    // check above names the cards in order and fails first, which is what
+    // makes a shift here readable rather than a run of wrong destinations.
     for (const [name, i, sel, want] of [
-      ["runway", 0, "h2", "/recurring"],
-      ["net worth", 1, ".nw-value", "/accounts"],
-      ["spending", 2, "h2", "/reports"],
-      ["budget", 3, "h2", "/budget"],
-      ["recurring", 4, "h2", "/recurring"],
-      ["goals", 5, "h2", "/goals"],
-      ["investments", 6, "h2", "/investments"],
+      ["net worth", 0, ".nw-value", "/accounts"],
+      ["spending", 1, "h2", "/reports"],
+      ["budget", 2, "h2", "/budget"],
+      ["recurring", 3, "h2", "/recurring"],
+      ["goals", 4, "h2", "/goals"],
+      ["investments", 5, "h2", "/investments"],
     ]) {
       const at = await opens(i, sel);
       check(`clicking the ${name} widget anywhere opens ${want}`, at === want, at);
@@ -2531,22 +2533,22 @@ try {
     // layer: a chart, a progress bar. Those sit above ordinary text by the
     // rules of painting, so a sheet that only clears the text is not a sheet
     // over the card.
-    const onChart = await opens(2, ".chart-wrap");
+    const onChart = await opens(1, ".chart-wrap");
     check("even the spending chart itself opens reports", onChart === "/reports", onChart);
-    const onBar = await opens(3, ".bar");
+    const onBar = await opens(2, ".bar");
     check("and the budget's own bar opens the budget", onBar === "/budget", onBar);
 
     // A row inside a list goes to that row's own page, not the card's.
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await dash.waitForTimeout(700);
-    const recName = (await dash.locator(".page > .card").nth(4).locator(".list-row .truncate").first().innerText()).trim();
-    const recPath = await pressAt(dash.locator(".page > .card").nth(4).locator(".list-row").first());
+    const recName = (await dash.locator(".page > .card").nth(3).locator(".list-row .truncate").first().innerText()).trim();
+    const recPath = await pressAt(dash.locator(".page > .card").nth(3).locator(".list-row").first());
     check("a recurring row opens that merchant, the way the recurring page's rows do",
       recPath === `/merchants/${recName}`, `${recPath} for ${recName}`);
 
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await dash.waitForTimeout(700);
-    const goalPath = await pressAt(dash.locator(".page > .card").nth(5).locator(".goal-row").first());
+    const goalPath = await pressAt(dash.locator(".page > .card").nth(4).locator(".goal-row").first());
     check("a goal row opens that goal rather than the goals list",
       /^\/goals\/.+/.test(goalPath), goalPath);
 
@@ -4590,67 +4592,6 @@ try {
     await ints.close();
   }
 
-  if (want("runway")) {
-    // ── what is left before payday ──
-    //
-    // The figures come from whatever the demo happens to hold, so what is
-    // checked is the relationship between them rather than any one number:
-    // what is there, less what is going, is what is left. A card that reads
-    // plausibly and does not add up is the failure worth catching.
-    const rw = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-    await rw.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
-    await rw.waitForTimeout(1200);
-
-    const card = await rw.evaluate(() => {
-      const el = document.querySelector(".page > .dash-card");
-      if (!el) return null;
-      const money = (t) => {
-        const m = /(-?)\$([\d,]+)/.exec(t ?? "");
-        return m ? Number(m[2].replace(/,/g, "")) * (m[1] ? -1 : 1) : null;
-      };
-      // Kept on two lines: the label is the first, the figure the second, and
-      // splitting on " $" missed a negative one, which reads "-$10".
-      const sums = [...el.querySelectorAll(".runway-sums > *")].map((c) => c.innerText);
-      return {
-        first: el.className,
-        heading: el.querySelector("h2")?.innerText ?? "",
-        headline: money(el.querySelector(".dash-card-head .num")?.innerText),
-        window: el.querySelector(".dash-card-head .tiny")?.innerText ?? "",
-        labels: sums.map((t) => t.split("\n")[0].trim()),
-        cash: money(sums[0]),
-        bills: money(sums[1]),
-        perDay: money(sums[2]),
-        href: el.querySelector(".dash-sheet")?.getAttribute("href") ?? "",
-        rows: el.querySelectorAll(".runway-bill").length,
-      };
-    });
-
-    check("the dashboard opens with what is left before payday", Boolean(card),
-      card ? card.first : "no card at all");
-    if (card) {
-      check("headed as safe to spend, or short",
-        /Safe to spend|Short before payday/.test(card.heading), card.heading);
-      check("and it names the window it is talking about",
-        /Until|next \d+ days/.test(card.window), card.window);
-      check("with the three figures it is built from",
-        card.labels.join(" / ") === "In checking / Bills to come / A day",
-        card.labels.join(" / "));
-      // The whole point: these have to agree. Within a dollar, because all
-      // three are read off the screen and each one was rounded to whole
-      // dollars on its way there: three separate roundings do not have to add
-      // up to the fourth. The cents are asserted exactly in the unit tests,
-      // where the figures have not been through a formatter.
-      check("and what is there less what is going is what is left",
-        card.cash !== null && card.bills !== null
-        && Math.abs(card.cash + card.bills - card.headline) <= 1,
-        `${card.cash} + ${card.bills} should be ${card.headline}`);
-      check("the bills it counted are listed underneath",
-        card.rows >= 1 || card.bills === 0, `${card.rows} rows for ${card.bills}`);
-      check("and the card goes to the page those bills live on",
-        card.href === "/recurring", card.href);
-    }
-    await rw.close();
-  }
 
   if (want("payoff")) {
     // ── where the next spare dollar goes ──
@@ -5028,6 +4969,92 @@ try {
         `${newest.title} (lit ${newest.litUp}) then ${oldest.title} (lit ${oldest.litUp})`);
     }
     await dp.close();
+  }
+
+
+  if (want("smoke")) {
+    // ── every page, twice: with two years of data and with none ──
+    //
+    // The cheap sweep that catches a whole class at once. A figure that came
+    // out NaN, a label that came out "undefined", a divide by a total that was
+    // zero, a screen that throws on an empty document: none of those need a
+    // bespoke check, they just need somebody to look at every page.
+    //
+    // The empty pass matters more than the full one. Every division in this
+    // app has a denominator that is zero on the day somebody installs it.
+    const ROT = /\bNaN\b|\bInfinity\b|\[object Object\]|\bundefined\b|\$-0(?!\d)|Invalid Date/;
+
+    const sweep = async (label, seedDoc) => {
+      const pg = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+      const broke = [];
+      pg.on("pageerror", (e) => broke.push(`threw: ${String(e.message).slice(0, 90)}`));
+      pg.on("console", (m) => {
+        if (m.type() === "error") broke.push(`console: ${m.text().slice(0, 90)}`);
+      });
+      if (seedDoc) {
+        await pg.addInitScript((d) => {
+          if (sessionStorage.getItem("bp-smoke")) return;
+          localStorage.setItem("sovereign.db.v1", d);
+          sessionStorage.setItem("bp-smoke", "1");
+        }, seedDoc);
+      }
+
+      const rotten = [];
+      const blank = [];
+      let confirmed = null;
+      for (const path of PAGES) {
+        await pg.goto(BASE + path, { waitUntil: "networkidle" });
+        await pg.waitForTimeout(350);
+        const seen = await pg.evaluate(() => ({
+          text: document.body.innerText,
+          cards: document.querySelectorAll(".page .card, .page .empty").length,
+        }));
+        const hit = ROT.exec(seen.text);
+        if (hit) {
+          const at = Math.max(0, hit.index - 45);
+          rotten.push(`${path}: …${seen.text.slice(at, hit.index + 45).replace(/\n/g, " ")}…`);
+        }
+        // A page that drew nothing at all is a page that threw on the way in.
+        if (seen.cards === 0) blank.push(path);
+        confirmed ??= await pg.evaluate(() => {
+          const db = JSON.parse(localStorage.getItem("sovereign.db.v1") ?? "null");
+          return db ? { accounts: db.accounts.length, txns: db.transactions.length } : null;
+        });
+      }
+
+      // Otherwise the empty pass could quietly be a second run of the full one,
+      // and would prove nothing at all.
+      check(`${label} — is the document it says it is`,
+        confirmed !== null && (seedDoc ? confirmed.txns === 0 : confirmed.txns > 100),
+        JSON.stringify(confirmed));
+
+      check(`${label} — no page shows a figure that is not a figure`,
+        rotten.length === 0, rotten.slice(0, 3).join(" || "));
+      check(`${label} — every page draws something`,
+        blank.length === 0, blank.join(", "));
+      check(`${label} — nothing throws on the way in`,
+        broke.length === 0, [...new Set(broke)].slice(0, 3).join(" || "));
+      await pg.close();
+    };
+
+    await sweep("with two years of data", null);
+
+    // The same document with its contents taken out: no accounts, no
+    // transactions, no goals, nothing to divide by.
+    const reader = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await reader.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await reader.waitForTimeout(1200);
+    const emptied = await reader.evaluate(() => {
+      const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+      return JSON.stringify({
+        ...db,
+        accounts: [], transactions: [], holdings: [], goals: [],
+        recurring: [], rules: [], tags: [], budgets: {},
+        forecast: undefined, estate: undefined,
+      });
+    });
+    await reader.close();
+    await sweep("on a document with nothing in it", emptied);
   }
 
 

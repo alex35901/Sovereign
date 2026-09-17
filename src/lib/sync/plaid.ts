@@ -2,6 +2,7 @@ import type { AssetClass, PlaidItemRef } from "../../types.js";
 import type { RemoteAccount, RemoteTransaction, SyncPayload } from "./types.js";
 import { postJSON } from "../api.js";
 import { cleanMerchant } from "./merge.js";
+import { today } from "../date.js";
 
 /**
  * Plaid. The Trial plan is free for up to 10 institutions and, unlike SimpleFIN,
@@ -172,7 +173,7 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
     action: "sync",
     accessToken: item.accessToken,
     startDate: since,
-    endDate: new Date().toISOString().slice(0, 10),
+    endDate: today(),
     withHoldings: item.kind === "investment",
   });
   return toPlaidPayload(raw, item);
@@ -190,7 +191,11 @@ export interface ItemMark { institution: string; logo?: string; domain?: string 
  * waiting to disagree.
  */
 export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload {
-  const today = new Date().toISOString().slice(0, 10);
+  // The day the balance belongs to is the day where the person is. SimpleFIN
+  // already dates its readings this way; this used to use UTC, so a sync run
+  // in the evening in California wrote a reading dated tomorrow, which the
+  // charts would not show until tomorrow came.
+  const stamped = today();
   const accounts: RemoteAccount[] = (raw.accounts ?? []).map((a) => {
     const magnitude = cents(a.balances.current);
     return {
@@ -200,7 +205,7 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
       balance: isLiability(a.type) ? -Math.abs(magnitude) : magnitude,
       currency: a.balances.iso_currency_code ?? "USD",
       type: mapAccountType(a.type, a.subtype),
-      balanceDate: today,
+      balanceDate: stamped,
       // Carried from the item, which fetched it once when it was connected.
       logo: item.logo,
       domain: item.domain,

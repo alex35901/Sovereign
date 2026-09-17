@@ -159,7 +159,14 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
   const selfTone = tone;
   const shown = here === null || here < 0 ? total : series[here];
   const move = moveBetween(series, here ?? undefined);
-  const window = here === null || !points.length ? null : `${points[0].sub} – ${points[here].sub}`;
+  // Indexed with a guard rather than bare: `series` and `points` are two props
+  // that have to stay in step, and Investments passes deliberately different
+  // data in them - dollars in one, rebased percentages in the other. They are
+  // the same length today. If they ever stop being, this loses a caption
+  // rather than taking the card down.
+  const window = here === null || !points.length
+    ? null
+    : `${points[0].sub} – ${points[here]?.sub ?? points[points.length - 1].sub}`;
 
   return (
     <>

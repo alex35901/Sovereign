@@ -1,15 +1,30 @@
 import type { ISODate, MonthKey } from "../types.js";
 
-export const today = (): ISODate => new Date().toISOString().slice(0, 10);
-export const monthOf = (d: ISODate): MonthKey => d.slice(0, 7);
-export const thisMonth = (): MonthKey => today().slice(0, 7);
-
 export function parseISO(d: ISODate): Date {
   const [y, m, day] = d.split("-").map(Number);
   return new Date(y, m - 1, day);
 }
 export const toISO = (d: Date): ISODate =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/**
+ * The date on the wall, not the date in Greenwich.
+ *
+ * Every other function here works in local time - parseISO builds a local
+ * Date, toISO reads local getters - and this used to be the one that did not:
+ * it took toISOString, which is UTC. West of Greenwich that makes the app a
+ * day early every evening. At half six on the 30th in California it said the
+ * 1st, so "this month" became next month, the budget emptied, the dashboard
+ * reported a month that had not started, and a charge made an hour ago read as
+ * "Yesterday". East of Greenwich the same fault runs the other way, early in
+ * the morning.
+ *
+ * A day is a thing that happens where the person is. Nothing in this app is
+ * about Greenwich.
+ */
+export const today = (): ISODate => toISO(new Date());
+export const monthOf = (d: ISODate): MonthKey => d.slice(0, 7);
+export const thisMonth = (): MonthKey => today().slice(0, 7);
 
 export function addDays(d: ISODate, n: number): ISODate {
   const dt = parseISO(d);

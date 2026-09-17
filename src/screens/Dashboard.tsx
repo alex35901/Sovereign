@@ -11,7 +11,6 @@ import {
   accountSlices, aggregateSeries, budgetSummary, earliestHistoryDate, portfolioSummary, trendTone,
 } from "../lib/select";
 import { dueSoon, goalMoves, monthProgress, overPace, spendPace } from "../lib/dashboard";
-import { runway } from "../lib/runway";
 import { CompareChart } from "../components/charts";
 import { BalanceChart, ScopeBar } from "../components/BalanceChart";
 import { Btn, Card, CardHead, Empty, Money, Progress, cx, color } from "../components/ui";
@@ -45,7 +44,6 @@ export default function Dashboard() {
     <>
       <TopBar title="Dashboard" />
       <div className="page stack">
-        <RunwayCard />
         <NetWorthCard range={range} onRange={setRange} />
         <SpendingCard />
         <BudgetCard month={month} />
@@ -82,79 +80,6 @@ function DashCard({ to, label, pad, className, children }: {
 }
 
 /* ── what is left before payday ───────────────────────────────────────── */
-
-/**
- * First on the page, because it is the question people open the app to ask.
- *
- * Everything else here reports on a month or a year. This one is about
- * Thursday. It is the same figures the Recurring page holds, read forwards:
- * what is in the current account, what is going to come out of it before pay
- * lands, and what that leaves.
- */
-function RunwayCard() {
-  const db = useDB();
-  const r = useMemo(() => runway(db), [db]);
-  const short = r.free < 0;
-
-  return (
-    <DashCard to="/recurring" label="Recurring" pad={false}>
-      <div className="dash-card-head">
-        <div className="spread">
-          <h2>{short ? "Short before payday" : "Safe to spend"}</h2>
-          <span className={cx("num bold", short && "neg")} style={{ fontSize: 22 }}>
-            <Money value={r.free} cents={false} />
-          </span>
-        </div>
-        <span className="tiny faint">
-          {r.guessed
-            ? `Over the next ${r.days} days. Nothing recurring says when you are next paid, so this is a fortnight rather than a payday.`
-            : `Until ${dateLabel(r.until)}, ${r.days === 0 ? "which is today" : `${r.days} day${r.days === 1 ? "" : "s"} away`}`}
-        </span>
-      </div>
-
-      <div className="runway-sums">
-        <div className="col" style={{ gap: 1 }}>
-          <span className="tiny faint">In checking</span>
-          <span className="num bold"><Money value={r.cash} cents={false} /></span>
-        </div>
-        <div className="col" style={{ gap: 1 }}>
-          <span className="tiny faint">Bills to come</span>
-          <span className="num bold neg"><Money value={-r.billsTotal} cents={false} /></span>
-        </div>
-        <div className="col" style={{ gap: 1 }}>
-          <span className="tiny faint">A day</span>
-          <span className={cx("num bold", short && "neg")}>
-            {r.perDay === null ? "-" : <Money value={r.perDay} cents={false} />}
-          </span>
-        </div>
-      </div>
-
-      {r.bills.length ? (
-        <div className="runway-bills">
-          {r.bills.slice(0, 4).map((b) => (
-            <div key={`${b.merchant}-${b.date}`} className="row runway-bill">
-              <span className="tiny faint" style={{ width: 52, flex: "none" }}>{dateLabel(b.date)}</span>
-              <span className="grow truncate small">{b.merchant}</span>
-              <Money value={b.amount} cents={false} className="small" />
-            </div>
-          ))}
-          {r.bills.length > 4 ? (
-            <div className="row runway-bill">
-              <span className="tiny faint" style={{ width: 52, flex: "none" }} />
-              <span className="grow tiny faint">
-                and {r.bills.length - 4} more before then
-              </span>
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <div style={{ padding: "10px 16px 14px" }}>
-          <span className="small faint">Nothing due before then.</span>
-        </div>
-      )}
-    </DashCard>
-  );
-}
 
 /* ── net worth ────────────────────────────────────────────────────────── */
 

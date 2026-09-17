@@ -704,6 +704,14 @@ export function BarChart({ groups, height = 200, showZero = true, compact = fals
 
 /* ── donut ────────────────────────────────────────────────────────────── */
 
+/**
+ * One band of a donut.
+ *
+ * Identified by position, not by label. Nothing stops two categories being
+ * called the same thing - the app has never required a category name to be
+ * unique - so a list keyed on the label would hand React two children with one
+ * key, and these are positional arrays rebuilt whole on every render anyway.
+ */
 export interface Slice { label: string; value: number; tone: string }
 
 export function Donut({ slices, size = 170, thickness = 22, center }: {
@@ -724,7 +732,7 @@ export function Donut({ slices, size = 170, thickness = 22, center }: {
             const len = (s.value / total) * c;
             const el = (
               <circle
-                key={s.label} cx={size / 2} cy={size / 2} r={r} fill="none"
+                key={i} cx={size / 2} cy={size / 2} r={r} fill="none"
                 stroke={color(s.tone)} strokeWidth={hover === i ? thickness + 4 : thickness}
                 strokeDasharray={`${len} ${c - len}`} strokeDashoffset={-offset}
                 onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
@@ -747,7 +755,7 @@ export function Donut({ slices, size = 170, thickness = 22, center }: {
       </div>
       <div className="col donut-key" style={{ gap: 7 }}>
         {slices.map((s, i) => (
-          <div key={s.label} className="row" style={{ gap: 8 }} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+          <div key={i} className="row" style={{ gap: 8 }} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
             <span className="dot" style={{ background: color(s.tone) }} />
             <span className="grow truncate small">{s.label}</span>
             <span className="num small bold">{fmt0(s.value)}</span>
@@ -930,9 +938,9 @@ export function HBars({ rows, onClick }: {
   const max = Math.max(...rows.map((r) => r.value), 1);
   return (
     <div className="col" style={{ gap: 11 }}>
-      {rows.map((r) => (
+      {rows.map((r, i) => (
         <div
-          key={r.label} className="col" style={{ gap: 5, cursor: onClick ? "pointer" : undefined }}
+          key={i} className="col" style={{ gap: 5, cursor: onClick ? "pointer" : undefined }}
           onClick={() => onClick?.(r.label)}
         >
           <div className="spread">

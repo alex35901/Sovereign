@@ -3,7 +3,7 @@ import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recu
 import { integrations, healthOf } from "./integrations.js";
 import { connectionOf } from "./connection.js";
 import { goalOutlook } from "./goal-funding.js";
-import { monthLabel, sinceLabel, thisMonth, today } from "./date.js";
+import { addDays, monthLabel, sinceLabel, thisMonth, today } from "./date.js";
 import { priceChanges } from "./price-watch.js";
 import { fmt0 } from "./money.js";
 
@@ -216,14 +216,11 @@ export function overdueRecurring(db: DB, now: ISODate = today()): Overdue[] {
     const periods = Math.floor(gap / span);
     out.push({
       id: r.id, merchant: r.merchant, amount: r.amount,
-      due: addDaysISO(seen, span * periods), since: seen,
+      due: addDays(seen, span * periods), since: seen,
     });
   }
   return out;
 }
-
-const addDaysISO = (d: ISODate, n: number): ISODate =>
-  new Date(Date.parse(d) + n * 86_400_000).toISOString().slice(0, 10);
 
 const TIER_WORDS: Record<string, string> = {
   over: "over budget",

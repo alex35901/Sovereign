@@ -1,6 +1,6 @@
-import type { DB, ISODate, Transaction, TxnEvent } from "../types.js";
+import type { DB, Transaction, TxnEvent } from "../types.js";
 import { fmt } from "./money.js";
-import { dateLabel } from "./date.js";
+import { dateLabel, toISO } from "./date.js";
 
 /**
  * A transaction's history: how it arrived, and every change since.
@@ -95,10 +95,17 @@ export function eventDetail(e: TxnEvent): string {
   return `${e.from} → ${e.to}`;
 }
 
-/** Timestamps are stored in UTC; shown in whatever zone the reader is in. */
+/**
+ * Timestamps are stored in UTC; shown in whatever zone the reader is in.
+ *
+ * Both halves from the same clock. The day used to come from toISOString,
+ * which is UTC, while the time beside it came from the reader's own zone - so
+ * a charge made at seven in the evening in California printed the next day's
+ * date with the right time next to it.
+ */
 export function eventWhen(at: string): string {
   const d = new Date(at);
   if (Number.isNaN(d.getTime())) return "";
-  const day = dateLabel(d.toISOString().slice(0, 10) as ISODate, { year: true });
+  const day = dateLabel(toISO(d), { year: true });
   return `${day} · ${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }

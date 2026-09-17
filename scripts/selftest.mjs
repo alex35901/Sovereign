@@ -9179,12 +9179,14 @@ await test("the two sets of books can be asked about separately", () => {
   assert.equal(M.HT.runTool(db, "spending_by_category", { scope: "nonsense" }).scope, "all");
 });
 
-await test("the standing context names the day, the position and what is spendable", () => {
+await test("the standing context names the day and the position, and nothing else", () => {
   const d = M.digest(M.buildDemoDB());
   assert.match(d, /Today is \d{4}-\d{2}-\d{2}/);
   assert.match(d, /Net worth/);
-  assert.match(d, /Safe to spend: /);
-  assert.ok(d.length < 4000, "the digest rides on every message and has to stay small");
+  assert.match(d, /budget/);
+  // Everything else is a tool call. This rides on every single message, so a
+  // figure earns its place here only by being wanted almost every time.
+  assert.ok(d.length < 3000, "the digest rides on every message and has to stay small");
   assert.match(M.SYSTEM, /forecast|retire/i, "the prompt has to point at the projections");
 });
 
@@ -10283,6 +10285,70 @@ await test("a bar's label does not say which bar it is", () => {
     const keys = M.B.lastBuckets("1990-01-01", "2026-09-17", grain, 400);
     assert.equal(new Set(keys).size, keys.length, `${grain} keys are unique`);
   }
+});
+
+
+/* ── a day is a thing that happens where the person is ─────────────────── */
+
+await test("the app's idea of today is the date on the wall, in any timezone", async () => {
+  // Run in two zones far either side of Greenwich. At any instant at least one
+  // of them has a local date that differs from the UTC one - Kiritimati is
+  // UTC+14 and only agrees before 10:00 UTC, Niue is UTC-11 and only agrees
+  // from 11:00 UTC - so between them this bites at every moment of the day,
+  // with no clock to fake.
+  //
+  // The fault it was written for: today() took toISOString, which is UTC. At
+  // half six in the evening on the 30th in California the app said the 1st, so
+  // thisMonth() rolled over and the budget, the dashboard and every "this
+  // month" figure moved to a month that had not started yet.
+  const { execFileSync } = await import("node:child_process");
+  const { pathToFileURL } = await import("node:url");
+  // Its own small bundle: the big one reaches the database driver and the API
+  // handlers, and none of that has to load to ask what day it is.
+  const dateOnly = join(dir, "date-only.mjs");
+  await build({
+    stdin: {
+      contents: 'export { today, toISO, thisMonth, monthOf, dateLabel } from "./src/lib/date.ts";'
+        + 'export { eventWhen } from "./src/lib/activity.ts";'
+        + 'export { toPlaidPayload } from "./src/lib/sync/plaid.ts";',
+      resolveDir: process.cwd(),
+      loader: "ts",
+    },
+    bundle: true, format: "esm", platform: "node", outfile: dateOnly, logLevel: "silent",
+  });
+
+  const probe = `const d = await import(${JSON.stringify(pathToFileURL(dateOnly).href)});`
+    + "const now = new Date();"
+    // An instant in the small hours UTC, which is the previous evening in the
+    // Americas: the exact case that used to print tomorrow's date.
+    + 'const at = "2026-09-17T02:00:00.000Z";'
+    + "const stamped = d.toPlaidPayload({ accounts: [{ account_id: 'x', name: 'A',"
+    + " type: 'depository', subtype: 'checking', balances: { current: 1 } }] },"
+    + " { institution: 'Bank' }).accounts[0].balanceDate;"
+    + "console.log(JSON.stringify({ today: d.today(), wall: d.toISO(now),"
+    + " month: d.thisMonth(), wallMonth: d.monthOf(d.toISO(now)),"
+    + " eventDay: d.eventWhen(at).split(' \u00b7 ')[0],"
+    + " wallEventDay: d.dateLabel(d.toISO(new Date(at)), { year: true }),"
+    + " stamped, wallStamp: d.toISO(now) }));";
+
+  const days = [];
+  for (const tz of ["Pacific/Kiritimati", "Pacific/Niue"]) {
+    const out = execFileSync(process.execPath, ["--input-type=module", "-e", probe], {
+      encoding: "utf8", env: { ...process.env, TZ: tz },
+    });
+    const r = JSON.parse(out.trim().split("\n").pop());
+    days.push(r.today);
+    assert.equal(r.today, r.wall, `${tz}: today() is not the local date`);
+    assert.equal(r.month, r.wallMonth, `${tz}: thisMonth() is not the local month`);
+    // An activity line prints a day and a time side by side. They have to come
+    // from the same clock, or the line contradicts itself.
+    assert.equal(r.eventDay, r.wallEventDay, `${tz}: an event's day is not its own day`);
+    // And a synced balance is dated the day the reader is having, so a sync
+    // run in the evening does not write a reading dated tomorrow.
+    assert.equal(r.stamped, r.wallStamp, `${tz}: a synced balance is stamped in the wrong day`);
+  }
+  // And the two zones really were on different days, or this proved nothing.
+  assert.notEqual(days[0], days[1], `both zones landed on ${days[0]}, so nothing was tested`);
 });
 
 await rm(dir, { recursive: true, force: true });
