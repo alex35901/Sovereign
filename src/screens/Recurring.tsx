@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, Check, Pencil, Plus } from "lucide-react";
+import { CalendarDays, Check, Pencil, Plus, TrendingDown, TrendingUp } from "lucide-react";
 import type { Cadence, Recurring as RecurringItem } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel, monthEnd, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
+import { dateLabel, longDate, monthEnd, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
 import { occurrences, paidOccurrences, recurringList, recurringSpend } from "../lib/select";
+import { priceChanges, yearlyImpact } from "../lib/price-watch";
 import { isNewRecurring, isSeen, markRead } from "../lib/notifications";
 import { UNCATEGORIZED } from "../lib/categories";
 import type { RecurringSpend } from "../lib/select";
@@ -111,6 +112,8 @@ export default function Recurring() {
               : "nothing else due this year"}
           />
         </div>
+
+        <PriceWatch />
 
         {/* The calendar first and across the whole page: it is the thing this
             screen is for, and in a third of the width its cells could hold a
@@ -251,5 +254,68 @@ function RecurringModal({ item, onClose }: { item: RecurringItem; onClose: () =>
         {item.detected ? "This was detected automatically. Saving turns it into a manual entry you control." : "Manually added."}
       </span>
     </Modal>
+  );
+}
+
+/**
+ * What has quietly changed price.
+ *
+ * Nobody notices two dollars. Six of them over a year is a car service, and
+ * the only reason it goes unnoticed is that the charge keeps the name it
+ * always had. Cuts are listed beside the rises rather than hidden: a card that
+ * only ever brings bad news gets scrolled past.
+ *
+ * Absent entirely when nothing has moved. An empty "no price rises" card is a
+ * thing to read every time the page opens in exchange for saying nothing.
+ */
+function PriceWatch() {
+  const db = useDB();
+  const changes = useMemo(() => priceChanges(db), [db]);
+  if (!changes.length) return null;
+
+  const impact = yearlyImpact(changes);
+  const risen = changes.filter((c) => c.delta > 0).length;
+
+  return (
+    <Card pad={false}>
+      <CardHead
+        flush title="What has changed price"
+        sub={`${risen ? `${risen} went up` : "None went up"}`
+          + `${changes.length - risen ? `, ${changes.length - risen} came down` : ""}. `
+          + "Counted only where the old price had settled, so a bill that swings each month is left out."}
+        right={
+          <span className="col" style={{ gap: 0, textAlign: "right" }}>
+            <span className={cx("num bold", impact > 0 ? "neg" : "pos")}>
+              <Money value={Math.abs(impact)} cents={false} />
+            </span>
+            <span className="tiny faint">{impact > 0 ? "more a year" : "less a year"}</span>
+          </span>
+        }
+      />
+      {changes.map((c) => (
+        <div key={c.id} className="row price-row">
+          <span className={cx("price-arrow", c.delta > 0 ? "neg" : "pos")}>
+            {c.delta > 0 ? <TrendingUp size={15} /> : <TrendingDown size={15} />}
+          </span>
+          <span className="col grow" style={{ gap: 0 }}>
+            <span className="bold">{c.merchant}</span>
+            <span className="tiny faint">
+              <Money value={c.was} cents /> to <Money value={c.now} cents />
+              {" "}per {c.cadence === "monthly" ? "month" : c.cadence === "yearly" ? "year" : c.cadence}
+              {" · "}from {longDate(c.at)}
+            </span>
+          </span>
+          <span className="col" style={{ gap: 0, textAlign: "right" }}>
+            <span className={cx("num bold", c.delta > 0 ? "neg" : "pos")}>
+              {c.delta > 0 ? "+" : ""}{c.share}%
+            </span>
+            <span className="tiny faint">
+              {c.delta > 0 ? "costs " : "saves "}
+              <Money value={Math.abs(c.yearly)} cents={false} /> a year
+            </span>
+          </span>
+        </div>
+      ))}
+    </Card>
   );
 }

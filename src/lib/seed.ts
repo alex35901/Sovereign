@@ -66,6 +66,23 @@ const FIXED: [number, string, string, number, Spec["account"]][] = [
   [28, "Sierra Club", "c_charity", 50.0, "amex"],
 ];
 
+/**
+ * What a fixed bill used to cost, and when it stopped costing it.
+ *
+ * [months ago the current price started, what it was before]. Here so the
+ * demo has something for the price watch to find: a household of two years'
+ * history that never saw a single subscription move would be a household
+ * nobody has.
+ */
+const RISES: Record<string, [number, number]> = {
+  "Netflix": [3, 19.99],
+  "Comcast Xfinity": [6, 79.99],
+  "iCloud+": [2, 6.99],
+  // Not everything goes up. A gym that cut its rate is the case that keeps the
+  // list worth opening.
+  "Equinox": [5, 229.0],
+};
+
 const cents = (d: number) => Math.round(d * 100);
 
 export function buildDemoDB(): DB {
@@ -138,9 +155,11 @@ export function buildDemoDB(): DB {
       if (date > end) continue;
       // utilities swing with the season; everything else is flat
       const seasonal = cat === "c_gas_and_electric" ? between(0.72, 1.46) : 1;
+      const rise = RISES[merchant];
+      const price = rise && m < MONTHS_BACK - rise[0] ? rise[1] : amount;
       push({
         accountId: accountIdFor[account], date, merchant,
-        amount: -cents(amount * seasonal), categoryId: cat,
+        amount: -cents(price * seasonal), categoryId: cat,
       });
     }
 

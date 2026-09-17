@@ -57,6 +57,7 @@ await build({
       export * as RW from "./src/lib/runway.ts";
       export * as PO from "./src/lib/payoff.ts";
       export * as TX from "./src/lib/tax.ts";
+      export * as PW from "./src/lib/price-watch.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -9774,6 +9775,163 @@ await test("every tax line names a form and knows which way its money moves", ()
     assert.equal(M.TX.taxLineInfo(l.id).id, l.id);
   }
   assert.equal(new Set(M.TX.TAX_LINES.map((l) => l.id)).size, M.TX.TAX_LINES.length, "no line twice");
+});
+
+
+/* ── subscriptions that quietly went up ────────────────────────────────── */
+
+const pwAcct = { id: "chk", name: "Everyday", type: "checking", balance: 0, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0 };
+const pwRec = (merchant, amount, cadence = "monthly", kind = "subscription") => ({
+  id: `rec_${merchant.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
+  merchant, categoryId: "c_shopping", accountId: "chk", amount, cadence,
+  nextDate: "2026-10-01", kind, detected: false,
+});
+const pwTxn = (merchant, date, amount) => ({
+  id: `${merchant}-${date}`, accountId: "chk", date, merchant, amount,
+  categoryId: "c_shopping", tags: [], pending: false, reviewed: true,
+  hideFromReports: false, createdAt: `${date}T00:00:00Z`,
+});
+const pwDB = (recurring, transactions) => ({ ...M.emptyDB(), accounts: [pwAcct], recurring, transactions });
+const NOW = "2026-09-17";
+
+// Four charges: the same price three times, then a rise.
+const netflix = [
+  pwTxn("Netflix", "2026-06-12", -15_49),
+  pwTxn("Netflix", "2026-07-12", -15_49),
+  pwTxn("Netflix", "2026-08-12", -15_49),
+  pwTxn("Netflix", "2026-09-12", -17_99),
+];
+
+await test("a settled price that moves is reported, with what the year costs", () => {
+  const [c] = M.PW.priceChanges(pwDB([pwRec("Netflix", -15_49)], netflix), NOW);
+  assert.equal(c.merchant, "Netflix");
+  assert.equal(c.was, 15_49);
+  assert.equal(c.now, 17_99);
+  assert.equal(c.delta, 2_50);
+  assert.equal(c.share, 16.1);
+  assert.equal(c.held, 3, "the old price held three times");
+  assert.equal(c.since, 1);
+  assert.equal(c.at, "2026-09-12", "dated to the first charge at the new price");
+  assert.equal(c.yearly, 30_00, "a monthly rise is twelve of them");
+});
+
+await test("a bill that never charges the same amount twice has no price to have left", () => {
+  // The electricity bill. No threshold excludes it: it simply never settles,
+  // so there is nothing to compare the latest figure against.
+  const swings = [
+    pwTxn("PG&E", "2026-06-05", -82_11),
+    pwTxn("PG&E", "2026-07-05", -140_02),
+    pwTxn("PG&E", "2026-08-05", -95_33),
+    pwTxn("PG&E", "2026-09-05", -210_00),
+  ];
+  assert.deepEqual(M.PW.priceChanges(pwDB([pwRec("PG&E", -120_00, "monthly", "bill")], swings), NOW), []);
+});
+
+await test("a difference too small to be a price rise is not called one", () => {
+  const cents = (last) => M.PW.priceChanges(pwDB([pwRec("Small", -10_00)], [
+    pwTxn("Small", "2026-06-01", -10_00),
+    pwTxn("Small", "2026-07-01", -10_00),
+    pwTxn("Small", "2026-08-01", -10_00),
+    pwTxn("Small", "2026-09-01", last),
+  ]), NOW);
+  assert.deepEqual(cents(-10_25), [], "twenty-five cents is a rounding difference");
+  assert.equal(cents(-10_60).length, 1, "sixty cents on ten dollars is a rise");
+
+  // Over the floor in cents but under it as a share: a big bill moving by a
+  // dollar is noise, and calling it a price rise would train people to ignore
+  // the list.
+  const share = M.PW.priceChanges(pwDB([pwRec("Big", -400_00, "monthly", "bill")], [
+    pwTxn("Big", "2026-06-01", -400_00),
+    pwTxn("Big", "2026-07-01", -400_00),
+    pwTxn("Big", "2026-08-01", -400_00),
+    pwTxn("Big", "2026-09-01", -401_00),
+  ]), NOW);
+  assert.deepEqual(share, []);
+});
+
+await test("a price that came down says so, and says what it saves", () => {
+  const [c] = M.PW.priceChanges(pwDB([pwRec("Hulu", -17_99)], [
+    pwTxn("Hulu", "2026-06-20", -17_99),
+    pwTxn("Hulu", "2026-07-20", -17_99),
+    pwTxn("Hulu", "2026-08-20", -12_99),
+  ]), NOW);
+  assert.equal(c.delta, -5_00);
+  assert.equal(c.yearly, -60_00, "negative is money back");
+  assert.ok(c.share < 0);
+});
+
+await test("a pay rise is not a subscription going up", () => {
+  const db = pwDB([pwRec("Payroll", 5_000_00, "monthly", "income")], [
+    pwTxn("Payroll", "2026-06-30", 5_000_00),
+    pwTxn("Payroll", "2026-07-31", 5_000_00),
+    pwTxn("Payroll", "2026-08-31", 5_400_00),
+  ]);
+  assert.deepEqual(M.PW.priceChanges(db, NOW), []);
+});
+
+await test("a refund is not a price", () => {
+  const db = pwDB([pwRec("Netflix", -15_49)], [
+    ...netflix.slice(0, 3),
+    pwTxn("Netflix", "2026-08-20", 15_49),
+    netflix[3],
+  ]);
+  const [c] = M.PW.priceChanges(db, NOW);
+  assert.equal(c.was, 15_49, "the money coming back is not one of the prices charged");
+  assert.equal(c.now, 17_99);
+});
+
+await test("two charges at the new price date the change to the first of them", () => {
+  const [c] = M.PW.priceChanges(pwDB([pwRec("Spotify", -11_99)], [
+    pwTxn("Spotify", "2026-05-03", -11_99),
+    pwTxn("Spotify", "2026-06-03", -11_99),
+    pwTxn("Spotify", "2026-07-03", -13_99),
+    pwTxn("Spotify", "2026-08-03", -13_99),
+  ]), NOW);
+  assert.equal(c.since, 2);
+  assert.equal(c.held, 2);
+  assert.equal(c.at, "2026-07-03");
+});
+
+await test("what a change costs over a year follows the cadence it bills on", () => {
+  const at = (cadence, dates) => M.PW.priceChanges(pwDB([pwRec("Thing", -100_00, cadence, "bill")],
+    dates.map((d, i) => pwTxn("Thing", d, i === dates.length - 1 ? -110_00 : -100_00))), NOW)[0];
+  assert.equal(at("yearly", ["2024-09-01", "2025-09-01", "2026-09-01"]).yearly, 10_00);
+  assert.equal(at("quarterly", ["2026-01-01", "2026-04-01", "2026-07-01"]).yearly, 40_00);
+  assert.equal(at("weekly", ["2026-09-01", "2026-09-08", "2026-09-15"]).yearly, 520_00);
+  assert.equal(M.PW.PER_YEAR.weekly, 52, "the rate a weekly charge arrives at, not the Fridays in a year");
+});
+
+await test("the dearest rise comes first, and the year's damage adds up", () => {
+  const db = pwDB(
+    [pwRec("Netflix", -15_49), pwRec("Spotify", -11_99), pwRec("Hulu", -17_99)],
+    [
+      ...netflix,
+      pwTxn("Spotify", "2026-06-03", -11_99),
+      pwTxn("Spotify", "2026-07-03", -11_99),
+      pwTxn("Spotify", "2026-08-03", -12_99),
+      pwTxn("Hulu", "2026-06-20", -17_99),
+      pwTxn("Hulu", "2026-07-20", -17_99),
+      pwTxn("Hulu", "2026-08-20", -12_99),
+    ],
+  );
+  const out = M.PW.priceChanges(db, NOW);
+  assert.deepEqual(out.map((c) => c.merchant), ["Netflix", "Spotify", "Hulu"]);
+  // 30 up, 12 up, 60 down.
+  assert.equal(M.PW.yearlyImpact(out), -18_00);
+});
+
+await test("a charge older than the window is not one of the prices", () => {
+  const old = M.PW.priceChanges(pwDB([pwRec("Netflix", -15_49)], [
+    pwTxn("Netflix", "2024-01-12", -9_99),
+    ...netflix,
+  ]), NOW);
+  assert.equal(old[0].was, 15_49, "a price from two years ago is not what it was last month");
+  // And with only the ancient charge inside the window there is nothing to say.
+  assert.deepEqual(M.PW.priceChanges(pwDB([pwRec("Netflix", -15_49)], [
+    pwTxn("Netflix", "2024-01-12", -9_99),
+    pwTxn("Netflix", "2024-02-12", -9_99),
+    pwTxn("Netflix", "2024-03-12", -12_99),
+  ]), NOW), []);
 });
 
 await rm(dir, { recursive: true, force: true });

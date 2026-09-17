@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -4798,6 +4798,59 @@ try {
     check("Tax sits after Estate in the rail",
       order.indexOf("/tax") === order.indexOf("/estate") + 1, order.join(" "));
     await rail.close();
+  }
+
+
+  if (want("price")) {
+    // ── subscriptions that quietly went up ──
+    const pw = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await pw.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await pw.waitForTimeout(1000);
+
+    const watch = await pw.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => c.querySelector(".price-row"));
+      if (!card) return null;
+      return {
+        head: card.querySelector(".card-head")?.innerText.replace(/\n/g, " | ") ?? "",
+        rows: [...card.querySelectorAll(".price-row")].map((r) => ({
+          text: r.innerText.replace(/\n/g, " | "),
+          up: !!r.querySelector(".price-arrow.neg"),
+        })),
+      };
+    });
+
+    check("the recurring page says what has changed price", watch !== null);
+    if (watch) {
+      check("each row says what it was, what it is, and when it moved",
+        watch.rows.every((r) => (r.text.match(/\$[\d,.]+/g) ?? []).length >= 3 && /from \w+ \d+, \d{4}/.test(r.text)),
+        watch.rows[0]?.text.slice(0, 110) ?? "");
+      check("and what the change costs over a year",
+        watch.rows.every((r) => /(costs|saves) \$[\d,]+ a year/.test(r.text)),
+        watch.rows[0]?.text.slice(0, 110) ?? "");
+      // A price is a price. Showing it as a negative amount because the
+      // transaction was an outflow reads as a refund.
+      check("prices are quoted as prices, not as outflows",
+        watch.rows.every((r) => !/-\$/.test(r.text)),
+        watch.rows.find((r) => /-\$/.test(r.text))?.text.slice(0, 110) ?? "");
+      check("a rise and a cut are told apart at a glance",
+        watch.rows.some((r) => r.up) && watch.rows.some((r) => !r.up),
+        watch.rows.map((r) => (r.up ? "up" : "down")).join(" "));
+      // The dearest rise is the one worth acting on, so it is the one at the top.
+      const yearly = watch.rows.map((r) => {
+        const n = Number((/(costs|saves) \$([\d,]+) a year/.exec(r.text)?.[2] ?? "0").replace(/,/g, ""));
+        return r.up ? n : -n;
+      });
+      check("the dearest rise is first and the cuts are last",
+        yearly.every((n, i) => i === 0 || yearly[i - 1] >= n), yearly.join(" "));
+      check("and the card says what the year comes to either way",
+        /(more|less) a year/.test(watch.head), watch.head.slice(0, 120));
+      // The season swings it every month, so it never has a settled price to
+      // have moved away from. This is the whole reason for the settled rule.
+      check("a bill that swings with the season is not called a price rise",
+        !watch.rows.some((r) => /PG&E|Water/.test(r.text)),
+        watch.rows.map((r) => r.text.split(" | ")[0]).join(", "));
+    }
+    await pw.close();
   }
 
 

@@ -4,6 +4,7 @@ import { integrations, healthOf } from "./integrations.js";
 import { connectionOf } from "./connection.js";
 import { goalOutlook } from "./goal-funding.js";
 import { monthLabel, sinceLabel, thisMonth, today } from "./date.js";
+import { priceChanges } from "./price-watch.js";
 import { fmt0 } from "./money.js";
 
 /**
@@ -24,7 +25,7 @@ import { fmt0 } from "./money.js";
 
 export type NoticeKind =
   | "recurring" | "budget" | "connection" | "goal"
-  | "unusual" | "missing" | "review" | "integration" | "swing";
+  | "unusual" | "missing" | "review" | "integration" | "swing" | "price";
 
 export interface Notice {
   /** Stable, and specific to what was true. See above. */
@@ -317,6 +318,24 @@ export function notices(db: DB, now: ISODate = today()): Notice[] {
       at: s.at,
       when: sinceLabel(`${s.at}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
       to: `/accounts/${s.accountId}`,
+      tone: "warn",
+    });
+  }
+
+  // ── a subscription that went up without saying so ──
+  for (const c of priceChanges(db, now)) {
+    if (c.delta <= 0) continue;
+    out.push({
+      // Dated to the charge, so a second rise next year is its own notice
+      // rather than one already read.
+      id: `price:${c.id}:${c.at}`,
+      kind: "price",
+      title: `${c.merchant} went up ${fmt0(c.delta)}`,
+      body: `${fmt0(c.was)} to ${fmt0(c.now)}, ${c.share}% more. `
+        + `At this cadence that is ${fmt0(c.yearly)} a year.`,
+      at: c.at,
+      when: sinceLabel(`${c.at}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
+      to: "/recurring",
       tone: "warn",
     });
   }

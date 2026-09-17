@@ -1205,6 +1205,16 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    is rebuilt for paper: the app's chrome goes, the colours invert to ink on
    white whatever theme is on screen, and every card becomes a block that will
    not be split across a page break. */
+/* ── price watch ──────────────────────────────────────────────────────── */
+
+.price-row { gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line-soft); }
+.price-row:first-of-type { border-top: 0; }
+/* The direction, said once at the start of the row, so a list of eight reads
+   as two groups rather than eight sentences. */
+.price-arrow { display: flex; align-items: center; }
+.price-arrow.neg { color: var(--neg); }
+.price-arrow.pos { color: var(--pos); }
+
 /* ── tax ──────────────────────────────────────────────────────────────── */
 
 /* The printed half of the screen, laid out like the estate record it borrows
