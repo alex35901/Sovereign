@@ -12,7 +12,6 @@ import { mergeHistory } from "./lib/balance-csv";
 import { refreshVehicleValues } from "./lib/vehicle";
 import { applyToFuture, setPlannedOn } from "./lib/select";
 import { squashHistory } from "./lib/history";
-import { dropRun } from "./lib/repair";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
@@ -215,8 +214,6 @@ export interface Actions {
   setAccountBalance: (id: ID, balance: number) => void;
   importBalanceHistory: (id: ID, points: { date: string; balance: number }[], mode: "merge" | "replace") => void;
   setBalanceAt: (id: ID, date: string, balance: number) => void;
-  /** Drops a stretch of readings a provider got wrong. See lib/repair. */
-  dropBalanceRun: (id: ID, from: string, to: string) => void;
   deleteBalancePoint: (id: ID, date: string) => void;
   deleteAccount: (id: ID) => void;
   closeAccount: (id: ID) => void;
@@ -420,20 +417,6 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
           return { ...a, history, balance: history[history.length - 1].balance };
         }),
       })),
-    dropBalanceRun: (id, from, to) =>
-      apply((db) => ({
-        ...db,
-        accounts: db.accounts.map((a) => {
-          if (a.id !== id) return a;
-          const history = dropRun(a.history, from, to);
-          // The newest remaining reading is what the account is worth.
-          // Nothing offered on screen ever reaches the end of the history -
-          // an excursion has to have come back to be offered at all - so in
-          // practice this leaves the balance alone. It is here because the
-          // action takes a date range and must be right for any of them.
-          return { ...a, history, balance: history.length ? history[history.length - 1]!.balance : a.balance };
-        }),
-      }), "drop those readings"),
     deleteBalancePoint: (id, date) =>
       apply((db) => ({
         ...db,

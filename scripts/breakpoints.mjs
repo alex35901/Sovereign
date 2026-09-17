@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price, year, drill-pick, bad-run.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, runway, payoff, tax, price, year, drill-pick.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -5028,114 +5028,6 @@ try {
         `${newest.title} (lit ${newest.litUp}) then ${oldest.title} (lit ${oldest.litUp})`);
     }
     await dp.close();
-  }
-
-
-  if (want("bad-run")) {
-    // ── readings a provider got wrong ──
-    //
-    // The bug behind this: the net worth line is derived from each account's
-    // balance history, which is the right way round. But a provider that
-    // reported an escrow balance where the loan principal had been wrote that
-    // figure into the record for the days it was live, and correcting today
-    // leaves those days carrying a four hundred thousand dollar spike.
-    // Read the demo out of one page, put an excursion into a synced loan, and
-    // hand the result to a second page before its scripts run. Writing it into
-    // a page that is already open does not survive: the store saves the
-    // document it is holding a moment later and puts the original back.
-    const read = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
-    await read.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
-    await read.waitForTimeout(1200);
-    const seed = await read.evaluate(() => {
-      const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
-      const loan = db.accounts.find((a) => ["mortgage", "loan"].includes(a.type) && a.history.length > 4);
-      if (!loan) return null;
-      loan.syncSource = "simplefin";
-      const at = loan.history.length - 3;
-      const real = loan.history[at - 1].balance;
-      // Two readings of almost nothing, then the real figure returns.
-      for (let i = 0; i < 2; i++) loan.history[at + i].balance = Math.sign(real) * 1_400_00;
-      return {
-        db: JSON.stringify(db),
-        id: loan.id, name: loan.name, real,
-        from: loan.history[at].date, to: loan.history[at + 1].date,
-      };
-    });
-    await read.close();
-
-    check("a synced loan with history was there to seed", seed !== null);
-    if (seed) {
-      const seeded = seed;
-      const br = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
-      // Guarded, so the repair the test performs is not undone by the next
-      // navigation re-seeding the page underneath it.
-      await br.addInitScript((doc) => {
-        if (sessionStorage.getItem("bp-seeded")) return;
-        localStorage.setItem("sovereign.db.v1", doc);
-        sessionStorage.setItem("bp-seeded", "1");
-      }, seed.db);
-      // Forward-filled from the readings, which is what every chart in the app
-      // does. Read out of the stored document rather than off the screen, so
-      // this is the figure the dashboard and the year in review would use too.
-      const readOn = (day, only) => br.evaluate(({ d, id }) => {
-        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
-        let total = 0;
-        for (const a of db.accounts) {
-          if (id ? a.id !== id : (!a.includeInNetWorth || a.hidden)) continue;
-          let at;
-          for (const h of a.history) { if (h.date <= d) at = h.balance; else break; }
-          total += at ?? (a.history.length ? 0 : a.balance);
-        }
-        return total;
-      }, { d: day, id: only });
-      const worthOn = (day) => readOn(day, null);
-      const loanOn = (day) => readOn(day, seeded.id);
-
-      await br.goto(`${BASE}/accounts/${seeded.id}`, { waitUntil: "networkidle" });
-      await br.waitForTimeout(1500);
-      const spiked = await worthOn(seeded.from);
-      const loanSpiked = await loanOn(seeded.from);
-      check("the seeded reading is in the document the app loaded",
-        Math.abs(loanSpiked - seeded.real) > 1000_00, `${loanSpiked} against ${seeded.real}`);
-
-      const card = await br.evaluate(() => {
-        const c = [...document.querySelectorAll(".card")].find((x) => x.querySelector(".bad-run"));
-        return c ? { text: c.innerText.replace(/\n/g, " | "), rows: c.querySelectorAll(".bad-run").length } : null;
-      });
-      check("the account says which readings look wrong", card !== null);
-      if (card) {
-        check("and names the days, the figure and the readings either side",
-          /\w+ \d+, \d{4}/.test(card.text) && (card.text.match(/\$[\d,]+/g) ?? []).length >= 3,
-          card.text.slice(0, 150));
-        check("and says what it is doing to net worth",
-          /too high|too low|moves nothing/.test(card.text), card.text.slice(0, 150));
-        // It deletes recorded data, so it is offered and never done quietly.
-        check("nothing is dropped until it is asked for",
-          Math.abs(await worthOn(seeded.from) - spiked) < 1, "the reading changed on its own");
-
-        if (await tryStep("the readings can be dropped", async () => {
-          await br.locator(".bad-run .btn").first().click({ timeout: 8000 });
-          await br.waitForTimeout(1000);
-        })) {
-          const after = await worthOn(seeded.from);
-          const loanAfter = await loanOn(seeded.from);
-          check("and the line holds at the last reading anybody stood behind",
-            loanAfter === seeded.real, `${loanAfter} should be ${seeded.real}`);
-          // Net worth is not stored anywhere, so it moves by exactly what the
-          // account moved by. That is the whole reason one repair is enough.
-          check("so net worth moves by exactly what the bad readings were worth",
-            after - spiked === seeded.real - loanSpiked,
-            `net ${spiked} -> ${after}, loan ${loanSpiked} -> ${loanAfter}`);
-          const gone = await br.evaluate(() =>
-            [...document.querySelectorAll(".card")].some((x) => x.querySelector(".bad-run")));
-          check("and the offer goes away once it is taken", !gone);
-          // Undo is the safety net on anything that deletes.
-          check("and it is undoable, like every other write",
-            await br.evaluate(() => !!document.querySelector(".toast")));
-        }
-      }
-      await br.close();
-    }
   }
 
 
