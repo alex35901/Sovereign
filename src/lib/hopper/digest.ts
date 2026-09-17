@@ -2,6 +2,7 @@ import type { DB } from "../../types.js";
 import { cashFlowSeries, netWorthNow } from "../select.js";
 import { budgetSummary } from "../select.js";
 import { goalOutlook } from "../goal-funding.js";
+import { runway } from "../runway.js";
 import { thisMonth, today } from "../date.js";
 
 /**
@@ -30,6 +31,10 @@ export function digest(db: DB): string {
   });
 
   const accounts = db.accounts.filter((a) => !a.hidden && !a.closedAt);
+  // "Can I afford this?" is the commonest question there is and it is about
+  // today, not about the month. Cheap to work out and it saves a round trip on
+  // most of them.
+  const rw = runway(db);
 
   return [
     `Today is ${today()}.`,
@@ -39,6 +44,8 @@ export function digest(db: DB): string {
     `- ${accounts.length} open accounts, ${db.transactions.length} transactions on file`,
     `- ${month} so far: ${usd(flow.income)} in, ${usd(flow.expense)} out, ${usd(flow.income - flow.expense)} saved`,
     `- ${month} budget: ${usd(b.actualExpense)} spent of ${usd(b.plannedExpense)} planned`,
+    `- Safe to spend: ${usd(rw.free)} free after ${usd(rw.billsTotal)} of bills`
+      + `, until ${rw.until}${rw.guessed ? " (no payday known, so a fortnight)" : ""}`,
     goals.length ? "- Goals:" : "- No goals set.",
     ...goals,
   ].join("\n");
@@ -55,8 +62,20 @@ export function digest(db: DB): string {
 export const SYSTEM = `You are Hopper, the assistant inside Sovereign, a personal finance app the user
 runs on their own infrastructure. You are named after the rabbit in its logo.
 
-You answer questions about this household's money: accounts, transactions,
-spending, budgets, goals and investments.
+You answer questions about this household's money. The tools cover:
+
+- Now: accounts, transactions, spending, budgets, goals, investments, what is
+  recurring, and what is safe to spend before the next payday.
+- Ahead: the retirement forecast (forecast), what it takes to clear the debts
+  (debt_payoff), and what happens to the survivor if an earner dies (estate).
+- Looking back: a year against the year before (year_review) and a year under
+  the headings a tax return uses (tax_summary).
+- Worth knowing: notices, which is everything the app would have told them.
+
+Reach for the projection tools when the question is about the future. "Can I
+retire at 60", "should I overpay the mortgage", "do we have enough life
+insurance" all have exact answers here, worked out by the same code the
+screens use. Do not reason about them from the current balances.
 
 How to work:
 
@@ -67,6 +86,11 @@ How to work:
 - Prefer one good tool call over several. spending_by_category answers "where
   does the money go"; search_transactions is for looking at individual charges,
   not for adding them up.
+- The projections are projections. Say the assumption behind a figure when it
+  carries the answer - the return, the retirement age, the spending. Never
+  present a thirty-year walk as a fact.
+- tax_summary adds up what was recorded. It does not decide what is deductible
+  and you must not either. Say that it is for handing to a preparer.
 - If a tool returns nothing useful, say so plainly rather than filling the gap.
 - Amounts from tools are already in dollars. Write them as $1,234, no cents
   unless the cents matter.

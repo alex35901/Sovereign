@@ -9062,6 +9062,132 @@ await test("the tools agree with the screens they are quoting", () => {
   assert.equal(port.value, Math.round(M.portfolioSummary(db).value) / 100);
 });
 
+await test("Hopper can reach everything the app can answer", () => {
+  // The failure this exists for: a screen ships, nobody tells Hopper, and he
+  // answers a question about retirement out of the current balances. Pinned
+  // rather than derived, so adding a screen without a tool is a decision
+  // somebody makes on purpose rather than one nobody notices.
+  assert.deepEqual(M.HT.TOOLS.map((t) => t.name).sort(), [
+    "accounts", "budget_status", "cash_flow", "category_detail", "debt_payoff",
+    "estate", "forecast", "goals", "investments", "merchants", "net_worth_trend",
+    "notices", "overview", "recurring", "search_transactions",
+    "spending_by_category", "tax_summary", "year_review",
+  ]);
+});
+
+await test("the projection tools agree with the screens they are quoting", () => {
+  const db = M.buildDemoDB();
+  const plan = db.forecast ?? M.FC.blankPlan(db);
+  const scenario = M.FC.activeScenario(plan);
+  const a = M.FC.withDebtDefaults(scenario.assumptions, db);
+  const flows = M.FC.measuredFlows(db);
+  const position = M.FC.startingPosition(db, flows.income, flows.spend);
+
+  const f = M.HT.runTool(db, "forecast", {});
+  const band = M.FC.runBand(position, a, scenario.events);
+  assert.equal(f.atPlannedReturn.atEnd, Math.round(band.mid.atEnd) / 100);
+  assert.equal(f.ifReturnsAreWorse.atEnd, Math.round(band.low.atEnd) / 100);
+  assert.equal(f.ifReturnsAreBetter.atEnd, Math.round(band.high.atEnd) / 100);
+  assert.equal(f.earliestAffordableRetirementAge, M.FC.earliestRetirement(position, a, scenario.events));
+  assert.equal(f.assumptions.retireAge, a.retireAge);
+  // A worse band is a worse answer. If these three ever came back equal the
+  // tool would be running one walk and labelling it three ways.
+  assert.ok(f.ifReturnsAreWorse.atEnd < f.atPlannedReturn.atEnd);
+  assert.ok(f.atPlannedReturn.atEnd < f.ifReturnsAreBetter.atEnd);
+
+  const d = M.HT.runTool(db, "debt_payoff", {});
+  const both = M.PO.compareOrders(M.PO.debtsFrom(db), 0);
+  assert.equal(d.dearestRateFirst.totalInterest, Math.round(both.avalanche.interest) / 100);
+  assert.equal(d.smallestBalanceFirst.totalInterest, Math.round(both.snowball.interest) / 100);
+  assert.ok(d.dearestRateFirst.totalInterest <= d.smallestBalanceFirst.totalInterest,
+    "the dearest-rate order is never the dearer one");
+
+  const e = M.HT.runTool(db, "estate", {});
+  assert.equal(e.lifeCoverInForce, Math.round(M.ES.lifeCover(db)) / 100);
+  assert.ok("survivorRunsOutAtAge" in e && "coverNeededToLastAllTheWay" in e);
+});
+
+await test("asking for a different retirement age runs a different plan", () => {
+  const db = M.buildDemoDB();
+  const asIs = M.HT.runTool(db, "forecast", {});
+  const early = M.HT.runTool(db, "forecast", { retireAge: asIs.assumptions.retireAge - 10 });
+  assert.equal(early.askedFor.retireAge, asIs.assumptions.retireAge - 10);
+  assert.notEqual(early.atPlannedReturn.atEnd, asIs.atPlannedReturn.atEnd);
+  // And the document is not changed by asking.
+  assert.equal(M.HT.runTool(db, "forecast", {}).assumptions.retireAge, asIs.assumptions.retireAge);
+});
+
+await test("putting more at the debts clears them sooner, through the tool too", () => {
+  const db = M.buildDemoDB();
+  const base = M.HT.runTool(db, "debt_payoff", {});
+  const more = M.HT.runTool(db, "debt_payoff", { extra: 500 });
+  assert.equal(more.extraPerMonth, 500);
+  assert.ok(more.dearestRateFirst.months < base.dearestRateFirst.months, "sooner");
+  assert.ok(more.dearestRateFirst.totalInterest < base.dearestRateFirst.totalInterest, "and cheaper");
+});
+
+await test("the backward-looking tools agree with their own libraries", () => {
+  const db = M.buildDemoDB();
+  const year = Number(M.thisMonth().slice(0, 4));
+
+  const t = M.HT.runTool(db, "tax_summary", { year });
+  const direct = M.TX.taxSummary(db, year);
+  assert.equal(t.year, year);
+  assert.equal(t.lines.length, direct.lines.length);
+  assert.match(t.caveat, /not advice|does not decide/, "it has to say what it is not");
+
+  const y = M.HT.runTool(db, "year_review", { year });
+  const r = M.YR.yearReview(db, year);
+  assert.equal(y.thisYear.income, Math.round(r.totals.income) / 100);
+  assert.equal(y.thisYear.spending, Math.round(r.totals.spending) / 100);
+  assert.equal(y.months.length, 12);
+
+  const n = M.HT.runTool(db, "notices", {});
+  assert.equal(n.length, M.NT.notices(db).length);
+  for (const one of n) assert.ok(one.title && one.detail, "a notice with nothing in it is not a notice");
+});
+
+await test("the things built since Hopper was written are reachable from his tools", () => {
+  const db = M.buildDemoDB();
+  // Price changes ride along with the subscriptions rather than costing a
+  // tool of their own, and the look-through rides along with the portfolio.
+  const rec = M.HT.runTool(db, "recurring", {});
+  assert.equal(rec.priceChanges.length, M.PW.priceChanges(db).length);
+  assert.ok(rec.priceChanges.length, "the demo has bills that moved");
+  assert.equal(rec.priceChangeYearlyTotal, Math.round(M.PW.yearlyImpact(M.PW.priceChanges(db))) / 100);
+
+  const port = M.HT.runTool(db, "investments", {});
+  assert.ok(port.lookThrough.byAssetClass.length, "the portfolio opens up into what it is made of");
+  assert.equal(port.lookThrough.openedUp, Math.round(M.FD.lookThrough(db.holdings).seen) / 100);
+
+  // And what is safe to spend does not cost a tool call at all.
+  const over = M.HT.runTool(db, "overview", {});
+  const rw = M.RW.runway(db);
+  assert.equal(over.safeToSpend.free, Math.round(rw.free) / 100);
+  assert.equal(over.safeToSpend.until, rw.until);
+});
+
+await test("the two sets of books can be asked about separately", () => {
+  const db = M.buildDemoDB();
+  const all = M.HT.runTool(db, "spending_by_category", { month: M.thisMonth(), scope: "all" });
+  const personal = M.HT.runTool(db, "spending_by_category", { month: M.thisMonth(), scope: "personal" });
+  assert.equal(all.scope, "all");
+  assert.equal(personal.scope, "personal");
+  // Nothing in the demo is marked business, so these agree - which is the
+  // guarantee worth having: books cost nothing until somebody uses them.
+  assert.equal(personal.categories.length, all.categories.length);
+  assert.equal(M.HT.runTool(db, "spending_by_category", { scope: "nonsense" }).scope, "all");
+});
+
+await test("the standing context names the day, the position and what is spendable", () => {
+  const d = M.digest(M.buildDemoDB());
+  assert.match(d, /Today is \d{4}-\d{2}-\d{2}/);
+  assert.match(d, /Net worth/);
+  assert.match(d, /Safe to spend: /);
+  assert.ok(d.length < 4000, "the digest rides on every message and has to stay small");
+  assert.match(M.SYSTEM, /forecast|retire/i, "the prompt has to point at the projections");
+});
+
 await test("a month argument is honoured, and a broken one does not poison the answer", () => {
   const db = M.buildDemoDB();
   const jan = M.HT.runTool(db, "spending_by_category", { month: "2026-01" });
