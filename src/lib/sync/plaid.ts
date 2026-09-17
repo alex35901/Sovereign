@@ -31,6 +31,8 @@ interface PlaidTransaction {
   name: string;
   merchant_name?: string | null;
   pending?: boolean;
+  /** The pending transaction this one settles, which carries a different id. */
+  pending_transaction_id?: string | null;
 }
 interface PlaidHolding {
   account_id: string;
@@ -222,6 +224,7 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
     description: t.name,
     payee: t.merchant_name ? cleanMerchant(t.merchant_name) : undefined,
     pending: Boolean(t.pending),
+    replacesSyncId: t.pending_transaction_id ?? undefined,
   }));
 
   const securities = new Map((raw.securities ?? []).map((s) => [s.security_id, s]));

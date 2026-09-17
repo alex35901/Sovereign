@@ -25,6 +25,15 @@ export interface RemoteTransaction {
   payee?: string;
   memo?: string;
   pending: boolean;
+  /**
+   * The pending row this one settles, when the provider issues a new id for it.
+   *
+   * Plaid does: a pending charge and the posted charge it becomes are two
+   * different transaction ids, joined only by this. Without it the pending one
+   * is never recognised again and the account carries both - the hold and the
+   * charge - for ever.
+   */
+  replacesSyncId?: string;
 }
 
 export interface SyncPayload {

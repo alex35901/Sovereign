@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -5272,6 +5272,100 @@ try {
       await acct.locator(".modal button", { hasText: "Cancel" }).first().click().catch(() => {});
     }
     await acct.close();
+  }
+
+
+  if (want("duplicate")) {
+    // ── a second one like this ──
+    //
+    // The importer's duplicate check is a good one and still occasionally
+    // wrong: two rent payments of the same amount on the same day from two
+    // tenants are one key and two real transactions. There has to be a way to
+    // put back what it decided was a copy.
+    const du = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await du.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await du.waitForTimeout(1200);
+
+    const count = () => du.evaluate(() =>
+      JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length);
+    const openFirst = async () => {
+      await du.locator(".list-row.tx-grid:not(.head) .tx-amount").first().click({ timeout: 8000 });
+      await du.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+    };
+
+    if (await tryStep("a transaction opens", openFirst)) {
+      const foot = await du.evaluate(() =>
+        [...document.querySelectorAll(".modal-foot button")].map((b) => b.innerText.trim()));
+      check("its footer offers to duplicate it, beside delete",
+        foot.join(" | ") === "Delete | Duplicate | Cancel | Save changes", foot.join(" | "));
+
+      const was = await count();
+      // Every id before, so the copy can be found by being the one that is
+      // new rather than by a merchant name fifty other rows also carry.
+      const idsBefore = await du.evaluate(() =>
+        JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.map((t) => t.id));
+
+      if (await tryStep("it can be duplicated", async () => {
+        await du.locator(".modal-foot button", { hasText: "Duplicate" }).click({ timeout: 8000 });
+        await du.waitForTimeout(900);
+      })) {
+        check("which makes one more transaction, not two and not none",
+          (await count()) === was + 1, `${was} -> ${await count()}`);
+
+        const made = await du.evaluate((before) => {
+          const seen = new Set(before);
+          const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+          const fresh = db.transactions.filter((t) => !seen.has(t.id));
+          if (fresh.length !== 1) return { fresh: fresh.length };
+          const copy = fresh[0];
+          // Its twin: same account, day, amount and merchant, different row.
+          const twin = db.transactions.find((t) =>
+            t.id !== copy.id && t.accountId === copy.accountId && t.date === copy.date
+            && t.amount === copy.amount && t.merchant === copy.merchant);
+          return {
+            fresh: 1,
+            hasTwin: !!twin,
+            sameCategory: twin ? twin.categoryId === copy.categoryId : false,
+            sameTags: twin ? JSON.stringify(twin.tags) === JSON.stringify(copy.tags) : false,
+            saysSo: (copy.activity ?? []).some((e) => /from another one/.test(e.source ?? "")),
+            ownHistory: (copy.activity ?? []).length === 1,
+          };
+        }, idsBefore);
+        check("exactly one new transaction came out of it",
+          made.fresh === 1, JSON.stringify(made));
+        check("the copy carries the same money, day, category and tags",
+          made.hasTwin && made.sameCategory && made.sameTags, JSON.stringify(made));
+        // Two transactions, not one drawn twice: a shared id would be a list
+        // that looks right and a document that holds one row.
+        check("and its history is its own, saying where it came from",
+          made.saysSo && made.ownHistory, JSON.stringify(made));
+        check("and it is undoable like every other write",
+          await du.evaluate(() => /Undo/.test(document.querySelector(".toast")?.innerText ?? "")));
+
+        // Undo really puts it back, or the safety net is decoration.
+        if (await tryStep("the duplicate can be undone", async () => {
+          await du.locator(".toast button", { hasText: "Undo" }).click({ timeout: 8000 });
+          await du.waitForTimeout(700);
+        })) {
+          check("and undoing it leaves the document as it was",
+            (await count()) === was, `${await count()} should be ${was}`);
+        }
+      }
+    }
+
+    // Nothing to duplicate when there is nothing there yet.
+    await du.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await du.waitForTimeout(700);
+    if (await tryStep("a new transaction can be started", async () => {
+      await du.locator(".topbar button", { hasText: "Transaction" }).first().click({ timeout: 8000 });
+      await du.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+    })) {
+      const foot = await du.evaluate(() =>
+        [...document.querySelectorAll(".modal-foot button")].map((b) => b.innerText.trim()));
+      check("and a transaction that does not exist yet is not offered a copy",
+        !foot.some((t) => /Duplicate/.test(t)), foot.join(" | "));
+    }
+    await du.close();
   }
 
 

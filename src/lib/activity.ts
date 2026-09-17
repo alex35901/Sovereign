@@ -15,6 +15,7 @@ const SOURCE_LABEL: Record<string, string> = {
   plaid: "Plaid",
   csv: "a CSV import",
   manual: "you",
+  duplicate: "you, from another one",
 };
 
 export const sourceLabel = (source: string | undefined): string =>

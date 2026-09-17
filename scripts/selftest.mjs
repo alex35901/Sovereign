@@ -1295,6 +1295,220 @@ await test("merge creates the account and its transactions", () => {
   assert.equal(res.db.accounts[0].history.length, 1);
 });
 
+/* ── a hold is provisional; a settled charge is a fact ─────────────────── */
+
+const holdPayload = (over = {}, txn = {}) => ({
+  fetchedAt: "2026-08-28T12:00:00.000Z",
+  errors: [],
+  accounts: [{
+    syncId: "acct-1", name: "Premier Checking", institution: "Stub Bank",
+    balance: 421055, currency: "USD", type: "checking", balanceDate: "2026-08-20",
+  }],
+  transactions: [{
+    syncId: "hold-1", accountSyncId: "acct-1", date: "2026-08-18", amount: -50_00,
+    description: "SHELL OIL 12345", payee: "Shell", pending: true, ...txn,
+  }],
+  ...over,
+});
+
+await test("a hold that settles for more is corrected, not left at what it was held at", () => {
+  // Nothing here ever looked at a transaction it already had, so a fifty
+  // dollar fuel hold that settled at seventy-one sat in the account at fifty
+  // until somebody noticed and typed over it.
+  const first = M.mergeSync(M.emptyDB(), holdPayload(), "simplefin");
+  assert.equal(first.transactionsAdded, 1);
+  assert.equal(first.db.transactions[0].pending, true);
+  assert.equal(first.db.transactions[0].amount, -50_00);
+
+  const posted = M.mergeSync(first.db, holdPayload({}, { amount: -71_23, pending: false }), "simplefin");
+  assert.equal(posted.transactionsAdded, 0, "it is the same charge, not a second one");
+  assert.equal(posted.transactionsRevised, 1);
+  assert.equal(posted.db.transactions.length, 1);
+  assert.equal(posted.db.transactions[0].amount, -71_23);
+  assert.equal(posted.db.transactions[0].pending, false);
+  // And it is in the history, so a figure that moved is something you can see
+  // happened rather than something you misremember typing.
+  assert.ok((posted.db.transactions[0].activity ?? []).some((e) => e.kind === "changed"));
+});
+
+await test("what the household owns is not rewritten by a sync", () => {
+  const first = M.mergeSync(M.emptyDB(), holdPayload(), "simplefin");
+  // The sort of tidying anybody does to a pending row while waiting for it.
+  const mine = {
+    ...first.db.transactions[0],
+    merchant: "Shell, the one on Van Ness",
+    categoryId: "c_gas", tags: ["t_work"], notes: "reimburse this",
+    reviewed: true, hideFromReports: true, bucket: "business",
+  };
+  const db = { ...first.db, transactions: [mine] };
+
+  // The statement line moves too, which is the one field that carries the
+  // provider's own wording - and the only route by which a rewrite of the
+  // household's merchant name could sneak in behind it.
+  const posted = M.mergeSync(db, holdPayload({}, {
+    amount: -71_23, pending: false, payee: "SHELL OIL",
+    description: "SHELL OIL 12345 SAN FRANCISCO CA",
+  }), "simplefin");
+  const [t] = posted.db.transactions;
+  assert.equal(t.statement, "SHELL OIL 12345 SAN FRANCISCO CA", "the provider owns its own wording");
+  assert.equal(t.amount, -71_23, "the provider owns the figure");
+  assert.equal(t.pending, false);
+  assert.equal(t.merchant, "Shell, the one on Van Ness", "and not the name");
+  assert.equal(t.categoryId, "c_gas");
+  assert.deepEqual(t.tags, ["t_work"]);
+  assert.equal(t.notes, "reimburse this");
+  assert.equal(t.reviewed, true);
+  assert.equal(t.hideFromReports, true);
+  assert.equal(t.bucket, "business");
+});
+
+await test("a charge that has already settled is never restated", () => {
+  // A provider revising last March is not something to take on trust, and a
+  // household that corrected a figure by hand should keep the correction.
+  const settled = M.mergeSync(M.emptyDB(), holdPayload({}, { pending: false }), "simplefin");
+  assert.equal(settled.db.transactions[0].pending, false);
+  const later = M.mergeSync(settled.db, holdPayload({}, { pending: false, amount: -99_99 }), "simplefin");
+  assert.equal(later.transactionsRevised, 0);
+  assert.equal(later.db.transactions[0].amount, -50_00);
+});
+
+await test("Plaid giving the settled charge a new id does not leave both standing", () => {
+  // The hold and the charge are two different transaction ids, joined only by
+  // pending_transaction_id. Without it the account carries both for ever.
+  const held = M.mergeSync(M.emptyDB(), holdPayload(), "plaid");
+  assert.equal(held.db.transactions.length, 1);
+  assert.equal(held.db.transactions[0].importKey, "pl:hold-1");
+
+  const posted = M.mergeSync(held.db, holdPayload({}, {
+    syncId: "posted-9", replacesSyncId: "hold-1", amount: -71_23, pending: false,
+  }), "plaid");
+  assert.equal(posted.db.transactions.length, 1, "one charge, not a hold and a charge");
+  assert.equal(posted.transactionsAdded, 0);
+  assert.equal(posted.transactionsRevised, 1);
+  const [t] = posted.db.transactions;
+  assert.equal(t.amount, -71_23);
+  assert.equal(t.pending, false);
+  // Rekeyed to the posted id, or the next pull would not recognise it either.
+  assert.equal(t.importKey, "pl:posted-9");
+
+  // And pulling the same posted row again changes nothing.
+  const again = M.mergeSync(posted.db, holdPayload({}, {
+    syncId: "posted-9", replacesSyncId: "hold-1", amount: -71_23, pending: false,
+  }), "plaid");
+  assert.equal(again.db.transactions.length, 1);
+  assert.equal(again.transactionsAdded, 0);
+  assert.equal(again.transactionsRevised, 0);
+});
+
+await test("a hold and the charge it became, arriving in one pull, are one charge", () => {
+  // A pull covers a window, so this is the ordinary case rather than the
+  // corner one: the provider sends the hold it sent yesterday and the charge
+  // it has become, in the same response.
+  const both = (order) => {
+    const hold = {
+      syncId: "hold-1", accountSyncId: "acct-1", date: "2026-08-18", amount: -50_00,
+      description: "SHELL OIL 12345", payee: "Shell", pending: true,
+    };
+    const charge = {
+      syncId: "posted-9", accountSyncId: "acct-1", date: "2026-08-19", amount: -71_23,
+      description: "SHELL OIL 12345", payee: "Shell", pending: false, replacesSyncId: "hold-1",
+    };
+    return M.mergeSync(M.emptyDB(), holdPayload({
+      transactions: order === "hold first" ? [hold, charge] : [charge, hold],
+    }), "plaid");
+  };
+  for (const order of ["hold first", "charge first"]) {
+    const res = both(order);
+    assert.equal(res.db.transactions.length, 1, `${order}: one charge, not two`);
+    assert.equal(res.db.transactions[0].amount, -71_23, order);
+    assert.equal(res.db.transactions[0].pending, false, order);
+    assert.equal(res.db.transactions[0].importKey, "pl:posted-9", order);
+  }
+});
+
+await test("a provider repeating the hold after it has settled adds nothing", () => {
+  const hold = {
+    syncId: "hold-1", accountSyncId: "acct-1", date: "2026-08-18", amount: -50_00,
+    description: "SHELL OIL 12345", payee: "Shell", pending: true,
+  };
+  const charge = {
+    syncId: "posted-9", accountSyncId: "acct-1", date: "2026-08-19", amount: -71_23,
+    description: "SHELL OIL 12345", payee: "Shell", pending: false, replacesSyncId: "hold-1",
+  };
+  // Pull one: only the hold. Pull two: both, the way a window overlaps.
+  const first = M.mergeSync(M.emptyDB(), holdPayload({ transactions: [hold] }), "plaid");
+  assert.equal(first.db.transactions.length, 1);
+  for (const order of [[hold, charge], [charge, hold]]) {
+    const second = M.mergeSync(first.db, holdPayload({ transactions: order }), "plaid");
+    assert.equal(second.db.transactions.length, 1, "still one");
+    assert.equal(second.db.transactions[0].amount, -71_23);
+    assert.equal(second.db.transactions[0].importKey, "pl:posted-9");
+  }
+
+  // And when the pull restates the hold as well as posting it - a raised hold
+  // and the charge it became, together - the charge is still what stands. The
+  // hold is stale by definition once something says it has settled, whichever
+  // way round they arrive.
+  const raised = { ...hold, amount: -60_00 };
+  for (const order of [[raised, charge], [charge, raised]]) {
+    const second = M.mergeSync(first.db, holdPayload({ transactions: order }), "plaid");
+    assert.equal(second.db.transactions.length, 1);
+    assert.equal(second.db.transactions[0].amount, -71_23, "the settled figure, not the raised hold");
+    assert.equal(second.db.transactions[0].pending, false);
+    assert.equal(second.db.transactions[0].importKey, "pl:posted-9");
+  }
+});
+
+await test("a posted row cannot overwrite one that had already settled", () => {
+  // Otherwise a provider repeating itself - or reusing an id - would take a
+  // real transaction, rewrite its figure and rekey it, and the row it stood
+  // for would be gone with nothing to show it ever existed.
+  const held = M.mergeSync(M.emptyDB(), holdPayload({}, {
+    syncId: "hold-1", amount: -50_00, pending: false,
+  }), "plaid");
+  assert.equal(held.db.transactions[0].pending, false);
+
+  const posted = M.mergeSync(held.db, holdPayload({}, {
+    syncId: "posted-9", replacesSyncId: "hold-1", amount: -71_23, pending: false,
+  }), "plaid");
+  assert.equal(posted.transactionsRevised, 0, "the settled one is left alone");
+  assert.equal(posted.transactionsAdded, 1, "and the new one is its own row");
+  assert.equal(posted.db.transactions.length, 2);
+  const old = posted.db.transactions.find((t) => t.importKey === "pl:hold-1");
+  assert.equal(old.amount, -50_00, "untouched");
+});
+
+await test("Plaid's own response carries the link between a hold and its charge", () => {
+  // Read off the raw shape, because the merge can only join them if the
+  // mapping hands the link over in the first place.
+  const raw = {
+    accounts: [{ account_id: "acct-1", name: "Card", type: "credit", subtype: "credit card", balances: { current: 100 } }],
+    transactions: [
+      { transaction_id: "hold-1", account_id: "acct-1", date: "2026-08-18", amount: 50, name: "SHELL OIL", pending: true },
+      { transaction_id: "posted-9", account_id: "acct-1", date: "2026-08-19", amount: 71.23, name: "SHELL OIL", pending: false, pending_transaction_id: "hold-1" },
+    ],
+  };
+  const mapped = M.toPlaidPayload(raw, { institution: "Chase" });
+  assert.equal(mapped.transactions[0].replacesSyncId, undefined, "a hold replaces nothing");
+  assert.equal(mapped.transactions[1].replacesSyncId, "hold-1");
+  assert.equal(mapped.transactions[1].pending, false);
+
+  // And end to end: the two rows in one pull come out as one charge.
+  const merged = M.mergeSync(M.emptyDB(), mapped, "plaid");
+  assert.equal(merged.db.transactions.length, 1, "one charge, not a hold and a charge");
+  assert.equal(merged.db.transactions[0].importKey, "pl:posted-9");
+  // Plaid reports money leaving as positive; this app uses the opposite.
+  assert.equal(merged.db.transactions[0].amount, -71_23);
+});
+
+await test("a posted row naming a hold nobody holds is simply a new transaction", () => {
+  const fresh = M.mergeSync(M.emptyDB(), holdPayload({}, {
+    syncId: "posted-9", replacesSyncId: "never-seen", amount: -71_23, pending: false,
+  }), "plaid");
+  assert.equal(fresh.transactionsAdded, 1);
+  assert.equal(fresh.db.transactions[0].importKey, "pl:posted-9");
+});
+
 await test("merge is idempotent — re-syncing adds nothing", () => {
   const once = M.mergeSync(M.emptyDB(), payload, "simplefin");
   const twice = M.mergeSync(once.db, payload, "simplefin");

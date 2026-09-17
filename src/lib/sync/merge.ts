@@ -13,6 +13,8 @@ export interface MergeResult {
   accountsAdded: number;
   accountsUpdated: number;
   transactionsAdded: number;
+  /** Pending rows the provider has since restated or settled. */
+  transactionsRevised: number;
   holdingsUpdated: number;
 }
 
@@ -79,10 +81,88 @@ export function mergeSync(
     }
   }
 
+  const prefix = source === "plaid" ? "pl" : "sf";
+  const keyFor = (syncId: string) => `${prefix}:${syncId}`;
   const known = new Set(db.transactions.map((t) => t.importKey).filter(Boolean) as string[]);
+  // By key, so a row the provider has restated can be found and corrected
+  // rather than merely recognised and skipped.
+  const heldByKey = new Map<string, Transaction>();
+  for (const t of db.transactions) if (t.importKey) heldByKey.set(t.importKey, t);
+
+  /** Rows the provider has revised, by id. Applied after the walk. */
+  const revised = new Map<string, Partial<Transaction>>();
+
+  /**
+   * Holds this same pull says have already settled.
+   *
+   * A pull covers a window, so it routinely carries both the hold and the
+   * charge it became. Whichever order they arrive in, the hold is not worth
+   * adding: the payload has already said what became of it.
+   */
+  const supersededHere = new Set<string>();
+  for (const r of payload.transactions) if (r.replacesSyncId) supersededHere.add(r.replacesSyncId);
+
+  /**
+   * The stored rows by key, rekeyed as replacements are worked out.
+   *
+   * Only ever rows the document already had. A row arriving in this same pull
+   * can never be the thing a later row replaces: the pass above has already
+   * skipped any hold this payload supersedes, so by the time a settled row is
+   * looked at, the hold it names is either something stored or nothing at all.
+   */
+  const byKey = new Map<string, Transaction>(heldByKey);
   const fresh: Transaction[] = [];
   for (const r of payload.transactions) {
-    const key = `${source === "plaid" ? "pl" : "sf"}:${r.syncId}`;
+    const key = keyFor(r.syncId);
+
+    // Superseded inside this very pull, and not something already held. The
+    // settled row in this same payload stands for it.
+    if (r.pending && supersededHere.has(r.syncId) && !byKey.has(key)) continue;
+
+    /**
+     * A pending charge is provisional; a settled one is a fact.
+     *
+     * Nothing here ever looked at a transaction it already had, so a hold
+     * stayed pending for ever and kept the figure it was held at. A fuel hold
+     * of fifty dollars that settles at seventy-one sat in the account at fifty
+     * until somebody noticed and typed over it.
+     *
+     * Only while the stored row is still pending, and only the things the
+     * provider owns: the amount, the day, the statement line and whether it
+     * has settled. The merchant, the category, the tags, the notes and the
+     * books are the household's, and a sync does not get to rewrite those. A
+     * row that has already settled is left alone entirely - a provider
+     * restating last March is not something to take on trust.
+     */
+    const heldSame = byKey.get(key);
+    if (heldSame) {
+      if (heldSame.pending) {
+        const patch: Partial<Transaction> = {};
+        if (heldSame.amount !== r.amount) patch.amount = r.amount;
+        if (heldSame.date !== r.date) patch.date = r.date;
+        if (heldSame.statement !== r.description) patch.statement = r.description;
+        if (heldSame.pending !== r.pending) patch.pending = r.pending;
+        if (Object.keys(patch).length) revised.set(heldSame.id, patch);
+      }
+      continue;
+    }
+
+    // Plaid gives a settled charge a new id and names the pending one it
+    // replaces. Without this the hold and the charge both stand.
+    const oldKey = r.replacesSyncId ? keyFor(r.replacesSyncId) : undefined;
+    const wasPending = oldKey ? byKey.get(oldKey) : undefined;
+    if (oldKey && wasPending?.pending) {
+      const patch: Partial<Transaction> = {
+        amount: r.amount, date: r.date, statement: r.description,
+        pending: r.pending, importKey: key,
+      };
+      revised.set(wasPending.id, patch);
+      byKey.delete(oldKey);
+      byKey.set(key, { ...wasPending, ...patch });
+      known.add(key);
+      continue;
+    }
+
     if (known.has(key)) continue;
     const accountId = idBySyncId.get(r.accountSyncId);
     if (!accountId) continue;
@@ -108,7 +188,17 @@ export function mergeSync(
     fresh.push(record(db, base, applyRules(db.rules, base), payload.fetchedAt));
   }
 
-  const transactions = [...fresh, ...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const carried = revised.size
+    ? db.transactions.map((t) => {
+      const patch = revised.get(t.id);
+      // Logged like any other change, so a figure that moved under somebody
+      // is something they can see happened rather than something they
+      // misremember typing.
+      return patch ? record(db, t, { ...t, ...patch }, payload.fetchedAt) : t;
+    })
+    : db.transactions;
+
+  const transactions = [...fresh, ...carried].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
   // Holdings are a snapshot, not a ledger: whatever the provider reports for an
   // account replaces what was there, so a sold position disappears instead of
@@ -145,7 +235,8 @@ export function mergeSync(
       ...db, accounts, transactions, holdings,
       settings: { ...db.settings, lastSyncAt: payload.fetchedAt },
     },
-    accountsAdded, accountsUpdated, transactionsAdded: fresh.length, holdingsUpdated,
+    accountsAdded, accountsUpdated, transactionsAdded: fresh.length,
+    transactionsRevised: revised.size, holdingsUpdated,
   };
 }
 

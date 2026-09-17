@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronDown, CircleHelp, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, CircleHelp, Copy, Plus, Trash2 } from "lucide-react";
 import type { Bucket, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { longDate, today } from "../lib/date";
@@ -111,7 +111,7 @@ function AmountHeader({ value, onChange, autoFocus }: {
 /** Add or edit a transaction, including splits and tags. */
 export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose: () => void }) {
   const db = useDB();
-  const { actions, suggestRule } = useStore();
+  const { actions, suggestRule, notify } = useStore();
   const editing = Boolean(txn);
 
   const [date, setDate] = useState(txn?.date ?? today());
@@ -137,15 +137,39 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   const splitTotal = splits.reduce((s, x) => s + x.amount, 0);
   const splitOff = splits.length > 0 && splitTotal !== amount;
 
+  const asTyped = () => ({
+    date, merchant: merchant.trim() || "Unknown", amount, accountId, categoryId,
+    notes: notes.trim() || undefined, tags, hideFromReports,
+    bucket: bucket || undefined,
+    pending: txn?.pending ?? false, reviewed,
+    splits: splits.length ? splits.map((s, i) => ({ ...s, id: txn?.splits?.[i]?.id ?? `s${i}` })) : undefined,
+  });
+
+  /**
+   * A second one like this, leaving the original alone.
+   *
+   * From what is on the screen rather than from what is stored, which is both
+   * what anybody would expect from a button sitting under a form and useful
+   * in its own right: change the date, press this, and the second occurrence
+   * is in. The original keeps whatever it had, exactly as Cancel would.
+   *
+   * The importer's duplicate check is a good one and still occasionally wrong
+   * - two rent payments of the same amount on the same day from two tenants
+   * are one key and two real transactions - so there has to be a way to put
+   * back what it decided was a copy.
+   */
+  const duplicate = () => {
+    if (!accountId || !txn) return;
+    // The original's own statement text, not the tidied merchant name: the
+    // copy stands for the same line on the same statement.
+    actions.duplicateTransaction({ ...asTyped(), statement: txn.statement, importKey: txn.importKey });
+    notify("Duplicated. The copy is yours to edit.");
+    onClose();
+  };
+
   const save = () => {
     if (!accountId) return;
-    const payload = {
-      date, merchant: merchant.trim() || "Unknown", amount, accountId, categoryId,
-      notes: notes.trim() || undefined, tags, hideFromReports,
-      bucket: bucket || undefined,
-      pending: txn?.pending ?? false, reviewed,
-      splits: splits.length ? splits.map((s, i) => ({ ...s, id: txn?.splits?.[i]?.id ?? `s${i}` })) : undefined,
-    };
+    const payload = asTyped();
     if (txn) actions.updateTransaction(txn.id, payload);
     else actions.addTransaction({ ...payload, statement: merchant.trim() });
     // Only for an edit that actually changed something — a rule made from a
@@ -173,9 +197,14 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
       footer={
         <>
           {txn ? (
-            <Btn variant="danger" onClick={() => { actions.deleteTransactions([txn.id]); onClose(); }}>
-              <Trash2 size={14} /> Delete
-            </Btn>
+            <>
+              <Btn variant="danger" onClick={() => { actions.deleteTransactions([txn.id]); onClose(); }}>
+                <Trash2 size={14} /> Delete
+              </Btn>
+              <Btn onClick={duplicate} disabled={!accountId || splitOff}>
+                <Copy size={14} /> Duplicate
+              </Btn>
+            </>
           ) : null}
           <div className="grow" />
           <Btn onClick={onClose}>Cancel</Btn>

@@ -229,6 +229,15 @@ export interface Actions {
   forgetDeletedAccounts: () => void;
 
   addTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
+  /**
+   * A second transaction just like one that already exists.
+   *
+   * For the day the bank really did take the same amount twice, and for
+   * putting back a row an importer decided was a duplicate when it was not.
+   * Its own action rather than an add, so the copy says in its history where
+   * it came from and so the undo is labelled.
+   */
+  duplicateTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
   addTransactions: (ts: Transaction[]) => void;
   /**
    * A CSV import, with any tags the file named created in the same write.
@@ -494,6 +503,22 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
             .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
         };
       }),
+    duplicateTransaction: (t) =>
+      apply((db) => {
+        const at = new Date().toISOString();
+        // Rules are not re-run. The original has already been through them and
+        // been corrected by hand since; running them again over the copy would
+        // quietly undo that work on one of the pair and not the other.
+        const fresh = {
+          ...t, tags: t.tags ?? [], id: uid("t"), createdAt: at,
+          activity: [added("duplicate", at)],
+        };
+        return {
+          ...db,
+          transactions: [fresh, ...db.transactions]
+            .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
+        };
+      }, "duplicate transaction"),
     importTransactions: (tagNames, build) =>
       apply((db) => {
         const tagIds = new Map(db.tags.map((t) => [t.name.toLowerCase(), t.id]));
