@@ -1205,6 +1205,13 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    is rebuilt for paper: the app's chrome goes, the colours invert to ink on
    white whatever theme is on screen, and every card becomes a block that will
    not be split across a page break. */
+/* ── readings a provider got wrong ────────────────────────────────────── */
+
+/* Room for three lines of explanation beside the one button, because this
+   deletes recorded data and the figures have to be readable first. */
+.bad-run { align-items: flex-start; gap: 14px; padding: 12px 16px; }
+.bad-run .btn { flex: none; margin-top: 2px; }
+
 /* ── year in review ───────────────────────────────────────────────────── */
 
 .yr-print { display: flex; flex-direction: column; gap: 12px; }

@@ -314,7 +314,8 @@ export function notices(db: DB, now: ISODate = today()): Notice[] {
       title: `${s.name} ${gone ? "nearly emptied" : "jumped"}`,
       body: `It went from ${fmt0(s.from)} to ${fmt0(s.to)} in one sync. `
         + `That is usually the provider reporting a different account, not money moving. `
-        + `Check it against the institution before trusting your net worth.`,
+        + `Check it against the institution. Once the real figure is back, the account's own page `
+        + `offers to drop the readings that were wrong, so your charts stop carrying them.`,
       at: s.at,
       when: sinceLabel(`${s.at}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
       to: `/accounts/${s.accountId}`,

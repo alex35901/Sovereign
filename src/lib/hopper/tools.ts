@@ -19,6 +19,7 @@ import { SALT_CAP, taxSummary, taxYears } from "../tax.js";
 import { reviewYears, yearReview } from "../year-review.js";
 import { notices } from "../notifications.js";
 import { lookThrough } from "../funds.js";
+import { badRuns, runOverstatement } from "../repair.js";
 import type { Scope } from "../select.js";
 
 /**
@@ -170,7 +171,10 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "accounts",
-    description: "Every open account with its balance, type and institution.",
+    description:
+      "Every open account with its balance, type and institution, plus any stretch of balance "
+      + "readings a provider got wrong. Those explain a spike or a dip in net worth that never "
+      + "actually happened.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
     run: (db) => db.accounts.filter((a) => !a.hidden && !a.closedAt).map((a) => ({
       id: a.id,
@@ -179,6 +183,18 @@ export const TOOLS: ToolSpec[] = [
       type: a.type,
       balance: money(a.balance),
       inNetWorth: a.includeInNetWorth,
+      // Every chart derives net worth from these readings rather than storing
+      // its own, so a bad stretch shows up on all of them until it is dropped
+      // from the account's page. Worth naming when a chart looks wrong.
+      readingsThatLookWrong: badRuns(a).map((r) => ({
+        from: r.from,
+        to: r.to,
+        readings: r.points.length,
+        reported: money(r.reported),
+        readingsEitherSideSay: money(r.expected),
+        overstatesNetWorthBy: money(runOverstatement(r)),
+        fixedFrom: `/accounts/${a.id}`,
+      })),
     })),
   },
   {

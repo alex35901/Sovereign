@@ -19,6 +19,7 @@ import { PropertyValueCard } from "./PropertyValueCard";
 import { VehicleValueCard } from "./VehicleValueCard";
 import { BalanceImportModal } from "./BalanceImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
+import { BadRunCard } from "./BadRunCard";
 import { AccountControls } from "./AccountControls";
 import { ConnectionCard } from "./ConnectionCard";
 import { TransactionModal } from "./TransactionModal";
@@ -136,6 +137,9 @@ export default function AccountDetail() {
             tone={trendTone(chart.series)} range={range} onRange={setRange}
           />
         </Card>
+
+        {/* Straight under the chart that is wrong because of them. */}
+        <BadRunCard account={account} />
 
         {canValue(account.type) ? <PropertyValueCard account={account} /> : null}
         {account.type === "vehicle" ? <VehicleValueCard account={account} /> : null}

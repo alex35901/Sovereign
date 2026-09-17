@@ -59,6 +59,7 @@ await build({
       export * as TX from "./src/lib/tax.ts";
       export * as PW from "./src/lib/price-watch.ts";
       export * as YR from "./src/lib/year-review.ts";
+      export * as RP from "./src/lib/repair.ts";
       export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
@@ -10283,6 +10284,162 @@ await test("a bar's label does not say which bar it is", () => {
     const keys = M.B.lastBuckets("1990-01-01", "2026-09-17", grain, 400);
     assert.equal(new Set(keys).size, keys.length, `${grain} keys are unique`);
   }
+});
+
+
+/* ── readings a provider got wrong ─────────────────────────────────────── */
+
+const rpAcct = (history, over = {}) => ({
+  id: "m", name: "Home Mortgage", type: "mortgage", institution: "NewRez",
+  balance: history[history.length - 1]?.balance ?? 0,
+  includeInNetWorth: true, hidden: false, order: 0, syncSource: "simplefin",
+  history, ...over,
+});
+// The real shape: a loan reporting its escrow balance for a week, then coming
+// back. Up on the chart, because the liability all but vanished.
+const escrow = [
+  { date: "2026-09-01", balance: -420_100_00 },
+  { date: "2026-09-08", balance: -420_000_00 },
+  { date: "2026-09-09", balance: -1_400_00 },
+  { date: "2026-09-12", balance: -1_380_00 },
+  { date: "2026-09-16", balance: -419_800_00 },
+];
+
+await test("a stretch both its neighbours disagree with is offered for removal", () => {
+  const [run] = M.RP.badRuns(rpAcct(escrow));
+  assert.equal(run.from, "2026-09-09");
+  assert.equal(run.to, "2026-09-12");
+  assert.equal(run.points.length, 2);
+  assert.equal(run.before.date, "2026-09-08");
+  assert.equal(run.after.date, "2026-09-16");
+  assert.equal(run.reported, -1_400_00);
+  assert.equal(run.expected, -420_000_00);
+  // What it was doing to net worth on those days.
+  assert.equal(M.RP.runOverstatement(run), 418_600_00);
+});
+
+await test("a balance that fell and stayed down is not an excursion", () => {
+  // The case this rule exists to protect: a mortgage actually paid off. It
+  // never comes back, so nothing is offered, and nothing can be deleted.
+  const paid = [
+    { date: "2026-06-01", balance: -420_000_00 },
+    { date: "2026-07-01", balance: -418_000_00 },
+    { date: "2026-08-01", balance: 0 },
+    { date: "2026-09-01", balance: 0 },
+  ];
+  assert.deepEqual(M.RP.badRuns(rpAcct(paid)), []);
+});
+
+await test("a run still running is not offered either", () => {
+  // It is where the account is now, not a stretch in the middle, and the
+  // document has no second opinion about it yet.
+  const live = escrow.slice(0, 4);
+  assert.deepEqual(M.RP.badRuns(rpAcct(live)), []);
+});
+
+await test("ordinary movement is never called wrong", () => {
+  const normal = [
+    { date: "2026-06-01", balance: 40_000_00 },
+    { date: "2026-07-01", balance: 43_000_00 },
+    { date: "2026-08-01", balance: 39_000_00 },
+    { date: "2026-09-01", balance: 44_000_00 },
+  ];
+  assert.deepEqual(M.RP.badRuns(rpAcct(normal)), []);
+  // Nor is a small account swinging about, however wild the proportion: the
+  // floor is what keeps a $40 card out of this.
+  const small = [
+    { date: "2026-06-01", balance: 300_00 },
+    { date: "2026-07-01", balance: 2_00 },
+    { date: "2026-08-01", balance: 310_00 },
+  ];
+  assert.deepEqual(M.RP.badRuns(rpAcct(small)), []);
+  // And nor is a large account moving by a large amount that is a small part
+  // of it. Fifty thousand off a brokerage clears the floor easily; it is the
+  // proportion that says whether a balance vanished or merely had a bad week.
+  const brokerage = [
+    { date: "2026-06-01", balance: 500_000_00 },
+    { date: "2026-07-01", balance: 450_000_00 },
+    { date: "2026-08-01", balance: 520_000_00 },
+  ];
+  assert.deepEqual(M.RP.badRuns(rpAcct(brokerage, { type: "investment" })), []);
+});
+
+await test("a figure somebody typed in is a figure somebody meant", () => {
+  for (const source of ["manual", "csv", undefined]) {
+    assert.deepEqual(M.RP.badRuns(rpAcct(escrow, { syncSource: source })), [], String(source));
+  }
+  assert.equal(M.RP.badRuns(rpAcct(escrow, { syncSource: "plaid" })).length, 1);
+});
+
+await test("two bad weeks are two separate offers", () => {
+  const twice = [
+    { date: "2026-01-01", balance: -420_000_00 },
+    { date: "2026-02-01", balance: -1_400_00 },
+    { date: "2026-03-01", balance: -418_000_00 },
+    { date: "2026-04-01", balance: -1_300_00 },
+    { date: "2026-05-01", balance: -416_000_00 },
+  ];
+  const runs = M.RP.badRuns(rpAcct(twice));
+  assert.equal(runs.length, 2);
+  assert.deepEqual(runs.map((r) => r.from), ["2026-02-01", "2026-04-01"]);
+});
+
+await test("dropping a run leaves the readings either side alone", () => {
+  const [run] = M.RP.badRuns(rpAcct(escrow));
+  const left = M.RP.dropRun(escrow, run.from, run.to);
+  assert.deepEqual(left.map((h) => h.date), ["2026-09-01", "2026-09-08", "2026-09-16"]);
+  // And the chart then holds at the last thing anybody knew, rather than at a
+  // figure the app made up.
+  const after = rpAcct(left);
+  assert.equal(M.balanceAt(after, "2026-09-10"), -420_000_00);
+  assert.equal(M.balanceAt(after, "2026-09-15"), -420_000_00);
+  assert.equal(M.balanceAt(after, "2026-09-16"), -419_800_00);
+});
+
+await test("net worth follows the repair everywhere, because nothing stores its own copy", () => {
+  const db = { ...M.emptyDB(), accounts: [rpAcct(escrow)] };
+  // The spike, as every chart in the app would draw it.
+  assert.equal(M.netWorthSplitAt(db, "2026-09-10").net, -1_400_00);
+  const [run] = M.RP.badRuns(db.accounts[0]);
+  const fixed = { ...db, accounts: [rpAcct(M.RP.dropRun(escrow, run.from, run.to))] };
+  assert.equal(M.netWorthSplitAt(fixed, "2026-09-10").net, -420_000_00, "the spike is gone from that day");
+  assert.equal(M.netWorthSplitAt(fixed, "2026-09-16").net, -419_800_00, "and the real readings are untouched");
+  // The same figures the Accounts chart plots, from the same readings.
+  assert.deepEqual(
+    M.aggregateSeries(fixed.accounts, ["2026-09-08", "2026-09-10", "2026-09-16"]),
+    [-420_000_00, -420_000_00, -419_800_00],
+  );
+  // Which is the point: one repair, and the accounts chart, the dashboard, the
+  // year in review and the forecast all stop carrying it.
+  assert.equal(M.netWorthSplitAt(fixed, "2026-09-10").liabilities, -420_000_00);
+});
+
+await test("Hopper can say why a chart has a spike in it", () => {
+  // "Why did my net worth jump in September?" has an exact answer, and it is
+  // not one he could work out from balances.
+  const db = { ...M.emptyDB(), accounts: [rpAcct(escrow)] };
+  const [acct] = M.HT.runTool(db, "accounts", {});
+  assert.equal(acct.readingsThatLookWrong.length, 1);
+  const r = acct.readingsThatLookWrong[0];
+  assert.equal(r.from, "2026-09-09");
+  assert.equal(r.to, "2026-09-12");
+  assert.equal(r.reported, -1_400);
+  assert.equal(r.readingsEitherSideSay, -420_000);
+  assert.equal(r.overstatesNetWorthBy, 418_600);
+  assert.equal(r.fixedFrom, "/accounts/m");
+  // And a clean account says nothing, rather than an empty warning.
+  assert.deepEqual(
+    M.HT.runTool(M.buildDemoDB(), "accounts", {}).flatMap((a) => a.readingsThatLookWrong),
+    [],
+  );
+});
+
+await test("an account with almost no history has nothing to say", () => {
+  assert.deepEqual(M.RP.badRuns(rpAcct([])), []);
+  assert.deepEqual(M.RP.badRuns(rpAcct([{ date: "2026-09-01", balance: -420_000_00 }])), []);
+  assert.deepEqual(M.RP.badRuns(rpAcct(escrow.slice(0, 2))), []);
+  // And a clean document offers nothing at all.
+  assert.deepEqual(M.RP.badRunsIn(M.buildDemoDB()), []);
 });
 
 await rm(dir, { recursive: true, force: true });

@@ -22,6 +22,9 @@ export type AccountType =
   | "checking" | "savings" | "credit" | "investment" | "retirement"
   | "loan" | "mortgage" | "real_estate" | "vehicle" | "crypto" | "other_asset" | "other_liability";
 
+/** One dated reading of an account's balance. */
+export interface BalancePoint { date: ISODate; balance: number }
+
 export interface Account {
   id: ID;
   name: string;
@@ -55,7 +58,7 @@ export interface Account {
   /** Closed on this date: balance zeroed, history kept, sync stops touching it. */
   closedAt?: ISODate;
   /** Sparse snapshots, ascending by date; forward-filled when charting. */
-  history: { date: ISODate; balance: number }[];
+  history: BalancePoint[];
   /** The institution's logo as a data URI, when the provider supplies one. */
   logo?: string;
   /** The institution's website, used to look a logo up when it doesn't. */
