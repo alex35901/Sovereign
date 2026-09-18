@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1384,11 +1384,24 @@ try {
     if (edited) {
       check("which opens the schedule where it is, rather than navigating away",
         /\/recurring/.test(wide.url()), wide.url());
-      // The row lost its dismiss button, so this is the only way left to say
-      // something is not recurring. It has to still be here.
-      check("and still offers to say it is not recurring at all",
-        (await wide.evaluate(() => [...document.querySelectorAll(".modal button")]
-          .some((b) => /not recurring/i.test(b.innerText)))) === true);
+      // The row lost its dismiss button, so the switch in here is the only way
+      // left to say something is not recurring. It has to still work.
+      const named = await wide.evaluate(() =>
+        document.querySelector(".modal .field input")?.value ?? "");
+      const before = await wide.evaluate(() => document.querySelectorAll(".rec-row").length);
+      check("and the switch in it starts on, for something that is recurring",
+        await wide.evaluate(() => !!document.querySelector(".rec-switch .switch.on")));
+      if (await tryStep("which can be turned off to say it is not recurring", async () => {
+        await wide.locator(".rec-switch .switch").click({ timeout: 5000 });
+        await wide.locator('.modal-foot button:has-text("Save")').click({ timeout: 5000 });
+        await wide.locator(".modal").waitFor({ state: "detached", timeout: 5000 });
+        await wide.waitForTimeout(700);
+      })) {
+        const after = await wide.evaluate(() => [...document.querySelectorAll(".rec-row")].map((r) => r.innerText));
+        check("and that takes it off the page",
+          after.length === before - 1 && !after.some((t) => named && t.includes(named)),
+          `${before} -> ${after.length}, looking for ${named}`);
+      }
     }
     await wide.close();
 
@@ -5634,15 +5647,46 @@ try {
       return hits.length === 1 ? hits[0].id : null;
     };
 
+    /**
+     * The rule offer must not land on the dialog's own buttons.
+     *
+     * A rename raises the "make this a rule?" offer, which is fixed to the
+     * bottom of the window and sits above the dialog scrim. On a tall dialog
+     * that is where the footer is, so opening another transaction inside the
+     * offer's few seconds used to put it over the one button being reached
+     * for. Measured between the two renames rather than after them, because
+     * with the bug in place the second rename is what it breaks.
+     */
+    const offerClear = async () => {
+      await hi.locator(".list-row.tx-grid:not(.head) .tx-amount").first().click({ timeout: 8000 });
+      await hi.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+      const seen = await hi.evaluate(() => {
+        const p = document.querySelector(".rule-prompt");
+        const foot = document.querySelector(".modal-foot");
+        if (!p || !foot) return { prompt: !!p, foot: !!foot, over: false };
+        const a = p.getBoundingClientRect(), b = foot.getBoundingClientRect();
+        return {
+          prompt: true, shown: getComputedStyle(p).display !== "none",
+          over: a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top,
+        };
+      });
+      check("the rule offer does not sit over an open dialog's own buttons",
+        !seen.over, JSON.stringify(seen));
+      await hi.locator(".modal-foot button", { hasText: "Cancel" }).last().click({ timeout: 8000 });
+      await hi.waitForTimeout(400);
+    };
+
     let first = null, second = null;
     const ok = await tryStep("two transactions can be renamed, one after the other", async () => {
       first = await rename(0, "First Edit Co");
+      await offerClear();
       second = await rename(1, "Second Edit Co");
     });
 
     if (ok) {
       check("both renames landed", first && second && first !== second,
         `${first} / ${second}`);
+
 
       await hi.goto(`${BASE}/history`, { waitUntil: "networkidle" });
       await hi.waitForTimeout(800);
@@ -5712,6 +5756,141 @@ try {
         phone.doc <= phone.vw && phone.button, JSON.stringify(phone));
     }
     await hi.close();
+  }
+
+
+  if (want("mark-recurring")) {
+    // ── saying a charge repeats, from the charge itself ──
+    //
+    // The Recurring page could only ever be told about a schedule from its own
+    // add button, which means from memory: the merchant, the amount and the
+    // day all typed again with the transaction that prompted it on another
+    // screen. This is the same editor reached from the row itself, with all of
+    // that already filled in.
+    const mr = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await mr.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await mr.waitForTimeout(1200);
+
+    const listed = () => mr.evaluate(() =>
+      JSON.parse(localStorage.getItem("sovereign.db.v1")).recurring ?? []);
+    const recRow = () => mr.evaluate(() =>
+      [...document.querySelectorAll(".modal .drow")]
+        .find((r) => /^Recurring/.test(r.innerText))?.innerText.replace(/\n/g, " ") ?? "");
+    const merchantOf = () => mr.evaluate(() =>
+      document.querySelector(".modal .drow .truncate")?.innerText.trim() ?? "");
+    const openRow = async (nth) => {
+      await mr.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(nth).click({ timeout: 8000 });
+      await mr.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+    };
+    const closeRow = async () => {
+      await mr.locator(".modal-foot button", { hasText: "Cancel" }).last().click({ timeout: 8000 });
+      await mr.waitForTimeout(400);
+    };
+    const openEditor = async () => {
+      await mr.locator(".modal .drow", { hasText: "Recurring" }).locator("button").click({ timeout: 8000 });
+      await mr.locator(".rec-switch").waitFor({ timeout: 5000 });
+    };
+    /** The editor on top, read as a whole; there are two modals up by then. */
+    const editor = () => mr.evaluate(() => {
+      const modal = [...document.querySelectorAll(".modal")].pop();
+      return {
+        on: !!modal.querySelector(".rec-switch .switch.on"),
+        labels: [...modal.querySelectorAll(".field label")].map((l) => l.innerText),
+        name: modal.querySelector(".bold.truncate")?.innerText ?? "",
+        date: modal.querySelector('input[type="date"]')?.value ?? "",
+      };
+    });
+
+    if (await tryStep("a transaction opens", () => openRow(0))) {
+      const rows = await mr.evaluate(() =>
+        [...document.querySelectorAll(".modal .drow")].map((r) => r.innerText.replace(/\n/g, " | ")));
+      const at = rows.findIndex((r) => /^Recurring/.test(r));
+      check("the detail has a recurring row, under the books it belongs to",
+        at >= 0, rows.map((r) => r.split(" | ")[0]).join(", "));
+      // Under Books, or under Hide from reports where there is only one set of
+      // books to be in. Either way it is below what the charge *is*.
+      check("and it sits below them rather than among the amounts",
+        at > rows.findIndex((r) => /^Hide from reports/.test(r)),
+        `recurring at ${at}, of ${rows.length}`);
+    }
+
+    // Find one the detector already knows about, and one it does not. The demo
+    // holds both, and which row is which is not something to write down here.
+    let known = -1, fresh = -1;
+    await tryStep("the transactions can be read for which of them repeat", async () => {
+      for (let i = 0; i < 14 && (known < 0 || fresh < 0); i++) {
+        if (!(await mr.locator(".modal .txn-amount").count())) await openRow(i);
+        const said = await recRow();
+        if (/Set up/.test(said)) { if (fresh < 0) fresh = i; } else if (said) { if (known < 0) known = i; }
+        await closeRow();
+      }
+    });
+    check("the list holds both a charge that repeats and one that does not",
+      known >= 0 && fresh >= 0, `known ${known}, fresh ${fresh}`);
+
+    if (known >= 0 && await tryStep("one that already repeats opens its editor", async () => {
+      await openRow(known);
+      await openEditor();
+    })) {
+      const e = await editor();
+      check("a charge the detector already found says so on the transaction itself",
+        e.on && e.labels.includes("Frequency") && e.labels.includes("Amount"), JSON.stringify(e));
+      await mr.locator(".modal-foot button", { hasText: "Cancel" }).last().click({ timeout: 8000 });
+      await mr.waitForTimeout(300);
+      check("and the row under Books says how often, not that there is nothing there",
+        /Monthly|Weekly|Yearly|Quarterly|Twice a year|Every 2 weeks/i.test(await recRow())
+        && /next/.test(await recRow()), await recRow());
+      await closeRow();
+    }
+
+    let merchant = "", was = 0;
+    if (fresh >= 0 && await tryStep("one that does not repeat opens its editor", async () => {
+      await openRow(fresh);
+      merchant = await merchantOf();
+      was = (await listed()).length;
+      await openEditor();
+    })) {
+      const off = await editor();
+      // Off until somebody says otherwise, and nothing to fill in while the
+      // answer is no: a form for a schedule that does not exist is noise.
+      check("a charge that does not repeat starts off, with its fields put away",
+        !off.on && off.labels.length === 0, JSON.stringify(off));
+      check("and names the merchant it would be for",
+        off.name === merchant, `${off.name} against ${merchant}`);
+
+      if (await tryStep("turning it on offers the schedule, already filled in", async () => {
+        await mr.locator(".rec-switch .switch").click({ timeout: 5000 });
+        await mr.locator(".modal .field").first().waitFor({ timeout: 5000 });
+      })) {
+        const on = await editor();
+        check("with everything a schedule needs on it",
+          ["Frequency", "Type", "Next date", "Amount", "Category", "Account"]
+            .every((l) => on.labels.includes(l)), on.labels.join(", "));
+        check("and a next date worked out from this charge, not left blank",
+          /^\d{4}-\d{2}-\d{2}$/.test(on.date) && on.date > new Date().toISOString().slice(0, 10), on.date);
+
+        if (await tryStep("it can be saved", async () => {
+          await mr.locator(".modal-foot button", { hasText: "Save" }).last().click({ timeout: 8000 });
+          await mr.waitForTimeout(800);
+        })) {
+          const now = await listed();
+          check("which writes one schedule, for this merchant",
+            now.length === was + 1 && now.some((r) => r.merchant === merchant),
+            `${was} -> ${now.length}: ${now.map((r) => r.merchant).join(", ")}`);
+          check("and leaves the transaction open behind it, not closed under it",
+            (await mr.locator(".modal .txn-amount").count()) === 1);
+          check("and the row now says how often and when next, rather than offering to set it up",
+            /Monthly/.test(await recRow()) && !/Set up/.test(await recRow()), await recRow());
+
+          await mr.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+          await mr.waitForTimeout(900);
+          check("and it shows on the page it is a schedule for",
+            await mr.evaluate((m) => [...document.querySelectorAll(".rec-row")]
+              .some((r) => r.innerText.includes(m)), merchant), merchant);
+        }
+      }
+    }
+    await mr.close();
   }
 
 

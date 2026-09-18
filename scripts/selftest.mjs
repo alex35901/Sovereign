@@ -64,6 +64,8 @@ await build({
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export * as AF from "./src/lib/amount-filter.ts";
       export * as CL from "./src/lib/changelog.ts";
+      export * as RC from "./src/lib/recurring.ts";
+      export { recurringList } from "./src/lib/select.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -11218,6 +11220,143 @@ await test("an undo that put nothing back says so rather than claiming it did", 
   const moved = { ...swept, transactions: swept.transactions.map((t) => (t.id === "t2" ? { ...t, categoryId: "c3" } : t)) };
   const partly = M.CL.revert(moved, both, AT);
   assert.equal(M.CL.revertMessage(both, partly), "Put back: Applied a rule · 1 left alone, changed again since");
+});
+
+/* ── a charge you say repeats, and one we worked out ───────────────────── */
+
+const recDB = (merchant, dates, amount = -14_99) => {
+  const base = M.emptyDB();
+  return {
+    ...base,
+    accounts: [{ id: "a1", name: "Checking", institution: "Bank", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 }],
+    categories: [{ id: "c1", groupId: "g1", name: "Subscriptions", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 }],
+    groups: [{ id: "g1", name: "Bills", kind: "expense", order: 0 }],
+    transactions: dates.map((date, i) => ({
+      id: `t${i}`, accountId: "a1", date, merchant, amount, categoryId: "c1",
+      tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: `${date}T00:00:00.000Z`,
+    })),
+  };
+};
+
+/** Four monthly charges ending last month, which is what the detector wants. */
+const monthly = (merchant) =>
+  recDB(merchant, ["2026-05-14", "2026-06-14", "2026-07-14", "2026-08-14"]);
+
+await test("a schedule written by hand lands on the row the detector would have made", () => {
+  // The whole reason the id is derived from the merchant. Two rows for one
+  // subscription is the bug this prevents, and it only shows up once the
+  // detector catches up with what somebody already typed in.
+  const db = monthly("Netflix");
+  const found = M.detectRecurring(db);
+  assert.equal(found.length, 1, "the detector finds it");
+  assert.equal(found[0].id, M.RC.recurringIdFor("Netflix"), "under the id a hand-written row would take");
+
+  const byHand = { ...found[0], id: M.RC.recurringIdFor("Netflix"), amount: -19_99, detected: false };
+  const merged = M.recurringList({ ...db, recurring: [byHand] });
+  assert.equal(merged.length, 1, "one row, not two");
+  assert.equal(merged[0].amount, -19_99, "and it is the one that was typed in");
+});
+
+await test("a name with punctuation in it still lands on one row", () => {
+  const db = monthly("Bob's Tyres & Co.");
+  const found = M.detectRecurring(db);
+  assert.equal(found[0].id, M.RC.recurringIdFor("Bob's Tyres & Co."));
+  assert.equal(M.recurringList({ ...db, recurring: [{ ...found[0], detected: false }] }).length, 1);
+});
+
+await test("saying a merchant is not recurring takes the detected one away too", () => {
+  const db = monthly("Netflix");
+  const off = { ...M.detectRecurring(db)[0], dismissed: true };
+  assert.equal(M.recurringList({ ...db, recurring: [off] }).length, 0);
+});
+
+await test("a month is a month, whichever end of it you started on", () => {
+  // The 31st clamps to the 28th in February and is the 31st again in March,
+  // rather than sliding a day at a time for the rest of the year.
+  assert.equal(M.RC.stepDate("2026-01-31", "monthly", 1), "2026-02-28");
+  assert.equal(M.RC.stepDate("2026-01-31", "monthly", 2), "2026-03-31");
+  assert.equal(M.RC.stepDate("2026-01-31", "monthly", 12), "2027-01-31");
+  assert.equal(M.RC.stepDate("2026-03-01", "yearly", 1), "2027-03-01", "twelve months, not 365 days");
+  assert.equal(M.RC.stepDate("2026-03-01", "weekly", 3), "2026-03-22");
+  assert.equal(M.RC.stepDate("2026-03-01", "biweekly", 1), "2026-03-15");
+  assert.equal(M.RC.stepDate("2026-03-01", "quarterly", 1), "2026-06-01");
+  assert.equal(M.RC.stepDate("2026-03-01", "semiannual", 1), "2026-09-01");
+});
+
+await test("the next one due is the first that has not already gone by", () => {
+  assert.equal(M.RC.nextAfter("2026-01-15", "monthly", "2026-09-18"), "2026-10-15");
+  assert.equal(M.RC.nextAfter("2026-09-10", "monthly", "2026-09-18"), "2026-10-10");
+  // A charge later this month is itself the next one; it has not happened yet.
+  assert.equal(M.RC.nextAfter("2026-08-25", "monthly", "2026-09-18"), "2026-09-25");
+  // Dated today is dated in the past as far as "what is still to come" goes.
+  assert.equal(M.RC.nextAfter("2026-08-18", "monthly", "2026-09-18"), "2026-10-18");
+  // Years of weekly steps still terminates.
+  assert.ok(M.RC.nextAfter("2019-01-01", "weekly", "2026-09-18") > "2026-09-18");
+  // A charge already in the ledger is not the next one, even when its date has
+  // not arrived yet. Counting it would draw it on the calendar twice: once as
+  // the transaction it already is, and again as the one still expected.
+  assert.equal(M.RC.nextAfter("2026-10-05", "monthly", "2026-09-18"), "2026-11-05");
+});
+
+await test("a schedule offered for a transaction is shaped like the transaction", () => {
+  const t = {
+    id: "t1", accountId: "a1", date: "2026-09-16", merchant: "Rogue", amount: -225_00,
+    categoryId: "c1", tags: [], pending: false, reviewed: true, hideFromReports: false,
+    createdAt: "2026-09-16T00:00:00.000Z",
+  };
+  const r = M.RC.fromTransaction(t);
+  assert.equal(r.id, M.RC.recurringIdFor("Rogue"));
+  assert.equal(r.merchant, "Rogue");
+  assert.equal(r.amount, -225_00);
+  assert.equal(r.categoryId, "c1");
+  assert.equal(r.accountId, "a1");
+  assert.equal(r.cadence, "monthly");
+  assert.equal(r.kind, "bill", "money going out is a bill");
+  assert.equal(r.detected, false);
+  assert.ok(r.nextDate > t.date, "the next one is after the one you are looking at");
+
+  const paid = M.RC.fromTransaction({ ...t, amount: 4_200_00 });
+  assert.equal(paid.kind, "income", "money coming in is income");
+
+  // A charge dated ahead of today is still one that has happened as far as the
+  // ledger is concerned, so the schedule starts after it rather than on it.
+  const ahead = M.RC.fromTransaction({ ...t, date: "2099-04-11" });
+  assert.equal(ahead.nextDate, "2099-05-11");
+});
+
+await test("what a merchant's schedule is, and how it came to exist", () => {
+  const db = monthly("Netflix");
+  const list = M.recurringList(db);
+
+  const found = M.RC.scheduleFor(db, "Netflix", list);
+  assert.ok(found.item, "a detected schedule is still a schedule");
+  assert.equal(found.manual, false);
+  assert.equal(found.dismissed, false);
+
+  const none = M.RC.scheduleFor(db, "Somewhere Else", list);
+  assert.equal(none.item, undefined);
+  assert.equal(none.manual, false);
+  assert.equal(none.dismissed, false);
+
+  const byHand = { ...list[0], detected: false };
+  const owned = { ...db, recurring: [byHand] };
+  const kept = M.RC.scheduleFor(owned, "Netflix", M.recurringList(owned));
+  assert.equal(kept.manual, true);
+
+  const off = { ...db, recurring: [{ ...list[0], dismissed: true }] };
+  const said = M.RC.scheduleFor(off, "Netflix", M.recurringList(off));
+  assert.equal(said.item, undefined, "nothing is expected any more");
+  assert.equal(said.dismissed, true, "and it says so, rather than looking untouched");
+  assert.equal(said.manual, false);
+});
+
+await test("case and spacing do not make a second schedule", () => {
+  // A name typed with a stray space is the same subscription, and an id that
+  // disagreed would put a second one on the page beside the first.
+  const want = M.RC.recurringIdFor("Netflix");
+  assert.equal(M.RC.recurringIdFor("NETFLIX"), want);
+  assert.equal(M.RC.recurringIdFor("  Netflix "), want);
+  assert.notEqual(M.RC.recurringIdFor("Netflix Games"), want, "a different name is a different schedule");
 });
 
 await rm(dir, { recursive: true, force: true });

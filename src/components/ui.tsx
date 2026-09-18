@@ -294,6 +294,9 @@ export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boo
   );
 }
 
+/** Every modal currently up, innermost last. See the effect in Modal. */
+const open: object[] = [];
+
 export function Modal({ title, children, onClose, footer, wide, flush }: {
   title: ReactNode; children: ReactNode; onClose: () => void; footer?: ReactNode; wide?: boolean;
   /** Drops the body's padding, for content that runs edge to edge — a list of
@@ -301,10 +304,21 @@ export function Modal({ title, children, onClose, footer, wide, flush }: {
   flush?: boolean;
 }) {
   useEffect(() => {
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    // Only the one on top answers Escape, and the page only gets its scrollbar
+    // back when the last one closes. A modal opened from inside another used
+    // to shut both, because every open modal was listening, and closing the
+    // inner one handed the scrollbar back while the outer was still up.
+    const mine = {};
+    open.push(mine);
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && open[open.length - 1] === mine) onClose(); };
     window.addEventListener("keydown", esc);
     document.body.style.overflow = "hidden";
-    return () => { window.removeEventListener("keydown", esc); document.body.style.overflow = ""; };
+    return () => {
+      window.removeEventListener("keydown", esc);
+      const i = open.indexOf(mine);
+      if (i >= 0) open.splice(i, 1);
+      if (!open.length) document.body.style.overflow = "";
+    };
   }, [onClose]);
   return createPortal(
     <div className="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>

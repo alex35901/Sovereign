@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { ChevronDown, CircleHelp, Copy, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, CircleHelp, Copy, Plus, Repeat, Trash2 } from "lucide-react";
 import type { Bucket, Transaction } from "../types";
 import { useDB, useStore } from "../store";
-import { longDate, today } from "../lib/date";
+import { dateLabel, longDate, today } from "../lib/date";
 import { fmt, parseMoney, toInput } from "../lib/money";
 import { UNCATEGORIZED } from "../lib/categories";
 import { Btn, Modal, Money, MoneyInput, SelectInput, TagPill, Toggle, cx } from "../components/ui";
@@ -11,7 +11,9 @@ import { CategoryPicker } from "../components/pickers";
 import { ActivityLog } from "../components/ActivityLog";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { MerchantAvatar } from "./Transactions";
-import { accountOptions, bucketIndex, bucketOf, hasBuckets } from "../lib/select";
+import { accountOptions, bucketIndex, bucketOf, hasBuckets, recurringList } from "../lib/select";
+import { cadenceLabel, fromTransaction, scheduleFor } from "../lib/recurring";
+import { RecurringEditor } from "./RecurringEditor";
 import { cachedExplanation, explainFacts, explainTransaction, rememberExplanation } from "../lib/hopper/explain";
 import type { ExplainFacts } from "../lib/hopper/explain";
 
@@ -132,6 +134,15 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   const inherited = bucketOf({ accountId, bucket: undefined } as Transaction, bucketIndex(db));
   const [splits, setSplits] = useState(txn?.splits?.map((s) => ({ categoryId: s.categoryId, amount: s.amount })) ?? []);
   const [explaining, setExplaining] = useState<ExplainFacts | null>(null);
+  const [scheduling, setScheduling] = useState(false);
+
+  // Found by merchant rather than stored on the row, so every transaction at
+  // a merchant agrees about whether it repeats, including the ones that
+  // arrived before anybody said so.
+  const schedule = useMemo(
+    () => scheduleFor(db, txn?.merchant ?? "", txn ? recurringList(db) : []),
+    [db, txn],
+  );
 
   const account = db.accounts.find((a) => a.id === accountId);
   const splitTotal = splits.reduce((s, x) => s + x.amount, 0);
@@ -345,6 +356,25 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
         </DetailRow>
       ) : null}
 
+      {/* Under Books deliberately: everything above is what this charge is,
+          and this is the first row that says something about the ones still
+          to come. Only offered for a transaction that exists, because a
+          schedule is found by merchant and a row being typed in has not
+          settled on one yet. */}
+      {txn ? (
+        <DetailRow label="Recurring">
+          <button className="drow-btn" onClick={() => setScheduling(true)}>
+            <Repeat size={14} className={schedule.item ? "pos" : undefined} />
+            <span className="truncate">
+              {schedule.item
+                ? `${cadenceLabel(schedule.item.cadence)}, next ${dateLabel(schedule.item.nextDate)}`
+                : schedule.dismissed ? "Not recurring" : "Set up"}
+            </span>
+            <ChevronDown size={14} />
+          </button>
+        </DetailRow>
+      ) : null}
+
       <div className="drow-block">
         <div className="spread">
           <span className="small muted">Splits</span>
@@ -380,6 +410,14 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
       {txn ? <div className="drow-block"><ActivityLog txn={txn} /></div> : null}
 
       {explaining ? <ExplainModal facts={explaining} onClose={() => setExplaining(null)} /> : null}
+      {scheduling && txn ? (
+        <RecurringEditor
+          item={schedule.item ?? fromTransaction({ ...txn, ...asTyped() })}
+          exists={!!schedule.item}
+          nameLocked
+          onClose={() => setScheduling(false)}
+        />
+      ) : null}
     </Modal>
   );
 }

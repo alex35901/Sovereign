@@ -1,6 +1,7 @@
 import type { Account, Bucket, Category, DB, ISODate, MonthKey, Recurring, Transaction } from "../types";
-import { addMonths, addMonthsDate, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
+import { addMonths, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
 import { goalSaved } from "./goal-funding.js";
+import { recurringIdFor, stepDate } from "./recurring.js";
 
 /* ── lookups ──────────────────────────────────────────────────────────── */
 
@@ -737,7 +738,7 @@ export function detectRecurring(db: DB): Recurring[] {
     let next = toISO(new Date(parseISO(last.date).getTime() + days * 86400000));
     while (next < today()) next = toISO(new Date(parseISO(next).getTime() + days * 86400000));
     out.push({
-      id: `rec_${last.merchant.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
+      id: recurringIdFor(last.merchant),
       merchant: last.merchant,
       categoryId: last.categoryId,
       accountId: last.accountId,
@@ -782,14 +783,11 @@ export function recurringList(db: DB): Recurring[] {
  * day at a time.
  */
 export function occurrences(r: Recurring, from: ISODate, to: ISODate): ISODate[] {
-  const days: Record<Recurring["cadence"], number> = { weekly: 7, biweekly: 14, monthly: 0, quarterly: 0, semiannual: 0, yearly: 0 };
-  const months: Record<Recurring["cadence"], number> = { weekly: 0, biweekly: 0, monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
   // Every date is measured from the one known date rather than from the last
   // one worked out. Stepping a month at a time loses the day it started on:
   // the 31st clamps to the 28th in February, and a walk that carries on from
   // there is on the 28th for the rest of the year.
-  const at = (n: number): ISODate =>
-    days[r.cadence] ? addDays(r.nextDate, days[r.cadence] * n) : addMonthsDate(r.nextDate, months[r.cadence] * n);
+  const at = (n: number): ISODate => stepDate(r.nextDate, r.cadence, n);
 
   // A weekly item over five years is 260 steps; the cap is what stops a
   // malformed cadence from spinning rather than a limit anyone should reach.

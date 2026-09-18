@@ -617,6 +617,14 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
   background: var(--surface-3); border: 1px solid var(--line); border-radius: 10px;
   box-shadow: var(--shadow); overflow: hidden; font-size: 13px;
 }
+/* Out of the way while a dialog is up.
+   It is fixed to the bottom of the window and sits above the scrim, so on a
+   tall dialog it lands squarely over the footer and eats the click meant for
+   Save. Renaming a merchant raises this offer and then closes the dialog, so
+   the two only ever meet when the next one is opened inside the few seconds
+   the offer lasts - which is exactly when a press on Save is most likely. It
+   comes back by itself when the dialog closes, if its time is not up. */
+body:has(.scrim) .rule-prompt { display: none; }
 .rule-prompt-body { position: relative; padding: 11px 14px 13px; min-width: 0; }
 .rule-prompt-acts { display: flex; flex-direction: column; border-left: 1px solid var(--line); flex: none; }
 .rule-prompt-acts button {
@@ -1230,6 +1238,21 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    and quieter, so a category reads as part of the figure above it. */
 .tax-sub { padding-left: 28px; }
 .tax-sub > .col > span:first-child { color: var(--muted); }
+
+/* ── a merchant that repeats ─────────────────────────────────────────────
+   The switch reads as one thing you turn on, which is why it sits in its own
+   panel rather than as another row in the form under it: everything below it
+   only exists once it is on. */
+.rec-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 12px 13px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.rec-switch > .row { flex: none; margin-top: 2px; }
 
 /* ── history ──────────────────────────────────────────────────────────── */
 .hist-list { display: flex; flex-direction: column; }

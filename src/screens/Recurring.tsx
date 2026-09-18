@@ -1,25 +1,28 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { CalendarDays, Check, Pencil, Plus, TrendingDown, TrendingUp } from "lucide-react";
-import type { Cadence, Recurring as RecurringItem } from "../types";
-import { useDB, useStore } from "../store";
+import type { Recurring as RecurringItem } from "../types";
+import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, longDate, monthEnd, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
 import { occurrences, paidOccurrences, recurringList, recurringSpend } from "../lib/select";
 import { priceChanges, yearlyImpact } from "../lib/price-watch";
-import { isNewRecurring, isSeen, markRead } from "../lib/notifications";
+import { isNewRecurring, isSeen } from "../lib/notifications";
 import { UNCATEGORIZED } from "../lib/categories";
+import { cadenceLabel } from "../lib/recurring";
 import type { RecurringSpend } from "../lib/select";
 import { MonthGrid } from "../components/charts";
-import { Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, SelectInput, cx } from "../components/ui";
-import { CategoryPicker, CategoryTag } from "../components/pickers";
+import { Btn, Card, CardHead, Empty, Money, cx } from "../components/ui";
+import { CategoryTag } from "../components/pickers";
+import { RecurringEditor } from "./RecurringEditor";
 import { MerchantAvatar } from "./Transactions";
 
 /**
  * A new item, ready to be filled in.
  *
- * Its own id from the start, so saving it lands as a new row rather than
- * overwriting something detected — and a date rather than a blank, because a
+ * The id is a placeholder: saving re-derives it from the merchant, so adding
+ * one by hand for a name the detector already found edits that one rather
+ * than leaving two of it on the page. A date rather than a blank, because a
  * schedule with no next date is not a schedule.
  */
 const blank = (): RecurringItem => ({
@@ -33,18 +36,10 @@ const blank = (): RecurringItem => ({
   detected: false,
 });
 
-const CADENCES: { value: Cadence; label: string }[] = [
-  { value: "weekly", label: "Weekly" },
-  { value: "biweekly", label: "Every 2 weeks" },
-  { value: "monthly", label: "Monthly" },
-  { value: "quarterly", label: "Quarterly" },
-  { value: "semiannual", label: "Twice a year" },
-  { value: "yearly", label: "Yearly" },
-];
 
 export default function Recurring() {
   const db = useDB();
-  const [editing, setEditing] = useState<RecurringItem | null>(null);
+  const [editing, setEditing] = useState<{ item: RecurringItem; exists: boolean } | null>(null);
 
   const list = useMemo(() => recurringList(db), [db]);
 
@@ -90,7 +85,7 @@ export default function Recurring() {
       <TopBar
         title="Recurring"
         primary={
-          <Btn variant="primary" onClick={() => setEditing(blank())}>
+          <Btn variant="primary" onClick={() => setEditing({ item: blank(), exists: false })}>
             <Plus size={14} /> Recurring
           </Btn>
         }
@@ -148,7 +143,7 @@ export default function Recurring() {
                       : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
                   </span>
                   <span className="tiny faint truncate rec-when">
-                    {CADENCES.find((c) => c.value === r.cadence)?.label} · next {relativeDayMid(r.nextDate)}
+                    {cadenceLabel(r.cadence)} · next {relativeDayMid(r.nextDate)}
                   </span>
                 </div>
                 <span className="rec-category"><CategoryTag categoryId={r.categoryId} /></span>
@@ -157,7 +152,7 @@ export default function Recurring() {
                 </span>
                 <button
                   className="btn btn-ghost btn-icon" title="Edit schedule" aria-label={`Edit ${r.merchant}'s schedule`}
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditing(r); }}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditing({ item: r, exists: true }); }}
                 >
                   <Pencil size={14} />
                 </button>
@@ -171,7 +166,9 @@ export default function Recurring() {
             ) : null}
         </Card>
       </div>
-      {editing ? <RecurringModal item={editing} onClose={() => setEditing(null)} /> : null}
+      {editing ? (
+        <RecurringEditor item={editing.item} exists={editing.exists} startOn onClose={() => setEditing(null)} />
+      ) : null}
     </>
   );
 }
@@ -200,60 +197,6 @@ function SpendTile({ label, spend, sub }: { label: string; spend: RecurringSpend
         </span>
       </div>
     </Card>
-  );
-}
-
-function RecurringModal({ item, onClose }: { item: RecurringItem; onClose: () => void }) {
-  const { actions, apply } = useStore();
-  // Acting on it is having seen it, so the "New" tag and the notification
-  // clear together rather than the row staying flagged after you have dealt
-  // with it.
-  const acknowledge = () => apply((cur) => markRead(cur, [`recurring:${item.id}`]));
-  const [merchant, setMerchant] = useState(item.merchant);
-  const [amount, setAmount] = useState(item.amount);
-  const [cadence, setCadence] = useState<Cadence>(item.cadence);
-  const [nextDate, setNextDate] = useState(item.nextDate);
-  const [categoryId, setCategoryId] = useState(item.categoryId);
-
-  return (
-    <Modal
-      title="Recurring item"
-      onClose={onClose}
-      footer={
-        <>
-          <Btn variant="danger" onClick={() => { actions.dismissRecurring(item); acknowledge(); onClose(); }}>Not recurring</Btn>
-          <div className="grow" />
-          <Btn onClick={onClose}>Cancel</Btn>
-          <Btn
-            variant="primary"
-            onClick={() => {
-              actions.upsertRecurring({ ...item, merchant, amount, cadence, nextDate, categoryId, detected: false });
-              acknowledge();
-              onClose();
-            }}
-          >
-            Save
-          </Btn>
-        </>
-      }
-    >
-      <Field label="Merchant">
-        <input className="input" value={merchant} onChange={(e) => setMerchant(e.target.value)} />
-      </Field>
-      <div className="row" style={{ gap: 12 }}>
-        <Field label="Amount" hint="Negative for bills"><MoneyInput value={amount} onChange={setAmount} /></Field>
-        <Field label="Cadence"><SelectInput value={cadence} onChange={setCadence} options={CADENCES} /></Field>
-      </div>
-      <div className="row" style={{ gap: 12 }}>
-        <Field label="Next date">
-          <input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
-        </Field>
-        <Field label="Category"><CategoryPicker value={categoryId} onChange={setCategoryId} /></Field>
-      </div>
-      <span className={cx("tiny", "faint")}>
-        {item.detected ? "This was detected automatically. Saving turns it into a manual entry you control." : "Manually added."}
-      </span>
-    </Modal>
   );
 }
 
