@@ -65,7 +65,7 @@ await build({
       export * as AF from "./src/lib/amount-filter.ts";
       export * as CL from "./src/lib/changelog.ts";
       export * as RC from "./src/lib/recurring.ts";
-      export { recurringList } from "./src/lib/select.ts";
+      export { recurringList, recurringByMerchant } from "./src/lib/select.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -11357,6 +11357,27 @@ await test("case and spacing do not make a second schedule", () => {
   assert.equal(M.RC.recurringIdFor("NETFLIX"), want);
   assert.equal(M.RC.recurringIdFor("  Netflix "), want);
   assert.notEqual(M.RC.recurringIdFor("Netflix Games"), want, "a different name is a different schedule");
+});
+
+await test("which merchants repeat is worked out once for the whole document", () => {
+  const db = monthly("Netflix");
+  const first = M.recurringByMerchant(db);
+  assert.equal(M.recurringByMerchant(db), first, "the same document gets the same answer back, not another walk");
+
+  // A document is replaced whole on every write, so a copy is a new question.
+  assert.notEqual(M.recurringByMerchant({ ...db }), first);
+});
+
+await test("a row knows it repeats by the merchant it is at", () => {
+  const db = monthly("Netflix");
+  const map = M.recurringByMerchant(db);
+  assert.ok(map.get(M.RC.recurringIdFor("Netflix")), "every charge at the merchant is part of the pattern");
+  assert.equal(map.get(M.RC.recurringIdFor("Netflix")).cadence, "monthly", "and the marker can say how often");
+  assert.equal(map.get(M.RC.recurringIdFor("Somewhere Else")), undefined);
+
+  // What was said not to repeat must not be marked as though it does.
+  const off = { ...db, recurring: [{ ...M.recurringList(db)[0], dismissed: true }] };
+  assert.equal(M.recurringByMerchant(off).get(M.RC.recurringIdFor("Netflix")), undefined);
 });
 
 await rm(dir, { recursive: true, force: true });

@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -351,10 +351,13 @@ try {
     check("1440px — every category pill is the same width",
       aligned.pillWidths.length === 1, `saw widths ${aligned.pillWidths.join(", ")}`);
 
-    // What a row says about itself — Pending, and the needs-review dot — sits
-    // against the merchant's name. The failure this replaces: the merchant's
-    // hover arrow holds its 28px while invisible, and holding it between the
-    // name and the badges left them adrift in the middle of the column.
+    // What a row says about itself — that it repeats, that it is Pending, that
+    // it still wants a look — sits against the merchant's name and against
+    // each other. The failure this replaces: the merchant's hover arrow holds
+    // its 28px while invisible, and holding it between the name and the badges
+    // left them adrift in the middle of the column. Every gap along the line is
+    // measured, not just the first, so one of them going astray shows wherever
+    // in the run it happens.
     const badges = await wide.evaluate(() => {
       const textRight = (el) => {
         const r = document.createRange();
@@ -367,36 +370,46 @@ try {
         const line = row.querySelector(".col > .row");
         if (!line) continue;
         const name = line.querySelector(".truncate");
-        const badge = line.querySelector(".tag, .dot");
-        if (!name || !badge) continue;
-        out.push({
-          gap: Math.round(badge.getBoundingClientRect().left - textRight(name)),
-          at: Math.round(badge.getBoundingClientRect().left),
-        });
+        const marks = [...line.querySelectorAll(".tx-repeat, .tag, .dot")];
+        if (!name || !marks.length) continue;
+        let edge = textRight(name);
+        for (const m of marks) {
+          const box = m.getBoundingClientRect();
+          out.push({ gap: Math.round(box.left - edge), at: Math.round(box.left) });
+          edge = box.right;
+        }
       }
       return out;
     });
-    check("1440px — a row's badges sit against its merchant name",
+    check("1440px — a row's badges sit against its merchant name and each other",
       badges.length > 3 && badges.every((b) => b.gap <= 10),
-      `${badges.length} rows, widest gap ${Math.max(...badges.map((b) => b.gap), 0)}px`);
+      `${badges.length} gaps, widest ${Math.max(...badges.map((b) => b.gap), 0)}px`);
 
     // And the arrow, which appears on hover, must not push them along when it
     // does — the space it reserves is why it sits after them.
+    // The same row read twice, rather than the first of the gaps measured
+    // above: what matters is that nothing on this line moves when the arrow
+    // arrives, and only the same element before and after can say that.
+    const marksOn = (nth) => wide.evaluate((i) => {
+      const line = document.querySelectorAll(".list-row.tx-grid:not(.head) .col > .row")[i];
+      return {
+        at: [...line.querySelectorAll(".tx-repeat, .tag, .dot")]
+          .map((m) => Math.round(m.getBoundingClientRect().left)),
+        arrow: getComputedStyle(line.querySelector(".tx-merchant-open")).opacity,
+      };
+    }, nth);
+
+    const before = await marksOn(0);
     const steady = await tryStep("1440px — hovering a row reveals its arrow", async () => {
       await wide.locator(".list-row.tx-grid:not(.head)").first().hover({ timeout: 5000 });
       await wide.waitForTimeout(300);
     });
     if (steady) {
-      const after = await wide.evaluate(() => {
-        const line = document.querySelector(".list-row.tx-grid:not(.head) .col > .row");
-        return {
-          at: Math.round(line.querySelector(".tag, .dot").getBoundingClientRect().left),
-          arrow: getComputedStyle(line.querySelector(".tx-merchant-open")).opacity,
-        };
-      });
+      const after = await marksOn(0);
       check("1440px — without shifting the badges it sits after",
-        after.arrow === "1" && Math.abs(after.at - badges[0].at) <= 1,
-        `arrow opacity ${after.arrow}, badge ${badges[0].at} then ${after.at}`);
+        after.arrow === "1" && before.at.length > 0
+        && after.at.every((x, i) => Math.abs(x - before.at[i]) <= 1),
+        `arrow opacity ${after.arrow}, ${before.at.join("/")} then ${after.at.join("/")}`);
     }
     await wide.close();
   }
@@ -5887,10 +5900,96 @@ try {
           check("and it shows on the page it is a schedule for",
             await mr.evaluate((m) => [...document.querySelectorAll(".rec-row")]
               .some((r) => r.innerText.includes(m)), merchant), merchant);
+
+          // And back on the list every charge at that merchant now says so,
+          // not only the one it was set up from.
+          await mr.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+          await mr.waitForTimeout(1200);
+          const marked = await mr.evaluate((m) => {
+            const rows = [...document.querySelectorAll(".list-row.tx-grid:not(.head)")];
+            const at = rows.filter((r) => r.querySelector(".truncate")?.innerText.trim() === m);
+            return { at: at.length, withMark: at.filter((r) => r.querySelector(".tx-repeat")).length };
+          }, merchant);
+          check("and every charge at it carries the marker, not just the one it was set up from",
+            marked.at > 0 && marked.withMark === marked.at, JSON.stringify(marked));
         }
       }
     }
     await mr.close();
+  }
+
+
+  if (want("repeat-mark")) {
+    // ── which of these comes round again ──
+    //
+    // A list of five thousand charges says nothing about which of them are the
+    // ones that turn up every month. The marker is the whole point of the
+    // schedules being there at all: it is what makes a page of transactions
+    // readable as a page of commitments.
+    const rm = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await rm.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await rm.waitForTimeout(1400);
+
+    const read = () => rm.evaluate(() =>
+      [...document.querySelectorAll(".list-row.tx-grid:not(.head)")].map((r) => ({
+        name: r.querySelector(".truncate")?.innerText.trim() ?? "",
+        mark: !!r.querySelector(".tx-repeat"),
+        title: r.querySelector(".tx-repeat")?.getAttribute("title") ?? "",
+      })));
+
+    const rows = await read();
+    const marked = rows.filter((r) => r.mark);
+    check("some of the list is marked as repeating, and not all of it",
+      marked.length > 0 && marked.length < rows.length, `${marked.length} of ${rows.length}`);
+    check("and the marker says how often, rather than only that it does",
+      marked.every((r) => /^Repeats (weekly|every 2 weeks|monthly|quarterly|twice a year|yearly)$/.test(r.title)),
+      [...new Set(marked.map((r) => r.title))].join(" | "));
+
+    // The same merchant cannot be marked on one line and not the next: what
+    // repeats is the charge at a merchant, so the answer is per name.
+    const byName = new Map();
+    for (const r of rows) byName.set(r.name, (byName.get(r.name) ?? new Set()).add(r.mark));
+    check("and a merchant is either marked on every line or on none",
+      [...byName.values()].every((s) => s.size === 1),
+      [...byName].filter(([, s]) => s.size > 1).map(([n]) => n).join(", "));
+
+    // It has to agree with the schedules themselves, or it is decoration.
+    await rm.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await rm.waitForTimeout(900);
+    const scheduled = await rm.evaluate(() =>
+      // The first truncate in a row is the name; the second is the cadence.
+      [...document.querySelectorAll(".rec-row")].map((r) => r.querySelector(".truncate")?.innerText.trim() ?? ""));
+    check("and every marked merchant is one the Recurring page lists",
+      marked.length > 0 && [...new Set(marked.map((r) => r.name))].every((n) => scheduled.includes(n)),
+      `marked: ${[...new Set(marked.map((r) => r.name))].join(", ")} | scheduled: ${scheduled.join(", ")}`);
+
+    // Hovering brings the merchant's own arrow up beside it rather than in
+    // place of it: both belong to the name, and neither may push the other out.
+    await rm.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await rm.waitForTimeout(1400);
+    const hovered = rm.locator(".list-row.tx-grid:not(.head)").filter({ has: rm.locator(".tx-repeat") }).first();
+    if (await tryStep("a marked row can be hovered", async () => {
+      await hovered.hover({ timeout: 8000 });
+      await rm.waitForTimeout(400);
+    })) {
+      const line = await hovered.evaluate((r) => {
+        const mark = r.querySelector(".tx-repeat");
+        const open = r.querySelector(".tx-merchant-open");
+        const name = r.querySelector(".truncate");
+        if (!mark || !open || !name) return { mark: !!mark, open: !!open };
+        const m = mark.getBoundingClientRect(), o = open.getBoundingClientRect(), n = name.getBoundingClientRect();
+        return {
+          mark: true, open: true,
+          shown: getComputedStyle(open).opacity !== "0",
+          afterName: m.left >= n.right - 1,
+          arrowAfterMark: o.left >= m.right - 1,
+          sameLine: Math.abs(m.top - o.top) < 12,
+        };
+      });
+      check("and the merchant's own arrow comes up beside the marker, after it",
+        line.shown && line.afterName && line.arrowAfterMark && line.sameLine, JSON.stringify(line));
+    }
+    await rm.close();
   }
 
 

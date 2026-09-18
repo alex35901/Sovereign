@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, ListChecks, Plus, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
+import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, ListChecks, Plus, Repeat, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { DB, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { IconAction, TopBar } from "../shell/TopBar";
@@ -9,7 +9,8 @@ import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
 import { logoFor } from "../lib/merchant-domain";
 import { toCSV } from "../lib/csv";
-import { accountOptions, budgetedCategoryIds, budgetedSum } from "../lib/select";
+import { accountOptions, budgetedCategoryIds, budgetedSum, recurringByMerchant } from "../lib/select";
+import { cadenceLabel, recurringIdFor } from "../lib/recurring";
 import type { BudgetedSum } from "../lib/select";
 import { fmt } from "../lib/money";
 import { download } from "../lib/storage";
@@ -627,6 +628,10 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
   const account = db.accounts.find((a) => a.id === txn.accountId);
   const category = db.categories.find((c) => c.id === txn.categoryId);
   const split = (txn.splits?.length ?? 0) > 0;
+  // By merchant rather than by row: what repeats is the charge at a merchant,
+  // so every transaction there is part of the pattern, including the ones
+  // that arrived before anybody said so.
+  const repeats = recurringByMerchant(db).get(recurringIdFor(txn.merchant));
 
   return (
     <div
@@ -648,6 +653,15 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
       <div className="col" style={{ gap: 1, cursor: "pointer", minWidth: 0 }} onClick={onEdit}>
         <span className="row" style={{ gap: 6 }}>
           <span className="truncate" style={{ fontWeight: 500 }}>{txn.merchant}</span>
+          {/* First of the badges, hard against the name: it is the one that
+              says what this charge is rather than what state it is in. */}
+          {repeats ? (
+            // On a span rather than the icon: an svg gets no tooltip from a
+            // title attribute, only from a title child.
+            <span className="tx-repeat" title={`Repeats ${cadenceLabel(repeats.cadence).toLowerCase()}`}>
+              <Repeat size={12} aria-label="Recurring" />
+            </span>
+          ) : null}
           {/* What the row says about itself comes first, hard against the name.
               The arrow holds its width while invisible so the line does not
               jump when the pointer arrives, and that reserved space reads as a

@@ -1239,6 +1239,11 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .tax-sub { padding-left: 28px; }
 .tax-sub > .col > span:first-child { color: var(--muted); }
 
+/* The marker beside a merchant that repeats. Faint, and flush against the
+   name: it is a fact about the charge, not a control, and the arrow that is
+   one keeps its own reserved space at the end of the line. */
+.tx-repeat { display: inline-flex; flex: none; color: var(--faint); }
+
 /* ── a merchant that repeats ─────────────────────────────────────────────
    The switch reads as one thing you turn on, which is why it sits in its own
    panel rather than as another row in the form under it: everything below it

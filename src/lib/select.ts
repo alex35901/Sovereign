@@ -770,6 +770,28 @@ export function recurringList(db: DB): Recurring[] {
 }
 
 /**
+ * The live schedules, by the id both sides derive from the merchant's name.
+ *
+ * Worked out once per document rather than once per row. Deciding whether a
+ * charge repeats means walking every transaction there is, and a list draws a
+ * hundred and twenty rows at a time: asking each of them separately is the
+ * difference between one pass over the ledger and a hundred and twenty.
+ *
+ * Keyed on the document itself, which is replaced whole on every write, so an
+ * answer cannot outlive the figures it was worked out from and nothing has to
+ * remember to clear it.
+ */
+const scheduleCache = new WeakMap<DB, Map<string, Recurring>>();
+
+export function recurringByMerchant(db: DB): Map<string, Recurring> {
+  const hit = scheduleCache.get(db);
+  if (hit) return hit;
+  const map = new Map(recurringList(db).map((r) => [r.id, r]));
+  scheduleCache.set(db, map);
+  return map;
+}
+
+/**
  * Every date a recurring item lands on inside a window.
  *
  * Walked from the next known date outwards, rather than assumed. Cadences
