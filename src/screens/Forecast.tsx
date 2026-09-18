@@ -7,10 +7,7 @@ import { addMonths, monthLabel, thisMonth } from "../lib/date";
 import { fmt0 } from "../lib/money";
 import { ACCOUNT_TYPE_LABEL } from "../lib/select";
 import { AreaChart } from "../components/charts";
-import {
-  Btn, Card, CardHead, Empty, Field, Modal, Money, MoneyInput, PercentInput,
-  SelectInput, TextInput, Toggle, cx,
-} from "../components/ui";
+import { Btn, Card, CardHead, cx, Empty, Field, Modal, Money, MoneyInput, NumInput, PercentInput, SelectInput, TextInput, Toggle } from "../components/ui";
 import type { Assumptions, EventKind, ForecastEvent, Scenario, TaxTreatment } from "../lib/forecast";
 import type { SocialSecurity as SS } from "../lib/social-security";
 import {
@@ -313,26 +310,6 @@ function Scenarios({ plan }: { plan: { scenarios: Scenario[]; activeId: ID } }) 
  * retype it leaves it empty for a keystroke, and a field that snaps to zero
  * the moment it is empty cannot be retyped at all.
  */
-function NumInput({ value, onChange, min, max }: {
-  value: number; onChange: (n: number) => void; min?: number; max?: number;
-}) {
-  const [buf, setBuf] = useState<string | null>(null);
-  return (
-    <input
-      className="input num" inputMode="numeric"
-      value={buf ?? String(value)}
-      onChange={(e) => {
-        setBuf(e.target.value);
-        const n = Number.parseInt(e.target.value, 10);
-        if (!Number.isFinite(n)) return;
-        onChange(Math.min(max ?? n, Math.max(min ?? n, n)));
-      }}
-      onFocus={(e) => { setBuf(e.target.value); e.currentTarget.select(); }}
-      onBlur={() => setBuf(null)}
-    />
-  );
-}
-
 function AssumptionsCard({ a, onChange }: {
   a: Assumptions; onChange: (patch: Partial<Assumptions>) => void;
 }) {

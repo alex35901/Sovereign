@@ -215,6 +215,27 @@ export function AmountBound({ value, onChange, placeholder }: {
  * legitimate thing to be half way through typing, and a field that reformats
  * on every keystroke will not let you get to "6.5".
  */
+/** A whole number, held as text while it is being typed so it can be emptied. */
+export function NumInput({ value, onChange, min, max }: {
+  value: number; onChange: (n: number) => void; min?: number; max?: number;
+}) {
+  const [buf, setBuf] = useState<string | null>(null);
+  return (
+    <input
+      className="input num" inputMode="numeric"
+      value={buf ?? String(value)}
+      onChange={(e) => {
+        setBuf(e.target.value);
+        const n = Number.parseInt(e.target.value, 10);
+        if (!Number.isFinite(n)) return;
+        onChange(Math.min(max ?? n, Math.max(min ?? n, n)));
+      }}
+      onFocus={(e) => { setBuf(e.target.value); e.currentTarget.select(); }}
+      onBlur={() => setBuf(null)}
+    />
+  );
+}
+
 export function PercentInput({ value, onChange, placeholder }: {
   value: number; onChange: (percent: number) => void; placeholder?: string;
 }) {

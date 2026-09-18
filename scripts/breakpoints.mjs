@@ -4645,7 +4645,7 @@ try {
 
     const base = await read();
     check("the list names the rule it is following",
-      /Dearest rate first\./.test(await po.evaluate(() =>
+      /Highest rate first\./.test(await po.evaluate(() =>
         [...document.querySelectorAll(".card-head")].map((h) => h.innerText).join(" "))));
     check("the debt page says how long it takes and what it costs",
       /\d+ months?/.test(base.big) && /interest/.test(base.sub), `${base.big} — ${base.sub}`);
@@ -4677,7 +4677,7 @@ try {
     const labels = await po.evaluate(() =>
       [...document.querySelectorAll(".payoff-order .seg-spread button")].map((b) => b.innerText.trim()));
     check("both orders are offered, neither preferred",
-      labels.join(" / ") === "Dearest rate first / Smallest balance first", labels.join(" / "));
+      labels.join(" / ") === "Highest rate first / Smallest balance first", labels.join(" / "));
     const before = await read();
     if (await tryStep("the other order can be chosen", async () => {
       await po.locator(".payoff-order button", { hasText: "Smallest balance" }).click({ timeout: 8000 });
@@ -4696,9 +4696,53 @@ try {
       // a month, and the only things that differ are the order and the total.
       check("at the same monthly outlay as the other order",
         money(snow.sub) === money(before.sub), `${money(before.sub)} then ${money(snow.sub)}`);
-      check("and never cheaper than paying the dearest rate first",
+      check("and never cheaper than paying the highest rate first",
         lastMoney(snow.sub) >= lastMoney(before.sub),
         `${lastMoney(before.sub)} then ${lastMoney(snow.sub)}`);
+    }
+    // The rate every figure on this page is worked out from has to be
+    // correctable here. It lives on the forecast's assumptions and used to be
+    // reachable only there, a page away from the screen that prints it.
+    const rateOf = () => po.evaluate(() =>
+      document.querySelector(".payoff-row .payoff-rate")?.innerText.trim() ?? "");
+    const wasRate = await rateOf();
+    check("a debt's rate is printed against it, and offers to be changed",
+      /^\d+(\.\d+)?%$/.test(wasRate), wasRate || "no rate button");
+
+    if (await tryStep("the rate opens an editor where it is read", async () => {
+      await po.locator(".payoff-row .payoff-rate").first().click({ timeout: 8000 });
+      await po.locator(".menu input").first().waitFor({ timeout: 5000 });
+    })) {
+      const fields = await po.evaluate(() =>
+        [...document.querySelectorAll(".menu .field label")].map((l) => l.innerText));
+      check("holding both halves of the term, not the rate alone",
+        fields.includes("Interest rate") && fields.includes("Years left"), fields.join(", "));
+
+      if (await tryStep("a corrected rate can be typed in", async () => {
+        await po.locator(".menu .field:has(label:text-is('Interest rate')) input").fill("3.9", { timeout: 8000 });
+        await po.keyboard.press("Tab");
+        await po.waitForTimeout(700);
+        await po.keyboard.press("Escape");
+        await po.waitForTimeout(400);
+      })) {
+        check("which is what the page then says",
+          (await rateOf()) === "3.9%", `${wasRate} -> ${await rateOf()}`);
+        // Stored where the forecast reads it, or the two screens would
+        // disagree about the same loan.
+        const stored = await po.evaluate(() => {
+          const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+          const sc = db.forecast?.scenarios.find((x) => x.id === db.forecast.activeId);
+          return Object.values(sc?.assumptions?.debts ?? {}).map((t) => t.apr);
+        });
+        check("and is kept where the forecast reads it, not beside it",
+          stored.includes(3.9), JSON.stringify(stored));
+        check("and the years it was set with are still there",
+          await po.evaluate(() => {
+            const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+            const sc = db.forecast?.scenarios.find((x) => x.id === db.forecast.activeId);
+            return Object.values(sc?.assumptions?.debts ?? {}).every((t) => t.termMonths > 0);
+          }));
+      }
     }
     await po.close();
 

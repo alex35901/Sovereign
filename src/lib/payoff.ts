@@ -7,7 +7,7 @@ import { DEBT_DEFAULTS, debtMonthlyRate, levelPayment } from "./forecast.js";
  * Where the next spare dollar should go, and what it buys.
  *
  * Two orders, and the argument between them is older than any of this. The
- * avalanche pays the dearest rate first and costs strictly less; the snowball
+ * avalanche pays the highest rate first and costs strictly less; the snowball
  * clears the smallest balance first and gets you an account closed sooner. The
  * app does not pick: it runs both and prints the difference, because the
  * honest answer is that one saves money and the other keeps people going, and
@@ -26,6 +26,9 @@ export interface Debt {
   /** Positive: what is owed. */
   balance: number;
   apr: number;
+  /** Carried so the rate can be corrected where it is read, not only where it
+   *  was set: changing one of the two terms must not discard the other. */
+  termMonths: number;
   /** The minimum due each month. */
   minimum: number;
 }
@@ -68,7 +71,7 @@ const MAX_MONTHS = 600;
 export function attackOrder(debts: readonly Debt[], order: Order): Debt[] {
   const live = debts.filter((d) => d.balance > 0);
   return [...live].sort((a, b) => (order === "avalanche"
-    // Dearest first; a tie goes to the smaller balance, which clears sooner
+    // Highest rate first; a tie goes to the smaller balance, which clears sooner
     // and frees its minimum for everything behind it.
     ? b.apr - a.apr || a.balance - b.balance
     : a.balance - b.balance || b.apr - a.apr));
@@ -183,6 +186,7 @@ export function debtsFrom(db: DB): Debt[] {
       name: a.name,
       balance: Math.abs(a.balance),
       apr: t.apr,
+      termMonths: t.termMonths,
       minimum: Math.round(levelPayment(a.balance, t.apr, t.termMonths)),
     });
   }

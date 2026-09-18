@@ -530,7 +530,7 @@ export const TOOLS: ToolSpec[] = [
     name: "debt_payoff",
     description:
       "Every debt with its rate and minimum, and what it takes to clear them: how long, what the "
-      + "interest costs, and the difference between paying the dearest rate first and the smallest "
+      + "interest costs, and the difference between paying the highest rate first and the smallest "
       + "balance first. Pass extra to see what putting more at it every month would do.",
     input_schema: {
       type: "object",
@@ -555,7 +555,7 @@ export const TOOLS: ToolSpec[] = [
         extraPerMonth: money(extra),
         totalOwed: money(debts.reduce((n, d) => n + d.balance, 0)),
         debts: debts.map((d) => ({ name: d.name, balance: money(d.balance), aprPct: d.apr, minimum: money(d.minimum) })),
-        dearestRateFirst: say(both.avalanche),
+        highestRateFirst: say(both.avalanche),
         smallestBalanceFirst: say(both.snowball),
         // Said rather than recommended: one order saves money and the other
         // closes an account sooner, and which matters more is not arithmetic.

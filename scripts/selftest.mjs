@@ -9316,9 +9316,9 @@ await test("the projection tools agree with the screens they are quoting", () =>
 
   const d = M.HT.runTool(db, "debt_payoff", {});
   const both = M.PO.compareOrders(M.PO.debtsFrom(db), 0);
-  assert.equal(d.dearestRateFirst.totalInterest, Math.round(both.avalanche.interest) / 100);
+  assert.equal(d.highestRateFirst.totalInterest, Math.round(both.avalanche.interest) / 100);
   assert.equal(d.smallestBalanceFirst.totalInterest, Math.round(both.snowball.interest) / 100);
-  assert.ok(d.dearestRateFirst.totalInterest <= d.smallestBalanceFirst.totalInterest,
+  assert.ok(d.highestRateFirst.totalInterest <= d.smallestBalanceFirst.totalInterest,
     "the dearest-rate order is never the dearer one");
 
   const e = M.HT.runTool(db, "estate", {});
@@ -9341,8 +9341,8 @@ await test("putting more at the debts clears them sooner, through the tool too",
   const base = M.HT.runTool(db, "debt_payoff", {});
   const more = M.HT.runTool(db, "debt_payoff", { extra: 500 });
   assert.equal(more.extraPerMonth, 500);
-  assert.ok(more.dearestRateFirst.months < base.dearestRateFirst.months, "sooner");
-  assert.ok(more.dearestRateFirst.totalInterest < base.dearestRateFirst.totalInterest, "and cheaper");
+  assert.ok(more.highestRateFirst.months < base.highestRateFirst.months, "sooner");
+  assert.ok(more.highestRateFirst.totalInterest < base.highestRateFirst.totalInterest, "and cheaper");
 });
 
 await test("the backward-looking tools agree with their own libraries", () => {

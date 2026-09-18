@@ -1,18 +1,18 @@
 import { useMemo, useState } from "react";
-import { useDB } from "../store";
+import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { monthLabel } from "../lib/date";
 import { fmt0 } from "../lib/money";
 import { AreaChart } from "../components/charts";
-import { Card, CardHead, Empty, MoneyInput, Segmented, cx } from "../components/ui";
-import type { Order } from "../lib/payoff";
+import { Card, CardHead, Empty, Field, MoneyInput, NumInput, PercentInput, Popover, Segmented, cx } from "../components/ui";
+import type { Debt, Order } from "../lib/payoff";
 import { compareOrders, debtsFrom } from "../lib/payoff";
 
 /**
  * Where the next spare dollar should go.
  *
  * Two orders, and the app does not pick between them. The avalanche pays the
- * dearest rate first and costs strictly less; the snowball clears the smallest
+ * highest rate first and costs strictly less; the snowball clears the smallest
  * balance first and closes an account sooner. One saves money and the other
  * keeps people going, and which of those matters more is not a thing
  * arithmetic knows. So both are run, the difference between them is printed in
@@ -20,7 +20,7 @@ import { compareOrders, debtsFrom } from "../lib/payoff";
  */
 
 const ORDERS: { value: Order; label: string }[] = [
-  { value: "avalanche", label: "Dearest rate first" },
+  { value: "avalanche", label: "Highest rate first" },
   { value: "snowball", label: "Smallest balance first" },
 ];
 
@@ -88,7 +88,7 @@ export default function Payoff() {
         <Card pad={false}>
           <CardHead
             flush title="What you put at it"
-            sub="On top of the minimums. Every dollar here is paid at the dearest rate you carry."
+            sub="On top of the minimums. Every dollar here goes against the highest rate you carry."
           />
           <div className="fc-grid">
             <div className="field">
@@ -108,7 +108,7 @@ export default function Payoff() {
             <span className="tiny faint">
               {both.costsExtra > 0
                 ? order === "snowball"
-                  ? `This order costs ${fmt0(both.costsExtra)} more in interest than paying the dearest rate first`
+                  ? `This order costs ${fmt0(both.costsExtra)} more in interest than paying the highest rate first`
                     + (both.firstWinSooner > 0
                       ? `, and closes your first account ${both.firstWinSooner} month${both.firstWinSooner === 1 ? "" : "s"} sooner.`
                       : ", and closes your first account no sooner.")
@@ -128,7 +128,7 @@ export default function Payoff() {
               plan were rendered. */}
           <CardHead
             flush title="In the order they go"
-            sub={`${plan.order === "avalanche" ? "Dearest rate first" : "Smallest balance first"}. `
+            sub={`${plan.order === "avalanche" ? "Highest rate first" : "Smallest balance first"}. `
               + "Each one's minimum rolls into the next when it clears."}
           />
           {debtsFrom(db).length ? plan.cleared.length ? plan.cleared.map((c, i) => {
@@ -138,8 +138,9 @@ export default function Payoff() {
                 <span className="payoff-rank num">{i + 1}</span>
                 <span className="col grow" style={{ gap: 0 }}>
                   <span className="bold">{c.name}</span>
-                  <span className="tiny faint">
-                    {fmt0(d.balance)} at {d.apr}% · {fmt0(d.minimum)} a month · {fmt0(c.interest)} of interest
+                  <span className="tiny faint payoff-terms">
+                    {fmt0(d.balance)} at <RateEditor debt={d} /> · {fmt0(d.minimum)} a month
+                    {" · "}{fmt0(c.interest)} of interest
                   </span>
                 </span>
                 <span className="col" style={{ gap: 0, textAlign: "right" }}>
@@ -167,11 +168,56 @@ export default function Payoff() {
         </Card>
 
         <span className="tiny faint" style={{ padding: "0 2px" }}>
-          Rates and terms come from the Forecast page, under Accounts. Change them there and this follows.
-          The other order would clear everything in {other.months ?? "more than fifty"} months
-          for {fmt0(other.interest)} of interest.
+          Press a rate to correct it. Rates and terms are shared with the Forecast page, under Accounts,
+          so a change here shows there too. The other order would clear everything
+          in {other.months ?? "more than fifty"} months for {fmt0(other.interest)} of interest.
         </span>
       </div>
     </>
+  );
+}
+
+/**
+ * The rate, corrected where it is read.
+ *
+ * It lives on the forecast's assumptions and was only editable there, which
+ * is a page away from the one that prints "at 6%" against a mortgage. A rate
+ * nobody can find is a rate nobody fixes, and every figure on this screen is
+ * worked out from it.
+ *
+ * The term comes along for the ride because the two are one setting: the
+ * monthly minimum is worked out from the balance, the rate and the years, so
+ * correcting the rate alone would leave a payment that no longer matches the
+ * loan.
+ */
+function RateEditor({ debt }: { debt: Debt }) {
+  const { actions } = useStore();
+  const set = (patch: { apr?: number; termMonths?: number }) =>
+    actions.setDebtTerms(debt.id, { apr: debt.apr, termMonths: debt.termMonths, ...patch });
+
+  return (
+    <Popover
+      width={230}
+      trigger={(open) => (
+        <button className="payoff-rate" onClick={open} title={`Change ${debt.name}'s rate`}>
+          {debt.apr}%
+        </button>
+      )}
+    >
+      {() => (
+        <div className="col" style={{ gap: 10, padding: 10 }}>
+          <span className="small bold">{debt.name}</span>
+          <Field label="Interest rate">
+            <PercentInput value={debt.apr} onChange={(apr) => set({ apr })} />
+          </Field>
+          <Field label="Years left" hint="The minimum each month is worked out from these two.">
+            <NumInput
+              value={Math.round(debt.termMonths / 12)} min={1} max={50}
+              onChange={(years) => set({ termMonths: years * 12 })}
+            />
+          </Field>
+        </div>
+      )}
+    </Popover>
   );
 }

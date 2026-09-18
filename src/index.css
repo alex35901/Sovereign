@@ -1170,6 +1170,16 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   padding: 4px 16px 16px;
 }
 .payoff-order .tiny { line-height: 1.5; }
+/* The rate, pressable where it is printed. Underlined rather than boxed: it
+   sits mid-sentence in a line of small grey text, and a button drawn as one
+   would make the sentence read as a form. */
+.payoff-rate {
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: var(--muted); cursor: pointer;
+  text-decoration: underline; text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.payoff-rate:hover { color: var(--accent); }
 .payoff-row { gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); }
 .payoff-row:last-child { border-bottom: 0; }
 /* A numbered queue, because the order is the whole subject. */
