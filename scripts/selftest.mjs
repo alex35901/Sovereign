@@ -63,6 +63,7 @@ await build({
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export * as AF from "./src/lib/amount-filter.ts";
+      export * as CL from "./src/lib/changelog.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -10914,6 +10915,309 @@ await test("a range knows whether it is asking anything", () => {
   assert.equal(M.AF.hasAmountRange({ min: 0 }), true, "zero is a bound somebody typed");
   assert.equal(M.AF.hasAmountRange({ max: 0 }), true);
   assert.equal(M.AF.hasAmountRange({ min: -500_00 }), true);
+});
+
+/* ── an undo that does not cost you the hour since ─────────────────────── */
+
+const clDB = () => {
+  const base = M.emptyDB();
+  return {
+    ...base,
+    accounts: [{ id: "a1", name: "Checking", institution: "Bank", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 }],
+    categories: [
+      { id: "c1", groupId: "g1", name: "Groceries", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+      { id: "c2", groupId: "g1", name: "Dining", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 1 },
+      { id: "c3", groupId: "g1", name: "Travel", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 2 },
+    ],
+    transactions: [
+      { id: "t1", accountId: "a1", date: "2026-09-01", merchant: "Corner Shop", amount: -12_00, categoryId: "c1", tags: [], pending: false, reviewed: false, hideFromReports: false, createdAt: "2026-09-01T00:00:00.000Z" },
+      { id: "t2", accountId: "a1", date: "2026-09-02", merchant: "Deli", amount: -8_00, categoryId: "c1", tags: [], pending: false, reviewed: false, hideFromReports: false, createdAt: "2026-09-02T00:00:00.000Z" },
+    ],
+    budgets: { "2026-09": { c1: 400_00 } },
+  };
+};
+
+const recat = (db, ids, categoryId) => ({
+  ...db,
+  transactions: db.transactions.map((t) => (ids.includes(t.id) ? { ...t, categoryId } : t)),
+});
+
+const AT = "2026-09-18T10:00:00.000Z";
+
+await test("an action records only the rows and fields it moved", () => {
+  const before = clDB();
+  const after = recat(before, ["t1"], "c2");
+  const entry = M.CL.diffAction(before, after, "Recategorised", AT);
+  assert.equal(entry.tables.length, 1, "one table touched");
+  const [diff] = entry.tables;
+  assert.equal(diff.table, "transactions");
+  assert.equal(diff.changed.length, 1, "one row, not both");
+  assert.deepEqual(Object.keys(diff.changed[0].after), ["categoryId"], "one field, not the whole row");
+  assert.equal(diff.changed[0].before.categoryId, "c1");
+  assert.equal(diff.changed[0].after.categoryId, "c2");
+  assert.equal(entry.budgets.length, 0);
+});
+
+await test("a document that did not move is not an action", () => {
+  const before = clDB();
+  assert.equal(M.CL.diffAction(before, before, "Nothing", AT), null);
+  // A new object holding all the same rows is still nothing that happened.
+  assert.equal(M.CL.diffAction(before, { ...before }, "Nothing", AT), null);
+});
+
+await test("putting one action back leaves the work done since alone", () => {
+  const before = clDB();
+  // The mistake: both rows recategorised in one sweep.
+  const swept = recat(before, ["t1", "t2"], "c2");
+  const entry = M.CL.diffAction(before, swept, "Applied rule to all transactions", AT);
+  // An hour of real work afterwards, on one of the same rows.
+  const later = {
+    ...swept,
+    transactions: swept.transactions.map((t) => (t.id === "t2" ? { ...t, categoryId: "c3" } : t)),
+  };
+  const out = M.CL.revert(later, entry, AT);
+  const byId = Object.fromEntries(out.db.transactions.map((t) => [t.id, t]));
+  assert.equal(byId.t1.categoryId, "c1", "the untouched one goes back");
+  assert.equal(byId.t2.categoryId, "c3", "the one changed since stays as it was left");
+  assert.equal(out.restored, 1);
+  assert.equal(out.skipped, 1);
+});
+
+await test("a field changed since is left alone even when another on the same row is not", () => {
+  const before = clDB();
+  const after = {
+    ...before,
+    transactions: before.transactions.map((t) => (t.id === "t1" ? { ...t, categoryId: "c2", merchant: "Corner Store" } : t)),
+  };
+  const entry = M.CL.diffAction(before, after, "Edited", AT);
+  const later = {
+    ...after,
+    transactions: after.transactions.map((t) => (t.id === "t1" ? { ...t, merchant: "Corner Market" } : t)),
+  };
+  const out = M.CL.revert(later, entry, AT);
+  const t1 = out.db.transactions.find((t) => t.id === "t1");
+  assert.equal(t1.merchant, "Corner Market", "the row is left whole rather than half put back");
+  assert.equal(t1.categoryId, "c2");
+  assert.equal(out.restored, 0);
+  assert.equal(out.skipped, 1);
+});
+
+await test("undoing a creation takes the row away again", () => {
+  const before = clDB();
+  const fresh = { id: "t9", accountId: "a1", date: "2026-09-03", merchant: "New", amount: -5_00, categoryId: "c1", tags: [], pending: false, reviewed: false, hideFromReports: false, createdAt: AT };
+  const after = { ...before, transactions: [...before.transactions, fresh] };
+  const entry = M.CL.diffAction(before, after, "Added a transaction", AT);
+  assert.deepEqual(entry.tables[0].added, ["t9"]);
+  const out = M.CL.revert(after, entry, AT);
+  assert.equal(out.db.transactions.length, 2);
+  assert.equal(out.restored, 1);
+});
+
+await test("undoing a deletion puts the whole row back", () => {
+  const before = clDB();
+  const after = { ...before, transactions: before.transactions.filter((t) => t.id !== "t1") };
+  const entry = M.CL.diffAction(before, after, "Deleted a transaction", AT);
+  assert.equal(entry.tables[0].removed.length, 1);
+  const out = M.CL.revert(after, entry, AT);
+  const back = out.db.transactions.find((t) => t.id === "t1");
+  assert.deepEqual(back, before.transactions[0], "every field of it, not a stub");
+});
+
+await test("a row already put back by hand is not put back twice", () => {
+  const before = clDB();
+  const after = { ...before, transactions: before.transactions.filter((t) => t.id !== "t1") };
+  const entry = M.CL.diffAction(before, after, "Deleted", AT);
+  const out = M.CL.revert(before, entry, AT);
+  assert.equal(out.db.transactions.length, 2, "not a duplicate");
+  assert.equal(out.restored, 0);
+  assert.equal(out.skipped, 1);
+});
+
+await test("a field that was not there is taken back off, not set to nothing", () => {
+  const before = clDB();
+  const after = {
+    ...before,
+    transactions: before.transactions.map((t) => (t.id === "t1" ? { ...t, notes: "typed by mistake" } : t)),
+  };
+  const entry = M.CL.diffAction(before, after, "Noted", AT);
+  // Round-tripped through storage, which is where an undo an hour later comes from.
+  const stored = JSON.parse(JSON.stringify(entry));
+  const out = M.CL.revert(after, stored, AT);
+  const t1 = out.db.transactions.find((t) => t.id === "t1");
+  assert.equal("notes" in t1, false, "the field is gone, not present and empty");
+});
+
+await test("a budget amount goes back a cell at a time", () => {
+  const before = clDB();
+  const after = { ...before, budgets: { "2026-09": { c1: 450_00, c2: 100_00 } } };
+  const entry = M.CL.diffAction(before, after, "Budgeted", AT);
+  assert.equal(entry.budgets.length, 2);
+  const out = M.CL.revert(after, entry, AT);
+  assert.deepEqual(out.db.budgets["2026-09"], { c1: 400_00 }, "the added cell is removed, the changed one restored");
+  assert.equal(out.restored, 2);
+});
+
+await test("a budget changed again since is left where it was put", () => {
+  const before = clDB();
+  const after = { ...before, budgets: { "2026-09": { c1: 450_00 } } };
+  const entry = M.CL.diffAction(before, after, "Budgeted", AT);
+  const later = { ...after, budgets: { "2026-09": { c1: 500_00 } } };
+  const out = M.CL.revert(later, entry, AT);
+  assert.equal(out.db.budgets["2026-09"].c1, 500_00);
+  assert.equal(out.skipped, 1);
+  assert.equal(out.restored, 0);
+});
+
+await test("a transaction put back says so in its own history", () => {
+  const before = clDB();
+  const after = recat(before, ["t1"], "c2");
+  const entry = M.CL.diffAction(before, after, "Recategorised", AT);
+  const out = M.CL.revert(after, entry, AT);
+  const t1 = out.db.transactions.find((t) => t.id === "t1");
+  const last = (t1.activity ?? []).at(-1);
+  assert.ok(last, "the undo is logged on the row like any other change");
+  assert.equal(last.field, "Category");
+  assert.equal(last.from, "Dining");
+  assert.equal(last.to, "Groceries");
+});
+
+await test("the log a transaction keeps is never itself rewound", () => {
+  const before = clDB();
+  const after = {
+    ...before,
+    transactions: before.transactions.map((t) => (t.id === "t1" ? { ...t, categoryId: "c2", activity: [{ at: AT, kind: "changed", field: "Category", from: "Groceries", to: "Dining" }] } : t)),
+  };
+  const entry = M.CL.diffAction(before, after, "Recategorised", AT);
+  assert.deepEqual(Object.keys(entry.tables[0].changed[0].after), ["categoryId"], "activity is not a field to put back");
+});
+
+await test("what an action touched is counted out loud", () => {
+  const before = clDB();
+  const after = {
+    ...recat(before, ["t1", "t2"], "c2"),
+    rules: [{ id: "r1", name: "Deli", enabled: true, order: 0, criteria: {}, actions: {} }],
+  };
+  const entry = M.CL.diffAction(before, after, "Made a rule and ran it", AT);
+  assert.equal(M.CL.actionSummary(entry), "2 transactions, 1 rule");
+  assert.equal(M.CL.actionSize(entry), 3);
+});
+
+await test("the history is trimmed to what a browser can hold", () => {
+  const one = { id: "x", label: "One", at: AT, tables: [], budgets: [] };
+  const many = Array.from({ length: M.CL.KEPT + 40 }, (_, i) => ({ ...one, id: `x${i}` }));
+  assert.equal(M.CL.trim(many).length, M.CL.KEPT);
+  assert.equal(M.CL.trim(many)[0].id, "x0", "the newest survive, not the oldest");
+
+  // A sweeping change is exactly the one worth being able to take back, so it
+  // is kept whole and the older entries make room for it.
+  const rows = (n) => [{ table: "transactions", added: [], removed: [], changed: Array.from({ length: n }, (_, i) => ({ id: `t${i}`, before: { categoryId: "c1" }, after: { categoryId: "c2" } })) }];
+  const big = { ...one, id: "big", tables: rows(4_000) };
+  const trimmed = M.CL.trim([big, ...many]);
+  assert.equal(trimmed[0].id, "big");
+  assert.equal(trimmed[0].tooBig, undefined, "a rule run over thousands of rows is still undoable");
+  assert.ok(JSON.stringify(trimmed).length <= M.CL.MAX_BYTES, "and the rest is trimmed to fit around it");
+});
+
+await test("an action bigger than the whole budget is remembered without a way back", () => {
+  // Restoring a backup replaces every row: keeping the old ones would be a
+  // second copy of the document in a browser already holding one.
+  const whole = {
+    id: "restore", label: "restore backup", at: AT, budgets: [],
+    tables: [{ table: "transactions", added: [], changed: [], removed: Array.from({ length: 8_000 }, (_, i) => ({ id: `t${i}`, accountId: "a1", date: "2026-09-01", merchant: "Some Shop With A Name", amount: -1234, categoryId: "c1", tags: [], pending: false, reviewed: false, hideFromReports: false, createdAt: AT })) }],
+  };
+  const real = { id: "x", label: "Category changed on 1 transaction", at: AT, tables: [], budgets: [] };
+  const out = M.CL.trim([whole, real]);
+  assert.equal(out[0].tooBig, true);
+  assert.equal(out[0].label, "restore backup", "it still says what happened");
+  assert.deepEqual(out[0].tables, [], "with nothing kept to put back");
+  assert.equal(out[1].id, "x", "and it does not push the real edits out of the list");
+  // Reverting it is a no-op rather than a half-applied restore.
+  const before = clDB();
+  assert.equal(M.CL.revert(before, out[0], AT).db, before);
+});
+
+await test("pressing put-back twice does not undo the undo", () => {
+  const before = clDB();
+  const after = recat(before, ["t1"], "c2");
+  const entry = M.CL.diffAction(before, after, "Recategorised", AT);
+  const once = M.CL.revert(after, entry, AT);
+  const twice = M.CL.revert(once.db, entry, AT);
+  assert.equal(twice.db.transactions.find((t) => t.id === "t1").categoryId, "c1");
+  assert.equal(twice.restored, 0, "the second press has nothing left that this action put there");
+  assert.equal(twice.skipped, 1);
+});
+
+await test("an action that did not name itself is named after what it did", () => {
+  const before = clDB();
+  const one = M.CL.diffAction(before, recat(before, ["t1"], "c2"), undefined, AT);
+  assert.equal(one.label, "Category changed on 1 transaction");
+  assert.equal(one.auto, true, "so the screen knows not to count it twice");
+
+  const both = M.CL.diffAction(before, recat(before, ["t1", "t2"], "c2"), undefined, AT);
+  assert.equal(both.label, "Category changed on 2 transactions");
+
+  const named = M.CL.diffAction(before, recat(before, ["t1"], "c2"), "Applied a rule", AT);
+  assert.equal(named.label, "Applied a rule", "a caller that named itself keeps its name");
+  assert.equal(named.auto, undefined);
+});
+
+await test("a change across several fields is counted rather than listed", () => {
+  const before = clDB();
+  const after = {
+    ...before,
+    transactions: before.transactions.map((t) => (t.id === "t1"
+      ? { ...t, categoryId: "c2", merchant: "New", notes: "x", reviewed: true }
+      : t)),
+  };
+  assert.equal(M.CL.diffAction(before, after, undefined, AT).label, "1 transaction changed");
+
+  const two = {
+    ...before,
+    transactions: before.transactions.map((t) => (t.id === "t1" ? { ...t, categoryId: "c2", reviewed: true } : t)),
+  };
+  assert.equal(M.CL.diffAction(before, two, undefined, AT).label, "Category and Reviewed changed on 1 transaction");
+});
+
+await test("what a machine keeps about itself is not an edit", () => {
+  const before = clDB();
+  // An account's balance history and the marks left by the last sync grow on
+  // every pull. Two copies of all of it, hourly, would be the whole budget.
+  const after = {
+    ...before,
+    accounts: before.accounts.map((a) => ({
+      ...a,
+      balance: 500_00,
+      history: [{ date: "2026-09-18", balance: 500_00 }],
+      lastSyncedAt: AT,
+    })),
+  };
+  const entry = M.CL.diffAction(before, after, "sync", AT);
+  assert.deepEqual(Object.keys(entry.tables[0].changed[0].after), ["balance"]);
+});
+
+await test("a change with nothing in the tables is not an action at all", () => {
+  const before = clDB();
+  const themed = { ...before, settings: { ...before.settings, theme: "light" } };
+  assert.equal(M.CL.diffAction(before, themed, undefined, AT), null, "changing the theme is not something to undo");
+});
+
+await test("an undo that put nothing back says so rather than claiming it did", () => {
+  const before = clDB();
+  const after = recat(before, ["t1"], "c2");
+  const entry = M.CL.diffAction(before, after, "Recategorised", AT);
+  const done = M.CL.revert(after, entry, AT);
+  assert.equal(M.CL.revertMessage(entry, done), "Put back: Recategorised");
+
+  // Pressing it again, or pressing it after the toast already took it back.
+  const again = M.CL.revert(done.db, entry, AT);
+  assert.equal(M.CL.revertMessage(entry, again), "Nothing left to put back: Recategorised");
+
+  // Some back, some not.
+  const swept = recat(before, ["t1", "t2"], "c2");
+  const both = M.CL.diffAction(before, swept, "Applied a rule", AT);
+  const moved = { ...swept, transactions: swept.transactions.map((t) => (t.id === "t2" ? { ...t, categoryId: "c3" } : t)) };
+  const partly = M.CL.revert(moved, both, AT);
+  assert.equal(M.CL.revertMessage(both, partly), "Put back: Applied a rule · 1 left alone, changed again since");
 });
 
 await rm(dir, { recursive: true, force: true });

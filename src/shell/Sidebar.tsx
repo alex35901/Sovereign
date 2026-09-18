@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { NavLink, useLocation } from "react-router-dom";
 import {
-  ArrowLeftRight, ChartPie, Filter, Landmark, LayoutDashboard, LineChart, MessagesSquare, MoreHorizontal,
+  ArrowLeftRight, ChartPie, Filter, History as HistoryIcon, Landmark, LayoutDashboard, LineChart, MessagesSquare, MoreHorizontal,
   Receipt, Repeat, Settings as SettingsIcon, Sparkles, Shapes, ShieldCheck, Store, Tag, Target, TrendingDown, TrendingUp, Wallet,
 } from "lucide-react";
 import { useDB } from "../store";
@@ -32,6 +32,7 @@ export const NAV_CONFIG = [
   { to: "/rules", label: "Rules", Icon: Filter },
   { to: "/categories", label: "Categories", Icon: Shapes },
   { to: "/tags", label: "Tags", Icon: Tag },
+  { to: "/history", label: "History", Icon: HistoryIcon },
 ];
 
 /**

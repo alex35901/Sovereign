@@ -27,6 +27,8 @@ import { blankEstate } from "./lib/estate";
 const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
 import { accountKeys } from "./lib/sync/merge";
 import { added, record } from "./lib/activity";
+import type { LoggedAction } from "./lib/changelog";
+import { clearLog, diffAction, loadLog, revert, revertMessage, saveLog, trim } from "./lib/changelog";
 
 type Mutator = (db: DB) => DB;
 
@@ -49,6 +51,11 @@ interface Store {
    */
   /** Installs an outside document, migrated, and hands back what it installed. */
   replaceFromCloud: (next: DB) => DB;
+  /** Every change made to the document in this browser, newest first. */
+  log: LoggedAction[];
+  /** Takes one of them back on its own, without touching anything done since. */
+  revertAction: (id: string) => void;
+  forgetHistory: () => void;
   actions: Actions;
 }
 
@@ -99,8 +106,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<string | null>(null);
   const undoStack = useRef<{ db: DB; label: string }[]>([]);
   const [undoLabel, setUndoLabel] = useState<string | null>(null);
+  const [log, setLog] = useState<LoggedAction[]>(() => loadLog());
+  // Read inside a setDb updater, which only ever sees the state it closed over.
+  const logRef = useRef(log);
+  logRef.current = log;
+  /** The document the last logged action started from. See `apply`. */
+  const lastLogged = useRef<DB | null>(null);
 
   useEffect(() => { saveDB(db); }, [db]);
+  useEffect(() => { saveLog(log); }, [log]);
   // vehicles depreciate whether or not anyone opens their page
   const refreshed = useRef(false);
   useEffect(() => {
@@ -139,20 +153,80 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const apply = useCallback((fn: Mutator, label?: string) => {
     setDb((prev) => {
+      const next = withGroupColors(fn(prev));
       if (label) {
         undoStack.current = [{ db: prev, label }, ...undoStack.current].slice(0, 12);
         setUndoLabel(label);
         window.setTimeout(() => setUndoLabel((l) => (l === label ? null : l)), 6000);
       }
-      return withGroupColors(fn(prev));
+      // Logged whether or not it was named, because the label is there for the
+      // toast and plenty of ordinary edits deliberately do not raise one.
+      // Changing a single transaction is one of them, and a history without it
+      // would be a history of everything except what people do all day.
+      //
+      // Strict mode runs this twice in development with the same document in
+      // hand; the second pass is the same change, not another one.
+      if (lastLogged.current !== prev) {
+        lastLogged.current = prev;
+        const entry = diffAction(prev, next, label, new Date().toISOString());
+        if (entry) setLog((l) => trim([entry, ...l]));
+      }
+      return next;
     });
+  }, []);
+
+  /**
+   * Take one past action back, leaving everything done since where it stands.
+   *
+   * Not `apply`: the point of this is that it is a patch rather than a rewind,
+   * so putting it on the snapshot stack would offer a ctrl-Z that undid far
+   * more than the button the reader just pressed. It lands in the history
+   * itself instead, where it can be taken back in exactly the same way.
+   */
+  const revertAction = useCallback((id: string) => {
+    const at = new Date().toISOString();
+    setDb((prev) => {
+      const entry = logRef.current.find((a) => a.id === id);
+      if (!entry || entry.revertedAt || entry.tooBig) return prev;
+      const result = revert(prev, entry, at);
+      const next = withGroupColors(result.db);
+      if (lastLogged.current === prev) return next;
+      lastLogged.current = prev;
+      const undone = diffAction(prev, next, `Put back: ${entry.label}`, at);
+      // Only struck off when something actually went back. An action whose
+      // rows have all moved on is still an action you could undo the day one
+      // of them moves back, and crossing it out would say otherwise.
+      setLog((l) => trim([
+        ...(undone ? [undone] : []),
+        ...l.map((a) => (a.id === id && result.restored ? { ...a, revertedAt: at } : a)),
+      ]));
+      notify(revertMessage(entry, result));
+      return next;
+    });
+  }, [notify]);
+
+  const forgetHistory = useCallback(() => {
+    setLog([]);
+    clearLog();
   }, []);
 
   const undo = useCallback(() => {
     const top = undoStack.current[0];
     if (!top) return;
     undoStack.current = undoStack.current.slice(1);
-    setDb(top.db);
+    const at = new Date().toISOString();
+    // Logged like any other change, so the History page and the document never
+    // disagree: an action taken back by the toast has to show as taken back
+    // there too, or its button would sit waiting to undo something that has
+    // already been undone.
+    setDb((prev) => {
+      if (lastLogged.current !== prev) {
+        lastLogged.current = prev;
+        const entry = diffAction(prev, top.db, `Undid: ${top.label}`, at);
+        if (entry) setLog((l) => trim([entry, ...l]));
+      }
+      return top.db;
+    });
     setUndoLabel(null);
     notify(`Undid: ${top.label}`);
   }, [notify]);
@@ -181,6 +255,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const value: Store = {
     db, apply, undo, undoLabel, toast, notify, replaceFromCloud, actions,
+    log, revertAction, forgetHistory,
     rulePrompt, suggestRule, dismissRulePrompt,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

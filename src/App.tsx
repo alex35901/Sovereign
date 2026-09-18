@@ -22,6 +22,7 @@ import Estate from "./screens/Estate";
 import Payoff from "./screens/Payoff";
 import Tax from "./screens/Tax";
 import YearReview from "./screens/YearReview";
+import History from "./screens/History";
 import Settings from "./screens/Settings";
 import Rules from "./screens/Rules";
 import Categories from "./screens/Categories";
@@ -64,6 +65,7 @@ export default function App() {
           <Route path="/merchants" element={<Merchants />} />
           <Route path="/merchants/:name" element={<MerchantDetail />} />
           <Route path="/tags" element={<Tags />} />
+          <Route path="/history" element={<History />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

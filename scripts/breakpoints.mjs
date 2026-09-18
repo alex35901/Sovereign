@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -1112,8 +1112,12 @@ try {
     // The exact cadence counts are checked in scripts/selftest.mjs.
     const [month, year] = top;
     const ratio = month.total > 0 ? year.total / month.total : 0;
+    // The lower end allows a cent: both totals are rounded to whole cents, so
+    // twelve times a monthly figure and the yearly one drawn beside it can
+    // land a penny apart without anything being wrong. It is thirteen
+    // payments a year this is watching for, not a rounding step.
     check("the year is twelve months of bills, not thirteen",
-      ratio >= 12 && ratio < 12.5,
+      ratio > 11.99 && ratio < 12.5,
       `${year.total} is ${ratio.toFixed(2)} of ${month.total}`);
     await tiles.close();
 
@@ -1489,8 +1493,13 @@ try {
           rows: document.querySelectorAll(".notif-row").length,
           unread: document.querySelectorAll(".notif-row.unread").length,
         }));
-        check("the one that was read stops counting", Number(after.badge) === before - 1,
-          `badge ${after.badge}, was ${before}`);
+        // The badge caps at "9+", so reading it as a number says NaN on any
+        // day the demo happens to raise more than ten notices. What it shows
+        // is what to assert against, not what it would show if it never
+        // counted past nine.
+        const badge = before - 1 > 9 ? "9+" : String(before - 1);
+        check("the one that was read stops counting", after.badge === badge,
+          `badge ${after.badge}, expected ${badge} after ${before}`);
         check("but stays in the list rather than vanishing", after.rows === before,
           `${after.rows} rows, was ${before}`);
         check("shown as read", after.unread === before - 1, `${after.unread} unread`);
@@ -5593,6 +5602,116 @@ try {
         went.map((g) => `${g.label} -> ${g.at}`).join(" | "));
     }
     await busy.close();
+  }
+
+
+  if (want("history")) {
+    // ── a way back that is not a rewind ──
+    //
+    // The undo toast lasts six seconds and puts the whole document back. The
+    // mistake this exists for is noticed an hour later, with an hour of real
+    // work sitting on top of it, so what has to be proved here is that one
+    // action can be taken back while the hour survives.
+    const hi = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await hi.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await hi.waitForTimeout(1200);
+
+    const txns = () => hi.evaluate(() =>
+      JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions);
+    const merchantOf = async (id) => (await txns()).find((t) => t.id === id)?.merchant;
+
+    /** Opens the nth row, renames the merchant, saves, and says which row it was. */
+    const rename = async (nth, name) => {
+      await hi.locator(".list-row.tx-grid:not(.head) .tx-amount").nth(nth).click({ timeout: 8000 });
+      await hi.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
+      await hi.locator(".modal .drow-btn").first().click({ timeout: 8000 });
+      await hi.locator('.modal input[aria-label="Merchant"]').fill(name, { timeout: 8000 });
+      await hi.locator(".modal-foot button", { hasText: "Save changes" }).click({ timeout: 8000 });
+      await hi.waitForTimeout(700);
+      // Found by the name just typed rather than by position: the list resorts
+      // on a rename, so the row that was nth is not necessarily nth after it.
+      const hits = (await txns()).filter((t) => t.merchant === name);
+      return hits.length === 1 ? hits[0].id : null;
+    };
+
+    let first = null, second = null;
+    const ok = await tryStep("two transactions can be renamed, one after the other", async () => {
+      first = await rename(0, "First Edit Co");
+      second = await rename(1, "Second Edit Co");
+    });
+
+    if (ok) {
+      check("both renames landed", first && second && first !== second,
+        `${first} / ${second}`);
+
+      await hi.goto(`${BASE}/history`, { waitUntil: "networkidle" });
+      await hi.waitForTimeout(800);
+
+      const rows = () => hi.evaluate(() =>
+        [...document.querySelectorAll(".hist-row")].map((r) => ({
+          label: r.querySelector(".hist-label")?.innerText ?? "",
+          sub: r.querySelector(".hist-head .tiny")?.innerText ?? "",
+          done: !!r.querySelector(".hist-done"),
+        })));
+
+      const listed = await rows();
+      check("both edits are listed, newest first",
+        listed.length >= 2 && listed.slice(0, 2).every((r) => /Merchant changed on 1 transaction/.test(r.label)),
+        JSON.stringify(listed.slice(0, 3)));
+      const top = listed[0] ?? { label: "", sub: "" };
+      check("and each one says what it did, not just that something happened",
+        top.sub.includes("·") && /\d/.test(top.sub), top.sub || "nothing is listed");
+
+      // Expanded, a row has to say what it did or there is no way to tell one
+      // sweep from another before pressing the button that takes it back.
+      if (await tryStep("an entry opens to show what it changed", async () => {
+        await hi.locator(".hist-head").nth(1).click({ timeout: 8000 });
+        await hi.locator(".hist-detail").first().waitFor({ timeout: 5000 });
+      })) {
+        const detail = await hi.evaluate(() =>
+          document.querySelector(".hist-detail")?.innerText.replace(/\n/g, " | ") ?? "");
+        check("naming the field, what it was, and what it became",
+          /Merchant/.test(detail) && /First Edit Co/.test(detail) && /→/.test(detail), detail.slice(0, 140));
+      }
+
+      // The whole point: undo the older one, keep the newer one.
+      if (await tryStep("the older edit can be put back", async () => {
+        await hi.locator(".hist-row").nth(1).locator("button", { hasText: "Put it back" })
+          .click({ timeout: 8000 });
+        await hi.waitForTimeout(800);
+      })) {
+        check("which puts that transaction back the way it was",
+          (await merchantOf(first)) !== "First Edit Co", await merchantOf(first));
+        check("and leaves the edit made after it exactly where it was",
+          (await merchantOf(second)) === "Second Edit Co", await merchantOf(second));
+        const after = await rows();
+        check("the entry then says it has been put back",
+          after.some((r) => r.done), JSON.stringify(after.slice(0, 3)));
+        check("and the undo is itself an entry, so it can be taken back too",
+          after.some((r) => /Put back/.test(r.label)), JSON.stringify(after.slice(0, 2)));
+      }
+
+      // The in-memory undo stack dies with the tab. This must not.
+      await hi.reload({ waitUntil: "networkidle" });
+      await hi.waitForTimeout(800);
+      const kept = await rows();
+      check("the history survives a reload, unlike the undo toast",
+        kept.length >= 3, String(kept.length));
+
+      // A long label beside a button is the shape that runs off a phone, and
+      // the page is only ever empty in the overflow sweep, which is where a
+      // full one would have shown it.
+      await hi.setViewportSize({ width: 390, height: 844 });
+      await hi.waitForTimeout(400);
+      const phone = await hi.evaluate(() => ({
+        doc: document.documentElement.scrollWidth,
+        vw: window.innerWidth,
+        button: !!document.querySelector(".hist-row button"),
+      }));
+      check("and a full list still fits a phone",
+        phone.doc <= phone.vw && phone.button, JSON.stringify(phone));
+    }
+    await hi.close();
   }
 
 
