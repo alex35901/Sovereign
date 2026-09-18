@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -4140,8 +4140,13 @@ try {
     await rail.waitForTimeout(500);
     const order = await rail.evaluate(() =>
       [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
+    // Debt before Forecast, with Cards between them: what the cards cost, then
+    // what they pay, then the long view. It used to be adjacency, which was
+    // incidental - the ordering is the part that was ever meant.
     check("Forecast sits after Debt in the Plan group",
-      order.indexOf("/forecast") === order.indexOf("/payoff") + 1, order.join(" "));
+      order.indexOf("/forecast") > order.indexOf("/payoff"), order.join(" "));
+    check("and Cards sits with Debt, being about the same plastic",
+      order.indexOf("/cards") === order.indexOf("/payoff") + 1, order.join(" "));
     await rail.close();
   }
 
@@ -4798,7 +4803,7 @@ try {
     const order = await rail.evaluate(() =>
       [...document.querySelectorAll(".sidebar a[href]")].map((a) => a.getAttribute("href")));
     check("Debt sits before Forecast in the rail",
-      order.indexOf("/payoff") === order.indexOf("/forecast") - 1, order.join(" "));
+      order.indexOf("/payoff") < order.indexOf("/forecast"), order.join(" "));
     await rail.close();
   }
 
@@ -6080,6 +6085,123 @@ try {
         line.shown && line.afterName && line.arrowAfterMark && line.sameLine, JSON.stringify(line));
     }
     await rm.close();
+  }
+
+
+  if (want("wallet")) {
+    // ── which card to reach for ──
+    //
+    // The arithmetic is pinned in scripts/selftest.mjs. What this checks is
+    // that the page is wired to it: that saying what a card pays changes what
+    // the page says, and that a figure nobody has confirmed is not dressed up
+    // as one that has been.
+    const wl = await browser.newPage({ viewport: { width: 1280, height: 1200 } });
+    const dollars = (t) => Number(t.replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+    await wl.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+    await wl.waitForTimeout(1500);
+
+    const read = () => wl.evaluate(() => ({
+      best: document.querySelector(".nw-total")?.innerText ?? "",
+      tiles: [...document.querySelectorAll(".card-head + .grid .card, .grid .card")]
+        .map((t) => t.innerText.replace(/\n/g, " | ")),
+      cards: [...document.querySelectorAll(".card-row")].map((r) => ({
+        // The logo's initials are the first line of the row, so the name is
+        // read off the element that holds it rather than off the text.
+        name: r.querySelector(".bold")?.innerText.trim() ?? "",
+        text: r.innerText.replace(/\n/g, " | "),
+      })),
+      rows: [...document.querySelectorAll(".card-cat:not(.head)")].map((r) => ({
+        name: r.querySelector(".chip")?.innerText.trim() ?? "",
+        reach: r.querySelector(".card-cat-best")?.innerText.trim() ?? "",
+        missed: r.querySelector(".card-cat-gap")?.innerText.trim() ?? "",
+      })),
+      unset: [...document.querySelectorAll(".card-unset")].length,
+      warns: [...document.querySelectorAll(".card-head")].some((h) => /Nobody has checked/.test(h.innerText)),
+    }));
+
+    const before = await read();
+    check("the page opens on a wallet with cards in it",
+      before.cards.length >= 2 && before.rows.length > 3,
+      `${before.cards.length} cards, ${before.rows.length} categories`);
+    // A page that quietly assumed 1% and said nothing would be presenting a
+    // guess as a finding.
+    check("and says plainly that nobody has said what these cards pay",
+      before.warns && before.unset === before.cards.length,
+      `${before.unset} marked unset of ${before.cards.length}`);
+    check("with nothing to move while every card pays the same",
+      before.rows.every((r) => r.missed === "-" && /stay put/i.test(r.reach)),
+      before.rows.slice(0, 3).map((r) => `${r.name}: ${r.reach} ${r.missed}`).join(" | "));
+
+    // Say one card pays more on one category and the page has to find it.
+    const named = before.rows.find((r) => r.name)?.name ?? "";
+    if (await tryStep("a card's terms can be filled in", async () => {
+      await wl.locator(".card-row").nth(1).click({ timeout: 8000 });
+      await wl.locator(".modal").waitFor({ timeout: 5000 });
+      await wl.locator('.modal .field:has(label:text-is("On everything")) input').fill("4", { timeout: 8000 });
+      await wl.locator(".modal-foot button", { hasText: "Save and confirm" }).click({ timeout: 8000 });
+      await wl.waitForTimeout(900);
+    })) {
+      const after = await read();
+      const second = before.cards[1].name;
+      check("which is what the wallet then says it pays",
+        after.cards[1].text.includes("4%"), after.cards[1].text);
+      check("and the card stops being marked as unchecked",
+        after.unset === before.unset - 1, `${before.unset} -> ${after.unset}`);
+      // Only the rows with something in them: a category whose saving rounds
+      // to nothing says "stay put" on purpose, and reading those as failures
+      // would be asserting the opposite of what the page is for.
+      const worth = after.rows.filter((r) => /^\+\$/.test(r.missed));
+      check("the better card becomes the one to reach for",
+        worth.length > 0 && worth.every((r) => r.reach.includes(second)),
+        `${second}: ${worth.slice(0, 3).map((r) => r.reach).join(" | ")} of ${worth.length}`);
+      check("and the page now says what reaching for the wrong one cost",
+        after.rows.some((r) => /^\+\$/.test(r.missed)),
+        after.rows.slice(0, 3).map((r) => r.missed).join(" | "));
+      check("with a bigger figure than before at the top",
+        dollars(after.best) > dollars(before.best), `${before.best} -> ${after.best}`);
+      check("and the daily driver is the card that pays more on everything",
+        await wl.evaluate((n) => document.body.innerText.includes(n), second), second);
+    }
+
+    // Saving a half-finished draft must not promote a guess to a checked
+    // figure. The two buttons mean different things and the page leans on the
+    // difference to tell the reader which of the two it is showing them.
+    if (await tryStep("a card's terms can be saved without confirming them", async () => {
+      await wl.locator(".card-row").first().click({ timeout: 8000 });
+      await wl.locator(".modal").waitFor({ timeout: 5000 });
+      await wl.locator('.modal .field:has(label:text-is("On everything")) input').fill("3", { timeout: 8000 });
+      await wl.locator(".modal-foot button", { hasText: "Save" }).first().click({ timeout: 8000 });
+      await wl.waitForTimeout(900);
+    })) {
+      const draft = await read();
+      check("which keeps the rate that was typed",
+        draft.cards[0].text.includes("3%"), draft.cards[0].text);
+      check("and still says nobody has checked it",
+        draft.unset === 1 && draft.warns, `${draft.unset} unset, warned ${draft.warns}`);
+    }
+
+    // A bonus rate with a cap has to be enterable, because a cap is most of
+    // what a cash-back card is.
+    if (await tryStep("a capped bonus rate can be added", async () => {
+      await wl.locator(".card-row").first().click({ timeout: 8000 });
+      await wl.locator(".modal").waitFor({ timeout: 5000 });
+      await wl.locator(".modal button", { hasText: "Add" }).click({ timeout: 8000 });
+      await wl.locator(".card-rule").waitFor({ timeout: 5000 });
+    })) {
+      const rule = await wl.evaluate(() => {
+        const r = document.querySelector(".card-rule");
+        return {
+          fields: r ? r.innerText.replace(/\n/g, " | ") : "",
+          periods: [...(r?.querySelectorAll("select option") ?? [])].map((o) => o.innerText),
+        };
+      });
+      check("holding a rate, a category, a cap and what the cap resets on",
+        /up to/.test(rule.fields) && rule.periods.join(",") === "a month,a quarter,a year,ever",
+        `${rule.fields.slice(0, 80)} // ${rule.periods.join(",")}`);
+      check("and saying so when it would do nothing without a category",
+        /Pick at least one category/.test(rule.fields), rule.fields.slice(0, 90));
+    }
+    await wl.close();
   }
 
 

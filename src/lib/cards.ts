@@ -145,8 +145,16 @@ export interface CardReport {
   totals: { spend: number; earned: number; best: number; gap: number };
   /** The card to reach for when nothing has a bonus, and what it pays. */
   driver?: { accountId: ID; name: string; rate: number };
-  /** Spend that never touched a card, and so earned nothing at all. */
-  offCard: number;
+  /**
+   * Spend that never went near a card.
+   *
+   * Kept out of the headline on purpose. A mortgage, a tax bill and the water
+   * rates are the biggest things a household pays and most of them cannot go
+   * on a card at all, so counting them as money left on the table would put a
+   * number at the top of the page that nobody could ever collect - and would
+   * bury the one they could under it.
+   */
+  offCard: { spend: number; could: number };
 }
 
 /**
@@ -211,10 +219,10 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
   const onCard = new Set(accounts.map((a) => a.id));
   const muted = mutedAccountIds(db);
 
-  const all: SpendLine[] = [];
+  const carded: SpendLine[] = [];
+  const elsewhere: SpendLine[] = [];
   const byCard = new Map<ID, SpendLine[]>();
   const spent = new Map<ID, number>();
-  let offCard = 0;
 
   for (const t of db.transactions) {
     if (t.date < from || t.date > to || !counts(t, muted)) continue;
@@ -222,14 +230,14 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
       // Only money going out, and only on something that is really a purchase.
       if (l.amount >= 0 || categoryKind(db, l.categoryId) === "transfer") continue;
       const line: SpendLine = { date: t.date, categoryId: l.categoryId, amount: -l.amount };
-      all.push(line);
-      spent.set(l.categoryId, (spent.get(l.categoryId) ?? 0) + line.amount);
       if (onCard.has(t.accountId)) {
+        carded.push(line);
+        spent.set(l.categoryId, (spent.get(l.categoryId) ?? 0) + line.amount);
         const at = byCard.get(t.accountId) ?? [];
         at.push(line);
         byCard.set(t.accountId, at);
       } else {
-        offCard += line.amount;
+        elsewhere.push(line);
       }
     }
   }
@@ -259,7 +267,10 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
     };
   });
 
-  const best = bestRouting(wallet, all);
+  // Only what was already on a card. The question this page answers is which
+  // card to reach for, and that is only a question about money a card was
+  // ever going to touch.
+  const best = bestRouting(wallet, carded);
 
   const categories: CategoryLine[] = [...spent.entries()]
     .map(([categoryId, spend]) => {
@@ -283,7 +294,7 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
   return {
     from, to, cards, categories,
     totals: {
-      spend: all.reduce((n, l) => n + l.amount, 0),
+      spend: carded.reduce((n, l) => n + l.amount, 0),
       earned: earnedTotal,
       best: best.total,
       gap: Math.max(0, best.total - earnedTotal),
@@ -293,6 +304,9 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
       name: accounts.find((a) => a.id === top.id)?.name ?? "",
       rate: top.rewards.base * top.rewards.pointCents,
     } : undefined,
-    offCard,
+    offCard: {
+      spend: elsewhere.reduce((n, l) => n + l.amount, 0),
+      could: bestRouting(wallet, elsewhere).total,
+    },
   };
 }

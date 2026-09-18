@@ -22,6 +22,7 @@ import Estate from "./screens/Estate";
 import Payoff from "./screens/Payoff";
 import Tax from "./screens/Tax";
 import YearReview from "./screens/YearReview";
+import Cards from "./screens/Cards";
 import History from "./screens/History";
 import Settings from "./screens/Settings";
 import Rules from "./screens/Rules";
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="/forecast" element={<Forecast />} />
           <Route path="/estate" element={<Estate />} />
           <Route path="/payoff" element={<Payoff />} />
+          <Route path="/cards" element={<Cards />} />
           <Route path="/tax" element={<Tax />} />
           <Route path="/year" element={<YearReview />} />
           <Route path="/rules" element={<Rules />} />

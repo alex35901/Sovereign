@@ -236,8 +236,11 @@ export function NumInput({ value, onChange, min, max }: {
   );
 }
 
-export function PercentInput({ value, onChange, placeholder }: {
+export function PercentInput({ value, onChange, placeholder, suffix = "%" }: {
   value: number; onChange: (percent: number) => void; placeholder?: string;
+  /** The unit sitting inside the box. A rate is not always a percentage: a
+   *  point is worth so many cents, and a card pays so many points per dollar. */
+  suffix?: string;
 }) {
   const [buf, setBuf] = useState<string | null>(null);
   return (
@@ -258,7 +261,7 @@ export function PercentInput({ value, onChange, placeholder }: {
         className="tiny faint"
         style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}
       >
-        %
+        {suffix}
       </span>
     </span>
   );

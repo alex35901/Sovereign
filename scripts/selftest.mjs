@@ -11601,10 +11601,30 @@ await test("money that never touched a card is counted as earning nothing", () =
     ],
   );
   const r = M.CD.cardReport(db, ...YEAR);
-  assert.equal(r.offCard, 400_00);
-  assert.equal(r.totals.earned, 2_00, "only what was on a card earned");
-  assert.equal(r.totals.best, 10_00, "but all of it could have been");
-  assert.equal(r.totals.gap, 8_00);
+  assert.equal(r.offCard.spend, 400_00);
+  assert.equal(r.offCard.could, 8_00, "said on its own, as what it might be worth");
+  assert.equal(r.totals.spend, 100_00, "the headline is about money a card ever touched");
+  assert.equal(r.totals.earned, 2_00);
+  assert.equal(r.totals.gap, 0, "and there was nothing to move between cards");
+  assert.equal(r.categories.length, 1, "so only the carded category is in the table");
+});
+
+await test("what a card was never going to touch is not money left on the table", () => {
+  // The mortgage is the biggest thing a household pays and it cannot go on a
+  // card. Counting it would put a figure at the top of the page that nobody
+  // could ever collect, and bury the one they could underneath it.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [
+      { on: "chk", date: "2026-02-01", cat: "gas", dollars: 30_000 },
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 100 },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.spend, 100_00);
+  assert.equal(r.totals.gap, 0);
+  assert.equal(r.offCard.spend, 30_000_00);
+  assert.deepEqual(r.categories.map((c) => c.categoryId), ["food"]);
 });
 
 await test("the best routing spends a cap once and then moves on", () => {

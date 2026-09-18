@@ -1258,6 +1258,38 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    one keeps its own reserved space at the end of the line. */
 .tx-repeat { display: inline-flex; flex: none; color: var(--faint); }
 
+/* ── the wallet ─────────────────────────────────────────────────────────
+   A row per card and a row per category. The category table is a grid rather
+   than a flex row because five figures that do not line up down the page are
+   five figures nobody can compare. */
+.card-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 16px; border: 0; border-bottom: 1px solid var(--line-soft);
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.card-row:last-child { border-bottom: 0; }
+.card-row:hover { background: var(--surface-2); }
+.card-unset { background: var(--accent-soft); color: var(--accent); }
+.card-cat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px minmax(0, 130px) 76px 72px;
+  align-items: center; gap: 10px;
+  padding: 9px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.card-cat:last-child { border-bottom: 0; }
+.card-cat.head { background: var(--surface-2); padding-top: 8px; padding-bottom: 8px; text-transform: uppercase; letter-spacing: .06em; }
+.card-cat-name { min-width: 0; }
+.card-cat-spend, .card-cat-earned, .card-cat-gap { text-align: right; }
+.card-cat-best { min-width: 0; color: var(--muted); }
+.card-rule {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface-2);
+}
+.card-rule-rate { width: 78px; flex: none; }
+.card-rule-cap { width: 116px; flex: none; }
+.card-rule-period { width: 104px; flex: none; }
+
 /* ── a merchant that repeats ─────────────────────────────────────────────
    The switch reads as one thing you turn on, which is why it sits in its own
    panel rather than as another row in the form under it: everything below it
