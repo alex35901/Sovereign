@@ -1,13 +1,14 @@
 import { useMemo, useState } from "react";
 import { Plus, Sparkles, Trash2 } from "lucide-react";
-import type { Account, CardRewards, EarnRule, ID } from "../types";
+import type { Account, CandidateCard, CardRewards, EarnRule, ID } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { today } from "../lib/date";
+import { addMonthsDate, today } from "../lib/date";
 import { rangeStart } from "../lib/range";
 import { fmt0 } from "../lib/money";
 import { uid } from "../lib/id";
-import { cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
+import type { BonusProgress } from "../lib/cards";
+import { candidateValue, cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
 import { draftRewards, toRules } from "../lib/hopper/rewards";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
@@ -35,8 +36,10 @@ const PERIODS = [
 
 export default function Cards() {
   const db = useDB();
+  const { actions } = useStore();
   const cards = useMemo(() => cardAccounts(db), [db]);
   const [editing, setEditing] = useState<Account | null>(null);
+  const [weighing, setWeighing] = useState<CandidateCard | "new" | null>(null);
   const to = today();
   const from = rangeStart("1y");
   const report = useMemo(() => cardReport(db, from, to), [db, from, to]);
@@ -120,6 +123,23 @@ export default function Cards() {
                     {c.base}% on everything{r.rules.length ? `, ${r.rules.length} bonus rate${r.rules.length === 1 ? "" : "s"}` : ""}
                     {c.annualFee ? ` · ${fmt0(c.annualFee)} a year` : ""}
                   </span>
+                  {c.annualFee > 0 ? (
+                    <span className={cx("tiny", c.earned >= c.annualFee ? "pos" : "neg")}>
+                      {c.earned >= c.annualFee
+                        ? `Clears its fee, with ${fmt0(c.earned - c.annualFee)} over`
+                        : `${fmt0(c.annualFee - c.earned)} short of its fee`}
+                    </span>
+                  ) : null}
+                  {/* The counterweight. A card earning two percent while
+                      charging twenty-two is a losing card, and a rewards page
+                      that never says so is lying by omission. */}
+                  {c.interest > 0 ? (
+                    <span className="tiny neg">
+                      Charged {fmt0(c.interest)} of interest, against {fmt0(c.earned)} earned
+                      {c.interest > c.earned ? ". This card cost more than it paid." : "."}
+                    </span>
+                  ) : null}
+                  {c.bonus ? <BonusLine b={c.bonus} /> : null}
                 </span>
                 <span className="col" style={{ gap: 1, textAlign: "right" }}>
                   <span className="num bold">{fmt0(c.earned)}</span>
@@ -177,25 +197,76 @@ export default function Cards() {
           </Card>
         ) : null}
 
+        <Card pad={false}>
+          <CardHead
+            flush title="Cards you are weighing up"
+            sub="Type the rates off an offer and see what it would have been worth against the year you actually had."
+            right={<Btn size="sm" onClick={() => setWeighing("new")}><Plus size={13} /> Add</Btn>}
+          />
+          {(db.candidates ?? []).length ? (db.candidates ?? []).map((c) => (
+            <Candidate key={c.id} card={c} from={from} to={to} onEdit={() => setWeighing(c)} />
+          )) : (
+            <div style={{ padding: "4px 16px 16px" }}>
+              <span className="small faint">
+                Nothing yet. Sovereign holds no list of card products, so the rates come off the offer in front of you
+                and the answer comes off your own spending.
+              </span>
+            </div>
+          )}
+        </Card>
+
         <span className="tiny faint" style={{ padding: "0 2px" }}>
           Worked out from your own purchases over the last year, and from what you have said each card pays.
           Sovereign holds no list of card products and never recommends one.
         </span>
       </div>
-      {editing ? <RewardsModal account={editing} onClose={() => setEditing(null)} /> : null}
+      {editing ? (
+        <RewardsModal
+          name={editing.name} rewards={rewardsOf(editing)} nameLocked
+          onSave={(_n, rewards) => actions.updateAccount(editing.id, { rewards })}
+          onClose={() => setEditing(null)}
+        />
+      ) : null}
+      {weighing ? (
+        <RewardsModal
+          name={weighing === "new" ? "" : weighing.name}
+          rewards={weighing === "new" ? DEFAULT_REWARDS : weighing.rewards}
+          onSave={(name, rewards) => (weighing === "new"
+            ? actions.addCandidate(name || "A card", rewards)
+            : actions.updateCandidate(weighing.id, { name, rewards }))}
+          onDelete={weighing === "new" ? undefined : () => actions.deleteCandidate(weighing.id)}
+          onClose={() => setWeighing(null)}
+        />
+      ) : null}
     </>
   );
 }
 
-/** What one card pays, said plainly enough to be checked against the card. */
-function RewardsModal({ account, onClose }: { account: Account; onClose: () => void }) {
+/**
+ * What one card pays, said plainly enough to be checked against the card.
+ *
+ * The same form for a card in the wallet and one being weighed up, because
+ * they hold the same thing. The only difference is whose name it is: a card
+ * you hold is named by its account, and one you are considering is named by
+ * whoever typed it in.
+ */
+function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onDelete, onClose }: {
+  name: string;
+  rewards: CardRewards;
+  nameLocked?: boolean;
+  onSave: (name: string, rewards: CardRewards) => void;
+  onDelete?: () => void;
+  onClose: () => void;
+}) {
   const db = useDB();
-  const { actions } = useStore();
-  const start = rewardsOf(account);
+  const [name, setName] = useState(startName);
   const [pointCents, setPointCents] = useState(start.pointCents);
   const [base, setBase] = useState(start.base);
   const [annualFee, setFee] = useState(start.annualFee ?? 0);
   const [rules, setRules] = useState<EarnRule[]>(start.rules);
+  const [requirement, setRequirement] = useState(start.bonus?.requirement ?? 0);
+  const [bonusFrom, setBonusFrom] = useState(start.bonus?.from ?? today());
+  const [bonusBy, setBonusBy] = useState(start.bonus?.by ?? addMonthsDate(today(), 3));
   const [asking, setAsking] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -211,7 +282,7 @@ function RewardsModal({ account, onClose }: { account: Account; onClose: () => v
     setAsking(true);
     setFailed(null);
     try {
-      const draft = await draftRewards(account.name, db.categories);
+      const draft = await draftRewards(name, db.categories);
       setBase(draft.base);
       setPointCents(draft.pointCents);
       setFee(Math.round(draft.annualFee * 100));
@@ -228,24 +299,25 @@ function RewardsModal({ account, onClose }: { account: Account; onClose: () => v
     setRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...p } : r)));
 
   const save = (confirmed: boolean) => {
-    const next: CardRewards = {
+    onSave(name.trim() || startName, {
       pointCents, base, annualFee: annualFee || undefined,
       rules: rules.filter((r) => r.categoryIds.length),
+      bonus: requirement > 0 ? { requirement, from: bonusFrom, by: bonusBy } : undefined,
       // Stamped only when a person says the terms are right. Saving a draft
       // keeps whatever the last confirmation was, so a half-finished edit
       // cannot quietly promote a guess.
       confirmedAt: confirmed ? new Date().toISOString() : start.confirmedAt,
-    };
-    actions.updateAccount(account.id, { rewards: next });
+    });
     onClose();
   };
 
   return (
     <Modal
-      title={account.name}
+      title={nameLocked ? startName : "A card to weigh up"}
       onClose={onClose}
       footer={
         <>
+          {onDelete ? <Btn variant="danger" onClick={() => { onDelete(); onClose(); }}>Remove</Btn> : null}
           <div className="grow" />
           <Btn onClick={onClose}>Cancel</Btn>
           <Btn onClick={() => save(false)}>Save</Btn>
@@ -267,6 +339,12 @@ function RewardsModal({ account, onClose }: { account: Account; onClose: () => v
       </div>
       {note ? <span className="tiny" style={{ color: "var(--accent)" }}>{note}</span> : null}
       {failed ? <span className="tiny neg">{failed}</span> : null}
+
+      {nameLocked ? null : (
+        <Field label="Card" hint="Whatever the offer calls it">
+          <input className="input" value={name} placeholder="Amex Gold" onChange={(e) => setName(e.target.value)} />
+        </Field>
+      )}
 
       <div className="row" style={{ gap: 12 }}>
         <Field label="On everything" hint="Per dollar, in whatever this card counts in">
@@ -339,11 +417,78 @@ function RewardsModal({ account, onClose }: { account: Account; onClose: () => v
         )) : <span className="tiny faint">Nothing beyond the base rate yet.</span>}
       </div>
 
+      <div className="col" style={{ gap: 10 }}>
+        <span className="small muted">Sign-up bonus</span>
+        <Field label="Spend to earn it" hint="Leave at zero if there is none, or it has been paid">
+          <MoneyInput value={requirement} onChange={setRequirement} />
+        </Field>
+        {requirement > 0 ? (
+          <div className="row" style={{ gap: 12 }}>
+            <Field label="From">
+              <input className="input" type="date" value={bonusFrom} onChange={(e) => setBonusFrom(e.target.value)} />
+            </Field>
+            <Field label="By">
+              <input className="input" type="date" value={bonusBy} onChange={(e) => setBonusBy(e.target.value)} />
+            </Field>
+          </div>
+        ) : null}
+      </div>
+
       <span className="tiny faint">
         {start.confirmedAt
           ? `Last confirmed ${new Date(start.confirmedAt).toLocaleDateString()}.`
           : "Nobody has confirmed these against the card yet."}
       </span>
     </Modal>
+  );
+}
+
+/** How far along a sign-up bonus is, in one line. */
+function BonusLine({ b }: { b: BonusProgress }) {
+  if (b.met) return <span className="tiny pos">Bonus earned: {fmt0(b.requirement)} spent.</span>;
+  if (b.missed) {
+    return (
+      <span className="tiny faint">
+        Bonus window closed with {fmt0(b.spent)} of {fmt0(b.requirement)} spent.
+      </span>
+    );
+  }
+  return (
+    <span className={cx("tiny", b.daysLeft <= 30 ? "neg" : "muted")}>
+      {fmt0(b.left)} still to spend for the bonus, {b.daysLeft} day{b.daysLeft === 1 ? "" : "s"} left.
+    </span>
+  );
+}
+
+/**
+ * One card nobody holds, measured against the year that happened.
+ *
+ * The whole point of the page in one row: not "this card is good", but "on
+ * what you actually bought, this would have paid this much more than the
+ * cards you already carry, and its fee is this".
+ */
+function Candidate({ card, from, to, onEdit }: {
+  card: CandidateCard; from: string; to: string; onEdit: () => void;
+}) {
+  const db = useDB();
+  const v = useMemo(() => candidateValue(db, from, to, card.rewards), [db, from, to, card.rewards]);
+  return (
+    <button className="card-row" onClick={onEdit}>
+      <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
+        <span className="bold truncate">{card.name}</span>
+        <span className="tiny faint truncate">
+          {v.gain > 0
+            ? `${fmt0(v.gain)} more than your wallet earned, on ${fmt0(v.onIt)} of spending it would take`
+            : "Nothing you buy would go on it: your wallet already pays as well or better"}
+          {v.fee > 0 ? ` · ${fmt0(v.fee)} fee` : " · no fee"}
+        </span>
+      </span>
+      <span className="col" style={{ gap: 1, textAlign: "right" }}>
+        <span className={cx("num bold", v.net > 0 ? "pos" : "neg")}>
+          {v.net > 0 ? `+${fmt0(v.net)}` : fmt0(v.net)}
+        </span>
+        <span className="tiny faint">a year, after the fee</span>
+      </span>
+    </button>
   );
 }

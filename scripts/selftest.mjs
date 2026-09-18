@@ -11875,6 +11875,177 @@ await test("a draft becomes rules this document can hold", () => {
   assert.ok(rules[0].id, "and it has an id of its own, so the form can edit it");
 });
 
+/* ── the fee, the interest, and the bonus ──────────────────────────────── */
+
+await test("what one more card would have been worth, less its fee", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat One", rewards: cash(1) }],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 10_000 },
+      { on: "a", date: "2026-04-01", cat: "gas", dollars: 1_000 },
+    ],
+  );
+  // 4% on groceries against a 1% wallet: $400 instead of $100 on the food, and
+  // the petrol stays where it is because the candidate is no better at it.
+  const v = M.CD.candidateValue(db, ...YEAR, { pointCents: 1, base: 1, rules: [earnRule("r", 4, ["food"])], annualFee: 95_00 });
+  assert.equal(v.without, 110_00);
+  assert.equal(v.withIt, 400_00 + 10_00);
+  assert.equal(v.gain, 300_00);
+  assert.equal(v.fee, 95_00);
+  assert.equal(v.net, 205_00);
+  assert.equal(v.onIt, 10_000_00, "and says how much would move onto it");
+});
+
+await test("a card that beats nothing you hold is worth nothing, not less than nothing", () => {
+  // Before the fee. A card nobody would ever reach for is simply never
+  // reached for, so the gain is zero rather than negative.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Three", rewards: cash(3) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 1_000 }],
+  );
+  const v = M.CD.candidateValue(db, ...YEAR, { pointCents: 1, base: 1, rules: [], annualFee: 95_00 });
+  assert.equal(v.gain, 0);
+  assert.equal(v.net, -95_00, "and the fee is the whole of what it would cost");
+  assert.equal(v.onIt, 0, "with nothing moving onto it");
+});
+
+await test("the best routing cannot promise what no card would actually pay", () => {
+  // One card, one purchase bigger than its cap, and nowhere else for the money
+  // to go. What the routing says it could have earned has to be what that card
+  // pays, or the page invents a saving out of the cap it ignored.
+  const db = walletDB(
+    [{ id: "a", name: "Five Capped", rewards: cash(1, [earnRule("r", 5, ["food"], { cap: 1_000_00, period: "year" })]) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 2_000 }],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.earned, 50_00 + 10_00, "5% on the first thousand, 1% on the rest");
+  assert.equal(r.totals.best, r.totals.earned, "and there was never anywhere better for it to go");
+  assert.equal(r.totals.gap, 0, "so there is nothing to say");
+});
+
+await test("a candidate is weighed on card spending only", () => {
+  // A new card cannot collect the mortgage either. Counting money it could
+  // never touch is how a card pays for itself on paper and not in the bank.
+  const db = walletDB(
+    [{ id: "a", name: "Flat One", rewards: cash(1) }],
+    [
+      { on: "chk", date: "2026-02-01", cat: "gas", dollars: 40_000 },
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 1_000 },
+    ],
+  );
+  const v = M.CD.candidateValue(db, ...YEAR, { pointCents: 1, base: 5, rules: [] });
+  assert.equal(v.gain, 40_00, "five percent of the thousand that was on a card, not of the forty thousand");
+});
+
+await test("interest is counted only where the card says it charged some", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 100 }],
+  );
+  assert.equal(M.CD.interestOn(db, "a", ...YEAR), 0, "silence is not an accusation");
+
+  const charged = {
+    ...db,
+    transactions: [...db.transactions, {
+      id: "ti", accountId: "a", date: "2026-04-01", merchant: "INTEREST CHARGE ON PURCHASES",
+      amount: -42_10, categoryId: "food", tags: [], pending: false, reviewed: true,
+      hideFromReports: false, createdAt: "2026-04-01T00:00:00.000Z",
+    }],
+  };
+  assert.equal(M.CD.interestOn(charged, "a", ...YEAR), 42_10);
+  assert.equal(M.CD.interestOn(charged, "chk", ...YEAR), 0, "and only on the card that charged it");
+
+  // "Charge" on its own is a petrol station, a phone shop and half the high
+  // street. Only interest is interest.
+  const noise = {
+    ...db,
+    transactions: [...db.transactions, {
+      id: "tc", accountId: "a", date: "2026-05-01", merchant: "ChargePoint",
+      amount: -18_40, categoryId: "food", tags: [], pending: false, reviewed: true,
+      hideFromReports: false, createdAt: "2026-05-01T00:00:00.000Z",
+    }],
+  };
+  assert.equal(M.CD.interestOn(noise, "a", ...YEAR), 0);
+  assert.equal(M.CD.interestOn(charged, "a", "2026-01-01", "2026-03-31"), 0, "and only inside the window");
+
+  const report = M.CD.cardReport(charged, ...YEAR);
+  assert.equal(report.cards[0].interest, 42_10, "so the page can set it against what the card earned");
+});
+
+await test("a refund of interest is not interest charged", () => {
+  const db = walletDB([{ id: "a", name: "Flat Two", rewards: cash(2) }], []);
+  const back = {
+    ...db,
+    transactions: [{
+      id: "ti", accountId: "a", date: "2026-04-01", merchant: "Interest charge refund",
+      amount: 42_10, categoryId: "food", tags: [], pending: false, reviewed: true,
+      hideFromReports: false, createdAt: "2026-04-01T00:00:00.000Z",
+    }],
+  };
+  assert.equal(M.CD.interestOn(back, "a", ...YEAR), 0);
+});
+
+const bonus = (extra = {}) => ({ requirement: 4_000_00, from: "2026-01-01", by: "2026-04-01", ...extra });
+
+await test("a sign-up bonus is counted from what the card was actually charged", () => {
+  const spend = [buy("2026-01-15", "food", 1_500), buy("2026-02-15", "food", 1_000)];
+  const p = M.CD.bonusProgress(bonus(), spend, "2026-03-01");
+  assert.equal(p.spent, 2_500_00);
+  assert.equal(p.left, 1_500_00);
+  assert.equal(p.daysLeft, 31);
+  assert.equal(p.met, false);
+  assert.equal(p.missed, false);
+});
+
+await test("and only from inside its own window", () => {
+  const spend = [
+    buy("2025-12-31", "food", 5_000),
+    buy("2026-02-01", "food", 1_000),
+    buy("2026-04-02", "food", 5_000),
+  ];
+  const p = M.CD.bonusProgress(bonus(), spend, "2026-03-01");
+  assert.equal(p.spent, 1_000_00, "the day before it opened and the day after it shut do not count");
+});
+
+await test("a bonus that has been met says so, and stops asking for more", () => {
+  // Close is not met. Ninety-five percent of the way there still pays nothing,
+  // and a page that called it done would cost somebody the bonus.
+  const nearly = M.CD.bonusProgress(bonus(), [buy("2026-02-01", "food", 3_800)], "2026-03-01");
+  assert.equal(nearly.met, false, "$3,800 of $4,000 is not a bonus");
+  assert.equal(nearly.left, 200_00);
+  const exactly = M.CD.bonusProgress(bonus(), [buy("2026-02-01", "food", 4_000)], "2026-03-01");
+  assert.equal(exactly.met, true, "and the requirement itself is met, not missed by a penny");
+
+  const p = M.CD.bonusProgress(bonus(), [buy("2026-02-01", "food", 5_000)], "2026-03-01");
+  assert.equal(p.met, true);
+  assert.equal(p.left, 0, "never negative: there is nothing left to spend");
+  assert.equal(p.missed, false);
+});
+
+await test("a bonus whose window has shut without being met is missed, not still running", () => {
+  const p = M.CD.bonusProgress(bonus(), [buy("2026-02-01", "food", 1_000)], "2026-05-01");
+  assert.equal(p.met, false);
+  assert.equal(p.missed, true);
+  assert.ok(p.daysLeft < 0, `${p.daysLeft}`);
+
+  // Met in time, read after the window: still met, never missed.
+  const done = M.CD.bonusProgress(bonus(), [buy("2026-02-01", "food", 5_000)], "2026-05-01");
+  assert.equal(done.met, true);
+  assert.equal(done.missed, false);
+});
+
+await test("a bonus is read over its own window, not the page's", () => {
+  // A card opened eighteen months ago still has to say whether its bonus was
+  // met, and a page showing the last year would only ever see part of it.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: { ...cash(2), bonus: { requirement: 1_000_00, from: "2024-01-01", by: "2024-04-01" } } }],
+    [{ on: "a", date: "2024-02-01", cat: "food", dollars: 1_500 }],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.spend, 0, "none of it is inside the page's year");
+  assert.equal(r.cards[0].bonus.met, true, "but the bonus was met all the same");
+});
+
 await rm(dir, { recursive: true, force: true });
 
 for (const [status, name, msg] of results) console.log(status.padEnd(5), name, msg ? `— ${msg}` : "");

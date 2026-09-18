@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
+import type { Account, CandidateCard, CardRewards, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
 import { buildDemoDB, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
 import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
@@ -432,6 +432,11 @@ export interface Actions {
   addEstateDocument: (d: Omit<EstateDocument, "id">) => void;
   updateEstateDocument: (id: ID, patch: Partial<EstateDocument>) => void;
   deleteEstateDocument: (id: ID) => void;
+
+  /** A card nobody holds, kept so the question can be asked again. */
+  addCandidate: (name: string, rewards: CardRewards) => void;
+  updateCandidate: (id: ID, patch: Partial<CandidateCard>) => void;
+  deleteCandidate: (id: ID) => void;
 
   addHolding: (h: Omit<Holding, "id">) => void;
   updateHolding: (id: ID, patch: Partial<Holding>) => void;
@@ -925,6 +930,19 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     deleteEstateDocument: (id) => apply((db) => withEstate(db, (e) => ({
       ...e, documents: e.documents.filter((d) => d.id !== id),
     })), "delete document"),
+
+    addCandidate: (name, rewards) => apply((db) => ({
+      ...db,
+      candidates: [...(db.candidates ?? []), { id: uid("cc"), name, rewards }],
+    }), "add a card to weigh up"),
+    updateCandidate: (id, patch) => apply((db) => ({
+      ...db,
+      candidates: (db.candidates ?? []).map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    })),
+    deleteCandidate: (id) => apply((db) => ({
+      ...db,
+      candidates: (db.candidates ?? []).filter((c) => c.id !== id),
+    }), "stop weighing up a card"),
 
     addHolding: (h) => apply((db) => ({ ...db, holdings: [...db.holdings, { ...h, id: uid("h") }] })),
     updateHolding: (id, patch) => apply((db) => ({ ...db, holdings: replace(db.holdings, id, patch) })),

@@ -6097,6 +6097,8 @@ try {
     // as one that has been.
     const wl = await browser.newPage({ viewport: { width: 1280, height: 1200 } });
     const dollars = (t) => Number(t.replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "0");
+    // A deadline that is always ahead of today, whenever this is run.
+    const SOON = new Date(Date.now() + 40 * 86400000).toISOString().slice(0, 10);
     await wl.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
     await wl.waitForTimeout(1500);
 
@@ -6104,7 +6106,11 @@ try {
       best: document.querySelector(".nw-total")?.innerText ?? "",
       tiles: [...document.querySelectorAll(".card-head + .grid .card, .grid .card")]
         .map((t) => t.innerText.replace(/\n/g, " | ")),
-      cards: [...document.querySelectorAll(".card-row")].map((r) => ({
+      // Scoped to the wallet: the candidates below draw the same kind of row,
+      // and a card nobody holds must not read as one that is held.
+      cards: [...(([...document.querySelectorAll(".card")]
+        .find((c) => /Your wallet/.test(c.querySelector(".card-head")?.innerText ?? ""))
+        ?.querySelectorAll(".card-row")) ?? [])].map((r) => ({
         // The logo's initials are the first line of the row, so the name is
         // read off the element that holds it rather than off the text.
         name: r.querySelector(".bold")?.innerText.trim() ?? "",
@@ -6211,6 +6217,87 @@ try {
       }
       await wl.locator(".modal-foot button", { hasText: "Cancel" }).click({ timeout: 8000 });
       await wl.waitForTimeout(400);
+    }
+
+    // A fee that does not clear, a bonus with a deadline, and a card nobody
+    // holds measured against the year that happened. Between them these are
+    // the difference between a rewards page and a scoreboard.
+    if (await tryStep("a fee and a bonus can be entered", async () => {
+      await wl.locator(".card-row").first().click({ timeout: 8000 });
+      await wl.locator(".modal").waitFor({ timeout: 5000 });
+      await wl.locator('.modal .field:has(label:text-is("Annual fee")) input').fill("395", { timeout: 8000 });
+      await wl.locator('.modal .field:has(label:text-is("Spend to earn it")) input').fill("4000", { timeout: 8000 });
+      await wl.waitForTimeout(400);
+      await wl.locator('.modal .field:has(label:text-is("By")) input').fill(SOON, { timeout: 8000 });
+      await wl.locator(".modal-foot button", { hasText: "Save and confirm" }).click({ timeout: 8000 });
+      await wl.waitForTimeout(900);
+    })) {
+      const row = await wl.evaluate(() =>
+        document.querySelector(".card-row")?.innerText.replace(/\n/g, " | ") ?? "");
+      check("and the card says whether what it earned covers its fee",
+        /Clears its fee|short of its fee/.test(row), row.slice(0, 160));
+      check("and how far along the bonus is, with the days still to run",
+        /still to spend for the bonus, \d+ days? left|Bonus earned/.test(row), row.slice(0, 160));
+    }
+
+    // A card nobody holds, weighed against the spending that happened.
+    const candidates = () => wl.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /weighing up/.test(c.querySelector(".card-head")?.innerText ?? ""));
+      return card ? [...card.querySelectorAll(".card-row")].map((r) => r.innerText.replace(/\n/g, " | ")) : null;
+    });
+    check("the page offers to weigh up a card nobody holds", (await candidates())?.length === 0,
+      JSON.stringify(await candidates()));
+
+    if (await tryStep("one can be typed in", async () => {
+      await wl.locator(".card-head button", { hasText: "Add" }).last().click({ timeout: 8000 });
+      await wl.locator(".modal").waitFor({ timeout: 5000 });
+      await wl.locator('.modal .field:has(label:text-is("Card")) input').fill("A Better Card", { timeout: 8000 });
+      await wl.locator('.modal .field:has(label:text-is("On everything")) input').fill("9", { timeout: 8000 });
+      await wl.locator('.modal .field:has(label:text-is("Annual fee")) input').fill("50", { timeout: 8000 });
+      await wl.locator(".modal-foot button", { hasText: "Save and confirm" }).click({ timeout: 8000 });
+      await wl.waitForTimeout(900);
+    })) {
+      const listed = await candidates();
+      check("and is measured against the year that happened, net of its fee",
+        listed?.length === 1 && /A Better Card/.test(listed[0])
+        && /more than your wallet earned/.test(listed[0]) && /\+\$/.test(listed[0]),
+        (listed ?? []).join(" // ").slice(0, 190));
+      // It is not a card anybody holds: it must not turn up in the wallet or
+      // change what the wallet is said to have earned.
+      const after = await read();
+      check("without joining the wallet or changing what the wallet earned",
+        after.cards.length === before.cards.length
+        && !after.cards.some((c) => /A Better Card/.test(c.name)),
+        after.cards.map((c) => c.name).join(", "));
+
+      // One that is no better than what is already held, with a fee. The fee
+      // has to come off, or a page could recommend paying for nothing.
+      if (await tryStep("a card that is no better can be typed in too", async () => {
+        await wl.locator(".card-head button", { hasText: "Add" }).last().click({ timeout: 8000 });
+        await wl.locator(".modal").waitFor({ timeout: 5000 });
+        await wl.locator('.modal .field:has(label:text-is("Card")) input').fill("No Better Card", { timeout: 8000 });
+        await wl.locator('.modal .field:has(label:text-is("On everything")) input').fill("1", { timeout: 8000 });
+        await wl.locator('.modal .field:has(label:text-is("Annual fee")) input').fill("95", { timeout: 8000 });
+        await wl.locator(".modal-foot button", { hasText: "Save and confirm" }).click({ timeout: 8000 });
+        await wl.waitForTimeout(900);
+      })) {
+        const both = await candidates();
+        const dud = (both ?? []).find((r) => /No Better Card/.test(r)) ?? "";
+        check("and comes out behind by its fee, rather than looking free",
+          /Nothing you buy would go on it/.test(dud) && /-\$95/.test(dud), dud.slice(0, 190));
+        await wl.locator(".card-row", { hasText: "No Better Card" }).click({ timeout: 8000 });
+        await wl.locator(".modal-foot button", { hasText: "Remove" }).click({ timeout: 8000 });
+        await wl.waitForTimeout(700);
+      }
+
+      if (await tryStep("and it can be dropped again", async () => {
+        await wl.locator(".card-row", { hasText: "A Better Card" }).click({ timeout: 8000 });
+        await wl.locator(".modal-foot button", { hasText: "Remove" }).click({ timeout: 8000 });
+        await wl.waitForTimeout(800);
+      })) {
+        check("leaving nothing behind", (await candidates())?.length === 0, JSON.stringify(await candidates()));
+      }
     }
 
     // A bonus rate with a cap has to be enterable, because a cap is most of

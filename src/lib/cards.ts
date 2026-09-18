@@ -1,5 +1,5 @@
-import type { Account, CardRewards, DB, EarnRule, ID, ISODate } from "../types.js";
-import { monthOf } from "./date.js";
+import type { Account, CardRewards, DB, EarnRule, ID, ISODate, SignupBonus } from "../types.js";
+import { monthOf, parseISO, today } from "./date.js";
 import { categoryKind, counts, lines, mutedAccountIds } from "./select.js";
 
 /**
@@ -122,6 +122,10 @@ export interface CardLine {
   /** Whether a person has checked these terms, and when. */
   confirmedAt?: string;
   set: boolean;
+  /** Interest this card charged in the window, when it charged any. */
+  interest: number;
+  /** How far along its sign-up bonus is, when it has one. */
+  bonus?: BonusProgress;
 }
 
 export interface CategoryLine {
@@ -169,36 +173,57 @@ export interface CardReport {
 function bestRouting(cards: { id: ID; rewards: CardRewards }[], spend: readonly SpendLine[]) {
   const used = new Map<string, number>();
   const byCategory = new Map<ID, { best: number; on: Map<ID, number> }>();
+  const byCard = new Map<ID, number>();
   let total = 0;
 
-  const rateOn = (c: { id: ID; rewards: CardRewards }, line: SpendLine, amount: number) => {
+  /**
+   * What this card would pay for this purchase, given what its caps have
+   * already taken, and what that would cost each of those caps.
+   *
+   * Split at the cap exactly as earnDetail splits it. Valuing the whole
+   * purchase at the bonus rate whenever the cap had a dollar left in it was
+   * the bug this replaces: a two-thousand-dollar shop against a thousand of
+   * remaining cap was priced at five percent of all of it, so the page
+   * promised a saving no card would ever have paid.
+   */
+  const valueOn = (c: { id: ID; rewards: CardRewards }, line: SpendLine) => {
+    const charges: { key: string; amount: number }[] = [];
+    let left = line.amount;
+    let points = 0;
     for (const rule of claiming(c.rewards, line.categoryId)) {
-      if (rule.cap === undefined) return { value: amount * rule.rate * c.rewards.pointCents, rule };
+      if (left <= 0) break;
+      if (rule.cap === undefined) { points += left * rule.rate; left = 0; break; }
       const key = `${c.id}:${rule.id}:${capKey(rule, line.date)}`;
-      if ((used.get(key) ?? 0) >= rule.cap) continue;
-      return { value: amount * rule.rate * c.rewards.pointCents, rule, key };
+      const room = Math.max(0, rule.cap - (used.get(key) ?? 0));
+      const at = Math.min(left, room);
+      if (at <= 0) continue;
+      charges.push({ key, amount: at });
+      points += at * rule.rate;
+      left -= at;
     }
-    return { value: amount * c.rewards.base * c.rewards.pointCents, rule: undefined };
+    points += left * c.rewards.base;
+    return { value: points * c.rewards.pointCents, charges };
   };
 
   for (const line of [...spend].sort((a, b) => (a.date < b.date ? -1 : 1))) {
-    let pick = null as null | { id: ID; value: number; key?: string };
+    let pick = null as null | { id: ID; value: number; charges: { key: string; amount: number }[] };
     for (const c of cards) {
-      const { value, key } = rateOn(c, line, line.amount);
-      if (!pick || value > pick.value) pick = { id: c.id, value, key };
+      const { value, charges } = valueOn(c, line);
+      if (!pick || value > pick.value) pick = { id: c.id, value, charges };
     }
     if (!pick) continue;
-    // Charged against the cap it was paid from, so the next purchase sees a
+    // Charged against the caps it was paid from, so the next purchase sees a
     // wallet in the state this one left it.
-    if (pick.key) used.set(pick.key, (used.get(pick.key) ?? 0) + line.amount);
+    for (const ch of pick.charges) used.set(ch.key, (used.get(ch.key) ?? 0) + ch.amount);
     const value = Math.round(pick.value / 100);
     total += value;
     const at = byCategory.get(line.categoryId) ?? { best: 0, on: new Map<ID, number>() };
     at.best += value;
     at.on.set(pick.id, (at.on.get(pick.id) ?? 0) + line.amount);
     byCategory.set(line.categoryId, at);
+    byCard.set(pick.id, (byCard.get(pick.id) ?? 0) + line.amount);
   }
-  return { total, byCategory };
+  return { total, byCategory, byCard };
 }
 
 /** Which card the routing leaned on for a category, by spend rather than count. */
@@ -213,12 +238,16 @@ const leader = (on: Map<ID, number>): ID | undefined =>
  * transfer is out, which is what keeps a card payment from counting as a
  * purchase on the card it clears.
  */
-export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
-  const accounts = cardAccounts(db);
-  const wallet = accounts.map((a) => ({ id: a.id, rewards: rewardsOf(a) }));
-  const onCard = new Set(accounts.map((a) => a.id));
+/**
+ * Every purchase in the window, split by whether a card was involved.
+ *
+ * One walk, shared, because more than one thing on this page asks the same
+ * question of the same transactions and two walks would be two places for
+ * "what counts as spending" to drift apart.
+ */
+function walkSpend(db: DB, from: ISODate, to: ISODate) {
+  const onCard = new Set(cardAccounts(db).map((a) => a.id));
   const muted = mutedAccountIds(db);
-
   const carded: SpendLine[] = [];
   const elsewhere: SpendLine[] = [];
   const byCard = new Map<ID, SpendLine[]>();
@@ -241,6 +270,21 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
       }
     }
   }
+  return { carded, elsewhere, byCard, spent };
+}
+
+/** What went on a card in the window, for anything weighing one card against another. */
+export const cardedSpend = (db: DB, from: ISODate, to: ISODate): SpendLine[] =>
+  walkSpend(db, from, to).carded;
+
+/** What went on one card, over a window of its own. */
+export const spendOnCard = (db: DB, accountId: ID, from: ISODate, to: ISODate): SpendLine[] =>
+  walkSpend(db, from, to).byCard.get(accountId) ?? [];
+
+export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
+  const accounts = cardAccounts(db);
+  const wallet = accounts.map((a) => ({ id: a.id, rewards: rewardsOf(a) }));
+  const { carded, elsewhere, byCard, spent } = walkSpend(db, from, to);
 
   // What was actually earned, card by card, and per category so the table can
   // set the two side by side.
@@ -264,6 +308,13 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
       base: r.base * r.pointCents,
       confirmedAt: r.confirmedAt,
       set: isSet(a),
+      interest: interestOn(db, a.id, from, to),
+      // Counted over the bonus's own window rather than the page's, because a
+      // card opened eighteen months ago still has to say whether its bonus was
+      // met, and a page showing the last year would only see part of it.
+      bonus: r.bonus
+        ? bonusProgress(r.bonus, spendOnCard(db, a.id, r.bonus.from, r.bonus.by), today())
+        : undefined,
     };
   });
 
@@ -308,5 +359,118 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
       spend: elsewhere.reduce((n, l) => n + l.amount, 0),
       could: bestRouting(wallet, elsewhere).total,
     },
+  };
+}
+
+/* ── the fee, the interest, and the bonus ──────────────────────────────── */
+
+/**
+ * Interest this card charged, which is the counterweight to everything above.
+ *
+ * Narrow on purpose: a charge on the card whose merchant or category says
+ * interest or finance charge. Only stated when there is evidence, because a
+ * page that guessed at interest would be worse than one that said nothing.
+ * A card earning two percent while charging twenty-two is a losing card, and a
+ * rewards page that never mentions that is lying by omission.
+ */
+const LOOKS_LIKE_INTEREST = /interest|finance charge/i;
+
+export function interestOn(db: DB, accountId: ID, from: ISODate, to: ISODate): number {
+  const name = new Map(db.categories.map((c) => [c.id, c.name]));
+  let out = 0;
+  for (const t of db.transactions) {
+    if (t.accountId !== accountId || t.date < from || t.date > to || t.amount >= 0) continue;
+    const said = `${t.merchant} ${name.get(t.categoryId) ?? ""}`;
+    if (LOOKS_LIKE_INTEREST.test(said)) out += -t.amount;
+  }
+  return out;
+}
+
+export interface BonusProgress {
+  requirement: number;
+  spent: number;
+  /** Never negative: what is still to spend. */
+  left: number;
+  /** Days from `now` to the last day that counts. Negative once it has gone. */
+  daysLeft: number;
+  met: boolean;
+  /** The window has closed without the requirement being met. */
+  missed: boolean;
+  reward?: string;
+}
+
+/**
+ * How far along a sign-up bonus is, counted from what the card was actually
+ * charged inside its own window.
+ */
+export function bonusProgress(
+  bonus: SignupBonus, spend: readonly SpendLine[], now: ISODate,
+): BonusProgress {
+  const spent = spend
+    .filter((l) => l.date >= bonus.from && l.date <= bonus.by)
+    .reduce((n, l) => n + l.amount, 0);
+  const met = spent >= bonus.requirement;
+  const daysLeft = Math.round(
+    (parseISO(bonus.by).getTime() - parseISO(now).getTime()) / 86_400_000,
+  );
+  return {
+    requirement: bonus.requirement,
+    spent,
+    left: Math.max(0, bonus.requirement - spent),
+    daysLeft,
+    met,
+    missed: !met && daysLeft < 0,
+    reward: bonus.reward,
+  };
+}
+
+export interface Verdict {
+  /** What the wallet earns as it stands. */
+  without: number;
+  /** What it would earn with this card in it. */
+  withIt: number;
+  /**
+   * Never negative: a card can only ever be reached for when it wins, so the
+   * walk should not be able to come out behind. The floor is belt and braces
+   * against a future rule shape that could, not a case seen today.
+   */
+  gain: number;
+  fee: number;
+  /** The gain less the fee. Negative when the fee is not worth paying. */
+  net: number;
+  /** Spend the routing would move onto it. */
+  onIt: number;
+}
+
+/**
+ * What one more card would have been worth, on the year that happened.
+ *
+ * The same purchase-by-purchase walk, run twice: once over the wallet as it
+ * is, once with the candidate in it. The difference is what the card would
+ * have added, and the fee comes off it. It cannot come out negative before the
+ * fee, because a card nobody has to reach for is simply never reached for.
+ *
+ * Only spending that already goes on a card. A new card cannot collect the
+ * mortgage either, and counting money it could never touch is how a card pays
+ * for itself on paper and not in the bank.
+ */
+export function candidateValue(
+  db: DB, from: ISODate, to: ISODate, candidate: CardRewards,
+): Verdict {
+  const wallet = cardAccounts(db).map((a) => ({ id: a.id, rewards: rewardsOf(a) }));
+  const spend = cardedSpend(db, from, to);
+
+  const without = bestRouting(wallet, spend).total;
+  const CANDIDATE = "__candidate__";
+  const withCard = bestRouting([...wallet, { id: CANDIDATE, rewards: candidate }], spend);
+  const gain = Math.max(0, withCard.total - without);
+  const fee = candidate.annualFee ?? 0;
+  return {
+    without,
+    withIt: withCard.total,
+    gain,
+    fee,
+    net: gain - fee,
+    onIt: withCard.byCard.get(CANDIDATE) ?? 0,
   };
 }

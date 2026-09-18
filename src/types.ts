@@ -142,6 +142,24 @@ export interface EarnRule {
   label?: string;
 }
 
+/**
+ * What the card pays for opening it, and what has to be spent to get it.
+ *
+ * Worth tracking because it has a deadline and because the spending that
+ * counts towards it is spending the app already has. Nobody misses a bonus by
+ * not knowing the terms; they miss it by losing track of the date.
+ */
+export interface SignupBonus {
+  /** What has to be spent, in cents. */
+  requirement: number;
+  /** The day the window opened, usually the day the card arrived. */
+  from: ISODate;
+  /** The last day that counts. */
+  by: ISODate;
+  /** What it pays, in the card's own words. */
+  reward?: string;
+}
+
 export interface CardRewards {
   /** What one point is worth, in cents. 1 for cash back. */
   pointCents: number;
@@ -150,6 +168,7 @@ export interface CardRewards {
   rules: EarnRule[];
   /** In cents, charged yearly. */
   annualFee?: number;
+  bonus?: SignupBonus;
   /**
    * When somebody last checked these against the card itself.
    *
@@ -550,7 +569,23 @@ export interface DB {
   forecast?: ForecastPlan;
   /** What a family would need to find. Absent until somebody opens it. */
   estate?: EstateRecord;
+  /** Cards being considered, which nobody holds. Absent until one is added. */
+  candidates?: CandidateCard[];
   settings: Settings;
+}
+
+/**
+ * A card being weighed up, which nobody holds.
+ *
+ * Kept so the question can be asked again next month without typing the offer
+ * out a second time, and so two of them can be set against each other. It is
+ * never part of the wallet and never earns anything: it exists to be measured
+ * against the spending that already happened.
+ */
+export interface CandidateCard {
+  id: ID;
+  name: string;
+  rewards: CardRewards;
 }
 
 export interface HopperExchange {
