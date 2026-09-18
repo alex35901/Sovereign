@@ -66,6 +66,7 @@ await build({
       export * as CL from "./src/lib/changelog.ts";
       export * as RC from "./src/lib/recurring.ts";
       export { recurringList, recurringByMerchant } from "./src/lib/select.ts";
+      export { debtsFrom, debtsLeftOut } from "./src/lib/payoff.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -11378,6 +11379,51 @@ await test("a row knows it repeats by the merchant it is at", () => {
   // What was said not to repeat must not be marked as though it does.
   const off = { ...db, recurring: [{ ...M.recurringList(db)[0], dismissed: true }] };
   assert.equal(M.recurringByMerchant(off).get(M.RC.recurringIdFor("Netflix")), undefined);
+});
+
+/* ── a card you clear every month is not a balance to pay down ─────────── */
+
+const cardDB = () => {
+  const base = M.emptyDB();
+  return {
+    ...base,
+    accounts: [
+      { id: "card", name: "Venture X", institution: "Capital One", type: "credit", balance: -2_400_00, includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "car", name: "Auto Loan", institution: "Bank", type: "loan", balance: -19_000_00, includeInNetWorth: true, hidden: false, history: [], order: 1 },
+    ],
+  };
+};
+
+await test("a debt left out is gone from the plan and nowhere else", () => {
+  const db = cardDB();
+  assert.deepEqual(M.debtsFrom(db).map((d) => d.name), ["Venture X", "Auto Loan"]);
+  assert.deepEqual(M.debtsLeftOut(db), []);
+
+  const set = { ...db, accounts: db.accounts.map((a) => (a.id === "card" ? { ...a, excludeFromPayoff: true } : a)) };
+  assert.deepEqual(M.debtsFrom(set).map((d) => d.name), ["Auto Loan"], "out of the plan");
+  assert.deepEqual(M.debtsLeftOut(set).map((d) => d.name), ["Venture X"], "and listed as set aside");
+  assert.equal(M.debtsLeftOut(set)[0].balance, 2_400_00, "as a positive figure, like every other debt here");
+
+  // Still owed: net worth is not what this flag is about.
+  const acct = set.accounts.find((a) => a.id === "card");
+  assert.equal(acct.balance, -2_400_00);
+  assert.equal(acct.includeInNetWorth, true);
+});
+
+await test("what is set aside is only ever what would have been a debt", () => {
+  const db = cardDB();
+  // A flag on something that is not a debt says nothing and must not be listed.
+  const odd = {
+    ...db,
+    accounts: [
+      ...db.accounts.map((a) => ({ ...a, excludeFromPayoff: true })),
+      { id: "cash", name: "Everyday", institution: "Bank", type: "checking", balance: 4_000_00, includeInNetWorth: true, hidden: false, history: [], excludeFromPayoff: true, order: 2 },
+      { id: "paid", name: "Cleared Card", institution: "Bank", type: "credit", balance: 0, includeInNetWorth: true, hidden: false, history: [], excludeFromPayoff: true, order: 3 },
+      { id: "gone", name: "Old Card", institution: "Bank", type: "credit", balance: -50_00, includeInNetWorth: true, hidden: true, history: [], excludeFromPayoff: true, order: 4 },
+    ],
+  };
+  assert.deepEqual(M.debtsLeftOut(odd).map((d) => d.name), ["Venture X", "Auto Loan"]);
+  assert.deepEqual(M.debtsFrom(odd), [], "and the plan is empty rather than falling back to them");
 });
 
 await rm(dir, { recursive: true, force: true });

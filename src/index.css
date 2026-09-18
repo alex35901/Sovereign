@@ -1180,6 +1180,10 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   text-underline-offset: 2px;
 }
 .payoff-rate:hover { color: var(--accent); }
+.payoff-leave {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-top: 10px; border-top: 1px solid var(--line-soft);
+}
 .payoff-row { gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); }
 .payoff-row:last-child { border-bottom: 0; }
 /* A numbered queue, because the order is the whole subject. */

@@ -4744,6 +4744,52 @@ try {
           }));
       }
     }
+    // A card cleared every month is owed but is not a balance to pay down,
+    // and leaving it in puts a 22% rate at the top of a plan it does not
+    // belong in. Setting it aside must not lose it: net worth still counts it,
+    // and the way back has to be visible from here.
+    // Scoped to the card that holds the order: "Left out" draws payoff-rows of
+    // its own, and the month on the right of each row is bold as well.
+    const plan = () => po.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /In the order they go/.test(c.querySelector(".card-head")?.innerText ?? ""));
+      return {
+        rows: card ? [...card.querySelectorAll(".payoff-row .col.grow > .bold")].map((b) => b.innerText.trim()) : [],
+        owed: document.querySelector(".fc-head .small.faint")?.innerText ?? "",
+        back: [...document.querySelectorAll(".card-head")].some((h) => /Left out/.test(h.innerText)),
+      };
+    });
+    const full = await plan();
+    if (await tryStep("a debt can be left out from its own row", async () => {
+      await po.locator(".payoff-row .payoff-rate").first().click({ timeout: 8000 });
+      await po.locator(".menu button", { hasText: "Leave out of this plan" }).click({ timeout: 8000 });
+      await po.waitForTimeout(800);
+    })) {
+      const rest = await plan();
+      check("which takes it out of the order",
+        rest.rows.length === full.rows.length - 1 && !rest.rows.includes(full.rows[0]),
+        `${full.rows.join(", ")} -> ${rest.rows.join(", ")}`);
+      check("and out of what the plan says is owed",
+        rest.owed !== full.owed && /owed/.test(rest.owed), `${full.owed} | ${rest.owed}`);
+      check("while still being listed, so it can be brought back", rest.back);
+      // Set aside, not deleted: the balance is real and net worth counts it.
+      check("and the account is untouched apart from the one flag",
+        await po.evaluate((name) => {
+          const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+          const a = db.accounts.find((x) => x.name === name);
+          return !!a && a.excludeFromPayoff === true && a.balance < 0 && a.includeInNetWorth !== false;
+        }, full.rows[0]), full.rows[0]);
+
+      if (await tryStep("and it can be put back", async () => {
+        await po.locator(".payoff-row button", { hasText: "Put it back" }).first().click({ timeout: 8000 });
+        await po.waitForTimeout(800);
+      })) {
+        const again = await plan();
+        check("which returns it to the order it was in",
+          again.rows.join("|") === full.rows.join("|") && !again.back,
+          `${again.rows.join(", ")} against ${full.rows.join(", ")}`);
+      }
+    }
     await po.close();
 
     const rail = await browser.newPage({ viewport: { width: 1280, height: 900 } });

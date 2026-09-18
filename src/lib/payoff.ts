@@ -174,11 +174,19 @@ export function compareOrders(debts: readonly Debt[], extra: number, from: Month
  * balance, the rate and the years left, so a household sees one figure for a
  * mortgage payment here and on the forecast screen rather than two.
  */
+/** Accounts that would be debts here but have been left out on purpose. */
+export function debtsLeftOut(db: DB): { id: ID; name: string; balance: number }[] {
+  return db.accounts
+    .filter((a) => a.excludeFromPayoff && !a.hidden && !a.closedAt && a.balance < 0
+      && ["credit", "loan", "mortgage", "other_liability"].includes(a.type))
+    .map((a) => ({ id: a.id, name: a.name, balance: Math.abs(a.balance) }));
+}
+
 export function debtsFrom(db: DB): Debt[] {
   const terms = db.forecast?.scenarios.find((s) => s.id === db.forecast?.activeId)?.assumptions.debts ?? {};
   const out: Debt[] = [];
   for (const a of db.accounts) {
-    if (a.hidden || a.closedAt || a.balance >= 0) continue;
+    if (a.hidden || a.closedAt || a.balance >= 0 || a.excludeFromPayoff) continue;
     if (!["credit", "loan", "mortgage", "other_liability"].includes(a.type)) continue;
     const t = terms[a.id] ?? DEBT_DEFAULTS[a.type] ?? DEBT_DEFAULTS.other_liability;
     out.push({

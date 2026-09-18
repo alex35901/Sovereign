@@ -4,9 +4,9 @@ import { TopBar } from "../shell/TopBar";
 import { monthLabel } from "../lib/date";
 import { fmt0 } from "../lib/money";
 import { AreaChart } from "../components/charts";
-import { Card, CardHead, Empty, Field, MoneyInput, NumInput, PercentInput, Popover, Segmented, cx } from "../components/ui";
+import { Btn, Card, CardHead, Empty, Field, MoneyInput, NumInput, PercentInput, Popover, Segmented, cx } from "../components/ui";
 import type { Debt, Order } from "../lib/payoff";
-import { compareOrders, debtsFrom } from "../lib/payoff";
+import { compareOrders, debtsFrom, debtsLeftOut } from "../lib/payoff";
 
 /**
  * Where the next spare dollar should go.
@@ -26,7 +26,9 @@ const ORDERS: { value: Order; label: string }[] = [
 
 export default function Payoff() {
   const db = useDB();
+  const { actions } = useStore();
   const debts = useMemo(() => debtsFrom(db), [db]);
+  const left = useMemo(() => debtsLeftOut(db), [db]);
   const [extra, setExtra] = useState(0);
   const [order, setOrder] = useState<Order>("avalanche");
 
@@ -40,9 +42,19 @@ export default function Payoff() {
         <TopBar title="Debt" />
         <div className="page stack">
           <Card>
+            {/* Two different nothings. A page that says "nothing owed" to
+                somebody carrying a balance they have set aside is wrong, and
+                would leave them with no way to change their mind. */}
             <Empty
-              title="Nothing owed"
-              body="Credit cards, loans and mortgages show up here once they carry a balance. Their rates and terms come from the Forecast page."
+              title={left.length ? "Nothing left to clear" : "Nothing owed"}
+              body={left.length
+                ? `${left.map((d) => d.name).join(", ")} ${left.length === 1 ? "is" : "are"} owed but left out of this plan.`
+                : "Credit cards, loans and mortgages show up here once they carry a balance. Their rates and terms come from the Forecast page."}
+              action={left.length ? (
+                <Btn onClick={() => left.forEach((d) => actions.updateAccount(d.id, { excludeFromPayoff: false }))}>
+                  Put {left.length === 1 ? "it" : "them"} back
+                </Btn>
+              ) : undefined}
             />
           </Card>
         </div>
@@ -167,6 +179,26 @@ export default function Payoff() {
           ) : null}
         </Card>
 
+        {left.length ? (
+          <Card>
+            <CardHead
+              title="Left out"
+              sub="Owed, and counted in net worth, but not a balance this plan tries to clear."
+            />
+            {left.map((d) => (
+              <div key={d.id} className="row payoff-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+                <span className="col grow" style={{ gap: 0 }}>
+                  <span className="bold">{d.name}</span>
+                  <span className="tiny faint">{fmt0(d.balance)} owed</span>
+                </span>
+                <Btn size="sm" onClick={() => actions.updateAccount(d.id, { excludeFromPayoff: false })}>
+                  Put it back
+                </Btn>
+              </div>
+            ))}
+          </Card>
+        ) : null}
+
         <span className="tiny faint" style={{ padding: "0 2px" }}>
           Press a rate to correct it. Rates and terms are shared with the Forecast page, under Accounts,
           so a change here shows there too. The other order would clear everything
@@ -216,6 +248,17 @@ function RateEditor({ debt }: { debt: Debt }) {
               onChange={(years) => set({ termMonths: years * 12 })}
             />
           </Field>
+          {/* A button rather than a switch: from in here it only ever goes one
+              way, and the way back is a row of its own at the foot of the page
+              where a reader can see what they have set aside. */}
+          <div className="payoff-leave">
+            <Btn size="sm" onClick={() => actions.updateAccount(debt.id, { excludeFromPayoff: true })}>
+              Leave out of this plan
+            </Btn>
+            <span className="tiny faint">
+              For a card you clear every month. It stays owed, and still counts in net worth.
+            </span>
+          </div>
         </div>
       )}
     </Popover>

@@ -52,6 +52,15 @@ export interface Account {
    * right the moment a balance changes.
    */
   autoGoalId?: ID;
+  /**
+   * Left out of the payoff plan, though still owed.
+   *
+   * For a card that is cleared every month - put everything on it for the
+   * points, pay it off, carry nothing. The balance is real and net worth
+   * still counts it; what it is not is debt to pay down, and leaving it in
+   * puts a 22% card at the top of a plan it does not belong in.
+   */
+  excludeFromPayoff?: boolean;
   /** Closed on this date: balance zeroed, history kept, sync stops touching it. */
   closedAt?: ISODate;
   /** Sparse snapshots, ascending by date; forward-filled when charting. */
