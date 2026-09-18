@@ -68,6 +68,7 @@ await build({
       export { recurringList, recurringByMerchant } from "./src/lib/select.ts";
       export { debtsFrom, debtsLeftOut } from "./src/lib/payoff.ts";
       export * as CD from "./src/lib/cards.ts";
+      export { readDraft, toRules } from "./src/lib/hopper/rewards.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -11773,6 +11774,105 @@ await test("a category you already played better than the plan shows no saving",
   assert.ok(food.best < food.earned, "and the purchase-by-purchase plan spent that cap on the petrol");
   assert.equal(food.gap, 0, "so there is nothing to say, rather than something negative to say");
   assert.ok(r.totals.gap >= 0);
+});
+
+/* ── a draft of what a card pays is checked, not trusted ───────────────── */
+
+const KNOWN = ["Groceries", "Gas", "Travel & Vacation"];
+const draft = (obj, known = KNOWN) => M.readDraft(JSON.stringify(obj), known);
+
+await test("a well-formed draft is read as it was written", () => {
+  const d = draft({
+    base: 2, pointCents: 1.5, annualFee: 395,
+    rules: [{ rate: 10, categories: ["Travel & Vacation"], cap: 0, period: "", label: "through the portal" }],
+    note: "Check the travel rate.",
+  });
+  assert.equal(d.base, 2);
+  assert.equal(d.pointCents, 1.5);
+  assert.equal(d.annualFee, 395);
+  assert.equal(d.rules.length, 1);
+  assert.equal(d.rules[0].rate, 10);
+  assert.deepEqual(d.rules[0].categories, ["Travel & Vacation"]);
+  assert.equal(d.rules[0].cap, undefined, "a cap of zero is no cap");
+  assert.equal(d.rules[0].label, "through the portal");
+  assert.equal(d.note, "Check the travel rate.");
+});
+
+await test("an answer wrapped in chatter is still read", () => {
+  // Models say "Here you go:" whatever they are asked. Losing a whole draft
+  // to a greeting would make the button unreliable for no reason.
+  const d = M.readDraft('Sure, here is that card:\n```json\n{"base": 2, "rules": []}\n```\nHope that helps.', KNOWN);
+  assert.equal(d.base, 2);
+});
+
+await test("an answer that is not a draft at all is refused", () => {
+  assert.throws(() => M.readDraft("I am afraid I do not know that card.", KNOWN));
+  assert.throws(() => M.readDraft("{ not json at all", KNOWN));
+  assert.throws(() => M.readDraft("", KNOWN));
+});
+
+await test("a category nobody has is dropped rather than invented", () => {
+  const d = draft({ rules: [
+    { rate: 4, categories: ["Groceries", "Dining Out", "Nightclubs"] },
+    { rate: 3, categories: ["Streaming Services"] },
+  ] });
+  assert.equal(d.rules.length, 1, "the rule with nothing left is dropped whole");
+  assert.deepEqual(d.rules[0].categories, ["Groceries"]);
+});
+
+await test("category names are matched however they were cased", () => {
+  const d = draft({ rules: [{ rate: 4, categories: ["  groceries ", "GAS"] }] });
+  assert.deepEqual(d.rules[0].categories, ["Groceries", "Gas"], "and come back spelled the way the document spells them");
+});
+
+await test("a rate that cannot be a rate is not shown as one", () => {
+  // A misread decimal point is the difference between 4% and 400%, and a form
+  // full of nonsense is worse than a form full of defaults.
+  const d = draft({ base: 400, pointCents: -3, annualFee: 99_000_000, rules: [{ rate: 9_999, categories: ["Gas"] }] });
+  assert.ok(d.base <= 20, `base ${d.base}`);
+  assert.equal(d.pointCents, 1, "a negative point value falls back rather than inverting the maths");
+  assert.ok(d.annualFee <= 10_000, `fee ${d.annualFee}`);
+  assert.ok(d.rules[0].rate <= 20, `rate ${d.rules[0].rate}`);
+});
+
+await test("missing and malformed fields fall back instead of throwing", () => {
+  assert.deepEqual(draft({}), { base: 1, pointCents: 1, annualFee: 0, rules: [], note: "" });
+  assert.deepEqual(draft({ rules: "lots" }).rules, []);
+  assert.deepEqual(draft({ rules: [null, 7, { categories: ["Gas"] }] }).rules.length, 1);
+  assert.equal(draft({ rules: [{ rate: 3, categories: "Gas" }] }).rules.length, 0, "a string is not a list of categories");
+  assert.equal(draft({ base: "two" }).base, 1);
+  assert.equal(draft({ note: { long: true } }).note, "");
+});
+
+await test("a period only means something with a cap beside it", () => {
+  assert.equal(draft({ rules: [{ rate: 5, categories: ["Gas"], cap: 1500, period: "quarter" }] }).rules[0].period, "quarter");
+  assert.equal(draft({ rules: [{ rate: 5, categories: ["Gas"], period: "quarter" }] }).rules[0].period, undefined,
+    "a reset on a cap that does not exist would be read as a cap of nothing");
+  assert.equal(draft({ rules: [{ rate: 5, categories: ["Gas"], cap: 1500, period: "fortnight" }] }).rules[0].period, undefined);
+});
+
+await test("a note is kept short and a label shorter", () => {
+  assert.equal(draft({ note: "x".repeat(900) }).note.length, 300);
+  assert.equal(draft({ rules: [{ rate: 2, categories: ["Gas"], label: "y".repeat(500) }] }).rules[0].label.length, 80);
+});
+
+await test("a draft becomes rules this document can hold", () => {
+  const categories = [
+    { id: "c1", name: "Groceries" },
+    { id: "c2", name: "Gas" },
+  ];
+  const rules = M.toRules({
+    base: 1, pointCents: 1, annualFee: 0, note: "",
+    rules: [
+      { rate: 5, categories: ["Groceries", "Gas"], cap: 1_500, period: "quarter" },
+      { rate: 3, categories: ["Nowhere"] },
+    ],
+  }, categories);
+  assert.equal(rules.length, 1, "a rule that maps onto nothing is not a rule");
+  assert.deepEqual(rules[0].categoryIds, ["c1", "c2"]);
+  assert.equal(rules[0].cap, 1_500_00, "dollars in, cents out, like every other figure in the document");
+  assert.equal(rules[0].period, "quarter");
+  assert.ok(rules[0].id, "and it has an id of its own, so the form can edit it");
 });
 
 await rm(dir, { recursive: true, force: true });

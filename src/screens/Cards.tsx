@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Sparkles, Trash2 } from "lucide-react";
 import type { Account, CardRewards, EarnRule, ID } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -8,6 +8,7 @@ import { rangeStart } from "../lib/range";
 import { fmt0 } from "../lib/money";
 import { uid } from "../lib/id";
 import { cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
+import { draftRewards, toRules } from "../lib/hopper/rewards";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, SelectInput, Tile, cx } from "../components/ui";
@@ -188,12 +189,40 @@ export default function Cards() {
 
 /** What one card pays, said plainly enough to be checked against the card. */
 function RewardsModal({ account, onClose }: { account: Account; onClose: () => void }) {
+  const db = useDB();
   const { actions } = useStore();
   const start = rewardsOf(account);
   const [pointCents, setPointCents] = useState(start.pointCents);
   const [base, setBase] = useState(start.base);
   const [annualFee, setFee] = useState(start.annualFee ?? 0);
   const [rules, setRules] = useState<EarnRule[]>(start.rules);
+  const [asking, setAsking] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  /**
+   * A first draft, for checking.
+   *
+   * It fills the form in and nothing else. Confirming is still a separate
+   * press, so a rate the model half-remembers cannot present itself as one
+   * somebody has read off their own card.
+   */
+  const askHopper = async () => {
+    setAsking(true);
+    setFailed(null);
+    try {
+      const draft = await draftRewards(account.name, db.categories);
+      setBase(draft.base);
+      setPointCents(draft.pointCents);
+      setFee(Math.round(draft.annualFee * 100));
+      setRules(toRules(draft, db.categories));
+      setNote(draft.note || "Check every line against your own card before confirming.");
+    } catch (err) {
+      setFailed(err instanceof Error ? err.message : "Hopper could not be reached.");
+    } finally {
+      setAsking(false);
+    }
+  };
 
   const patch = (id: ID, p: Partial<EarnRule>) =>
     setRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...p } : r)));
@@ -224,6 +253,21 @@ function RewardsModal({ account, onClose }: { account: Account; onClose: () => v
         </>
       }
     >
+      <div className="card-ask">
+        <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
+          <span className="small bold">Ask Hopper for a first draft</span>
+          <span className="tiny faint">
+            It is told the card's name and your category names, nothing else. What comes back is a
+            draft to check, not an answer: Hopper does not know your card and will sometimes be wrong.
+          </span>
+        </div>
+        <Btn size="sm" onClick={() => void askHopper()} disabled={asking}>
+          <Sparkles size={13} /> {asking ? "Asking" : "Draft"}
+        </Btn>
+      </div>
+      {note ? <span className="tiny" style={{ color: "var(--accent)" }}>{note}</span> : null}
+      {failed ? <span className="tiny neg">{failed}</span> : null}
+
       <div className="row" style={{ gap: 12 }}>
         <Field label="On everything" hint="Per dollar, in whatever this card counts in">
           <PercentInput value={base} onChange={setBase} suffix="" />

@@ -1281,6 +1281,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .card-cat-name { min-width: 0; }
 .card-cat-spend, .card-cat-earned, .card-cat-gap { text-align: right; }
 .card-cat-best { min-width: 0; color: var(--muted); }
+.card-ask {
+  display: flex; align-items: center; gap: 14px;
+  padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface-2);
+}
+.card-ask .btn { flex: none; }
 .card-rule {
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px;

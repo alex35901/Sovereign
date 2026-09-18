@@ -6180,6 +6180,39 @@ try {
         draft.unset === 1 && draft.warns, `${draft.unset} unset, warned ${draft.warns}`);
     }
 
+    // The draft button, and what it does when there is nothing behind it.
+    // A button that silently fails is worse than no button.
+    if (await tryStep("the editor offers a first draft", async () => {
+      await wl.locator(".card-row").first().click({ timeout: 8000 });
+      await wl.locator(".card-ask").waitFor({ timeout: 5000 });
+    })) {
+      const ask = await wl.evaluate(() => document.querySelector(".card-ask")?.innerText ?? "");
+      check("saying what it sends and that it is a draft, not an answer",
+        /card's name and your category names/.test(ask) && /will sometimes be wrong/.test(ask),
+        ask.replace(/\n/g, " | ").slice(0, 120));
+
+      if (await tryStep("and it can be pressed", async () => {
+        await wl.locator(".card-ask button").click({ timeout: 8000 });
+        await wl.waitForTimeout(1200);
+      })) {
+        // This preview has no key and no passphrase, so the honest outcome is
+        // a message. What must not happen is a silent nothing, or a form that
+        // fills itself with invented figures.
+        const after = await wl.evaluate(() => ({
+          // Playwright's :text-is() is not CSS, so inside the page the field is
+          // found by its label the long way round.
+          said: [...document.querySelectorAll(".modal .tiny")].map((e) => e.innerText).join(" | "),
+          rules: document.querySelectorAll(".card-rule").length,
+        }));
+        check("and says so when it cannot reach Hopper, rather than failing quietly",
+          /not connected|could not be reached|no API key/i.test(after.said), after.said.slice(0, 140));
+        check("leaving the form as it was rather than filling it with guesses",
+          after.rules === 0, `${after.rules} rules appeared`);
+      }
+      await wl.locator(".modal-foot button", { hasText: "Cancel" }).click({ timeout: 8000 });
+      await wl.waitForTimeout(400);
+    }
+
     // A bonus rate with a cap has to be enterable, because a cap is most of
     // what a cash-back card is.
     if (await tryStep("a capped bonus rate can be added", async () => {
