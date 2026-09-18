@@ -67,6 +67,7 @@ await build({
       export * as RC from "./src/lib/recurring.ts";
       export { recurringList, recurringByMerchant } from "./src/lib/select.ts";
       export { debtsFrom, debtsLeftOut } from "./src/lib/payoff.ts";
+      export * as CD from "./src/lib/cards.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
@@ -11424,6 +11425,334 @@ await test("what is set aside is only ever what would have been a debt", () => {
   };
   assert.deepEqual(M.debtsLeftOut(odd).map((d) => d.name), ["Venture X", "Auto Loan"]);
   assert.deepEqual(M.debtsFrom(odd), [], "and the plan is empty rather than falling back to them");
+});
+
+/* ── what a wallet of cards actually earns ─────────────────────────────── */
+
+const earnRule = (id, rate, categoryIds, extra = {}) => ({ id, rate, categoryIds, ...extra });
+const cash = (base, rules = []) => ({ pointCents: 1, base, rules });
+const buy = (date, categoryId, dollars) => ({ date, categoryId, amount: dollars * 100 });
+
+await test("a flat card pays its rate on everything", () => {
+  const card = cash(2);
+  assert.equal(M.CD.earned(card, [buy("2026-03-01", "food", 100)]), 2_00);
+  assert.equal(M.CD.earned(card, [buy("2026-03-01", "food", 100), buy("2026-04-01", "gas", 50)]), 3_00);
+  assert.equal(M.CD.earned(card, []), 0);
+});
+
+await test("a bonus category is paid at its own rate and everything else at base", () => {
+  const card = cash(1, [earnRule("r1", 4, ["food"])]);
+  assert.equal(M.CD.earned(card, [buy("2026-03-01", "food", 100)]), 4_00);
+  assert.equal(M.CD.earned(card, [buy("2026-03-01", "gas", 100)]), 1_00);
+  assert.equal(M.CD.earned(card, [buy("2026-03-01", "food", 100), buy("2026-03-02", "gas", 100)]), 5_00);
+});
+
+await test("points are worth what they are worth, not a cent each", () => {
+  // Two points at 1.5 cents beats three percent cash, and a comparison that
+  // could not say so would be comparing the wrong numbers.
+  const points = { pointCents: 1.5, base: 2, rules: [] };
+  assert.equal(M.CD.earned(points, [buy("2026-03-01", "food", 100)]), 3_00);
+  assert.ok(M.CD.earned(points, [buy("2026-03-01", "food", 100)])
+    > M.CD.earned(cash(2), [buy("2026-03-01", "food", 100)]));
+});
+
+await test("a cap is a cap, and what is over it drops to the base rate", () => {
+  // 5% on the first $1,500 a quarter, 1% after: $2,000 of groceries is
+  // $75 + $5, not $100.
+  const card = cash(1, [earnRule("r1", 5, ["food"], { cap: 1_500_00, period: "quarter" })]);
+  assert.equal(M.CD.earned(card, [buy("2026-01-15", "food", 2_000)]), 75_00 + 5_00);
+  assert.equal(M.CD.earned(card, [buy("2026-01-15", "food", 1_000)]), 50_00, "under the cap, all of it");
+});
+
+await test("a cap fills in the order the money was spent", () => {
+  const card = cash(1, [earnRule("r1", 5, ["food"], { cap: 1_000_00, period: "quarter" })]);
+  const out = [buy("2026-02-01", "food", 600), buy("2026-01-01", "food", 800)];
+  // January's 800 takes the bonus first; February gets 200 of it and 400 at base.
+  assert.equal(M.CD.earned(card, out), 40_00 + 10_00 + 4_00);
+});
+
+await test("a cap resets when its period does", () => {
+  const quarterly = cash(1, [earnRule("r1", 5, ["food"], { cap: 1_000_00, period: "quarter" })]);
+  const two = [buy("2026-03-31", "food", 1_000), buy("2026-04-01", "food", 1_000)];
+  assert.equal(M.CD.earned(quarterly, two), 100_00, "a day apart, but different quarters");
+
+  const yearly = cash(1, [earnRule("r1", 5, ["food"], { cap: 1_000_00, period: "year" })]);
+  assert.equal(M.CD.earned(yearly, two), 50_00 + 10_00, "same year, so one cap between them");
+
+  const monthly = cash(1, [earnRule("r1", 5, ["food"], { cap: 1_000_00, period: "month" })]);
+  assert.equal(M.CD.earned(monthly, two), 100_00);
+
+  // No period at all is a lifetime cap, spent once.
+  const once = cash(1, [earnRule("r1", 5, ["food"], { cap: 1_000_00 })]);
+  assert.equal(M.CD.earned(once, two), 50_00 + 10_00);
+});
+
+await test("quarters are quarters, not three months from January whenever you look", () => {
+  const card = cash(0, [earnRule("r1", 5, ["food"], { cap: 100_00, period: "quarter" })]);
+  const one = (date) => M.CD.earned(card, [buy(date, "food", 100)]);
+  // Q1 Jan-Mar, Q2 Apr-Jun, Q3 Jul-Sep, Q4 Oct-Dec: each gets its own cap.
+  const dates = ["2026-01-31", "2026-03-31", "2026-04-01", "2026-06-30", "2026-07-01", "2026-12-31"];
+  for (const d of dates) assert.equal(one(d), 5_00, d);
+  assert.equal(M.CD.earned(card, [buy("2026-01-31", "food", 100), buy("2026-03-31", "food", 100)]),
+    5_00, "both inside Q1, so one cap");
+  assert.equal(M.CD.earned(card, [buy("2026-03-31", "food", 100), buy("2026-04-01", "food", 100)]),
+    10_00, "either side of the line, so two");
+});
+
+await test("a purchase can straddle a cap", () => {
+  // One charge bigger than what is left of the cap is paid partly at each
+  // rate, which is what the statement does.
+  const card = cash(1, [earnRule("r1", 5, ["food"], { cap: 500_00, period: "year" })]);
+  assert.equal(M.CD.earned(card, [buy("2026-01-01", "food", 1_000)]), 25_00 + 5_00);
+});
+
+await test("the better of two rules on the same category is the one paid", () => {
+  const card = cash(1, [earnRule("low", 2, ["food"]), earnRule("high", 4, ["food"])]);
+  assert.equal(M.CD.earned(card, [buy("2026-03-01", "food", 100)]), 4_00);
+
+  // And when the better one is capped out, the lesser one still beats base.
+  const mixed = cash(1, [
+    earnRule("high", 5, ["food"], { cap: 100_00, period: "year" }),
+    earnRule("low", 3, ["food"]),
+  ]);
+  assert.equal(M.CD.earned(mixed, [buy("2026-03-01", "food", 200)]), 5_00 + 3_00);
+});
+
+await test("a card's categories add up to the card", () => {
+  // The table sets a category against what it earned; those figures have to be
+  // the same money the card's own total is made of.
+  const card = cash(1, [earnRule("r1", 5, ["food", "gas"], { cap: 1_000_00, period: "year" })]);
+  const out = [buy("2026-01-01", "food", 800), buy("2026-02-01", "gas", 800), buy("2026-03-01", "misc", 100)];
+  const detail = M.CD.earnDetail(card, out);
+  const summed = [...detail.byCategory.values()].reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(summed - detail.total) <= 2, `${summed} against ${detail.total}`);
+  // The shared cap is spent once across both, not once each.
+  assert.equal(detail.total, 40_00 + 10_00 + 6_00 + 1_00);
+});
+
+/* ── the wallet against the spending that happened ─────────────────────── */
+
+const walletDB = (cards, txns) => {
+  const base = M.emptyDB();
+  return {
+    ...base,
+    accounts: [
+      ...cards.map((c, i) => ({
+        id: c.id, name: c.name, institution: "Bank", type: "credit", balance: -100_00,
+        includeInNetWorth: true, hidden: false, history: [], order: i, rewards: c.rewards,
+      })),
+      { id: "chk", name: "Everyday", institution: "Bank", type: "checking", balance: 5_000_00,
+        includeInNetWorth: true, hidden: false, history: [], order: 9 },
+    ],
+    groups: [
+      { id: "g1", name: "Spending", kind: "expense", order: 0 },
+      { id: "gt", name: "Transfers", kind: "transfer", order: 1 },
+    ],
+    categories: [
+      { id: "food", groupId: "g1", name: "Groceries", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+      { id: "gas", groupId: "g1", name: "Gas", icon: "x", color: "--c2", excludeFromBudget: false, rollover: false, order: 1 },
+      { id: "pay", groupId: "gt", name: "Card Payment", icon: "x", color: "--c3", excludeFromBudget: false, rollover: false, order: 2 },
+    ],
+    transactions: txns.map((t, i) => ({
+      id: `t${i}`, accountId: t.on, date: t.date, merchant: "Shop", amount: -t.dollars * 100,
+      categoryId: t.cat, tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: `${t.date}T00:00:00.000Z`, ...(t.extra ?? {}),
+    })),
+  };
+};
+
+const YEAR = ["2026-01-01", "2026-12-31"];
+
+await test("what was earned is read off the card the money actually went on", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }, { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 1_000 }],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.spend, 1_000_00);
+  assert.equal(r.totals.earned, 20_00, "2% on the card it was put on");
+  assert.equal(r.totals.best, 40_00, "4% on the card it should have been put on");
+  assert.equal(r.totals.gap, 20_00);
+
+  const food = r.categories.find((c) => c.categoryId === "food");
+  assert.equal(food.gap, 20_00);
+  assert.equal(food.bestAccountId, "b", "and it names which card that was");
+});
+
+await test("a card payment is not a purchase on the card it clears", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 100 },
+      { on: "chk", date: "2026-03-05", cat: "pay", dollars: 100 },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.spend, 100_00, "the transfer is not spending");
+  assert.equal(r.totals.earned, 2_00);
+});
+
+await test("money that never touched a card is counted as earning nothing", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 100 },
+      { on: "chk", date: "2026-03-02", cat: "gas", dollars: 400 },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.offCard, 400_00);
+  assert.equal(r.totals.earned, 2_00, "only what was on a card earned");
+  assert.equal(r.totals.best, 10_00, "but all of it could have been");
+  assert.equal(r.totals.gap, 8_00);
+});
+
+await test("the best routing spends a cap once and then moves on", () => {
+  // $2,000 of groceries against a 5% card capped at $1,000 a year and a flat
+  // 2% card: the first $1,000 goes on the capped one, the rest on the flat one.
+  const db = walletDB(
+    [
+      { id: "cap", name: "Five Capped", rewards: cash(1, [earnRule("r", 5, ["food"], { cap: 1_000_00, period: "year" })]) },
+      { id: "flat", name: "Flat Two", rewards: cash(2) },
+    ],
+    [
+      { on: "flat", date: "2026-02-01", cat: "food", dollars: 1_000 },
+      { on: "flat", date: "2026-03-01", cat: "food", dollars: 1_000 },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.earned, 40_00, "2% on both, as it happened");
+  assert.equal(r.totals.best, 50_00 + 20_00, "5% on the first thousand, 2% on the rest");
+});
+
+await test("the gap is never negative, however the money was routed", () => {
+  // Already on the best card: there is nothing to say, and a page that
+  // invented a saving here would be lying.
+  const db = walletDB(
+    [{ id: "a", name: "Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) }, { id: "b", name: "One", rewards: cash(1) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 500 }],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.gap, 0);
+  assert.equal(r.categories.find((c) => c.categoryId === "food").gap, 0);
+});
+
+await test("the daily driver is the best rate on what nothing else claims", () => {
+  const db = walletDB(
+    [
+      { id: "a", name: "Grocery Five", rewards: cash(1, [earnRule("r", 5, ["food"])]) },
+      { id: "b", name: "Flat Two", rewards: cash(2) },
+    ],
+    [{ on: "a", date: "2026-03-01", cat: "gas", dollars: 100 }],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.driver.accountId, "b", "a 5% grocery card is not the one to reach for by default");
+  assert.equal(r.driver.rate, 2);
+});
+
+await test("a card with nothing said about it is not treated as though it were checked", () => {
+  const db = walletDB([{ id: "a", name: "Unknown", rewards: undefined }], [{ on: "a", date: "2026-03-01", cat: "food", dollars: 100 }]);
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.cards[0].set, false, "so the page can say so rather than quietly assuming 1%");
+  assert.equal(r.cards[0].earned, 1_00, "while still being worth something, so the page works on day one");
+});
+
+await test("only what is inside the window counts", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [
+      { on: "a", date: "2025-12-31", cat: "food", dollars: 100 },
+      { on: "a", date: "2026-06-01", cat: "food", dollars: 100 },
+      { on: "a", date: "2027-01-01", cat: "food", dollars: 100 },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.spend, 100_00);
+});
+
+await test("a hidden card is not part of the wallet", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }, { id: "b", name: "Drawer", rewards: cash(5) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 100 }],
+  );
+  const hidden = { ...db, accounts: db.accounts.map((x) => (x.id === "b" ? { ...x, hidden: true } : x)) };
+  assert.equal(M.CD.cardReport(hidden, ...YEAR).totals.best, 2_00, "a card you cannot see is not one you could have used");
+  assert.equal(M.CD.cardReport(db, ...YEAR).totals.best, 5_00);
+});
+
+await test("a refund is not spending, and does not earn", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 100 }],
+  );
+  const refunded = {
+    ...db,
+    transactions: [...db.transactions, {
+      id: "tr", accountId: "a", date: "2026-03-09", merchant: "Shop", amount: 40_00,
+      categoryId: "food", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: "2026-03-09T00:00:00.000Z",
+    }],
+  };
+  // Deliberately not netted off: the points on the original purchase were
+  // earned, and whether the issuer claws them back is the issuer's business.
+  assert.equal(M.CD.cardReport(refunded, ...YEAR).totals.spend, 100_00);
+});
+
+await test("a split is read a line at a time, so each part earns its own rate", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Groceries Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 200, extra: {
+      splits: [{ id: "s1", categoryId: "food", amount: -100_00 }, { id: "s2", categoryId: "gas", amount: -100_00 }],
+    } }],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.totals.spend, 200_00);
+  assert.equal(r.totals.earned, 4_00 + 1_00, "the groceries half at four, the rest at base");
+});
+
+await test("a shared cap is credited to the purchase that actually used it", () => {
+  // One rule, one cap, two categories. Which of them got the bonus is a
+  // question about which came first, and the table says "your groceries
+  // earned this" - so it had better be the groceries that earned it.
+  const card = cash(1, [earnRule("r", 5, ["food", "gas"], { cap: 1_000_00, period: "year" })]);
+  const foodFirst = M.CD.earnDetail(card, [
+    buy("2026-01-01", "food", 1_000),
+    buy("2026-02-01", "gas", 1_000),
+  ]);
+  assert.equal(foodFirst.byCategory.get("food"), 50_00);
+  assert.equal(foodFirst.byCategory.get("gas"), 10_00);
+
+  const gasFirst = M.CD.earnDetail(card, [
+    buy("2026-01-01", "gas", 1_000),
+    buy("2026-02-01", "food", 1_000),
+  ]);
+  assert.equal(gasFirst.byCategory.get("gas"), 50_00);
+  assert.equal(gasFirst.byCategory.get("food"), 10_00);
+  assert.equal(gasFirst.total, foodFirst.total, "the same money either way, told differently");
+});
+
+await test("a category you already played better than the plan shows no saving", () => {
+  // The best routing is decided purchase by purchase, which is what a person
+  // at a till can do, and is not the theoretical best. It can therefore spend
+  // a shared cap somewhere the real history did not - and a page that then
+  // reported a negative saving would be telling somebody they lost money by
+  // getting it right.
+  const db = walletDB(
+    [
+      { id: "cap", name: "Five Capped", rewards: cash(1, [earnRule("r", 5, ["food", "gas"], { cap: 1_000_00, period: "year" })]) },
+      { id: "flat", name: "Flat Two", rewards: cash(2) },
+    ],
+    [
+      { on: "flat", date: "2026-01-01", cat: "gas", dollars: 1_000 },
+      { on: "cap", date: "2026-02-01", cat: "food", dollars: 1_000 },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  const food = r.categories.find((c) => c.categoryId === "food");
+  assert.equal(food.earned, 50_00, "the real history put the groceries on the capped card");
+  assert.ok(food.best < food.earned, "and the purchase-by-purchase plan spent that cap on the petrol");
+  assert.equal(food.gap, 0, "so there is nothing to say, rather than something negative to say");
+  assert.ok(r.totals.gap >= 0);
 });
 
 await rm(dir, { recursive: true, force: true });

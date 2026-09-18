@@ -52,6 +52,8 @@ export interface Account {
    * right the moment a balance changes.
    */
   autoGoalId?: ID;
+  /** What this card pays back, when it is a card that pays anything. */
+  rewards?: CardRewards;
   /**
    * Left out of the payoff plan, though still owed.
    *
@@ -114,6 +116,48 @@ export interface Account {
   /** Depreciation inputs for a vehicle account. */
   vehicle?: VehicleProfile;
   order: number;
+}
+
+/**
+ * One line of what a card pays back.
+ *
+ * A rate is per dollar, in whatever the card counts in: 2 is two percent on a
+ * cash-back card and two points on a points card, and `pointCents` is what
+ * turns the second into the first so the two can be compared at all.
+ *
+ * A cap is the thing most often left out of a comparison and the thing that
+ * most often decides it: "five percent on the first fifteen hundred a quarter"
+ * is worth seventy-five dollars a quarter, not five percent of the groceries.
+ */
+export interface EarnRule {
+  id: ID;
+  rate: number;
+  /** Which categories earn it. Empty is the card's own base rate. */
+  categoryIds: ID[];
+  /** Spend this rate applies to before it drops to base, in cents. */
+  cap?: number;
+  /** What the cap resets on. Absent with a cap means it never resets. */
+  period?: "month" | "quarter" | "year";
+  /** "Booked through the issuer's travel portal", and the like. */
+  label?: string;
+}
+
+export interface CardRewards {
+  /** What one point is worth, in cents. 1 for cash back. */
+  pointCents: number;
+  /** Earned on everything no rule claims. */
+  base: number;
+  rules: EarnRule[];
+  /** In cents, charged yearly. */
+  annualFee?: number;
+  /**
+   * When somebody last checked these against the card itself.
+   *
+   * Rates are drafted from a name and then confirmed by a person, so the
+   * document has to be able to say which of the two it is holding. A figure
+   * nobody has looked at must not be presented as one that has been.
+   */
+  confirmedAt?: string;
 }
 
 export type GroupKind = "income" | "expense" | "transfer";
