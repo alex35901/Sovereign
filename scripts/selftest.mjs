@@ -12059,6 +12059,38 @@ await test("a bonus is read over its own window, not the page's", () => {
   assert.equal(r.cards[0].bonus.met, true, "but the bonus was met all the same");
 });
 
+/* ── the save path must not drag the document across the wire ──────────── */
+
+await test("taking the write lock does not read the document out of the database", () => {
+  // The most expensive thing this app ever did, and invisible from the app:
+  // every save took a row lock with SELECT ... FOR UPDATE and selected the
+  // whole document along with it, to read a version number and throw the
+  // megabyte away. On a five thousand transaction budget that is 1.4 MB a
+  // save, which is about three and a half thousand saves inside a free tier's
+  // five gigabytes of transfer.
+  //
+  // Checked against the source because there is nothing in writeDoc's answer
+  // that says how much it moved to produce it.
+  const sql = readFileSync("api/_store.ts", "utf8");
+  const locking = sql.split(/\n/).reduce((acc, line, i, all) => {
+    if (!/FOR UPDATE/.test(line)) return acc;
+    // The statement is a template literal spanning a couple of lines.
+    return [...acc, all.slice(Math.max(0, i - 3), i + 1).join(" ")];
+  }, []);
+
+  assert.equal(locking.length, 1, "one locking read, or this is checking the wrong one");
+  const [query] = locking;
+  assert.match(query, /SELECT/, query);
+  // `doc ? 'ct'` is Postgres answering "is it sealed" as one boolean, which is
+  // the whole point; selecting the column itself is what must not come back.
+  const columns = query.slice(query.indexOf("SELECT") + 6, query.indexOf("FROM"));
+  assert.doesNotMatch(
+    columns.replace(/\(\s*doc \? '[a-z]+'\s*\)/g, ""),
+    /\bdoc\b/,
+    `the locking read selects the document:${columns}`,
+  );
+});
+
 await rm(dir, { recursive: true, force: true });
 
 for (const [status, name, msg] of results) console.log(status.padEnd(5), name, msg ? `— ${msg}` : "");

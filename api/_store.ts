@@ -353,10 +353,24 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
   const client = await (await db()).connect();
   try {
     await client.query("BEGIN");
-    // Locked for the transaction: two devices saving at the same instant must
-    // not both read version 4 and both write version 5.
+    /**
+     * Locked for the transaction: two devices saving at the same instant must
+     * not both read version 4 and both write version 5.
+     *
+     * The document itself is deliberately not selected here. Every save takes
+     * this lock, and pulling a megabyte of JSON across the wire to look at a
+     * version number and throw it away again is the most expensive thing this
+     * app did. The two questions actually asked of the stored row are its
+     * version and whether it is sealed, and Postgres answers the second one
+     * with `doc ? 'ct'` as a single boolean.
+     *
+     * The document is only fetched on the path that hands it back, which is a
+     * conflict, and by then the row is already locked by this transaction, so
+     * the second read cannot see a different one.
+     */
     const { rows } = await client.query(
-      "SELECT version, updated_at, updated_by, doc FROM budget_document WHERE id = $1 FOR UPDATE",
+      `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed
+         FROM budget_document WHERE id = $1 FOR UPDATE`,
       [ROW_ID],
     );
     const row = rows[0] as Record<string, unknown> | undefined;
@@ -365,12 +379,20 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
     // A one-way ratchet, checked inside the same locked transaction as the
     // version so it cannot be raced: once a document is sealed, nothing may
     // put a readable one back in its place.
-    if (row && isEnvelope(row.doc) && !isEnvelope(doc)) {
+    if (row && row.sealed === true && !isEnvelope(doc)) {
       await client.query("ROLLBACK");
       return { ok: false, wouldDecrypt: true };
     }
 
     if (!writeAllowed(currentVersion, baseVersion)) {
+      let stored: unknown;
+      if (row) {
+        const { rows: full } = await client.query(
+          "SELECT doc FROM budget_document WHERE id = $1",
+          [ROW_ID],
+        );
+        stored = (full[0] as Record<string, unknown> | undefined)?.doc;
+      }
       await client.query("ROLLBACK");
       return {
         ok: false,
@@ -379,7 +401,7 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
               version: currentVersion,
               updatedAt: new Date(row.updated_at as string).toISOString(),
               updatedBy: String(row.updated_by),
-              doc: row.doc,
+              doc: stored,
             }
           : undefined,
       };

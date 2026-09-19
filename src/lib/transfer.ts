@@ -11,8 +11,15 @@
  *
  *   - it counts what crosses this app's own API, not what Neon bills. Neon
  *     meters the traffic between its storage and its compute; this meters the
- *     traffic that causes it. The two are close and neither is the other, so
- *     the reading is labelled as an estimate wherever it is shown.
+ *     traffic that causes it. They are not the same number and the reading is
+ *     labelled as an estimate wherever it is shown - but "close" was too
+ *     generous, and believing it cost a quota. Every save used to take its row
+ *     lock with SELECT ... FOR UPDATE and pull the whole document along with
+ *     it, to read a version number and discard a megabyte. A browser sent a
+ *     hundred and twenty compressed kilobytes; Neon moved a megabyte and a
+ *     half. This meter read a twelfth of the real bill and said everything was
+ *     fine, right up until the compute was suspended. The amplifier is gone,
+ *     which is what makes the two close enough to be worth reading at all.
  *
  *   - it lives in localStorage rather than in the document. Putting it in the
  *     document would mean every poll marked the document dirty, which would
