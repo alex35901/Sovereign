@@ -1258,6 +1258,19 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    one keeps its own reserved space at the end of the line. */
 .tx-repeat { display: inline-flex; flex: none; color: var(--faint); }
 
+/* ── whether the work has reached the cloud ─────────────────────────────
+   Loud on purpose, and it does not go away by itself. The failure it exists
+   for went three weeks unnoticed behind a three-second toast. */
+.save-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 999px; cursor: pointer;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.save-pill.waiting { background: var(--accent-soft); color: var(--accent); }
+.save-pill.stuck { background: var(--neg-soft); color: var(--neg); }
+.save-pill:hover { filter: brightness(1.12); }
+
 /* ── the wallet ─────────────────────────────────────────────────────────
    A row per card and a row per category. The category table is a grid rather
    than a flex row because five figures that do not line up down the page are

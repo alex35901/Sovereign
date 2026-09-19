@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
 import { Btn, Popover, cx } from "../components/ui";
+import { SaveState } from "../components/SaveState";
 import { isSeen, markRead, notices, unread } from "../lib/notifications";
 
 /**
@@ -50,6 +51,7 @@ export function TopBar({ title, back, actions, primary }: {
       <h1 className="grow truncate" style={{ fontSize: 19 }}>{title}</h1>
       <div className="row topbar-actions" style={{ gap: 6 }}>
         {actions}
+        <SaveState />
         <Notifications />
         <button className="btn btn-ghost btn-icon" title="Toggle theme" onClick={act.toggleTheme}>
           {db.settings.theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}

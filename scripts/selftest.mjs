@@ -78,7 +78,7 @@ await build({
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { withWake } from "./api/_store.ts";
       export { findConnection } from "./api/_store.ts";
-      export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS } from "./src/lib/cloud.ts";
+      export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
@@ -12089,6 +12089,37 @@ await test("taking the write lock does not read the document out of the database
     /\bdoc\b/,
     `the locking read selects the document:${columns}`,
   );
+});
+
+/* ── a save that is not happening has to be visible ────────────────────── */
+
+await test("nothing is said while the cloud is keeping up", () => {
+  // A permanent "saved" badge is a thing you stop reading, and then it is a
+  // thing that can turn red without being noticed.
+  assert.equal(M.needsAttention({ version: 12, dirty: false }), false);
+  assert.equal(M.needsAttention({ version: 12, dirty: false, okAt: Date.now() }), false);
+});
+
+await test("and nothing is said to a browser that never asked for the cloud", () => {
+  // Not syncing is not failing to sync. Crying wolf at somebody who never
+  // connected teaches them to ignore the one warning that matters.
+  assert.equal(M.needsAttention({ version: 0, dirty: true }), false);
+  assert.equal(M.needsAttention({ version: 0, dirty: false }), false);
+});
+
+await test("but a browser holding work the cloud has not taken says so", () => {
+  assert.equal(M.needsAttention({ version: 12, dirty: true }), true);
+  // Connected is remembered three ways, and any of them is enough: a browser
+  // that has saved before is one this matters to.
+  assert.equal(M.needsAttention({ version: 0, dirty: true, okAt: 1 }), true);
+  assert.equal(M.needsAttention({ version: 0, dirty: true, lastError: { status: 500, message: "x", at: 1 } }), true);
+});
+
+await test("and a broken sync says so before an edit gives it a reason to", () => {
+  // A wrong passphrase or a spent quota is a broken sync whether or not
+  // anything is waiting to go. Holding the news until the next edit is holding
+  // it until the worst possible moment.
+  assert.equal(M.needsAttention({ version: 12, dirty: false, blocked: "Wrong passphrase." }), true);
 });
 
 await rm(dir, { recursive: true, force: true });

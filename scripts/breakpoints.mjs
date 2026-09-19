@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, settings-trim.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, settings-trim, not-saved.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -6408,6 +6408,85 @@ try {
     check("and merchant logos resolve with nothing to switch them on",
       logos.merchant > 0, JSON.stringify(logos));
     await st.close();
+  }
+
+
+  if (want("not-saved")) {
+    // ── a save that is not happening has to be impossible to miss ──
+    //
+    // The failure this exists for: every save failed for three weeks, said so
+    // each time in a toast that went away after three seconds, was never seen,
+    // and the work went when the browser's data was cleared for an unrelated
+    // reason. The toast was honest. The design was wrong.
+    const ns = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await ns.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await ns.waitForTimeout(1500);
+
+    const pill = () => ns.evaluate(() => {
+      const el = document.querySelector(".save-pill");
+      return el ? { text: el.innerText.trim(), stuck: el.classList.contains("stuck") } : null;
+    });
+    /** Put a cloud state in place the way the app does, and tell the page. */
+    const say = (state) => ns.evaluate((s) => {
+      localStorage.setItem("sovereign.cloud.state.v1", JSON.stringify(s));
+      window.dispatchEvent(new CustomEvent("sovereign:cloud"));
+    }, state);
+
+    check("a browser keeping up says nothing", (await pill()) === null, JSON.stringify(await pill()));
+
+    // Never connected is not failing: this must stay quiet for somebody who
+    // has never asked for the cloud at all.
+    await say({ version: 0, dirty: true });
+    await ns.waitForTimeout(300);
+    check("and neither does one that never asked for the cloud",
+      (await pill()) === null, JSON.stringify(await pill()));
+
+    await say({
+      version: 12, dirty: true, failures: 3, okAt: Date.now() - 3 * 3600_000,
+      lastError: { status: 500, message: "Your project has exceeded the data transfer quota.", at: Date.now() },
+    });
+    await ns.waitForTimeout(400);
+    const shown = await pill();
+    check("but work the cloud has not taken is said in the bar, without a reload",
+      shown !== null && /not saved/i.test(shown.text), JSON.stringify(shown));
+
+    if (await tryStep("and it opens on what is wrong", async () => {
+      await ns.locator(".save-pill").click({ timeout: 8000 });
+      await ns.locator(".menu").waitFor({ timeout: 5000 });
+    })) {
+      const panel = await ns.evaluate(() => document.querySelector(".menu")?.innerText.replace(/\n/g, " | ") ?? "");
+      check("naming the reason and when it last got through",
+        /exceeded the data transfer quota/.test(panel) && /Last saved to the cloud 3 hours ago/.test(panel),
+        panel.slice(0, 170));
+      // The one thing that actually rescues this, one press away rather than
+      // four screens away.
+      check("and offering the copy that does not depend on the cloud",
+        /Back up to a file now/.test(panel), panel.slice(0, 170));
+      await ns.keyboard.press("Escape");
+      await ns.waitForTimeout(300);
+    }
+
+    // It has to be on every screen, not just the one that was open.
+    for (const path of ["/transactions", "/settings"]) {
+      await ns.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+      await ns.waitForTimeout(900);
+      const here = await pill();
+      check(`and it is still there on ${path}`, here !== null && /not saved/i.test(here.text), JSON.stringify(here));
+    }
+
+    // A blocked sync is louder, and says so with nothing waiting to go.
+    await say({ version: 12, dirty: false, blocked: "Wrong passphrase." });
+    await ns.waitForTimeout(400);
+    const stuck = await pill();
+    check("a sync that waiting cannot fix is louder, and does not wait for an edit",
+      stuck !== null && stuck.stuck === true, JSON.stringify(stuck));
+
+    // And it goes when the work lands, rather than needing to be dismissed.
+    await say({ version: 13, dirty: false, okAt: Date.now() });
+    await ns.waitForTimeout(400);
+    check("and it goes by itself once the save gets through",
+      (await pill()) === null, JSON.stringify(await pill()));
+    await ns.close();
   }
 
 

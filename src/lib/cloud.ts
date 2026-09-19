@@ -45,6 +45,29 @@ export interface CloudState {
   saidAt?: number;
 }
 
+/**
+ * Whether this browser is holding work the cloud has not taken.
+ *
+ * Its own function because it decides whether anything is said at all, and a
+ * rule that lives inside a component is a rule nobody can test. Three cases
+ * and they are all deliberate:
+ *
+ *   - nothing to say while the cloud is keeping up. A permanent "saved" badge
+ *     is a thing you stop reading, and then it is a thing that can turn red
+ *     without being noticed.
+ *   - nothing to say to a browser that has never been connected. Not syncing
+ *     is not failing to sync, and crying wolf at somebody who never asked for
+ *     the cloud teaches them to ignore the one warning that matters.
+ *   - blocked counts even when nothing is dirty. A wrong passphrase or a spent
+ *     quota is still a broken sync, and waiting for an edit to mention it is
+ *     waiting for the worst possible moment.
+ */
+export function needsAttention(state: CloudState): boolean {
+  const connected = state.version > 0 || state.okAt !== undefined || state.lastError !== undefined;
+  if (!connected) return false;
+  return state.dirty || state.blocked !== undefined;
+}
+
 /** How long to leave it before complaining about the same thing again. */
 export const QUIET_MS = 10 * 60 * 1000;
 
@@ -109,8 +132,21 @@ const read = <T,>(key: string, fallback: T): T => {
 };
 
 export const cloudState = (): CloudState => read<CloudState>(STATE_KEY, { version: 0, dirty: false });
+
+/**
+ * Said out loud whenever the save state moves.
+ *
+ * The state lives in localStorage because it has to outlive the tab, which
+ * means nothing in React knows when it changes. Anything drawing it listened
+ * on a timer, so "not saved" could sit unsaid for as long as the timer. An
+ * event costs nothing and the one thing on screen that has to be believed is
+ * this one.
+ */
+export const CLOUD_EVENT = "sovereign:cloud";
+
 export const setCloudState = (s: CloudState): void => {
   try { localStorage.setItem(STATE_KEY, JSON.stringify(s)); } catch { /* storage full; next write retries */ }
+  try { window.dispatchEvent(new CustomEvent(CLOUD_EVENT)); } catch { /* not a browser */ }
 };
 
 /**
