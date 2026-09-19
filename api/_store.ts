@@ -144,8 +144,9 @@ export async function diagnose(): Promise<StoreDiagnosis> {
   }
 
   try {
-    await ensureTable();
-    const { rows } = await (await db()).query("SELECT count(*)::int AS n FROM budget_document");
+    const { rows } = await withTable(async () =>
+      (await db()).query("SELECT count(*)::int AS n FROM budget_document"),
+    );
     out.table.ok = true;
     out.documents = Number((rows[0] as { n: number }).n);
   } catch (err) {
@@ -258,17 +259,68 @@ export async function db(): Promise<Pool> {
  *
  * Every read and every write goes through here first, which makes it the one
  * place a sleeping database has to be woken. Nothing below it needs to know.
+ *
+ * Remembered per warm instance rather than run per request. It was a second
+ * round trip on every call, including every poll, to tell a database that has
+ * had the table for months that it would like the table. A serverless instance
+ * handles many requests before it is recycled and the answer cannot change
+ * under it; a cold start asks again, which is the case that ever needed it.
+ *
+ * The promise is what is kept, not a boolean, so two requests arriving
+ * together on one instance wait on the same statement rather than racing to
+ * issue it twice. A failure is forgotten, so a database that was asleep or
+ * unreachable is asked again next time instead of being written off for the
+ * life of the instance.
+ *
+ * Remembering is only safe because forgetting is cheap: if the table turns out
+ * not to be there after all, `withTable` below clears this and asks again. A
+ * memo that could be wrong about the one thing it promises would be worse than
+ * no memo, and a test suite that drops the table between cases is the proof
+ * that "nothing ever drops it" was an assumption rather than a fact.
  */
+let tableReady: Promise<void> | null = null;
+
 async function ensureTable(): Promise<void> {
-  await withWake(async () => (await db()).query(`
-    CREATE TABLE IF NOT EXISTS budget_document (
-      id integer PRIMARY KEY,
-      version integer NOT NULL,
-      updated_at timestamptz NOT NULL,
-      updated_by text NOT NULL,
-      doc jsonb NOT NULL
-    )
-  `));
+  if (!tableReady) {
+    tableReady = withWake(async () => {
+      await (await db()).query(`
+        CREATE TABLE IF NOT EXISTS budget_document (
+          id integer PRIMARY KEY,
+          version integer NOT NULL,
+          updated_at timestamptz NOT NULL,
+          updated_by text NOT NULL,
+          doc jsonb NOT NULL
+        )
+      `);
+    }).catch((err) => {
+      tableReady = null;
+      throw err;
+    });
+  }
+  await tableReady;
+}
+
+/** Postgres for "that table is not there". */
+const UNDEFINED_TABLE = "42P01";
+
+/**
+ * Runs something against the document table, having made sure there is one.
+ *
+ * The retry is what keeps the memo above honest: the guarantee is that the
+ * table exists by the time the work runs, and the only way to keep that while
+ * also not asking every time is to notice when the answer was stale and ask
+ * again. Once, because a second failure is a real one.
+ */
+async function withTable<T>(run: () => Promise<T>): Promise<T> {
+  await ensureTable();
+  try {
+    return await run();
+  } catch (err) {
+    if ((err as { code?: string })?.code !== UNDEFINED_TABLE) throw err;
+    tableReady = null;
+    await ensureTable();
+    return run();
+  }
 }
 
 export interface DocMeta {
@@ -292,11 +344,10 @@ export interface DocMeta {
  * asking whether the document is sealed costs nothing either.
  */
 export async function readMeta(): Promise<DocMeta | null> {
-  await ensureTable();
-  const { rows } = await (await db()).query(
+  const { rows } = await withTable(async () => (await db()).query(
     "SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed FROM budget_document WHERE id = $1",
     [ROW_ID],
-  );
+  ));
   const row = rows[0] as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
@@ -308,11 +359,10 @@ export async function readMeta(): Promise<DocMeta | null> {
 }
 
 export async function readDoc(): Promise<StoredDoc | null> {
-  await ensureTable();
-  const { rows } = await (await db()).query(
+  const { rows } = await withTable(async () => (await db()).query(
     "SELECT version, updated_at, updated_by, doc FROM budget_document WHERE id = $1",
     [ROW_ID],
-  );
+  ));
   const row = rows[0] as Record<string, unknown> | undefined;
   if (!row) return null;
   return {
@@ -349,84 +399,85 @@ export interface WriteResult {
  * write, which the cron uses because it always reads immediately beforehand.
  */
 export async function writeDoc(doc: unknown, baseVersion: number | null, by: string): Promise<WriteResult> {
-  await ensureTable();
-  const client = await (await db()).connect();
-  try {
-    await client.query("BEGIN");
-    /**
-     * Locked for the transaction: two devices saving at the same instant must
-     * not both read version 4 and both write version 5.
-     *
-     * The document itself is deliberately not selected here. Every save takes
-     * this lock, and pulling a megabyte of JSON across the wire to look at a
-     * version number and throw it away again is the most expensive thing this
-     * app did. The two questions actually asked of the stored row are its
-     * version and whether it is sealed, and Postgres answers the second one
-     * with `doc ? 'ct'` as a single boolean.
-     *
-     * The document is only fetched on the path that hands it back, which is a
-     * conflict, and by then the row is already locked by this transaction, so
-     * the second read cannot see a different one.
-     */
-    const { rows } = await client.query(
-      `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed
-         FROM budget_document WHERE id = $1 FOR UPDATE`,
-      [ROW_ID],
-    );
-    const row = rows[0] as Record<string, unknown> | undefined;
-    const currentVersion = row ? Number(row.version) : 0;
+  return withTable(async () => {
+    const client = await (await db()).connect();
+    try {
+      await client.query("BEGIN");
+      /**
+       * Locked for the transaction: two devices saving at the same instant must
+       * not both read version 4 and both write version 5.
+       *
+       * The document itself is deliberately not selected here. Every save takes
+       * this lock, and pulling a megabyte of JSON across the wire to look at a
+       * version number and throw it away again is the most expensive thing this
+       * app did. The two questions actually asked of the stored row are its
+       * version and whether it is sealed, and Postgres answers the second one
+       * with `doc ? 'ct'` as a single boolean.
+       *
+       * The document is only fetched on the path that hands it back, which is a
+       * conflict, and by then the row is already locked by this transaction, so
+       * the second read cannot see a different one.
+       */
+      const { rows } = await client.query(
+        `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed
+           FROM budget_document WHERE id = $1 FOR UPDATE`,
+        [ROW_ID],
+      );
+      const row = rows[0] as Record<string, unknown> | undefined;
+      const currentVersion = row ? Number(row.version) : 0;
 
-    // A one-way ratchet, checked inside the same locked transaction as the
-    // version so it cannot be raced: once a document is sealed, nothing may
-    // put a readable one back in its place.
-    if (row && row.sealed === true && !isEnvelope(doc)) {
-      await client.query("ROLLBACK");
-      return { ok: false, wouldDecrypt: true };
-    }
-
-    if (!writeAllowed(currentVersion, baseVersion)) {
-      let stored: unknown;
-      if (row) {
-        const { rows: full } = await client.query(
-          "SELECT doc FROM budget_document WHERE id = $1",
-          [ROW_ID],
-        );
-        stored = (full[0] as Record<string, unknown> | undefined)?.doc;
+      // A one-way ratchet, checked inside the same locked transaction as the
+      // version so it cannot be raced: once a document is sealed, nothing may
+      // put a readable one back in its place.
+      if (row && row.sealed === true && !isEnvelope(doc)) {
+        await client.query("ROLLBACK");
+        return { ok: false, wouldDecrypt: true };
       }
-      await client.query("ROLLBACK");
-      return {
-        ok: false,
-        conflict: row
-          ? {
-              version: currentVersion,
-              updatedAt: new Date(row.updated_at as string).toISOString(),
-              updatedBy: String(row.updated_by),
-              doc: stored,
-            }
-          : undefined,
-      };
-    }
 
-    const version = currentVersion + 1;
-    const updatedAt = new Date().toISOString();
-    await client.query(
-      `INSERT INTO budget_document (id, version, updated_at, updated_by, doc)
-       VALUES ($1, $2, $3, $4, $5::jsonb)
-       ON CONFLICT (id) DO UPDATE SET
-         version = EXCLUDED.version,
-         updated_at = EXCLUDED.updated_at,
-         updated_by = EXCLUDED.updated_by,
-         doc = EXCLUDED.doc`,
-      [ROW_ID, version, updatedAt, by, JSON.stringify(doc)],
-    );
-    await client.query("COMMIT");
-    return { ok: true, stored: { version, updatedAt, updatedBy: by, doc } };
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+      if (!writeAllowed(currentVersion, baseVersion)) {
+        let stored: unknown;
+        if (row) {
+          const { rows: full } = await client.query(
+            "SELECT doc FROM budget_document WHERE id = $1",
+            [ROW_ID],
+          );
+          stored = (full[0] as Record<string, unknown> | undefined)?.doc;
+        }
+        await client.query("ROLLBACK");
+        return {
+          ok: false,
+          conflict: row
+            ? {
+                version: currentVersion,
+                updatedAt: new Date(row.updated_at as string).toISOString(),
+                updatedBy: String(row.updated_by),
+                doc: stored,
+              }
+            : undefined,
+        };
+      }
+
+      const version = currentVersion + 1;
+      const updatedAt = new Date().toISOString();
+      await client.query(
+        `INSERT INTO budget_document (id, version, updated_at, updated_by, doc)
+         VALUES ($1, $2, $3, $4, $5::jsonb)
+         ON CONFLICT (id) DO UPDATE SET
+           version = EXCLUDED.version,
+           updated_at = EXCLUDED.updated_at,
+           updated_by = EXCLUDED.updated_by,
+           doc = EXCLUDED.doc`,
+        [ROW_ID, version, updatedAt, by, JSON.stringify(doc)],
+      );
+      await client.query("COMMIT");
+      return { ok: true, stored: { version, updatedAt, updatedBy: by, doc } };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  });
 }
 
 /* ── the drop box ──────────────────────────────────────────────────────── */

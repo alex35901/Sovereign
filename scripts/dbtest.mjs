@@ -96,6 +96,23 @@ await test("the table is created on first use, and reading an empty store is not
   assert.equal(await M.readDoc(), null, "a second call must not trip over the existing table");
 });
 
+await test("the table is remembered, but a table that disappears is rebuilt rather than assumed", async () => {
+  // The CREATE TABLE is issued once per warm instance instead of on every
+  // read and write. This is the case that keeps that memo honest: pull the
+  // table out from under a store that has already seen it, and every entry
+  // point has to notice and put it back rather than fail.
+  await M.writeDoc({ a: 1 }, 0, "first");
+  await wipe();
+  assert.equal(await M.readMeta(), null, "the metadata read rebuilds the table");
+  await wipe();
+  assert.equal(await M.readDoc(), null, "the document read rebuilds the table");
+  await wipe();
+  const written = await M.writeDoc({ a: 2 }, 0, "second");
+  assert.equal(written.ok, true, "the write rebuilds the table");
+  assert.deepEqual((await M.readDoc()).doc, { a: 2 });
+  await wipe();
+});
+
 await test("a document round-trips intact", async () => {
   const doc = {
     settings: { theme: "dark", householdName: "Cameron", simplefinAccessUrl: "https://u:p@x/y" },

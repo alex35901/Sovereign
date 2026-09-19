@@ -115,7 +115,7 @@ await build({
       export { thisMonth, addMonths, addDays, relativeDay, relativeDayMid } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
-      export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS } from "./src/lib/sync/schedule.ts";
+      export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS, pollDelay, POLL_MIN_MS, POLL_MAX_MS } from "./src/lib/sync/schedule.ts";
       export { syncSimplefin, syncPlaid, syncPlaidItem } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
@@ -12120,6 +12120,54 @@ await test("and a broken sync says so before an edit gives it a reason to", () =
   // anything is waiting to go. Holding the news until the next edit is holding
   // it until the worst possible moment.
   assert.equal(M.needsAttention({ version: 12, dirty: false, blocked: "Wrong passphrase." }), true);
+});
+
+/* ── asking less often when the answer keeps being no ──────────────────── */
+
+/** Neon scales a compute to zero after this much quiet, and cannot be told not to. */
+const NEON_SLEEP_MS = 5 * 60_000;
+
+await test("the first poll comes quickly, and they slow down while nothing changes", () => {
+  assert.equal(M.pollDelay(0), M.POLL_MIN_MS);
+  assert.equal(M.pollDelay(1), 2 * M.POLL_MIN_MS);
+  assert.equal(M.pollDelay(2), 4 * M.POLL_MIN_MS);
+  assert.equal(M.pollDelay(3), 8 * M.POLL_MIN_MS);
+});
+
+await test("and stop growing at half an hour", () => {
+  assert.equal(M.pollDelay(20), M.POLL_MAX_MS);
+  assert.equal(M.pollDelay(1000), M.POLL_MAX_MS);
+  // A tab open for a week must not overflow its way to an infinite wait.
+  assert.ok(Number.isFinite(M.pollDelay(100_000)));
+  assert.equal(M.pollDelay(100_000), M.POLL_MAX_MS);
+});
+
+await test("a quiet tab lets the database go to sleep, which is the whole point", () => {
+  // Under five minutes the compute never scales to zero, so the cost is the
+  // asking rather than the answer. The gap has to clear that line.
+  assert.ok(M.pollDelay(0) < NEON_SLEEP_MS, "but it is still quick while something is happening");
+  assert.ok(M.pollDelay(3) > NEON_SLEEP_MS, `${M.pollDelay(3)}`);
+  assert.ok(M.POLL_MAX_MS > NEON_SLEEP_MS);
+});
+
+await test("a nonsense round count is treated as none", () => {
+  assert.equal(M.pollDelay(-5), M.POLL_MIN_MS);
+  assert.equal(M.pollDelay(0.7), M.POLL_MIN_MS);
+});
+
+await test("an idle day costs a fraction of what it did", () => {
+  // Twelve hours of a tab left open and untouched, counted honestly: the first
+  // few rounds are quick and then it settles at the ceiling.
+  const asks = (ms) => {
+    let spent = 0;
+    let rounds = 0;
+    for (let q = 0; spent < ms; q++) { spent += M.pollDelay(q); rounds++; }
+    return rounds;
+  };
+  const half = 12 * 3600_000;
+  assert.equal(asks(half) < 30, true, `${asks(half)} asks in twelve hours`);
+  // What it used to be, for the comparison the change exists for.
+  assert.equal(Math.round(half / M.POLL_MIN_MS), 720);
 });
 
 await rm(dir, { recursive: true, force: true });

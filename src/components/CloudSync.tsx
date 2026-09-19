@@ -6,11 +6,8 @@ import {
   stashConflict, subscribeSync,
 } from "../lib/cloud";
 import { drainQueue } from "../lib/sync/drain";
-import { saveDelay } from "../lib/sync/schedule";
+import { POLL_MIN_MS, pollDelay, saveDelay } from "../lib/sync/schedule";
 import type { DB } from "../types";
-
-/** How often to look for changes made on another device. */
-const POLL_MS = 60_000;
 
 /**
  * Keeps this browser and the stored document in step.
@@ -31,6 +28,9 @@ export function CloudSync() {
   const busy = useRef(false);
   const ready = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The next poll, and how many rounds in a row have found nothing. */
+  const poll = useRef<number | null>(null);
+  const quiet = useRef(0);
   /** When the oldest unsent edit was made, so a busy hour still gets saved. */
   const firstEdit = useRef(0);
 
@@ -246,6 +246,10 @@ export function CloudSync() {
     if (!firstEdit.current) firstEdit.current = Date.now();
     const delay = saveDelay(firstEdit.current);
 
+    // An edit is also a reason to start asking often again: work is happening,
+    // so another device may be about to see it and answer back.
+    quiet.current = 0;
+
     // An edit clears the backoff. Somebody is at the keyboard, which is the
     // one moment worth spending a retry on: whatever was wrong may have been
     // put right, and if it has not been, the wait starts again from a minute.
@@ -261,19 +265,26 @@ export function CloudSync() {
 
   // ── pick up edits made elsewhere, and whatever the schedule pulled in ──
 
-  /** One round: send anything unsent, then take anything new. */
-  const syncNow = async () => {
+  /**
+   * One round: send anything unsent, then take anything new.
+   *
+   * Says whether it did anything, because the loop below asks less often while
+   * the answer keeps being no. A round that could not run at all counts as
+   * quiet: a browser that is not connected has nothing to be woken for.
+   */
+  const syncNow = async (): Promise<boolean> => {
     // Re-checked every time rather than at mount: a refusal part-way through a
     // session has to stop this where it stands.
-    if (busy.current || !ready.current || !cloudEnabled()) return;
+    if (busy.current || !ready.current || !cloudEnabled()) return false;
     const at = cloudState();
     // Our own unsent work comes first, and gets sent rather than waiting for
     // another edit that may never come. While a failed save is backing off,
     // this falls through to the version check below instead: that costs a few
     // hundred bytes, and a browser that cannot save should still be able to
     // notice that another device has.
-    if (at.dirty && mayPush(at)) { await pushNow(); return; }
+    if (at.dirty && mayPush(at)) { await pushNow(); return true; }
     busy.current = true;
+    let moved = false;
     try {
       // The version first, on its own. This used to fetch the whole document
       // every minute and throw it away when nothing had changed — half a
@@ -286,12 +297,14 @@ export function CloudSync() {
           install(remote.doc);
           setCloudState({ version: remote.version, dirty: false });
           if (remote.updatedBy !== deviceName()) notifyUpdate(act.current.notify, remote.updatedBy);
+          moved = true;
         }
       }
       await drainNow();
     } catch { /* offline, most likely; the next round tries again */ } finally {
       busy.current = false;
     }
+    return moved;
   };
 
   useEffect(() => {
@@ -306,6 +319,27 @@ export function CloudSync() {
     // Leaving the tab is the one moment worth not waiting for quiet: the work
     // survives locally either way, but another device picking the budget up
     // next would otherwise be working from a copy that is eight seconds stale.
+    /**
+     * A timeout that books the next one, rather than a fixed interval.
+     *
+     * The gap has to be able to grow and an interval cannot change its mind.
+     * A hidden tab asks nothing at all and does not count the round as quiet:
+     * it has not learned that nothing changed, it simply has not looked.
+     */
+    let stopped = false;
+    const run = async () => {
+      if (poll.current) window.clearTimeout(poll.current);
+      const hidden = typeof document !== "undefined" && document.hidden;
+      if (!hidden) {
+        const moved = await syncNow();
+        quiet.current = moved ? 0 : quiet.current + 1;
+      }
+      // A round can be in flight when this unmounts, and booking the next one
+      // from inside it would outlive the component that owns it.
+      if (stopped) return;
+      poll.current = window.setTimeout(() => void run(), pollDelay(quiet.current));
+    };
+
     const onVisible = () => {
       if (document.hidden) {
         if (cloudState().dirty) {
@@ -315,16 +349,16 @@ export function CloudSync() {
         }
         return;
       }
-      void syncNow();
+      // Looking at it again is a reason to think the answer may have changed.
+      quiet.current = 0;
+      void run();
     };
     document.addEventListener("visibilitychange", onVisible);
+    poll.current = window.setTimeout(() => void run(), POLL_MIN_MS);
 
-    const id = window.setInterval(() => {
-      if (typeof document !== "undefined" && document.hidden) return;
-      void syncNow();
-    }, POLL_MS);
     return () => {
-      window.clearInterval(id);
+      stopped = true;
+      if (poll.current) window.clearTimeout(poll.current);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);

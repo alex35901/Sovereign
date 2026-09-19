@@ -113,3 +113,36 @@ export function saveDelay(firstEditAt: number, now: number = Date.now()): number
   const waited = now - firstEditAt;
   return Math.max(0, Math.min(PUSH_QUIET_MS, PUSH_MAX_WAIT_MS - waited));
 }
+
+/**
+ * How long to leave it before asking the server whether anything changed.
+ *
+ * The poll exists to notice what another device did. It used to ask every
+ * minute for as long as a tab was open and visible, which is a question with
+ * the same answer almost every time - and the cost is not the answer, it is
+ * the asking. Neon's compute scales to zero after five minutes of quiet and
+ * cannot be told not to, so a question every sixty seconds keeps a database
+ * awake all day for one person reading their own budget. On the free plan's
+ * hundred compute-hours that is most of the month spent on nothing.
+ *
+ * So it backs off while the answer keeps being no: a minute, two, four, eight,
+ * sixteen, then half an hour. Past five minutes the compute sleeps between
+ * questions, which is the whole point.
+ *
+ * What resets it is in the caller, and it is everything that means the answer
+ * might have changed: an edit here, the tab being looked at again, or a poll
+ * that actually found something. The case that gets slower is two devices both
+ * sitting open and untouched, and the moment either is touched it is a minute
+ * again.
+ */
+export const POLL_MIN_MS = 60_000;
+export const POLL_MAX_MS = 30 * 60_000;
+
+export function pollDelay(quietRounds: number): number {
+  const rounds = Math.max(0, Math.floor(quietRounds));
+  // Doubling, worked out rather than multiplied up so a long-lived tab cannot
+  // drift by accumulating rounding. No guard on the exponent: a tab open long
+  // enough to overflow it reaches Infinity, and the ceiling below takes that
+  // to half an hour like any other number too big.
+  return Math.min(POLL_MAX_MS, POLL_MIN_MS * 2 ** rounds);
+}
