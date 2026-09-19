@@ -40,7 +40,7 @@ export function AutoSync() {
       // Prices keep their own clock. Someone whose investment accounts come
       // from Plaid has no SimpleFIN connection at all, and their holdings
       // should still be priced.
-      const priceDue = cur.settings.priceAutoRefresh !== false
+      const priceDue = true
         && Boolean(cur.settings.tiingoApiKey?.trim())
         && pricesDue(cur.settings.lastPricesAt, now);
       if (!bankDue && !priceDue) return;

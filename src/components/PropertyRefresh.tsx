@@ -32,7 +32,6 @@ export function PropertyRefresh() {
     const tick = async () => {
       if (running.current) return;
       const cur = latest.current;
-      if (cur.settings.propertyAutoRefresh === false) return;
 
       const key = cur.settings.rentcastApiKey?.trim();
       if (!key) return;

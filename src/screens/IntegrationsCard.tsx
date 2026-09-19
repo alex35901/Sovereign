@@ -13,7 +13,7 @@ import { refreshPrices } from "../lib/prices";
 import { syncPlaid, syncSimplefin } from "../lib/sync";
 import { estimateHomeValue, canValue } from "../lib/property";
 import { reason, recordRun } from "../lib/usage";
-import { Btn, Card, CardHead, TextInput, Toggle } from "../components/ui";
+import { Btn, Card, CardHead, TextInput } from "../components/ui";
 
 /**
  * One table for every provider this app talks to.
@@ -133,20 +133,6 @@ export function IntegrationsCard() {
             {rows.map((row) => <Row key={row.id} row={row} busy={busy === row.id} onRun={() => void run(row.id)} />)}
           </tbody>
         </table>
-      </div>
-
-      <div className="divider" />
-      <div className="row wrap" style={{ gap: 20 }}>
-        <Toggle
-          on={db.settings.priceAutoRefresh !== false}
-          onChange={(v) => actions.patchSettings({ priceAutoRefresh: v })}
-          label={<span className="small">Refresh prices with the accounts</span>}
-        />
-        <Toggle
-          on={db.settings.propertyAutoRefresh !== false}
-          onChange={(v) => actions.patchSettings({ propertyAutoRefresh: v })}
-          label={<span className="small">Keep property values current</span>}
-        />
       </div>
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}

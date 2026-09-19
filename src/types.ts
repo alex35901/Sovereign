@@ -411,8 +411,6 @@ export interface Settings {
   rentcastApiKey?: string;
   /** Tiingo API token for holding prices, stored locally. */
   tiingoApiKey?: string;
-  /** Whether holding prices refresh on their own, alongside the account sync. */
-  priceAutoRefresh?: boolean;
   /** When prices were last asked for, successfully or not. */
   lastPricesAt?: string;
   /** How much of each provider's free tier has been spent. See lib/usage.ts. */
@@ -424,26 +422,15 @@ export interface Settings {
    */
   explanations?: Record<string, { text: string; at: string }>;
   /**
-   * Whether property values refresh on their own. The cadence is not stored:
-   * it is worked out from how many properties there are against RentCast's
-   * monthly allowance, so adding one slows them all rather than overrunning.
+   * The property refresh cadence is not stored: it is worked out from how many
+   * properties there are against RentCast's monthly allowance, so adding one
+   * slows them all rather than overrunning.
    */
-  propertyAutoRefresh?: boolean;
   /** Connected Plaid items. Credentials for Plaid itself live server-side. */
   plaidItems?: PlaidItemRef[];
   lastSyncAt?: string;
   /** How often to pull from SimpleFIN while the app is open. */
   syncCadence?: SyncCadence;
-  /**
-   * Look institution logos up from their domain when the provider gives no
-   * logo of its own. Off means initials, and nothing leaves this app for it.
-   */
-  institutionLogos?: boolean;
-  /**
-   * Show a merchant's logo in place of its initial. Only merchants on the
-   * built-in brand list are ever looked up — see lib/merchant-domain.ts.
-   */
-  merchantLogos?: boolean;
   /**
    * Accounts deleted on purpose. Without this a provider hands the same account
    * back on the next pull and it reappears, which reads as the delete failing.

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Download, Link2, RefreshCw, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -8,21 +8,16 @@ import { download, exportJSON, importJSON } from "../lib/storage";
 import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
 import type { SyncCadence } from "../lib/sync";
 import { pricesDue, refreshPrices } from "../lib/prices";
-import { BRAND_COUNT } from "../lib/merchant-domain";
-import { breakdown } from "../lib/transfer";
-import { Btn, Card, CardHead, ConfirmButton, Field, Money, TextInput, Toggle } from "../components/ui";
+import { Btn, Card, CardHead, ConfirmButton, Field, TextInput } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
 import { EncryptionCard } from "./EncryptionCard";
-import { ImportModal } from "./ImportModal";
 
 export default function Settings() {
   const db = useDB();
-  const size = useMemo(() => breakdown(db), [db]);
   const { actions, apply, notify } = useStore();
   const fileRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +52,7 @@ export default function Settings() {
       // repeatedly while someone waits for a transaction to show up, and a
       // closing price does not change in between. The Refresh now button on
       // the prices card is the one that always asks.
-      if (db.settings.priceAutoRefresh !== false && pricesDue(db.settings.lastPricesAt)) {
+      if (pricesDue(db.settings.lastPricesAt)) {
         await refreshPrices(db, apply).catch(() => {});
       }
     } catch (err) {
@@ -91,44 +86,20 @@ export default function Settings() {
                   onChange={(v) => actions.patchSettings({ householdName: v })}
                 />
               </Field>
-              <Toggle
-                on={db.settings.theme === "dark"} onChange={actions.toggleTheme}
-                label={<span className="small">Dark theme</span>}
-              />
             </div>
           </Card>
 
           <Card>
-            <CardHead title="What's stored where" sub={`${(size.bytes / 1024 / 1024).toFixed(2)} MB, sent whole on every save`} />
-            <div className="col small muted" style={{ gap: 8 }}>
-              {/* The size is the interesting part now that two providers meter
-                  it. Broken down, because the answer to "what do I do about
-                  it" depends entirely on which line is the big one. */}
-              <div className="col" style={{ gap: 3 }}>
-                {size.parts.map((part) => (
-                  <div key={part.label} className="spread tiny">
-                    <span className="muted">
-                      {part.label}
-                      {part.count !== undefined ? <span className="faint"> · {part.count.toLocaleString()}</span> : null}
-                    </span>
-                    <span className="num faint">
-                      {(part.bytes / 1024).toFixed(0)} KB
-                      <span className="muted"> · {Math.round((part.bytes / Math.max(1, size.bytes)) * 100)}%</span>
-                    </span>
-                  </div>
-                ))}
-              </div>
+            {/* What was here was a breakdown of where the megabytes go, which
+                mattered while the document was growing and two providers were
+                metering it. The buttons are not decoration though: this is the
+                only way to take a copy out or put one back, so they stay. */}
+            <CardHead
+              title="Backup"
+              sub="Kept in this browser and in your own database. A copy on disk is the one that survives both."
+            />
+            <div className="col" style={{ gap: 10 }}>
               <div className="row wrap" style={{ gap: 8 }}>
-                <Btn onClick={() => actions.compressHistory()}>Compress balance history</Btn>
-                <span className="tiny faint" style={{ maxWidth: 320 }}>
-                  Drops balance points that repeat the one before them. Charts read the same, because
-                  they fill forward from the last change.
-                </span>
-              </div>
-              <span>
-                Because it's per-browser, take a JSON backup before clearing site data or switching machines.
-              </span>
-              <div className="row wrap" style={{ gap: 8, marginTop: 4 }}>
                 <Btn onClick={() => download(`sovereign-backup-${new Date().toISOString().slice(0, 10)}.json`, exportJSON(db))}>
                   <Download size={14} /> Back up JSON
                 </Btn>
@@ -140,6 +111,13 @@ export default function Settings() {
                   ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) void restore(f); }}
                 />
+              </div>
+              <div className="row wrap" style={{ gap: 8 }}>
+                <Btn onClick={() => actions.compressHistory()}>Compress balance history</Btn>
+                <span className="tiny faint" style={{ maxWidth: 320 }}>
+                  Drops balance points that repeat the one before them. Charts read the same, because
+                  they fill forward from the last change.
+                </span>
               </div>
             </div>
           </Card>
@@ -213,7 +191,7 @@ export default function Settings() {
                   <b>{db.settings.deletedAccountKeys!.length} deleted account
                   {db.settings.deletedAccountKeys!.length === 1 ? " is" : "s are"} ignored on sync.</b>{" "}
                   Forgetting them lets the provider offer them again on the next pull, the way back
-                  from a delete you didn't mean.
+                  from a delete you didn&rsquo;t mean.
                 </span>
                 <Btn onClick={() => { actions.forgetDeletedAccounts(); notify("Deleted accounts forgotten. They can return on the next sync."); }}>
                   Forget them
@@ -222,28 +200,6 @@ export default function Settings() {
             </>
           ) : null}
 
-          <div className="divider" />
-          <div className="col" style={{ gap: 6 }}>
-            <div className="row wrap" style={{ gap: 20 }}>
-              <Toggle
-                on={db.settings.institutionLogos !== false}
-                onChange={(v) => actions.patchSettings({ institutionLogos: v })}
-                label={<span className="small">Bank logos</span>}
-              />
-              <Toggle
-                on={db.settings.merchantLogos !== false}
-                onChange={(v) => actions.patchSettings({ merchantLogos: v })}
-                label={<span className="small">Merchant logos</span>}
-              />
-            </div>
-            <span className="tiny faint" style={{ maxWidth: 620 }}>
-              Both are fetched by <code>/api/icon</code> on your behalf, so the icon services see
-              your deployment rather than your browser. Merchant logos are looked up only for the
-              {" "}{BRAND_COUNT} brands on a built-in list, nothing off a statement is sent anywhere
-              to find out what it is, so a name it doesn&rsquo;t recognise keeps its letter. Plaid&rsquo;s
-              own logos never leave this app at all. Turn either off to use initials and ask nobody.
-            </span>
-          </div>
 
         </Card>
 
@@ -252,34 +208,7 @@ export default function Settings() {
 
         <PlaidCard />
 
-        <Card>
-          <CardHead
-            title="Import transactions"
-            sub="Monarch, Mint, YNAB or any bank CSV. Columns are mapped on screen and duplicates are skipped"
-            right={<Btn variant="primary" onClick={() => setImporting(true)}><Upload size={14} /> Import CSV</Btn>}
-          />
-        </Card>
-
-
-        <Card>
-          <CardHead title="Danger zone" />
-          <div className="row wrap" style={{ gap: 10 }}>
-            <ConfirmButton
-              label="Reload demo data" confirmLabel="Click again, this replaces everything"
-              onConfirm={() => { actions.resetDemo(); notify("Demo data reloaded."); }}
-              variant="default"
-            />
-            <ConfirmButton
-              label="Erase everything" confirmLabel="Click again to erase"
-              onConfirm={() => { actions.resetEmpty(); notify("All data erased."); }}
-            />
-            <span className="small faint row">
-              Net worth today: <Money value={db.accounts.reduce((s, a) => s + (a.includeInNetWorth ? a.balance : 0), 0)} cents={false} />
-            </span>
-          </div>
-        </Card>
       </div>
-      {importing ? <ImportModal onClose={() => setImporting(false)} /> : null}
     </>
   );
 }

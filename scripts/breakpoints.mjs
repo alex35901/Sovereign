@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet.
+ * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, settings-trim.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -5304,9 +5304,11 @@ try {
     // The Account column was detected, mapped, read into every row, and then
     // dropped: a Monarch export covering ten accounts landed entirely in
     // whichever account was picked from the dropdown.
+    // From the transactions page, which is where importing is reached now that
+    // Settings no longer carries a box of its own.
     const im = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
-    await im.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
-    await im.waitForTimeout(900);
+    await im.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await im.waitForTimeout(1200);
 
     // Two of the demo's own accounts by name, plus one it has never heard of.
     const named = await im.evaluate(() => {
@@ -5323,7 +5325,7 @@ try {
     ].join("\n");
 
     if (await tryStep("the import dialog opens and takes a file", async () => {
-      await im.locator("button", { hasText: "Import CSV" }).first().click({ timeout: 8000 });
+      await im.locator('.topbar button[title="Import a CSV"]').click({ timeout: 8000 });
       await im.waitForTimeout(400);
       await im.locator('.modal input[type="file"]').setInputFiles({
         name: "monarch.csv", mimeType: "text/csv", buffer: Buffer.from(csv),
@@ -6322,6 +6324,58 @@ try {
         /Pick at least one category/.test(rule.fields), rule.fields.slice(0, 90));
     }
     await wl.close();
+  }
+
+
+  if (want("settings-trim")) {
+    // ── settings holds settings, not switches nobody moves ──
+    //
+    // Every toggle on this page had one sensible position and was left in it.
+    // What replaced them is nothing: logos always resolve, prices and property
+    // values always refresh with the accounts, and the theme is switched from
+    // the bar at the top of every screen rather than from a page you have to
+    // go and find.
+    const st = await browser.newPage({ viewport: { width: 1280, height: 1200 } });
+    await st.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await st.waitForTimeout(1200);
+
+    const page = await st.evaluate(() => ({
+      cards: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
+      switches: document.querySelectorAll(".page .switch").length,
+      buttons: [...document.querySelectorAll(".page button")].map((b) => b.innerText.trim()),
+    }));
+
+    check("settings carries no toggles at all", page.switches === 0, `${page.switches} left`);
+    for (const gone of ["Danger zone", "Import transactions", "What's stored where"]) {
+      check(`and no "${gone}" box`, !page.cards.includes(gone), page.cards.join(", "));
+    }
+    // The pushback: that box held the only way to take a copy out or put one
+    // back, and those buttons had to survive it.
+    check("but the way to take a backup and put one back survives",
+      ["Back up JSON", "Export CSV", "Restore backup"].every((b) => page.buttons.some((t) => t.includes(b))),
+      page.buttons.join(" | ").slice(0, 160));
+
+    // The theme is still switchable, from the bar rather than from here.
+    const themed = await st.evaluate(() => {
+      const was = document.documentElement.dataset.theme;
+      document.querySelector('.topbar button[title="Toggle theme"]')?.click();
+      return { was, button: !!document.querySelector('.topbar button[title="Toggle theme"]') };
+    });
+    await st.waitForTimeout(400);
+    check("and the theme is still switched, from the bar on every screen",
+      themed.button && (await st.evaluate(() => document.documentElement.dataset.theme)) !== themed.was,
+      JSON.stringify(themed));
+
+    // Always-on means always on: the logos have to be there with nothing set.
+    await st.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await st.waitForTimeout(1400);
+    const logos = await st.evaluate(() => ({
+      merchant: document.querySelectorAll(".tx-mark .institution-logo img").length,
+      rows: document.querySelectorAll(".list-row.tx-grid:not(.head)").length,
+    }));
+    check("and merchant logos resolve with nothing to switch them on",
+      logos.merchant > 0, JSON.stringify(logos));
+    await st.close();
   }
 
 

@@ -386,7 +386,6 @@ async function refreshPrices(db: DB): Promise<{
 
   const key = (db.settings?.tiingoApiKey ?? process.env.TIINGO_API_KEY ?? "").trim();
   if (!key) return idle;
-  if (db.settings?.priceAutoRefresh === false) return idle;
   if (!pricesDue(db.settings?.lastPricesAt)) return idle;
 
   const tickers = tickersOf(db.holdings ?? []);

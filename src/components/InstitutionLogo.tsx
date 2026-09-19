@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import type { Account } from "../types";
-import { useDB } from "../store";
 import { iconFor } from "../lib/icon";
 import { cx } from "./ui";
 
@@ -27,12 +26,13 @@ export const initialsOf = (name: string): string =>
 export function InstitutionLogo(
   { account, size = 32, round = false }: { account: Account; size?: number; round?: boolean },
 ) {
-  const db = useDB();
-  const lookupAllowed = db.settings.institutionLogos !== false;
-  const src = account.logo || (lookupAllowed && account.domain ? iconFor(account.domain) : "");
+  // The provider's own logo where there is one, otherwise looked up from the
+  // domain through /api/icon, so the icon service sees the deployment rather
+  // than the reader's browser.
+  const src = account.logo || (account.domain ? iconFor(account.domain) : "");
   const [failed, setFailed] = useState(false);
 
-  // A different account, or the setting turned back on, deserves another go.
+  // A different account deserves another go at fetching one.
   useEffect(() => setFailed(false), [src]);
 
   const tone = toneOf(account.institution || account.name);

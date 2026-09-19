@@ -63,11 +63,12 @@ export const merchantTone = (name: string): string => TONES[Number.parseInt(hash
  * string off a bank statement is sent anywhere to find out.
  */
 export function MerchantAvatar({ name, size = 32 }: { name: string; size?: number }) {
-  const db = useDB();
-  const src = db.settings.merchantLogos === false ? null : logoFor(name);
+  // Only the brands on the built-in list are ever looked up, so nothing off a
+  // statement is sent anywhere to find out what it is - see merchant-domain.ts.
+  const src = logoFor(name);
   const [failed, setFailed] = useState(false);
 
-  // A different merchant, or the setting turned back on, deserves another go.
+  // A different merchant deserves another go at fetching one.
   useEffect(() => setFailed(false), [src]);
 
   if (src && !failed) {

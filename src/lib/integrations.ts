@@ -149,7 +149,7 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       unit: "symbols",
       period: "month",
       lastAt: s.lastPricesAt,
-      note: s.priceAutoRefresh === false ? "Automatic refresh is off" : undefined,
+      note: undefined,
       error: tiingo.error,
     },
     {
@@ -163,11 +163,9 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       unit: "lookups",
       period: "month",
       lastAt: rentcast.at,
-      note: s.propertyAutoRefresh === false
-        ? "Automatic refresh is off"
-        : addressless
-          ? `${addressless} propert${addressless === 1 ? "y has" : "ies have"} no address`
-          : undefined,
+      note: addressless
+        ? `${addressless} propert${addressless === 1 ? "y has" : "ies have"} no address`
+        : undefined,
       error: rentcast.error,
     },
     {

@@ -770,12 +770,18 @@ await test("Hopper's row comes from the server, and is absent when it isn't set 
   assert.equal(row.lastAt, "2026-09-04T11:00:00.000Z");
 });
 
-await test("a switched-off refresh is said out loud rather than looking healthy", () => {
+await test("a refresh nobody can switch off is never reported as off", () => {
+  // Prices and property values refresh with the accounts, always. The switches
+  // that used to turn them off are gone, so nothing may still claim they are.
   const base = M.emptyDB();
-  const db = { ...base, settings: { ...base.settings, tiingoApiKey: "tok", priceAutoRefresh: false } };
+  const db = { ...base, settings: { ...base.settings, tiingoApiKey: "tok" } };
   const health = M.healthOf(rowsOf(db).tiingo);
-  assert.equal(health.state, "warn");
-  assert.match(health.text, /Automatic refresh is off/);
+  assert.notEqual(health.state, "warn", health.text);
+  assert.doesNotMatch(health.text ?? "", /refresh is off/i);
+
+  // The one note left on the property row is a real problem, not a setting.
+  const property = rowsOf({ ...base, settings: { ...base.settings, rentcastApiKey: "key" } }).rentcast;
+  assert.doesNotMatch(M.healthOf(property).text ?? "", /refresh is off/i);
 });
 
 await test("a price run records the symbols it asked about", async () => {
@@ -6362,9 +6368,16 @@ await test("no user-facing text in the app uses an em dash", () => {
         if (two === "/*") { mode = "block"; i += 2; continue; }
         if (two === "//") { mode = "line"; i += 2; continue; }
         if (`"'\``.includes(text[i])) {
-          const q = text[i]; i++;
-          while (i < text.length && text[i] !== q) { if (text[i] === "\\") i++; i++; }
-          i++; continue;
+          const q = text[i];
+          let j = i + 1;
+          while (j < text.length && text[j] !== q) { if (text[j] === "\\") j++; j++; }
+          // A quote with no partner is an apostrophe in prose, not a string.
+          // Skipping to the end of the file on one used to leave everything
+          // after it unstripped, so comments in the tail were read as if they
+          // were text and their em dashes reported. Treat it as an ordinary
+          // character and carry on from just after it.
+          if (j >= text.length) { i++; continue; }
+          i = j + 1; continue;
         }
         i++;
       } else if (mode === "block") {
