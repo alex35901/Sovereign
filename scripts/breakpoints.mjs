@@ -2344,6 +2344,38 @@ try {
   }
 
   if (want("dashboard")) {
+    // ── every card's heading says the same kind of thing ──
+    //
+    // A dashboard is read by glancing down the left edge. Three of these used
+    // to answer a different question from the rest: one restated an amount the
+    // chart under it already drew, and two said which month it is, on a page
+    // about this month.
+    const heads = await browser.newPage({ viewport: { width: 1280, height: 1500 } });
+    await heads.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await heads.waitForTimeout(1800);
+    const subs = await heads.evaluate(() => Object.fromEntries(
+      [...document.querySelectorAll(".card-head, .dash-card-head")].map((h) => [
+        h.querySelector("h2")?.innerText.trim() ?? "",
+        (h.innerText.split("\n").slice(1).join(" ") ?? "").trim(),
+      ])));
+
+    check("spending says which way it moved and by how much of last month",
+      /^[\u2197\u2198] \$[\d,]+ \(\d+% (higher|lower)\)$/.test(subs.Spending ?? ""),
+      JSON.stringify(subs.Spending));
+    check("and does not restate the total the chart below it draws",
+      !/vs\.|than by this day/i.test(subs.Spending ?? ""), JSON.stringify(subs.Spending));
+    for (const card of ["Budget", "Investments"]) {
+      check(`${card} carries no heading of its own`, (subs[card] ?? "") === "", JSON.stringify(subs[card]));
+    }
+    // The shape is the house one: the net worth card has said it this way all
+    // along, and the point of the change was that they agree.
+    // Delta carries no class of its own; it is the toned span in the head.
+    const delta = await heads.evaluate(() =>
+      document.querySelector(".nw-head .pos, .nw-head .neg")?.innerText.trim() ?? "");
+    check("which is the shape the net worth card was already using",
+      /^[\u2197\u2198] \$[\d,.]+ \([\d.]+%\)$/.test(delta), delta);
+    await heads.close();
+
     // ── the net worth card cuts by kind, the way the Accounts page does ──
     //
     // Not merely "it has some pills": the same kind on either screen has to be

@@ -1,12 +1,9 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { TrendingDown, TrendingUp } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
-import {
-  dateLabel, daysInMonth, monthLabel, relativeDay, thisMonth, today,
-} from "../lib/date";
+import { dateLabel, relativeDay, thisMonth, today } from "../lib/date";
 import {
   accountSlices, aggregateSeries, budgetSummary, earliestHistoryDate, portfolioSummary, trendTone,
 } from "../lib/select";
@@ -131,19 +128,26 @@ function SpendingCard() {
   const soFarLast = pace.lastMonth.find((p) => p.day === pace.thisMonth.length)?.total
     ?? pace.spentLast;
   const diff = pace.spent - soFarLast;
+  // Against nothing is not a comparison: a first month has no last month to be
+  // a percentage of, and dividing by it would print Infinity.
+  const pct = soFarLast > 0 ? Math.round((Math.abs(diff) / soFarLast) * 100) : null;
 
   return (
     <DashCard to="/reports" label="Reports">
-      <CardHead title="Spending" sub="This month vs. last month" />
+      {/* The same shape as every other sub-heading here: which way it moved,
+          by how much, and how much of last month that is. What it is against
+          is the chart directly below, which is labelled. */}
+      <CardHead
+        title="Spending"
+        sub={pace.thisMonth.length ? (
+          <span className={diff > 0 ? "neg" : "pos"}>
+            {diff > 0 ? "↗" : "↘"} <Money value={Math.abs(diff)} cents={false} />
+            {pct === null ? "" : ` (${pct}% ${diff > 0 ? "higher" : "lower"})`}
+          </span>
+        ) : undefined}
+      />
       {pace.thisMonth.length ? (
         <>
-          <div className="row wrap" style={{ gap: 10, marginBottom: 6 }}>
-            <span className="num bold" style={{ fontSize: 22 }}><Money value={pace.spent} /></span>
-            <span className={cx("small", diff > 0 ? "neg" : "pos")}>
-              {diff > 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}{" "}
-              <Money value={Math.abs(diff)} cents={false} /> {diff > 0 ? "more" : "less"} than by this day last month
-            </span>
-          </div>
           <CompareChart
             span={pace.days}
             current={pace.thisMonth.map((p) => [p.day, p.total] as [number, number])}
@@ -201,10 +205,9 @@ function BudgetLine({ label, planned, actual, doneWord, pace }: {
 function BudgetCard({ month }: { month: string }) {
   const db = useDB();
   const b = useMemo(() => budgetSummary(db, month), [db, month]);
-  const day = Number(today().slice(8, 10));
   return (
     <DashCard to="/budget" label="Budget">
-      <CardHead title="Budget" sub={`${monthLabel(month)} · day ${day} of ${daysInMonth(month)}`} />
+      <CardHead title="Budget" />
       {b.plannedIncome || b.plannedExpense ? (
         <div className="col" style={{ gap: 18 }}>
           <BudgetLine label="Income" planned={b.plannedIncome} actual={b.actualIncome} doneWord="earned" />
@@ -341,7 +344,7 @@ function InvestmentCard() {
 
   return (
     <DashCard to="/investments" label="Investments">
-      <CardHead title="Investments" sub={`${monthLabel(thisMonth())} so far`} />
+      <CardHead title="Investments" />
       <div className="row wrap" style={{ gap: 12, alignItems: "baseline" }}>
         <span className="num bold" style={{ fontSize: 26 }}><Money value={p.accountsValue} cents={false} /></span>
         <span className={up ? "pos" : "neg"}>
