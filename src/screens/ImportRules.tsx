@@ -81,14 +81,16 @@ export function ImportRules() {
           Import, and everything that could not be read is listed first.
         </div>
 
+        {/* The size lives in the stylesheet rather than here: an inline style
+            beats every rule there is, including the one that stops a phone
+            zooming itself in when this is tapped. */}
         <textarea
-          className="input"
+          className="input rule-paste"
           rows={7}
           spellCheck={false}
           placeholder={"If merchant name exactly matches fair oaks farms\tRecategorize to 🍽 Restaurants & Bars"}
           value={text}
           onChange={(e) => { setText(e.target.value); setDone(null); }}
-          style={{ fontFamily: "var(--mono, monospace)", fontSize: 12, resize: "vertical", width: "100%" }}
         />
 
         {done !== null ? (

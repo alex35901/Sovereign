@@ -102,6 +102,9 @@ const tryStep = async (what, fn) => {
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
   "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/tax", "/year", "/rules", "/categories", "/tags", "/settings",
+  // Added with the cards screen and missed at the time, so every per-page
+  // check below had a hole in it until now.
+  "/cards",
   // The category drill-down carries a chart, a transaction list and two cards
   // side by side, which is the layout most likely to run off a phone.
   "/categories/c_groceries", "/categories/c_groceries?by=year",
@@ -466,6 +469,106 @@ try {
       check(`${w}px — every page fits the viewport`, over.length === 0, `overflowing: ${over.join(", ")}`);
       await page.close();
     }
+  }
+
+  if (want("touch-zoom")) {
+    // ── nothing a finger can focus is small enough to zoom the page ──
+    //
+    // Safari on iPhone zooms the whole page in when a form control smaller
+    // than 16px takes focus, and leaves you there, scrolled sideways. There is
+    // no event to cancel and no setting to turn it off: the control being 16px
+    // is the only thing that stops it. It was reported on a transaction's
+    // category picker, whose search box was 13px like every other input.
+    //
+    // Emulated with touch on, which is what makes `pointer: coarse` match, so
+    // this measures the rule that actually ships rather than a width.
+    const SMALL = `(() => {
+      const out = [];
+      for (const el of document.querySelectorAll("input, select, textarea")) {
+        const t = (el.getAttribute("type") || "text").toLowerCase();
+        // The ones iOS does not zoom for: they take no text.
+        if (["checkbox", "radio", "button", "submit", "range", "color", "file"].includes(t)) continue;
+        if (el.offsetParent === null && !el.getClientRects().length) continue;
+        const size = parseFloat(getComputedStyle(el).fontSize);
+        if (size < 16) out.push(location.pathname + " " + (el.className || el.tagName.toLowerCase()) + " at " + size + "px");
+      }
+      return out;
+    })()`;
+
+    const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const offenders = [];
+    for (const path of PAGES) {
+      await phone.goto(`${BASE}${path}`, { waitUntil: "networkidle" }).catch(() => {});
+      await phone.waitForTimeout(250);
+      offenders.push(...await phone.evaluate(SMALL));
+    }
+    check("every page — nothing a finger can focus is under 16px",
+      offenders.length === 0, offenders.slice(0, 6).join(", "));
+
+    // The reported case, walked the way it was hit: open a transaction, open
+    // its category. A rule that covers the pages but not the thing a menu
+    // opens would pass everything above and still zoom.
+    await phone.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await phone.waitForTimeout(500);
+    await tryStep("a transaction opens on a phone", () =>
+      phone.locator(".list-row.tx-grid:not(.head) .col").first().click({ timeout: 5000 }));
+    await phone.waitForTimeout(600);
+    const catRow = phone.locator(".drow", { hasText: "Category" }).first();
+    await tryStep("and its category can be opened", () =>
+      catRow.locator("button, select, .drow-btn").first().click({ timeout: 5000 }));
+    await phone.waitForTimeout(500);
+    const picker = await phone.evaluate(SMALL);
+    const searched = await phone.evaluate(() => {
+      const el = [...document.querySelectorAll("input")]
+        .find((i) => /categor/i.test(i.getAttribute("placeholder") || ""));
+      return el ? parseFloat(getComputedStyle(el).fontSize) : null;
+    });
+    check("the category picker is reached, and its search box is 16px",
+      searched !== null && searched >= 16, `saw ${searched}`);
+    check("and nothing else inside the open transaction is under 16px",
+      picker.length === 0, picker.join(", "));
+
+    // The amount is 38px and must stay it: a blanket 16px would have shrunk
+    // the one control on the screen that was already large enough.
+    const amount = await phone.evaluate(() => {
+      const el = document.querySelector(".txn-amount input");
+      return el ? parseFloat(getComputedStyle(el).fontSize) : null;
+    });
+    check("and the amount is left the size it was designed",
+      amount !== null && amount > 30, `saw ${amount}`);
+    await phone.close();
+
+    // Capability, not width. The same narrow window under a mouse keeps the
+    // designed size, or this would be a redesign of every form in the app
+    // rather than a fix for one browser's behaviour.
+    const mouse = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mouse.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await mouse.waitForTimeout(400);
+    const size = await mouse.evaluate(() => {
+      const el = document.querySelector(".search .input");
+      return el ? parseFloat(getComputedStyle(el).fontSize) : null;
+    });
+    check("a narrow window with a mouse is not treated as a phone",
+      size !== null && size < 16, `saw ${size}`);
+    await mouse.close();
+
+    // The other two zooms, which have no focus to hang a measurement on.
+    const rest = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await rest.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await rest.waitForTimeout(400);
+    const taps = await rest.evaluate(() => {
+      const els = [...document.querySelectorAll("button, a")].filter((e) => e.getClientRects().length);
+      const wrong = els.filter((e) => !/manipulation|none/.test(getComputedStyle(e).touchAction));
+      return { seen: els.length, wrong: wrong.length, first: wrong[0]?.className ?? "" };
+    });
+    check("two quick taps on a button do not zoom either",
+      taps.seen > 10 && taps.wrong === 0, `${taps.wrong} of ${taps.seen} still zoom, e.g. ${taps.first}`);
+    const adjust = await rest.evaluate(() =>
+      getComputedStyle(document.documentElement).webkitTextSizeAdjust
+      ?? getComputedStyle(document.documentElement).textSizeAdjust);
+    check("and turning the phone does not grow the text by itself",
+      adjust === "100%", `saw ${adjust}`);
+    await rest.close();
   }
 
   if (want("phone-account")) {

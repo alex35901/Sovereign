@@ -70,6 +70,11 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+/* The third zoom, and the one nobody reports because it looks like a bug in
+   the layout: Safari on iPhone grows the text in some blocks by itself when
+   the phone is turned, which moves everything and lines up with nothing.
+   Pinch is untouched, and so is the reader's own text size. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--bg);
@@ -233,6 +238,9 @@ h3 { font-size: 14px; }
 .rule-when { background: var(--accent-soft); color: var(--accent); }
 .rule-then { background: var(--pos-soft); color: var(--pos); }
 .rule-backfill { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+/* Rules pasted in as text, one per line, so the tab between the two halves
+   lines up. */
+.rule-paste { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; resize: vertical; width: 100%; }
 
 /* A real logo sits in the same round slot the initials used. */
 .institution-logo { background: var(--surface-2); overflow: hidden; padding: 0; }
@@ -1404,6 +1412,43 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   .est-section .btn { display: none !important; }
   .est-notes textarea.input { border: 0; padding: 0; resize: none; height: auto; }
 }
+
+/* ── touch ────────────────────────────────────────────────────────────────
+ *
+ * Safari on iPhone zooms the whole page in when you focus a form control whose
+ * text is smaller than 16px, and then leaves you there, scrolled sideways, to
+ * pinch your way back out. It is not a setting and there is no event to cancel:
+ * the only thing that stops it is the control being 16px in the first place.
+ *
+ * So every control that can take focus is 16px where the pointer is a finger,
+ * and stays at its designed size everywhere else, because 13px reads fine
+ * under a mouse and a phone has the room for 16.
+ *
+ * Capability, not width: a small window on a laptop is not a phone, and a
+ * tablet at 1100px still has the problem. `pointer: coarse` asks the question
+ * that actually matters.
+ *
+ * These have to out-order the base rules they raise and be no less specific
+ * than them, which is why they name the same classes and sit below. They are
+ * not width-based, so they are not part of the section under this one, and
+ * nothing in that section sets a font size on a control.
+ */
+@media (pointer: coarse) {
+  /* Anything focusable that never got a size of its own: it inherits the
+     body's 14px, which is under the line. */
+  input, select, textarea { font-size: 16px; }
+  /* And the ones that did. A class beats an element however late it comes, so
+     each has to be named. */
+  .input, .select, textarea.input { font-size: 16px; }
+  .drow-val .input, .drow-val .select { font-size: 16px; }
+  .filter-bar .select, .date-bound, .filter-panel .select, .filter-panel .input { font-size: 16px; }
+  .rule-paste { font-size: 16px; }
+}
+
+/* The other zoom: two quick taps on anything tappable. A button is not a
+   paragraph, so there is nothing there to zoom in on and read, and the wait
+   for the second tap is what makes a tap feel slow. Pinch is untouched. */
+button, a, label, summary, [role="button"] { touch-action: manipulation; }
 
 /* ── responsive ───────────────────────────────────────────────────────────
  *
