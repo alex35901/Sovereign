@@ -492,15 +492,32 @@ export function notices(db: DB, now: ISODate = today()): Notice[] {
     // that stopped being called has. Said once rather than once a day: keyed
     // on the week so it comes back if it goes on being true, and does not
     // arrive every morning in between.
-    const quiet = staleSince(row, at);
-    if (!quiet) continue;
+    const resting = staleSince(row, at);
+    if (resting) {
+      out.push({
+        // Keyed on the message, which names the day it last ran, so it is one
+        // piece of news rather than the same one every morning.
+        id: `integration:${row.id}:quiet:${resting}`,
+        kind: "integration",
+        title: `${row.provider}: ${resting.toLowerCase()}`,
+        body: `${row.process}. Nothing has failed, which is what makes this worth saying: it has simply stopped happening.`,
+        at: now,
+        when: "now",
+        to: "/settings",
+        tone: "warn",
+      });
+      continue;
+    }
+    // Running, reporting no trouble, and bringing nothing back. The worst of
+    // the three, because every other signal says it is fine.
+    if (!row.quiet) continue;
     out.push({
-      // Keyed on the message, which names the day it last ran, so it is one
-      // piece of news rather than the same one every morning.
-      id: `integration:${row.id}:quiet:${quiet}`,
+      id: `integration:${row.id}:empty:${row.quiet.since}`,
       kind: "integration",
-      title: `${row.provider}: ${quiet.toLowerCase()}`,
-      body: `${row.process}. Nothing has failed, which is what makes this worth saying: it has simply stopped happening.`,
+      title: `${row.provider} has brought nothing back since ${row.quiet.since}`,
+      body: `${row.process}. It is still running and still reporting no trouble, so nothing else will tell you. `
+        + `${row.quiet.days} days with nothing, against a usual gap of ${row.quiet.usual}. `
+        + "A login that needs renewing at the bank looks exactly like this.",
       at: now,
       when: "now",
       to: "/settings",

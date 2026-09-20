@@ -40,17 +40,29 @@ export interface Integration {
   unit: string;
   /** Shown under the ceiling when the figure needs qualifying. */
   caveat?: string;
+  /**
+   * When this connection last brought something back, if that is longer ago
+   * than its own normal. Separate from `lastAt`, which is only when it last
+   * tried: a pull that succeeds and returns nothing moves one and not the
+   * other, and it is the other that says whether the connection works.
+   */
+  quiet?: { since: string; days: number; usual: number };
   period: Period;
   /** When the provider was last called. */
   lastAt?: string;
   /**
-   * How long this one may go quiet before that is worth saying, and whether
-   * never having run at all counts. A nightly job has clearly missed one after
-   * a day and a half; a bank on a weekly cadence has not. Left unset, the
-   * generic ceiling below applies and a provider that has never run is simply
-   * new rather than broken.
+   * How long this one may go without running before that is worth saying. A
+   * nightly job has clearly missed one after a day and a half; a bank on a
+   * weekly cadence has not. Left unset, the generic ceiling below applies.
    */
   staleAfterHours?: number;
+  /**
+   * What to say when it has never run at all, for the rows where that is
+   * already wrong. The scheduled job is one: it should have run last night.
+   * A bank connected a moment ago is not, and saying so would mean every new
+   * connection announced itself as broken before its first pull finished.
+   */
+  neverRun?: string;
   /** Worth saying out loud in the health column, beyond the ratio. */
   note?: string;
   error?: string;
@@ -81,16 +93,84 @@ export const STALE_HOURS = 14 * 24;
  */
 export function staleSince(i: Integration, now: number = Date.now()): string | undefined {
   if (!i.set || i.error) return undefined;
-  // Only a row that says how long it may rest treats never having run as a
-  // fault. For everything else, never having run means newly set up.
-  const neverRun = i.staleAfterHours === undefined ? undefined : "Hasn't run yet";
-  if (!i.lastAt) return neverRun;
+  // Only a row that says so treats never having run as a fault. For
+  // everything else, never having run means newly set up.
+  if (!i.lastAt) return i.neverRun;
   const ran = Date.parse(i.lastAt);
-  if (!Number.isFinite(ran)) return neverRun;
+  if (!Number.isFinite(ran)) return i.neverRun;
   // A stamp from the future is a clock that jumped, not a provider at rest.
   if (ran > now) return undefined;
   const hours = i.staleAfterHours ?? STALE_HOURS;
   return now - ran > hours * 3_600_000 ? `Hasn't run since ${i.lastAt.slice(0, 10)}` : undefined;
+}
+
+/**
+ * The least silence worth remarking on, however chatty the connection is.
+ *
+ * Four days, so a long weekend where nobody spends anything is not reported as
+ * a fault.
+ */
+export const MIN_QUIET_DAYS = 4;
+
+/** How far past a connection's own normal gap counts as it having stopped. */
+const QUIET_MULTIPLE = 3;
+
+/** Enough history to know what this connection's normal actually is. */
+const ENOUGH = 6;
+
+const DAY = 86_400_000;
+
+/**
+ * Whether a connection has gone quiet, judged against its own usual rhythm.
+ *
+ * "When did it last run" and "when did it last bring something back" are
+ * different questions, and only the second one is about whether the
+ * connection works. A bridge that answers every night and returns an empty
+ * list stamps its clock, reports no error, and reads as healthy for ever
+ * while nothing arrives. The visible symptom is a budget where a month's
+ * income never shows up, and a row in Settings that says Healthy.
+ *
+ * Judged against this connection's own history rather than a fixed number of
+ * days, because there is no fixed number that is right for both a card used
+ * twice a day and a savings account used twice a year. The usual gap between
+ * days with activity is the yardstick: silence of three times that, and at
+ * least four days, is worth saying. A connection without enough history to
+ * have a usual gap is not guessed at.
+ */
+export function quietSince(
+  db: DB,
+  source: "simplefin" | "plaid",
+  now: number = Date.now(),
+): { since: string; days: number; usual: number } | undefined {
+  const ids = new Set(
+    db.accounts.filter((a) => a.syncSource === source && !a.closedAt).map((a) => a.id),
+  );
+  if (!ids.size) return undefined;
+
+  // Distinct days with activity, newest first. Days rather than transactions,
+  // so a card used five times on Saturday counts as one Saturday.
+  const days = [...new Set(
+    db.transactions.filter((t) => ids.has(t.accountId)).map((t) => t.date),
+  )].sort().reverse();
+  if (days.length < ENOUGH) return undefined;
+
+  const newest = Date.parse(`${days[0]}T00:00:00.000Z`);
+  if (!Number.isFinite(newest) || newest > now) return undefined;
+
+  // The typical gap, taken as a median so one holiday does not set the bar.
+  const gaps: number[] = [];
+  for (let i = 0; i < days.length - 1 && i < 60; i++) {
+    const a = Date.parse(`${days[i]}T00:00:00.000Z`);
+    const b = Date.parse(`${days[i + 1]}T00:00:00.000Z`);
+    if (Number.isFinite(a) && Number.isFinite(b)) gaps.push((a - b) / DAY);
+  }
+  if (!gaps.length) return undefined;
+  gaps.sort((x, y) => x - y);
+  const usual = Math.max(1, gaps[Math.floor(gaps.length / 2)]!);
+
+  const quiet = Math.floor((now - newest) / DAY);
+  if (quiet < Math.max(MIN_QUIET_DAYS, usual * QUIET_MULTIPLE)) return undefined;
+  return { since: days[0]!, days: quiet, usual };
 }
 
 export function healthOf(i: Integration, now: number = Date.now()): { state: Health; text: string } {
@@ -99,8 +179,11 @@ export function healthOf(i: Integration, now: number = Date.now()): { state: Hea
   if (i.ceiling > 0 && i.used >= i.ceiling) return { state: "down", text: `At the ${i.ceiling} ${i.unit} limit` };
   // Before the allowance warning: a provider at rest is a worse problem than
   // one three quarters of the way through a budget it is plainly spending.
-  const quiet = staleSince(i, now);
-  if (quiet) return { state: "warn", text: quiet };
+  const resting = staleSince(i, now);
+  if (resting) return { state: "warn", text: resting };
+  // It has been running. It just has not brought anything back, which is the
+  // failure that looks exactly like a quiet fortnight.
+  if (i.quiet) return { state: "warn", text: `Nothing new since ${i.quiet.since}` };
   // An allowance about to run out outranks a note: one of them stops the
   // integration working this week and the other is a preference.
   if (i.ceiling > 0 && i.used >= i.ceiling * NEAR) return { state: "warn", text: `Near the ${i.unit} limit` };
@@ -165,6 +248,10 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       unit: "institutions",
       period: "ever",
       lastAt: s.lastSyncAt,
+      // A nightly job and a browser that syncs on its own cadence: three days
+      // with no attempt at all is not a quiet week, it is nothing running.
+      staleAfterHours: 72,
+      quiet: quietSince(db, "simplefin", now),
       error: simplefin.error,
     },
     {
@@ -178,6 +265,8 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       unit: "items",
       period: "ever",
       lastAt: plaidLast,
+      staleAfterHours: 72,
+      quiet: quietSince(db, "plaid", now),
       error: plaid.error,
     },
     {
@@ -263,6 +352,7 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       // A day and a half: long enough that a job due at nine has clearly
       // missed one, and a job that has never run at all is already wrong.
       staleAfterHours: 36,
+      neverRun: "Hasn't run yet",
     },
     {
       id: "anthropic",

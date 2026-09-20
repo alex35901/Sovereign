@@ -96,7 +96,7 @@ await build({
       export { compareValues, sortRows } from "./src/components/sort.tsx";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
-      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleSince } from "./src/lib/integrations.ts";
+      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleSince, quietSince, MIN_QUIET_DAYS } from "./src/lib/integrations.ts";
       export * as TR from "./src/lib/transfer.ts";
       export { compressPoints, squashHistory } from "./src/lib/history.ts";
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
@@ -904,7 +904,7 @@ await test("a runaway sync loop is called out by its request count, not just its
 await test("a scheduled job that has stopped is the point of the Vercel row", () => {
   const now = Date.parse("2026-09-04T12:00:00.000Z");
   // The cron says how long it may rest, so never having run is already wrong.
-  const job = (at) => M.staleSince({ set: true, lastAt: at, staleAfterHours: 36 }, now);
+  const job = (at) => M.staleSince({ set: true, lastAt: at, staleAfterHours: 36, neverRun: "Hasn't run yet" }, now);
   assert.equal(job(undefined), "Hasn't run yet");
   assert.equal(job("not a date"), "Hasn't run yet");
   assert.equal(job("2026-09-04T09:00:00.000Z"), undefined, "ran this morning");
@@ -4788,6 +4788,87 @@ await test("an account that is gone, or has barely any history, says nothing", (
   }).length, 1, "nothing to fifty thousand is still worth a word");
 });
 
+await test("a connection that runs every day and brings nothing back is not healthy", () => {
+  // The failure that beat every other signal: the bridge answers, reports no
+  // error, stamps its clock, and returns an empty list. Last transaction the
+  // eighth, today the twentieth, and the row says Healthy.
+  const base = M.emptyDB();
+  const account = {
+    id: "a1", name: "Checking", institution: "Chase", type: "checking",
+    balance: 100, includeInNetWorth: true, hidden: false, history: [], order: 0,
+    syncSource: "simplefin",
+  };
+  // Activity most days, which is what makes twelve days of silence loud.
+  const days = [];
+  for (let d = 1; d <= 8; d++) days.push(`2026-09-0${d}`);
+  const db = {
+    ...base,
+    settings: { ...base.settings, simplefinAccessUrl: "https://u:p@bridge/accounts", lastSyncAt: "2026-09-20T06:00:00.000Z" },
+    accounts: [account],
+    transactions: days.map((date, i) => ({
+      id: `t${i}`, date, merchant: "A shop", amount: -1200, categoryId: "c_uncategorized",
+      accountId: account.id, tags: [], reviewed: true,
+    })),
+  };
+  const now = Date.parse("2026-09-20T12:00:00.000Z");
+
+  const quiet = M.quietSince(db, "simplefin", now);
+  assert.ok(quiet, "twelve days against a usual gap of one is worth saying");
+  assert.equal(quiet.since, "2026-09-08");
+  assert.equal(quiet.days, 12);
+  assert.equal(quiet.usual, 1);
+
+  const row = M.integrations(db, null, now).find((r) => r.id === "simplefin");
+  assert.equal(row.error, undefined, "nothing has failed, which is the point");
+  assert.equal(M.healthOf(row, now).state, "warn");
+  assert.match(M.healthOf(row, now).text, /Nothing new since 2026-09-08/);
+
+  // And it says so out loud rather than only in a column.
+  const n = M.NT.notices(db, "2026-09-20T12:00:00.000Z").find((x) => x.kind === "integration");
+  assert.ok(n, "there is a notice");
+  assert.match(n.title, /brought nothing back since 2026-09-08/);
+});
+
+await test("a quiet connection is judged against its own rhythm, not a fixed week", () => {
+  // A savings account touched every few weeks must not be reported as broken
+  // for behaving exactly as it always has, and a card used daily must not
+  // have to go a fortnight before anyone says anything.
+  const base = M.emptyDB();
+  const acct = (id) => ({
+    id, name: "An account", institution: "Chase", type: "checking", balance: 1,
+    includeInNetWorth: true, hidden: false, history: [], order: 0, syncSource: "simplefin",
+  });
+  const withDates = (dates) => ({
+    ...base,
+    settings: { ...base.settings, simplefinAccessUrl: "https://u:p@bridge/accounts" },
+    accounts: [acct("a1")],
+    transactions: dates.map((date, i) => ({
+      id: `t${i}`, date, merchant: "A shop", amount: -500, categoryId: "c_uncategorized",
+      accountId: "a1", tags: [], reviewed: true,
+    })),
+  });
+  const now = Date.parse("2026-09-20T12:00:00.000Z");
+
+  // Every 30 days, last seen 33 days ago: normal for this one.
+  const slow = withDates(["2026-04-18", "2026-05-18", "2026-06-17", "2026-07-17", "2026-08-16", "2026-08-18"]);
+  assert.equal(M.quietSince(slow, "simplefin", now), undefined, "a slow account at its own pace is not broken");
+
+  // Daily, and silent for a week: loud.
+  const fast = withDates(["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11", "2026-09-12"]);
+  const q = M.quietSince(fast, "simplefin", now);
+  assert.ok(q, "eight days of nothing from a daily connection");
+  assert.equal(q.usual, 1);
+
+  // Four days is the floor, so a long weekend is never news.
+  const weekend = withDates(["2026-09-13", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"]);
+  assert.equal(M.quietSince(weekend, "simplefin", now), undefined, "two days is a weekend");
+  assert.equal(M.MIN_QUIET_DAYS, 4);
+
+  // Too little history to know what normal is: say nothing rather than guess.
+  const thin = withDates(["2026-09-01", "2026-09-02"]);
+  assert.equal(M.quietSince(thin, "simplefin", now), undefined);
+});
+
 await test("a provider that has quietly stopped becomes a notice, not just a colour", () => {
   // The failure that cost weeks once already: nothing is broken, nothing is
   // reported, and nothing is happening. It used to show as an amber cell on a
@@ -4811,9 +4892,14 @@ await test("a provider that has quietly stopped becomes a notice, not just a col
   const read = M.NT.markRead(db, [n.id]);
   assert.equal(M.NT.unread(read, "2026-09-10").some((x) => x.kind === "integration"), false);
 
-  // A pull five days ago is a quiet week, not a stopped provider.
-  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-05T09:00:00.000Z" } };
+  // A pull yesterday is not. A bank gets three days rather than the generic
+  // fortnight, because a nightly job and a browser that syncs on its own
+  // cadence should both have managed something in that time.
+  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-09T09:00:00.000Z" } };
   assert.equal(M.NT.notices(recent, "2026-09-10").some((x) => x.kind === "integration"), false);
+  const fiveDays = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-05T09:00:00.000Z" } };
+  assert.equal(M.NT.notices(fiveDays, "2026-09-10").some((x) => x.kind === "integration"), true,
+    "five days with no attempt is a bank sync that has stopped");
 });
 
 await test("the swing becomes a notice that points at the account", () => {
