@@ -1,6 +1,7 @@
 import type { Account, DB } from "../types.js";
 import { cadenceHours, DEFAULT_CADENCE } from "./sync/schedule.js";
 import { meterOf } from "./usage.js";
+import { quietFor } from "./quiet.js";
 
 /**
  * Where an account's balance comes from, and whether it is still coming.
@@ -79,6 +80,29 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
   if (error) return { state: "attention", provider, lastAt, status: "Needs attention", detail: error };
 
   if (!lastAt) return { state: "stale", provider, status: "Waiting for its first update" };
+
+  // Answering, and bringing nothing. This is the one the other checks all
+  // miss: the bridge returns the account every morning with a fresh balance
+  // and an empty list of transactions, so the clock above reads "just now"
+  // and every signal says connected while the newest transaction sits three
+  // weeks back. A bank being upgraded at the far end looks exactly like this.
+  //
+  // Judged against this account's own rhythm, so a current account used daily
+  // is asked after a few days and a savings account touched twice a year is
+  // left alone.
+  const quiet = quietFor(
+    db.transactions.filter((t) => t.accountId === account.id).map((t) => t.date),
+    now,
+  );
+  if (quiet) {
+    return {
+      state: "stale", provider, lastAt,
+      status: "No new transactions",
+      detail: `The balance is still arriving, but nothing has come through since ${quiet.since}. `
+        + `That is ${quiet.days} days, against a usual gap of ${quiet.usual}. `
+        + "A connection being upgraded or a login that needs renewing at the bank looks like this.",
+    };
+  }
 
   const hours = cadenceHours(db.settings.syncCadence ?? DEFAULT_CADENCE);
   // A cadence with no clock has no schedule to be behind, so only a provider

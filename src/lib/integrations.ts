@@ -1,4 +1,6 @@
 import type { DB } from "../types.js";
+import { quietFor } from "./quiet.js";
+import type { Quiet } from "./quiet.js";
 import { canValue } from "./property.js";
 import { MONTHLY_LOOKUPS } from "./property.js";
 import { MONTHLY_SYMBOLS, tickersOf } from "./prices.js";
@@ -105,72 +107,22 @@ export function staleSince(i: Integration, now: number = Date.now()): string | u
 }
 
 /**
- * The least silence worth remarking on, however chatty the connection is.
+ * Whether a connection has gone quiet, judged against its own rhythm.
  *
- * Four days, so a long weekend where nobody spends anything is not reported as
- * a fault.
- */
-export const MIN_QUIET_DAYS = 4;
-
-/** How far past a connection's own normal gap counts as it having stopped. */
-const QUIET_MULTIPLE = 3;
-
-/** Enough history to know what this connection's normal actually is. */
-const ENOUGH = 6;
-
-const DAY = 86_400_000;
-
-/**
- * Whether a connection has gone quiet, judged against its own usual rhythm.
- *
- * "When did it last run" and "when did it last bring something back" are
- * different questions, and only the second one is about whether the
- * connection works. A bridge that answers every night and returns an empty
- * list stamps its clock, reports no error, and reads as healthy for ever
- * while nothing arrives. The visible symptom is a budget where a month's
- * income never shows up, and a row in Settings that says Healthy.
- *
- * Judged against this connection's own history rather than a fixed number of
- * days, because there is no fixed number that is right for both a card used
- * twice a day and a savings account used twice a year. The usual gap between
- * days with activity is the yardstick: silence of three times that, and at
- * least four days, is worth saying. A connection without enough history to
- * have a usual gap is not guessed at.
+ * The rule itself lives in lib/quiet.ts, because the same question is asked of
+ * one account on its own page and of a whole connection here, and two copies
+ * of it would eventually answer differently.
  */
 export function quietSince(
   db: DB,
   source: "simplefin" | "plaid",
   now: number = Date.now(),
-): { since: string; days: number; usual: number } | undefined {
+): Quiet | undefined {
   const ids = new Set(
     db.accounts.filter((a) => a.syncSource === source && !a.closedAt).map((a) => a.id),
   );
   if (!ids.size) return undefined;
-
-  // Distinct days with activity, newest first. Days rather than transactions,
-  // so a card used five times on Saturday counts as one Saturday.
-  const days = [...new Set(
-    db.transactions.filter((t) => ids.has(t.accountId)).map((t) => t.date),
-  )].sort().reverse();
-  if (days.length < ENOUGH) return undefined;
-
-  const newest = Date.parse(`${days[0]}T00:00:00.000Z`);
-  if (!Number.isFinite(newest) || newest > now) return undefined;
-
-  // The typical gap, taken as a median so one holiday does not set the bar.
-  const gaps: number[] = [];
-  for (let i = 0; i < days.length - 1 && i < 60; i++) {
-    const a = Date.parse(`${days[i]}T00:00:00.000Z`);
-    const b = Date.parse(`${days[i + 1]}T00:00:00.000Z`);
-    if (Number.isFinite(a) && Number.isFinite(b)) gaps.push((a - b) / DAY);
-  }
-  if (!gaps.length) return undefined;
-  gaps.sort((x, y) => x - y);
-  const usual = Math.max(1, gaps[Math.floor(gaps.length / 2)]!);
-
-  const quiet = Math.floor((now - newest) / DAY);
-  if (quiet < Math.max(MIN_QUIET_DAYS, usual * QUIET_MULTIPLE)) return undefined;
-  return { since: days[0]!, days: quiet, usual };
+  return quietFor(db.transactions.filter((t) => ids.has(t.accountId)).map((t) => t.date), now);
 }
 
 export function healthOf(i: Integration, now: number = Date.now()): { state: Health; text: string } {

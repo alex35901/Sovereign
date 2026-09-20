@@ -64,8 +64,11 @@ export function ConnectionCard({ account }: { account: Account }) {
         {c.provider}
       </Row>
       {/* The reason, spelled out, rather than hidden behind the status's own
-          tooltip: an account that needs attention needs to say what for. */}
-      {c.detail ? <div className="conn-detail neg small">{c.detail}</div> : null}
+          tooltip: an account that needs attention needs to say what for. In
+          the same colour as the status it explains, because a connection that
+          has merely gone quiet is not the same news as one that is broken and
+          should not be painted as though it were. */}
+      {c.detail ? <div className={cx("conn-detail small", TONE[c.state])}>{c.detail}</div> : null}
     </Card>
   );
 }

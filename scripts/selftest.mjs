@@ -96,7 +96,8 @@ await build({
       export { compareValues, sortRows } from "./src/components/sort.tsx";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
-      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleSince, quietSince, MIN_QUIET_DAYS } from "./src/lib/integrations.ts";
+      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleSince, quietSince } from "./src/lib/integrations.ts";
+      export { quietFor, MIN_QUIET_DAYS } from "./src/lib/quiet.ts";
       export * as TR from "./src/lib/transfer.ts";
       export { compressPoints, squashHistory } from "./src/lib/history.ts";
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
@@ -2889,6 +2890,54 @@ await test("what the bridge says about one bank lands on that bank", () => {
   // A name too short to be distinctive is not matched on, or every message
   // mentioning a common word would land somewhere.
   assert.equal(M.noteFor(acct("ABC"), ["a message about abc and nothing else"]), undefined);
+});
+
+await test("a bank that answers with a fresh balance and no transactions is not connected", () => {
+  // The case every other check misses, and the one that actually happened:
+  // the bridge returns the account every morning with a current balance and an
+  // empty transaction list. Last update reads "just now", no error is
+  // reported, the provider row is healthy, and the newest transaction is
+  // eighteen days old.
+  const base = M.emptyDB();
+  const account = {
+    id: "a1", name: "Joint Bills", institution: "Elements Financial", type: "checking",
+    balance: 100, includeInNetWorth: true, hidden: false, history: [], order: 0,
+    syncSource: "simplefin",
+    // Stamped by this morning's pull, which is exactly the problem.
+    lastSyncedAt: "2026-09-20T11:00:00.000Z",
+  };
+  const days = ["2026-08-28", "2026-08-29", "2026-08-30", "2026-08-31", "2026-09-01", "2026-09-02"];
+  const db = {
+    ...base,
+    accounts: [account],
+    settings: { ...base.settings, syncCadence: "daily" },
+    transactions: days.map((date, i) => ({
+      id: `t${i}`, date, merchant: "A shop", amount: -2000, categoryId: "c_uncategorized",
+      accountId: account.id, tags: [], reviewed: true,
+    })),
+  };
+  const now = Date.parse("2026-09-20T12:00:00.000Z");
+
+  const c = M.connectionOf(account, db, now);
+  assert.equal(c.state, "stale", "answering is not the same as working");
+  assert.equal(c.status, "No new transactions");
+  assert.match(c.detail, /nothing has come through since 2026-09-02/);
+  assert.match(c.detail, /18 days/);
+
+  // An account that is simply quiet by nature is left alone: same silence,
+  // but it has always been silent, so there is nothing to report.
+  const slow = { ...account, id: "a2" };
+  const slowDays = ["2026-01-15", "2026-02-14", "2026-03-16", "2026-04-15", "2026-05-15", "2026-09-02"];
+  const slowDb = {
+    ...db,
+    accounts: [slow],
+    transactions: slowDays.map((date, i) => ({
+      id: `s${i}`, date, merchant: "Interest", amount: 500, categoryId: "c_uncategorized",
+      accountId: slow.id, tags: [], reviewed: true,
+    })),
+  };
+  assert.equal(M.connectionOf(slow, slowDb, now).state, "connected",
+    "a monthly account eighteen days on is behaving normally");
 });
 
 await test("an account carrying its own note says so instead of the connection's", () => {
