@@ -1,6 +1,6 @@
 import type { DB, ID, ISODate } from "../types.js";
 import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recurringList } from "./select.js";
-import { integrations, healthOf } from "./integrations.js";
+import { integrations, healthOf, staleSince } from "./integrations.js";
 import { connectionOf } from "./connection.js";
 import { goalOutlook } from "./goal-funding.js";
 import { addDays, monthLabel, sinceLabel, thisMonth, today } from "./date.js";
@@ -467,21 +467,44 @@ export function notices(db: DB, now: ISODate = today()): Notice[] {
   }
 
   // ── a provider that has stopped working, quietly ──
-  for (const row of integrations(db, null, Date.parse(now) || Date.now())) {
-    if (!row.set || !row.error) continue;
-    const health = healthOf(row);
-    if (health.state !== "down") continue;
+  const at = Date.parse(now) || Date.now();
+  for (const row of integrations(db, null, at)) {
+    if (!row.set) continue;
+    if (row.error) {
+      const health = healthOf(row, at);
+      if (health.state !== "down") continue;
+      out.push({
+        // Keyed on the message: a different failure is different news, and the
+        // same one going on being true is not.
+        id: `integration:${row.id}:${row.error.slice(0, 60)}`,
+        kind: "integration",
+        title: `${row.provider} is failing`,
+        body: `${row.process}. ${row.error}`,
+        at: now,
+        when: "now",
+        to: "/settings",
+        tone: "neg",
+      });
+      continue;
+    }
+    // The quiet failure. Nothing is broken as far as anything can tell, and
+    // nothing has happened for a fortnight, which is the shape a scheduled job
+    // that stopped being called has. Said once rather than once a day: keyed
+    // on the week so it comes back if it goes on being true, and does not
+    // arrive every morning in between.
+    const quiet = staleSince(row, at);
+    if (!quiet) continue;
     out.push({
-      // Keyed on the message: a different failure is different news, and the
-      // same one going on being true is not.
-      id: `integration:${row.id}:${row.error.slice(0, 60)}`,
+      // Keyed on the message, which names the day it last ran, so it is one
+      // piece of news rather than the same one every morning.
+      id: `integration:${row.id}:quiet:${quiet}`,
       kind: "integration",
-      title: `${row.provider} is failing`,
-      body: `${row.process}. ${row.error}`,
+      title: `${row.provider}: ${quiet.toLowerCase()}`,
+      body: `${row.process}. Nothing has failed, which is what makes this worth saying: it has simply stopped happening.`,
       at: now,
       when: "now",
       to: "/settings",
-      tone: "neg",
+      tone: "warn",
     });
   }
 

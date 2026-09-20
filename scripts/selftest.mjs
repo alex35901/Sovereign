@@ -96,7 +96,7 @@ await build({
       export { compareValues, sortRows } from "./src/components/sort.tsx";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
-      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleJob } from "./src/lib/integrations.ts";
+      export { integrations, healthOf, PERIOD_LABEL, NEAR, staleSince } from "./src/lib/integrations.ts";
       export * as TR from "./src/lib/transfer.ts";
       export { compressPoints, squashHistory } from "./src/lib/history.ts";
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
@@ -116,7 +116,7 @@ await build({
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS, pollDelay, POLL_MIN_MS, POLL_MAX_MS } from "./src/lib/sync/schedule.ts";
-      export { syncSimplefin, syncPlaid, syncPlaidItem } from "./src/lib/sync/run.ts";
+      export { syncSimplefin, syncPlaid, syncPlaidDue, syncPlaidItem } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
       export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
@@ -903,11 +903,26 @@ await test("a runaway sync loop is called out by its request count, not just its
 
 await test("a scheduled job that has stopped is the point of the Vercel row", () => {
   const now = Date.parse("2026-09-04T12:00:00.000Z");
-  assert.equal(M.staleJob(undefined, now), "Hasn't run yet");
-  assert.equal(M.staleJob("not a date", now), "Hasn't run yet");
-  assert.equal(M.staleJob("2026-09-04T09:00:00.000Z", now), undefined, "ran this morning");
-  assert.equal(M.staleJob("2026-09-03T09:00:00.000Z", now), undefined, "a day is not yet a problem");
-  assert.match(M.staleJob("2026-09-02T09:00:00.000Z", now), /Hasn't run since 2026-09-02/);
+  // The cron says how long it may rest, so never having run is already wrong.
+  const job = (at) => M.staleSince({ set: true, lastAt: at, staleAfterHours: 36 }, now);
+  assert.equal(job(undefined), "Hasn't run yet");
+  assert.equal(job("not a date"), "Hasn't run yet");
+  assert.equal(job("2026-09-04T09:00:00.000Z"), undefined, "ran this morning");
+  assert.equal(job("2026-09-03T09:00:00.000Z"), undefined, "a day is not yet a problem");
+  assert.match(job("2026-09-02T09:00:00.000Z"), /Hasn't run since 2026-09-02/);
+
+  // A provider with no schedule of its own gets a fortnight, and never having
+  // run means newly set up rather than broken.
+  const bank = (at) => M.staleSince({ set: true, lastAt: at }, now);
+  assert.equal(bank(undefined), undefined, "a key just pasted is not a fault");
+  assert.equal(bank("2026-08-30T09:00:00.000Z"), undefined, "five days is a quiet week, not a stopped provider");
+  assert.match(bank("2026-08-15T09:00:00.000Z"), /Hasn't run since 2026-08-15/);
+  assert.equal(M.staleSince({ set: true, lastAt: "2026-08-15T09:00:00.000Z", error: "login expired" }, now), undefined,
+    "a provider that is failing out loud is not also reported as quiet");
+  assert.equal(M.staleSince({ set: false, lastAt: "2026-08-15T09:00:00.000Z" }, now), undefined,
+    "and one that was never set up is not running by choice");
+  assert.equal(M.staleSince({ set: true, lastAt: "2027-01-01T00:00:00.000Z" }, now), undefined,
+    "a stamp from the future is a clock that jumped");
 
   const base = M.emptyDB();
   const db = { ...base, settings: { ...base.settings, usage: { vercel: { period: "2026-09", count: 1, at: "2026-09-01T09:00:00.000Z" } } } };
@@ -4680,6 +4695,34 @@ await test("an account that is gone, or has barely any history, says nothing", (
   }).length, 1, "nothing to fifty thousand is still worth a word");
 });
 
+await test("a provider that has quietly stopped becomes a notice, not just a colour", () => {
+  // The failure that cost weeks once already: nothing is broken, nothing is
+  // reported, and nothing is happening. It used to show as an amber cell on a
+  // screen nobody opens unless they already suspect something.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    settings: {
+      ...base.settings,
+      simplefinAccessUrl: "https://u:p@bridge.example/accounts",
+      lastSyncAt: "2026-08-01T09:00:00.000Z",
+    },
+  };
+  const n = M.NT.notices(db, "2026-09-10").find((x) => x.kind === "integration");
+  assert.ok(n, "there is one");
+  assert.equal(n.tone, "warn");
+  assert.equal(n.to, "/settings");
+  assert.match(n.title, /2026-08-01/, n.title);
+
+  // Read once, and it stays read while it goes on being the same news.
+  const read = M.NT.markRead(db, [n.id]);
+  assert.equal(M.NT.unread(read, "2026-09-10").some((x) => x.kind === "integration"), false);
+
+  // A pull five days ago is a quiet week, not a stopped provider.
+  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-05T09:00:00.000Z" } };
+  assert.equal(M.NT.notices(recent, "2026-09-10").some((x) => x.kind === "integration"), false);
+});
+
 await test("the swing becomes a notice that points at the account", () => {
   const db = swingDB();
   const all = M.NT.notices(db, "2026-09-10");
@@ -7721,6 +7764,44 @@ await test("every Plaid item can be synced from one call", async () => {
   assert.equal(out.changed, true);
   assert.deepEqual(out.errors, []);
   assert.equal(db.settings.plaidItems.every((i) => i.lastSyncAt), true, "each item is stamped with when it ran");
+});
+
+await test("the schedule pulls the Plaid items whose turn has come, and leaves the rest", async () => {
+  // Plaid used to refresh only when somebody pressed a button or when the
+  // overnight job ran, while SimpleFIN refreshed itself all day on the cadence
+  // in Settings. Two banks connected two ways behaved differently for no
+  // reason anyone chose.
+  const now = Date.parse("2026-08-10T12:00:00.000Z");
+  const hoursAgo = (h) => new Date(now - h * 3600_000).toISOString();
+  let db = plaidDb([
+    plaidItem({ itemId: "stale", institution: "Wells Fargo", lastSyncAt: hoursAgo(30) }),
+    plaidItem({ itemId: "fresh", institution: "Fidelity", lastSyncAt: hoursAgo(2) }),
+  ]);
+  const apply = (fn) => { db = fn(db); };
+  const body = () => new Response(JSON.stringify({
+    accounts: [{ account_id: "a1", name: "LLC Savings", type: "depository", subtype: "savings", balances: { current: 100 } }],
+    transactions: [], holdings: [], securities: [], total: 0, truncated: false,
+  }), { status: 200 });
+
+  const out = await withFetch(async () => body(),
+    () => M.syncPlaidDue(db, apply, "daily", now, now));
+  assert.match(out.summary, /Wells Fargo/);
+  assert.ok(!out.summary.includes("Fidelity"), "an item pulled two hours ago is not due on a daily cadence");
+  assert.equal(db.settings.plaidItems.find((i) => i.itemId === "fresh").lastSyncAt, hoursAgo(2),
+    "and its clock is left where it was");
+
+  // Nothing due is a different answer from nothing found, so the caller can
+  // stay quiet rather than announce an empty sync.
+  const none = await withFetch(async () => body(),
+    () => M.syncPlaidDue(db, apply, "daily", now, now));
+  assert.equal(none, null);
+
+  // An item that has never been pulled is due whatever the cadence says.
+  let fresh = plaidDb([plaidItem({ itemId: "new", institution: "Chase" })]);
+  const applyFresh = (fn) => { fresh = fn(fresh); };
+  const first = await withFetch(async () => body(),
+    () => M.syncPlaidDue(fresh, applyFresh, "weekly", now, now));
+  assert.match(first.summary, /Chase/);
 });
 
 await test("one bank's expired login does not cost the others their sync", async () => {

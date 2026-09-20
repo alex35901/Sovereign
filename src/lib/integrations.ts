@@ -43,6 +43,14 @@ export interface Integration {
   period: Period;
   /** When the provider was last called. */
   lastAt?: string;
+  /**
+   * How long this one may go quiet before that is worth saying, and whether
+   * never having run at all counts. A nightly job has clearly missed one after
+   * a day and a half; a bank on a weekly cadence has not. Left unset, the
+   * generic ceiling below applies and a provider that has never run is simply
+   * new rather than broken.
+   */
+  staleAfterHours?: number;
   /** Worth saying out loud in the health column, beyond the ratio. */
   note?: string;
   error?: string;
@@ -53,10 +61,46 @@ export type Health = "ok" | "warn" | "down" | "off";
 /** How far into an allowance counts as worth warning about. */
 export const NEAR = 0.8;
 
-export function healthOf(i: Integration): { state: Health; text: string } {
+/**
+ * How long a provider with no schedule of its own may go quiet.
+ *
+ * Longer than the slowest cadence anything here runs on, which is weekly, so
+ * a provider that is simply not busy is never called broken.
+ */
+export const STALE_HOURS = 14 * 24;
+
+/**
+ * Whether this provider looks like it has quietly stopped.
+ *
+ * The failure this exists for is the silent one. A connection that breaks with
+ * an error announces itself; one that simply stops being called leaves a row
+ * that looks perfectly healthy and is doing nothing, and the only sign is a
+ * date nobody was looking at. It began as the Vercel row's alone, because a
+ * cron that stops looks exactly like a quiet week, and every other provider
+ * here can stop just as quietly.
+ */
+export function staleSince(i: Integration, now: number = Date.now()): string | undefined {
+  if (!i.set || i.error) return undefined;
+  // Only a row that says how long it may rest treats never having run as a
+  // fault. For everything else, never having run means newly set up.
+  const neverRun = i.staleAfterHours === undefined ? undefined : "Hasn't run yet";
+  if (!i.lastAt) return neverRun;
+  const ran = Date.parse(i.lastAt);
+  if (!Number.isFinite(ran)) return neverRun;
+  // A stamp from the future is a clock that jumped, not a provider at rest.
+  if (ran > now) return undefined;
+  const hours = i.staleAfterHours ?? STALE_HOURS;
+  return now - ran > hours * 3_600_000 ? `Hasn't run since ${i.lastAt.slice(0, 10)}` : undefined;
+}
+
+export function healthOf(i: Integration, now: number = Date.now()): { state: Health; text: string } {
   if (!i.set) return { state: "off", text: "Not set up" };
   if (i.error) return { state: "down", text: i.error };
   if (i.ceiling > 0 && i.used >= i.ceiling) return { state: "down", text: `At the ${i.ceiling} ${i.unit} limit` };
+  // Before the allowance warning: a provider at rest is a worse problem than
+  // one three quarters of the way through a budget it is plainly spending.
+  const quiet = staleSince(i, now);
+  if (quiet) return { state: "warn", text: quiet };
   // An allowance about to run out outranks a note: one of them stops the
   // integration working this week and the other is a preference.
   if (i.ceiling > 0 && i.used >= i.ceiling * NEAR) return { state: "warn", text: `Near the ${i.unit} limit` };
@@ -216,7 +260,9 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       unit: "daily jobs",
       period: "ever",
       lastAt: vercel.at,
-      note: staleJob(vercel.at, now),
+      // A day and a half: long enough that a job due at nine has clearly
+      // missed one, and a job that has never run at all is already wrong.
+      staleAfterHours: 36,
     },
     {
       id: "anthropic",
@@ -236,19 +282,3 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
 /** The tickers a price run would ask about — what the Tiingo meter will record. */
 export const pricedSymbols = (db: DB): string[] => tickersOf(db.holdings);
 
-/** A day and a half. Long enough that a job at 9am has clearly missed one. */
-const STALE_MS = 36 * 3_600_000;
-
-/**
- * Whether the scheduled job looks like it has stopped.
- *
- * This is the whole reason the Vercel row is worth a line: a cron that quietly
- * stops running is indistinguishable from a quiet week, and the balances just
- * go on being yesterday's.
- */
-export function staleJob(at: string | undefined, now: number): string | undefined {
-  if (!at) return "Hasn't run yet";
-  const ran = Date.parse(at);
-  if (!Number.isFinite(ran)) return "Hasn't run yet";
-  return now - ran > STALE_MS ? "Hasn't run since " + at.slice(0, 10) : undefined;
-}

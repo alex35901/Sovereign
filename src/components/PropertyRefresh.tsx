@@ -15,6 +15,13 @@ import { reason, recordRun } from "../lib/usage";
 
 /** How often to look at the clock. The cadence decides whether anything happens. */
 const CHECK_MS = 10 * 60_000;
+/**
+ * How long to let a pasted key settle before acting on it.
+ *
+ * Typing one a character at a time would otherwise spend a lookup, out of
+ * fifty a month, on a key that is not one yet.
+ */
+const SETTLE_MS = 2_000;
 
 export function PropertyRefresh() {
   const { db, apply, actions } = useStore();
@@ -27,9 +34,11 @@ export function PropertyRefresh() {
   act.current = { apply, actions };
 
   const running = useRef(false);
+  /** The round itself, so a key just pasted can start one without waiting. */
+  const tick = useRef<() => Promise<void>>(async () => {});
 
   useEffect(() => {
-    const tick = async () => {
+    const round = async () => {
       if (running.current) return;
       const cur = latest.current;
 
@@ -81,10 +90,19 @@ export function PropertyRefresh() {
       }
     };
 
-    void tick();
-    const id = window.setInterval(() => void tick(), CHECK_MS);
+    tick.current = round;
+    const id = window.setInterval(() => void round(), CHECK_MS);
     return () => window.clearInterval(id);
   }, []);
+
+  // A key pasted into Settings used to sit there for up to ten minutes before
+  // anything happened, which on a first setup reads as nothing happening at
+  // all. Declared after the effect above, so the round is in place.
+  const hasKey = Boolean(db.settings.rentcastApiKey?.trim());
+  useEffect(() => {
+    const id = window.setTimeout(() => void tick.current(), SETTLE_MS);
+    return () => window.clearTimeout(id);
+  }, [hasKey]);
 
   return null;
 }

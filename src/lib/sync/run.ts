@@ -3,6 +3,8 @@ import { simplefin } from "./simplefin";
 import { mergeSync, syncWindowStart } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
 import { reason, recordRun } from "../usage";
+import { syncDue } from "./schedule";
+import type { SyncCadence } from "./schedule";
 
 export interface SyncOutcome {
   summary: string;
@@ -127,7 +129,38 @@ export async function syncPlaid(
 ): Promise<SyncOutcome> {
   const items = db.settings.plaidItems ?? [];
   if (!items.length) throw new Error("No Plaid accounts are connected.");
+  return runItems(db, apply, items);
+}
 
+/**
+ * The same thing on a schedule, for the items whose turn has come.
+ *
+ * Plaid used to refresh only when somebody pressed a button or when the
+ * overnight job ran, while SimpleFIN refreshed itself all day on the cadence
+ * in Settings. Two banks connected two ways behaved differently for no reason
+ * anyone chose. Null when nothing is due, so the caller can tell "nothing to
+ * do" from "did it and nothing came back".
+ */
+export async function syncPlaidDue(
+  db: DB,
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  cadence: SyncCadence,
+  now: number,
+  sessionStart: number,
+): Promise<SyncOutcome | null> {
+  // Each item keeps its own clock, so a bank added this afternoon is not
+  // treated as overdue because another one was last pulled this morning.
+  const due = (db.settings.plaidItems ?? [])
+    .filter((i) => syncDue(cadence, i.lastSyncAt, now, sessionStart));
+  if (!due.length) return null;
+  return runItems(db, apply, due);
+}
+
+async function runItems(
+  db: DB,
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  items: readonly PlaidItemRef[],
+): Promise<SyncOutcome> {
   const summaries: string[] = [];
   const errors: string[] = [];
   let changed = false;
