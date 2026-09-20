@@ -162,7 +162,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
    * From what is on the screen rather than from what is stored, which is both
    * what anybody would expect from a button sitting under a form and useful
    * in its own right: change the date, press this, and the second occurrence
-   * is in. The original keeps whatever it had, exactly as Cancel would.
+   * is in. The original keeps whatever it had, exactly as closing without saving would.
    *
    * The importer's duplicate check is a good one and still occasionally wrong
    * - two rent payments of the same amount on the same day from two tenants
@@ -218,7 +218,8 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
             </>
           ) : null}
           <div className="grow" />
-          <Btn onClick={onClose}>Cancel</Btn>
+          {/* No Cancel. Four buttons ran off the side of a phone, and the
+              close in the corner already does this, as does Escape. */}
           <Btn variant="primary" onClick={save} disabled={!accountId || splitOff}>
             {editing ? "Save changes" : "Add transaction"}
           </Btn>

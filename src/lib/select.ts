@@ -653,8 +653,17 @@ export function budgetTable(db: DB, month: MonthKey): BudgetGroupRow[] {
 /**
  * How what's left in a category reads: money in hand, overspent, or neither.
  * Shared so the group total and the row cell can never disagree.
+ *
+ * Income reads the other way round, and used to read the same way, which made
+ * a good month look like a disaster. What is left in an expense category is
+ * money you still have. What is "left" in an income one is money you expected
+ * and have not been paid yet, which is not an achievement, and a negative is
+ * not an overspend at all: it means more came in than you planned for. A
+ * paycheque twenty dollars over showed as red, and income recorded against a
+ * category with nothing planned showed as the whole amount in red.
  */
-export function remainingTone(remaining: number): "pos" | "neg" | "flat" {
+export function remainingTone(remaining: number, kind?: "income" | "expense" | "transfer"): "pos" | "neg" | "flat" {
+  if (kind === "income") return remaining < 0 ? "pos" : "flat";
   if (remaining > 0) return "pos";
   if (remaining < 0) return "neg";
   return "flat";

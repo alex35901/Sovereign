@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Search } from "lucide-react";
 import type { Emoji, EmojiGroup } from "../lib/emoji-data";
+import { coarsePointer } from "../lib/pointer";
 import { Popover, cx } from "./ui";
 
 /**
@@ -98,7 +99,7 @@ function EmojiPanel({ value, onPick }: { value: string; onPick: (emoji: string) 
         <div className="search">
           <Search size={13} />
           <input
-            className="input" autoFocus placeholder="Search 1,900+ emoji"
+            className="input" autoFocus={!coarsePointer()} placeholder="Search 1,900+ emoji"
             value={query} onChange={(e) => setQuery(e.target.value)}
           />
         </div>

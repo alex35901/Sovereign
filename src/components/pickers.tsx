@@ -5,6 +5,7 @@ import { useDB } from "../store";
 import { addMonths, monthLabel } from "../lib/date";
 import { Popover, SelectInput } from "./ui";
 import { accountOptions } from "../lib/select";
+import { coarsePointer } from "../lib/pointer";
 import type { RangeKey } from "../lib/range";
 import { RANGES } from "../lib/range";
 
@@ -58,7 +59,7 @@ export function CategoryPicker({ value, onChange, trigger, clearLabel, note, onl
         <>
           <div className="search" style={{ margin: "2px 2px 6px" }}>
             <Search size={13} />
-            <input className="input" autoFocus placeholder="Search categories" value={q} onChange={(e) => setQ(e.target.value)} />
+            <input className="input" autoFocus={!coarsePointer()} placeholder="Search categories" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
           {clearLabel ? (
             <button onClick={() => { onChange(""); setQ(""); close(); }}>

@@ -142,7 +142,7 @@ function GroupCard({ data, month, collapsed, onToggle }: {
           </div>
           <div className="bcol bcol-left">
             <div className="tile-label">Remaining</div>
-            <div className={cx("num small bold", remainingTone(data.remaining))}>
+            <div className={cx("num small bold", remainingTone(data.remaining, data.group.kind as "income" | "expense" | "transfer"))}>
               <Money value={data.remaining} cents={false} />
             </div>
           </div>
@@ -183,7 +183,7 @@ function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; inc
             <div className="bcol bcol-left">
               <HoverCard fill width={266} disabled={moving} card={<RemainingCard row={r} />}>
                 {income ? (
-                  <span className={cx("btn budget-amount remaining", remainingTone(r.remaining))}>
+                  <span className={cx("btn budget-amount remaining", remainingTone(r.remaining, r.kind))}>
                     {r.category.rollover ? <RotateCcw size={11} className="rollover-mark" /> : null}
                     <Money value={r.remaining} cents={false} />
                   </span>
@@ -199,29 +199,49 @@ function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; inc
   );
 }
 
-/** The whole month for one category, shown when you point at what's left. */
+/**
+ * The whole month for one category, shown when you point at what's left.
+ *
+ * Every line here was written for an expense and read as nonsense on income:
+ * money earned was "spent", what you expect to be paid was "available to
+ * spend", and being paid more than planned filled the bar as an overspend.
+ * Same figures, said the way the category actually works.
+ */
 function RemainingCard({ row }: { row: BudgetRow }) {
+  const income = row.kind === "income";
   const available = row.rollover + row.planned;
   const share = spentShare(available, row.actual);
+  // For income the last line is about what has arrived, which can be more than
+  // was expected, so the bar is full rather than over.
+  const over = !income && row.remaining < 0;
   return (
     <>
       <div className="hc-title">{row.category.icon} {row.category.name}</div>
       <div className="hc-body">
         {row.rollover ? <HcLine label="Rollover from last month" value={row.rollover} tone="pos" /> : null}
-        <HcLine label="Planned" value={row.planned} />
-        <HcLine label="Available to spend" value={available} />
-        <HcLine label="Actual" value={row.actual} />
+        <HcLine label={income ? "Expected" : "Planned"} value={row.planned} />
+        {income ? null : <HcLine label="Available to spend" value={available} />}
+        <HcLine label={income ? "Received" : "Actual"} value={row.actual} />
       </div>
       <div className="hc-foot">
-        <HcLine label="Remaining" value={row.remaining} tone={remainingTone(row.remaining)} bold />
+        <HcLine
+          label={income ? (row.remaining < 0 ? "More than expected" : "Still to come") : "Remaining"}
+          value={income ? Math.abs(row.remaining) : row.remaining}
+          tone={remainingTone(row.remaining, row.kind)}
+          bold
+        />
         <Progress
           value={row.actual} max={Math.max(available, row.actual, 1)}
-          color={row.category.color} over={row.remaining < 0}
+          color={row.category.color} over={over}
         />
         <div className="tiny faint">
-          {share === null
-            ? `Nothing planned. ${fmt0(row.actual)} spent`
-            : `${share}% of the ${fmt0(available)} available spent`}
+          {income
+            ? (share === null
+              ? `Nothing expected. ${fmt0(row.actual)} received`
+              : `${share}% of the ${fmt0(available)} expected has arrived`)
+            : (share === null
+              ? `Nothing planned. ${fmt0(row.actual)} spent`
+              : `${share}% of the ${fmt0(available)} available spent`)}
         </div>
       </div>
     </>

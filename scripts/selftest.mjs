@@ -2047,6 +2047,47 @@ await test("what's left reads as in hand, overspent, or neither", () => {
   assert.equal(M.remainingTone(1), "pos");
   assert.equal(M.remainingTone(-1), "neg");
   assert.equal(M.remainingTone(0), "flat");
+  // And an expense still reads that way when it says so out loud.
+  assert.equal(M.remainingTone(1, "expense"), "pos");
+  assert.equal(M.remainingTone(-1, "expense"), "neg");
+});
+
+await test("income reads the other way round, because it works the other way round", () => {
+  // What is left in an expense category is money you still have. What is left
+  // in an income one is money you have not been paid yet, which is not an
+  // achievement; and a negative is not an overspend, it is more arriving than
+  // was planned for. A paycheque twenty dollars over used to show red.
+  assert.equal(M.remainingTone(-2000, "income"), "pos", "more came in than planned is good news");
+  assert.equal(M.remainingTone(2000, "income"), "flat", "still to come is neither good nor bad");
+  assert.equal(M.remainingTone(0, "income"), "flat");
+});
+
+await test("income recorded against nothing planned is not an overspend", () => {
+  // The case that made this obvious: get paid before setting a budget, and the
+  // whole amount showed in the Remaining column in red, exactly as if it had
+  // been spent.
+  const base = M.emptyDB();
+  const group = { id: "g_in", name: "Income", kind: "income", order: 0 };
+  const cat = { id: "c_side", name: "Side work", groupId: "g_in", order: 0, icon: "💰", color: "--c3" };
+  const db = {
+    ...base,
+    groups: [...base.groups.filter((g) => g.kind !== "income"), group],
+    categories: [...base.categories, cat],
+    accounts: base.accounts.length ? base.accounts : [{
+      id: "a1", name: "Checking", type: "checking", institution: "A bank",
+      balance: 0, history: [], order: 0,
+    }],
+    budgets: { "2026-08": { [cat.id]: 0 } },
+    transactions: [{
+      id: "t1", date: "2026-08-05", merchant: "A client", amount: 250000,
+      categoryId: cat.id, accountId: (base.accounts[0]?.id ?? "a1"), tags: [], reviewed: true,
+    }],
+  };
+  const row = M.budgetTable(db, "2026-08").flatMap((g) => g.rows).find((r) => r.category.id === cat.id);
+  assert.ok(row, "the category is on the table");
+  assert.equal(row.actual, 250000, "the income is counted");
+  assert.equal(row.kind, "income");
+  assert.equal(M.remainingTone(row.remaining, row.kind), "pos", `remaining ${row.remaining} read as an overspend`);
 });
 
 /* ── institution logos ───────────────────────────────────────────────── */

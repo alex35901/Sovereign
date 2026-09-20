@@ -517,6 +517,37 @@ try {
     await tryStep("and its category can be opened", () =>
       catRow.locator("button, select, .drow-btn").first().click({ timeout: 5000 }));
     await phone.waitForTimeout(500);
+    // And the keyboard stays down. The search box above the list took focus
+    // when it opened, which on a phone means the keyboard covers the list you
+    // opened the menu to read. Under a mouse it should still take focus.
+    const focusedOnPhone = await phone.evaluate(() =>
+      document.activeElement ? document.activeElement.tagName.toLowerCase() : "none");
+    check("opening the category picker does not put the keyboard up",
+      focusedOnPhone !== "input", `focus landed on ${focusedOnPhone}`);
+
+    // The action bar has to fit. It held Delete, Duplicate, Cancel and Save,
+    // which ran off the side of a phone; Cancel went, because the close in the
+    // corner and Escape both already do it.
+    const foot = await phone.evaluate(() => {
+      const f = document.querySelector(".scrim .modal .modal-foot");
+      if (!f) return null;
+      const box = f.getBoundingClientRect();
+      const buttons = [...f.querySelectorAll("button")].map((b) => {
+        const r = b.getBoundingClientRect();
+        return { text: b.innerText.trim(), left: Math.round(r.left), right: Math.round(r.right) };
+      });
+      return {
+        overflows: f.scrollWidth - f.clientWidth > 1,
+        outside: buttons.filter((b) => b.left < box.left - 1 || b.right > box.right + 1),
+        labels: buttons.map((b) => b.text),
+      };
+    });
+    check("and the action bar fits on the screen",
+      !!foot && !foot.overflows && foot.outside.length === 0,
+      foot ? `${foot.labels.join(" | ")} overflow=${foot.overflows} outside=${JSON.stringify(foot.outside)}` : "no footer");
+    check("with no Cancel, since the corner close already does that",
+      !!foot && !foot.labels.some((l) => /cancel/i.test(l)), foot ? foot.labels.join(" | ") : "no footer");
+
     const picker = await phone.evaluate(SMALL);
     const searched = await phone.evaluate(() => {
       const el = [...document.querySelectorAll("input")]
@@ -550,6 +581,21 @@ try {
     });
     check("a narrow window with a mouse is not treated as a phone",
       size !== null && size < 16, `saw ${size}`);
+
+    // The other half of that: with a mouse the search box should still take
+    // focus, or a fix for phones has quietly cost everyone else the ability to
+    // open a menu and start typing.
+    await mouse.locator(".list-row.tx-grid:not(.head) .col").first().click();
+    await mouse.waitForTimeout(600);
+    await mouse.locator(".drow", { hasText: "Category" }).first()
+      .locator("button, select, .drow-btn").first().click();
+    await mouse.waitForTimeout(400);
+    const focusedOnMouse = await mouse.evaluate(() => {
+      const el = document.activeElement;
+      return el ? `${el.tagName.toLowerCase()}:${el.getAttribute("placeholder") ?? ""}` : "none";
+    });
+    check("but with a mouse the category search still takes focus",
+      /^input:.*categor/i.test(focusedOnMouse), `focus landed on ${focusedOnMouse}`);
     await mouse.close();
 
     // The other two zooms, which have no focus to hang a measurement on.
@@ -5570,7 +5616,7 @@ try {
       const foot = await du.evaluate(() =>
         [...document.querySelectorAll(".modal-foot button")].map((b) => b.innerText.trim()));
       check("its footer offers to duplicate it, beside delete",
-        foot.join(" | ") === "Delete | Duplicate | Cancel | Save changes", foot.join(" | "));
+        foot.join(" | ") === "Delete | Duplicate | Save changes", foot.join(" | "));
 
       const was = await count();
       // Every id before, so the copy can be found by being the one that is
@@ -5923,7 +5969,9 @@ try {
       });
       check("the rule offer does not sit over an open dialog's own buttons",
         !seen.over, JSON.stringify(seen));
-      await hi.locator(".modal-foot button", { hasText: "Cancel" }).last().click({ timeout: 8000 });
+      // Escape rather than a Cancel button: the transaction footer does not
+      // carry one, because four buttons did not fit on a phone.
+      await hi.keyboard.press("Escape");
       await hi.waitForTimeout(400);
     };
 
@@ -6034,7 +6082,10 @@ try {
       await mr.locator(".modal .txn-amount").waitFor({ timeout: 5000 });
     };
     const closeRow = async () => {
-      await mr.locator(".modal-foot button", { hasText: "Cancel" }).last().click({ timeout: 8000 });
+      // Escape, since the transaction footer has no Cancel of its own. The
+      // editor nested inside it still does, and is closed by its own button
+      // below so that this one only ever shuts the outer dialog.
+      await mr.keyboard.press("Escape");
       await mr.waitForTimeout(400);
     };
     const openEditor = async () => {
