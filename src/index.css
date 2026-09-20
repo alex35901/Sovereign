@@ -29,6 +29,10 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.24);
   --radius: 12px;
   --radius-sm: 8px;
+  /* Statements, pasted rules, anything meant to line up character for
+     character. Written out in four places before this, which is three places
+     for it to quietly stop matching. */
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --sidebar-w: 232px;
   /* What the sidebar keeps when it isn't being used. */
   --rail-w: 58px;
@@ -240,7 +244,7 @@ h3 { font-size: 14px; }
 .rule-backfill { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 /* Rules pasted in as text, one per line, so the tab between the two halves
    lines up. */
-.rule-paste { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; resize: vertical; width: 100%; }
+.rule-paste { font-family: var(--mono); font-size: 12px; resize: vertical; width: 100%; }
 
 /* A real logo sits in the same round slot the initials used. */
 .institution-logo { background: var(--surface-2); overflow: hidden; padding: 0; }
@@ -250,7 +254,7 @@ h3 { font-size: 14px; }
 .statement {
   padding: 8px 11px; border-radius: var(--radius-sm);
   background: var(--surface-2); border: 1px solid var(--line-soft);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  font-family: var(--mono); font-size: 12px;
   color: var(--muted); word-break: break-word; user-select: all;
 }
 
@@ -556,7 +560,7 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 }
 .drow-btn:hover { background: var(--surface-2); }
 .drow-btn > svg { color: var(--faint); flex: none; }
-.drow-statement { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); user-select: all; }
+.drow-statement { font-family: var(--mono); font-size: 12px; color: var(--muted); user-select: all; }
 /* The way to ask what a statement line was. Sits at the end of the value
    rather than beside the label: the label's own question mark explains what
    the field is, and this one asks about what is in it. */
@@ -569,7 +573,7 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 /* The explanation itself: the model writes plain sentences and hyphen
    bullets, so the line breaks it wrote are the ones worth keeping. */
 .explain-statement {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;
+  font-family: var(--mono); font-size: 13px;
   overflow-wrap: anywhere;
 }
 .explain-body { white-space: pre-wrap; font-size: 14px; line-height: 1.55; }
