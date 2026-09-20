@@ -1,4 +1,5 @@
 import type { DB, Holding, Transaction } from "../../types.js";
+import { noteFor } from "./notes.js";
 import type { SyncPayload } from "./types.js";
 import type { RemoteHolding } from "./plaid.js";
 import { UNCATEGORIZED } from "../categories.js";
@@ -59,6 +60,11 @@ export function mergeSync(
       accounts[idx] = {
         ...existing, balance: r.balance, history: kept,
         syncId: r.syncId, syncSource: source, lastSyncedAt: payload.fetchedAt,
+        // Whatever the provider said about this one last time, said again or
+        // dropped. An account that came back clean is clean.
+        syncNote: noteFor(existing, payload.errors)
+          ? { message: noteFor(existing, payload.errors)!, at: payload.fetchedAt }
+          : undefined,
         // Refreshed on every pull, but never blanked: a provider that stops
         // sending one shouldn't lose the logo already held.
         logo: r.logo ?? existing.logo,
@@ -78,6 +84,20 @@ export function mergeSync(
       });
       idBySyncId.set(r.syncId, id);
       accountsAdded++;
+    }
+  }
+
+  // The accounts this provider feeds that the pull did not bring back at all.
+  // A bank being upgraded or needing a new login goes quiet rather than
+  // failing, so the message naming it arrives with no account attached to it.
+  if (payload.errors.length) {
+    const returned = new Set(payload.accounts.map((r) => r.syncId));
+    for (let i = 0; i < accounts.length; i++) {
+      const a = accounts[i]!;
+      if (a.syncSource !== source || a.closedAt) continue;
+      if (a.syncId && returned.has(a.syncId)) continue;
+      const said = noteFor(a, payload.errors);
+      if (said) accounts[i] = { ...a, syncNote: { message: said, at: payload.fetchedAt } };
     }
   }
 

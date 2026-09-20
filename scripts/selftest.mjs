@@ -39,7 +39,7 @@ await build({
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
-      export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, budgetedSum } from "./src/lib/select.ts";
+      export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { occurrences, recurringSpend, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
@@ -107,6 +107,7 @@ await build({
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
       export * as R from "./src/lib/reports.ts";
       export { spendPace, monthProgress, dueSoon, overPace, goalMoves } from "./src/lib/dashboard.ts";
+      export { noteFor, unclaimed } from "./src/lib/sync/notes.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
@@ -2858,6 +2859,118 @@ await test("spending is counted from the first of the month, day by day", () => 
   assert.equal(p.spent, 35_00);
   assert.equal(p.spentLast, 99_00, "and last month is counted whole");
   assert.equal(p.lastMonth.length, 31, "August, right to the end of it");
+});
+
+await test("what the bridge says about one bank lands on that bank", () => {
+  // SimpleFIN reports trouble as sentences about the pull, not as a field on
+  // the account that has it, and those sentences name the institution. Pinned
+  // to the account they name, so an upgrade at one bank is not reported
+  // against the other four.
+  const acct = (institution) => ({
+    id: institution, name: "Checking", institution, type: "checking", balance: 0,
+    includeInNetWorth: true, hidden: false, history: [], order: 0, syncSource: "simplefin",
+  });
+  const accounts = [acct("Elements Financial"), acct("Chase")];
+  const errors = [
+    "We are upgrading this connection at Elements Financial. Please wait...",
+    "Something went wrong with the bridge itself",
+  ];
+
+  assert.match(M.noteFor(accounts[0], errors), /upgrading this connection/);
+  assert.equal(M.noteFor(accounts[1], errors), undefined, "Chase is fine and should not be told otherwise");
+
+  // Case and punctuation are not the point.
+  assert.ok(M.noteFor(acct("elements  financial"), errors));
+  assert.ok(M.noteFor(acct("Elements-Financial"), errors));
+
+  // What named nobody stays at the provider, where it was.
+  assert.deepEqual(M.unclaimed(accounts, errors), ["Something went wrong with the bridge itself"]);
+
+  // A name too short to be distinctive is not matched on, or every message
+  // mentioning a common word would land somewhere.
+  assert.equal(M.noteFor(acct("ABC"), ["a message about abc and nothing else"]), undefined);
+});
+
+await test("an account carrying its own note says so instead of the connection's", () => {
+  const base = M.emptyDB();
+  const account = {
+    id: "a1", name: "Checking", institution: "Elements Financial", type: "checking",
+    balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0,
+    syncSource: "simplefin", lastSyncedAt: "2026-09-20T06:00:00.000Z",
+    syncNote: { message: "We are upgrading this connection. Please wait...", at: "2026-09-20T06:00:00.000Z" },
+  };
+  const other = { ...account, id: "a2", institution: "Chase", syncNote: undefined };
+  const db = {
+    ...base, accounts: [account, other],
+    settings: { ...base.settings, syncCadence: "daily" },
+  };
+  const now = Date.parse("2026-09-20T12:00:00.000Z");
+
+  const c = M.connectionOf(account, db, now);
+  assert.equal(c.state, "attention");
+  assert.match(c.detail, /upgrading this connection/);
+
+  const ok = M.connectionOf(other, db, now);
+  assert.equal(ok.state, "connected", "the bank that is fine is not dragged in");
+});
+
+await test("paying off a card is not spending, and neither is moving money to savings", () => {
+  // The dashboard said sixty-five thousand for a month. A credit card paid in
+  // full is the same money twice: it left as the groceries bought on the card,
+  // and it leaves again as the payment. A transfer to savings has not been
+  // spent at all. Both were counted, so the more diligently the card was
+  // cleared and the bigger the mortgage, the further out the figure went.
+  const groups = [
+    { id: "g_shop", name: "Shopping", kind: "expense", order: 0 },
+    { id: "g_xfer", name: "Transfers", kind: "transfer", order: 1 },
+  ];
+  const categories = [
+    { id: "c_food", name: "Groceries", groupId: "g_shop", order: 0, icon: "🍏", color: "--c1" },
+    { id: "c_card", name: "Credit card payment", groupId: "g_xfer", order: 1, icon: "💳", color: "--c2" },
+    { id: "c_save", name: "To savings", groupId: "g_shop", order: 2, icon: "🏦", color: "--c3", excludeFromBudget: true },
+  ];
+  const db = dashDb([
+    { date: "2026-09-02", amount: -120_00, categoryId: "c_food" },
+    { date: "2026-09-03", amount: -4_000_00, categoryId: "c_card" },
+    { date: "2026-09-03", amount: -2_000_00, categoryId: "c_save" },
+    { date: "2026-08-10", amount: -80_00, categoryId: "c_food" },
+    { date: "2026-08-11", amount: -9_000_00, categoryId: "c_card" },
+  ], { groups, categories });
+
+  const p = M.spendPace(db, "2026-09-05");
+  assert.equal(p.spent, 120_00, "this month is the groceries, not the card payment");
+  assert.equal(p.spentLast, 80_00, "and last month the same, or the comparison is against a fiction");
+
+  // A category the document has never heard of still counts. Money quietly
+  // leaving a total that claims to say what was spent is the worse mistake.
+  const orphan = dashDb([{ date: "2026-09-02", amount: -50_00, categoryId: "c_gone" }], { groups, categories });
+  assert.equal(M.spendPace(orphan, "2026-09-05").spent, 50_00);
+
+  // And a split contributes the half that was spending.
+  const split = dashDb([{
+    date: "2026-09-02", amount: -1_100_00, categoryId: "c_food",
+    splits: [{ categoryId: "c_food", amount: -100_00 }, { categoryId: "c_card", amount: -1_000_00 }],
+  }], { groups, categories });
+  assert.equal(M.spendPace(split, "2026-09-05").spent, 100_00);
+});
+
+await test("what counts as money moving is the transfer groups and the excluded", () => {
+  const db = dashDb([], {
+    groups: [
+      { id: "g_shop", name: "Shopping", kind: "expense", order: 0 },
+      { id: "g_xfer", name: "Transfers", kind: "transfer", order: 1 },
+    ],
+    categories: [
+      { id: "c_food", name: "Groceries", groupId: "g_shop", order: 0, icon: "🍏", color: "--c1" },
+      { id: "c_card", name: "Card payment", groupId: "g_xfer", order: 1, icon: "💳", color: "--c2" },
+      { id: "c_off", name: "Reimbursed", groupId: "g_shop", order: 2, icon: "🧾", color: "--c3", excludeFromBudget: true },
+    ],
+  });
+  const moving = M.movingCategoryIds(db);
+  assert.equal(moving.has("c_card"), true, "a transfer group");
+  assert.equal(moving.has("c_off"), true, "and anything held off the budget");
+  assert.equal(moving.has("c_food"), false);
+  assert.equal(moving.has("c_unknown"), false, "a category nobody has heard of is not assumed to be a transfer");
 });
 
 await test("this month stops at today; last month does not", () => {

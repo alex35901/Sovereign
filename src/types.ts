@@ -103,6 +103,16 @@ export interface Account {
   syncSource?: "manual" | "csv" | "simplefin" | "plaid";
   syncId?: string;
   lastSyncedAt?: string;
+  /**
+   * What the provider last said about this account in particular.
+   *
+   * SimpleFIN reports trouble as a list of sentences about the whole pull, and
+   * those sentences usually name the bank they are about. Kept against the
+   * account they name, so "We are upgrading this connection" appears on the
+   * one connection being upgraded rather than on all of them, and cleared by
+   * the next pull that brings that account back without complaint.
+   */
+  syncNote?: { message: string; at: string };
   /** Street address, for property accounts that can be valued automatically. */
   address?: string;
   /** The most recent automated valuation, kept for provenance. */

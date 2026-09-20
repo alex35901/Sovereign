@@ -4,6 +4,7 @@ import { mergeSync, syncWindowStart } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
 import { reason, recordRun } from "../usage";
 import { syncDue } from "./schedule";
+import { unclaimed } from "./notes";
 import type { SyncCadence } from "./schedule";
 
 export interface SyncOutcome {
@@ -52,9 +53,14 @@ export async function syncSimplefin(
     return res.db;
   }, "sync from SimpleFIN");
 
-  // A pull that came back at all clears the last error, even when the bridge
-  // reported trouble with an individual bank: those are named separately.
-  recordRun(apply, "simplefin", "ever", { error: payload.errors[0] });
+  // A pull that came back at all clears the last error. What the bridge said
+  // about a named bank is now kept on that bank's own account, so only the
+  // messages that named nobody are left to report against the connection as a
+  // whole. Otherwise every account's status box would repeat one bank's
+  // trouble as though it were everyone's.
+  recordRun(apply, "simplefin", "ever", {
+    error: unclaimed(db.accounts.filter((a) => a.syncSource === "simplefin"), payload.errors)[0],
+  });
 
   return { summary, errors: payload.errors, changed };
 }

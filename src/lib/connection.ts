@@ -64,9 +64,17 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
     };
   }
 
+  // What the provider said about this account in particular, which beats
+  // anything it said about the pull as a whole: "we are upgrading this
+  // connection" belongs on the connection being upgraded, not on the four
+  // that are fine.
+  if (account.syncNote) {
+    return { state: "attention", provider, lastAt, status: "Needs attention", detail: account.syncNote.message };
+  }
+
   // The provider's own last word, which is what the Settings health column
-  // reads. An error here is the whole institution, not just this account, and
-  // it is cleared by the next run that comes back at all.
+  // reads. An error here names no institution, so it is about the whole
+  // connection, and it is cleared by the next run that comes back at all.
   const error = meterOf(db.settings.usage, source, "ever", now).error;
   if (error) return { state: "attention", provider, lastAt, status: "Needs attention", detail: error };
 
