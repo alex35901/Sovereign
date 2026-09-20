@@ -352,6 +352,25 @@ export function budgetedCategoryIds(db: DB): Set<string> {
   );
 }
 
+/**
+ * The categories whose money is moving rather than being spent.
+ *
+ * The complement of the set above, and deliberately not that question asked
+ * backwards. A transaction can carry a category id that is not in the document
+ * at all, and "is this known to be money moving" answers that safely where
+ * "is this one of the budgeted ones" would quietly drop it. For a total meant
+ * to say what was spent, dropping is the worse mistake: the money leaves the
+ * figure and nothing says so.
+ */
+export function movingCategoryIds(db: DB): Set<string> {
+  const transfers = new Set(db.groups.filter((g) => g.kind === "transfer").map((g) => g.id));
+  return new Set(
+    db.categories
+      .filter((c) => c.excludeFromBudget || transfers.has(c.groupId))
+      .map((c) => c.id),
+  );
+}
+
 export interface BudgetedSum {
   /** What the transactions come to, counting only budgeted categories. */
   total: number;

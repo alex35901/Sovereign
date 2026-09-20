@@ -1,6 +1,6 @@
 import type { DB, Goal, ISODate, MonthKey, Recurring } from "../types.js";
 import { addMonths, daysInMonth, monthEnd, monthOf, monthStart, today } from "./date.js";
-import { mutedAccountIds, counts, recurringList } from "./select.js";
+import { movingCategoryIds, mutedAccountIds, counts, lines, recurringList } from "./select.js";
 import { goalOutlook, goalSaved, goalSavedAt } from "./goal-funding.js";
 import type { GoalStatus } from "./goal-funding.js";
 
@@ -36,7 +36,13 @@ export interface SpendPace {
 }
 
 /** Cumulative spending through one month, a point per day. */
-function cumulative(db: DB, month: MonthKey, upTo: ISODate | null, muted: Set<string>): SpendPoint[] {
+function cumulative(
+  db: DB,
+  month: MonthKey,
+  upTo: ISODate | null,
+  muted: Set<string>,
+  moving: Set<string>,
+): SpendPoint[] {
   const from = monthStart(month);
   const to = monthEnd(month);
   const daily = new Map<number, number>();
@@ -44,12 +50,23 @@ function cumulative(db: DB, month: MonthKey, upTo: ISODate | null, muted: Set<st
     if (t.date < from || t.date > to) continue;
     if (upTo && t.date > upTo) continue;
     if (!counts(t, muted)) continue;
-    // Spending only: a payday landing mid-month would otherwise walk the line
-    // backwards and turn "spent so far" into "net so far", which is a
-    // different question and the one the budget card answers.
-    if (t.amount >= 0) continue;
     const day = Number(t.date.slice(8, 10));
-    daily.set(day, (daily.get(day) ?? 0) + -t.amount);
+    // Per line, so a shop split between groceries and a transfer contributes
+    // the groceries and not the transfer.
+    for (const l of lines(t)) {
+      // Spending only: a payday landing mid-month would otherwise walk the
+      // line backwards and turn "spent so far" into "net so far", which is a
+      // different question and the one the budget card answers.
+      if (l.amount >= 0) continue;
+      // And only the kind of leaving that is spending. A credit card paid off
+      // is the same money twice: it left as the groceries bought on the card,
+      // and it leaves again as the payment. So is a transfer into savings,
+      // which has not been spent at all. Counting both turned a month into a
+      // number nobody recognised, and the bigger the mortgage and the more
+      // diligently the card was cleared, the further out it went.
+      if (moving.has(l.categoryId)) continue;
+      daily.set(day, (daily.get(day) ?? 0) + -l.amount);
+    }
   }
 
   const last = upTo && monthOf(upTo) === month ? Number(upTo.slice(8, 10)) : daysInMonth(month);
@@ -66,8 +83,11 @@ export function spendPace(db: DB, now: ISODate = today()): SpendPace {
   const month = monthOf(now);
   const previous = addMonths(month, -1);
   const muted = mutedAccountIds(db);
-  const thisMonth = cumulative(db, month, now, muted);
-  const lastMonth = cumulative(db, previous, null, muted);
+  // Worked out once and handed to both months: the two sides of a comparison
+  // have to count the same transactions the same way.
+  const moving = movingCategoryIds(db);
+  const thisMonth = cumulative(db, month, now, muted, moving);
+  const lastMonth = cumulative(db, previous, null, muted, moving);
   const days = daysInMonth(month);
   return {
     thisMonth,
