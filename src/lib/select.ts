@@ -607,6 +607,19 @@ export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
 export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number {
   const cat = db.categories.find((c) => c.id === categoryId);
   if (!cat?.rollover) return 0;
+  // Never for income, whatever the flag says. Rollover means money you did not
+  // spend is still yours next month, which is a sentence about spending. The
+  // same arithmetic on income reads "a paycheque you did not receive is still
+  // owed to you", and it compounds: every month with a planned figure and no
+  // income recorded yet added its whole plan to the carry. Twelve thousand
+  // planned against fourteen thousand received came out as forty-four
+  // thousand remaining, which is not a rounding error, it is a different
+  // question being answered.
+  //
+  // Ignored rather than migrated away, because the flag is harmless where it
+  // cannot be reached and a document that already has it set should start
+  // reading correctly the moment this ships, without being rewritten first.
+  if (categoryKind(db, categoryId) === "income") return 0;
   const budgeted = Object.keys(db.budgets).filter((m) => m < month).sort();
   if (!budgeted.length) return 0;
   let carry = 0;

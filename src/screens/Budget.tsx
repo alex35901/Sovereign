@@ -184,7 +184,8 @@ function RowLine({ row: r, month, income }: { row: BudgetRow; month: string; inc
               <HoverCard fill width={266} disabled={moving} card={<RemainingCard row={r} />}>
                 {income ? (
                   <span className={cx("btn budget-amount remaining", remainingTone(r.remaining, r.kind))}>
-                    {r.category.rollover ? <RotateCcw size={11} className="rollover-mark" /> : null}
+                    {/* No rollover mark: income does not roll over, whatever
+                        the category's flag happens to say. */}
                     <Money value={r.remaining} cents={false} />
                   </span>
                 ) : (
@@ -218,7 +219,7 @@ function RemainingCard({ row }: { row: BudgetRow }) {
     <>
       <div className="hc-title">{row.category.icon} {row.category.name}</div>
       <div className="hc-body">
-        {row.rollover ? <HcLine label="Rollover from last month" value={row.rollover} tone="pos" /> : null}
+        {row.rollover && !income ? <HcLine label="Rollover from last month" value={row.rollover} tone="pos" /> : null}
         <HcLine label={income ? "Expected" : "Planned"} value={row.planned} />
         {income ? null : <HcLine label="Available to spend" value={available} />}
         <HcLine label={income ? "Received" : "Actual"} value={row.actual} />

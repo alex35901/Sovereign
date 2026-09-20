@@ -2062,6 +2062,58 @@ await test("income reads the other way round, because it works the other way rou
   assert.equal(M.remainingTone(0, "income"), "flat");
 });
 
+await test("income does not roll over, whatever the flag says", () => {
+  // Twelve thousand planned, fourteen thousand received, and the Remaining
+  // column read plus forty-four thousand. Rollover means money you did not
+  // spend is still yours next month, which is a sentence about spending. The
+  // same arithmetic on income treats a paycheque you have not received as
+  // still owed, and every earlier month with a plan and no income yet adds
+  // its whole plan to the carry.
+  const base = M.emptyDB();
+  const group = { id: "g_in", name: "Income", kind: "income", order: 0 };
+  const cat = { id: "c_pay", name: "Paychecks", groupId: "g_in", order: 0, icon: "💰", color: "--c3", rollover: true };
+  const account = { id: "a1", name: "Checking", type: "checking", institution: "A bank", balance: 0, history: [], order: 0 };
+  const paid = (id, date, amount) => ({
+    id, date, merchant: "Employer", amount, categoryId: cat.id, accountId: account.id, tags: [], reviewed: true,
+  });
+  const db = {
+    ...base,
+    groups: [...base.groups.filter((g) => g.kind !== "income"), group],
+    categories: [...base.categories, cat],
+    accounts: [account],
+    // Four months planned for, and income recorded only in the last of them,
+    // which is what an account connected partway through the year looks like.
+    budgets: {
+      "2026-05": { [cat.id]: 1200000 },
+      "2026-06": { [cat.id]: 1200000 },
+      "2026-07": { [cat.id]: 1200000 },
+      "2026-08": { [cat.id]: 1200000 },
+    },
+    transactions: [paid("p1", "2026-08-15", 700000), paid("p2", "2026-08-30", 700000)],
+  };
+
+  assert.equal(M.rolloverFor(db, "2026-08", cat.id), 0, "nothing carries into an income month");
+  const row = M.budgetTable(db, "2026-08").flatMap((g) => g.rows).find((r) => r.category.id === cat.id);
+  assert.equal(row.actual, 1400000);
+  assert.equal(row.remaining, -200000, "two thousand more than planned, and said as a negative");
+  assert.equal(M.remainingTone(row.remaining, row.kind), "pos");
+
+  // The same flag on an expense still works, or this would have fixed one
+  // thing by breaking the feature it borrowed.
+  const spend = {
+    ...db,
+    groups: [...base.groups.filter((g) => g.kind === "expense").slice(0, 1)],
+  };
+  const eg = spend.groups[0];
+  const ecat = { id: "c_food", name: "Groceries", groupId: eg.id, order: 0, icon: "🍏", color: "--c1", rollover: true };
+  const edb = {
+    ...base, groups: [eg], categories: [ecat], accounts: [account],
+    budgets: { "2026-07": { [ecat.id]: 50000 }, "2026-08": { [ecat.id]: 50000 } },
+    transactions: [],
+  };
+  assert.equal(M.rolloverFor(edb, "2026-08", ecat.id), 50000, "an unspent expense month still carries");
+});
+
 await test("income recorded against nothing planned is not an overspend", () => {
   // The case that made this obvious: get paid before setting a budget, and the
   // whole amount showed in the Remaining column in red, exactly as if it had

@@ -42,7 +42,8 @@ export function CategoriesPanel() {
             <div key={c.id} className="list-row">
               <span style={{ fontSize: 15, width: 22 }}>{c.icon}</span>
               <Link to={`/categories/${c.id}`} className="grow truncate cat-open">{c.name}</Link>
-              {c.rollover ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>rollover</span> : null}
+              {c.rollover && g.kind !== "income"
+                ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>rollover</span> : null}
               {c.excludeFromBudget ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>off-budget</span> : null}
               <span className="tiny faint">{db.transactions.filter((t) => t.categoryId === c.id).length} txns</span>
               <Btn size="sm" variant="ghost" onClick={() => setEditing(c)}>Edit</Btn>
@@ -173,10 +174,17 @@ export function CategoryModal({ category, groupId, onClose }: { category?: Categ
   const [rollover, setRollover] = useState(category?.rollover ?? false);
   const [excludeFromBudget, setExclude] = useState(category?.excludeFromBudget ?? false);
   const [reassignTo, setReassign] = useState("c_uncategorized");
+  const incomeGroup = db.groups.find((g) => g.id === group)?.kind === "income";
 
   const save = () => {
     // No colour here: it comes from the group, and withGroupColors puts it on.
-    const payload = { name: name.trim() || "New category", icon, color: "--c1", groupId: group, rollover, excludeFromBudget };
+    const payload = {
+      name: name.trim() || "New category", icon, color: "--c1", groupId: group,
+      // Cleared rather than carried, so a category moved into Income does not
+      // keep a switch that is no longer shown and no longer does anything.
+      rollover: incomeGroup ? false : rollover,
+      excludeFromBudget,
+    };
     if (category) actions.updateCategory(category.id, payload);
     else actions.addCategory({ ...payload, archived: false });
     onClose();
@@ -204,7 +212,15 @@ export function CategoryModal({ category, groupId, onClose }: { category?: Categ
           Colour comes from the group. Change it there and every category in it follows.
         </span>
       </div>
-      <Toggle on={rollover} onChange={setRollover} label={<span className="small">Roll unspent money into next month</span>} />
+      {/* Not offered on income. Rolling money you did not spend into next
+          month is a sentence about spending; the same idea on income would
+          mean a paycheque you were not paid is still owed to you, and it
+          compounds every month. The calculation ignores the flag there, so
+          offering the switch would only promise something that cannot
+          happen. */}
+      {incomeGroup ? null : (
+        <Toggle on={rollover} onChange={setRollover} label={<span className="small">Roll unspent money into next month</span>} />
+      )}
       <Toggle on={excludeFromBudget} onChange={setExclude} label={<span className="small">Exclude from budget</span>} />
       {category ? (
         <>
