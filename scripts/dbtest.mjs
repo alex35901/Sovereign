@@ -29,10 +29,10 @@ const entry = join(dir, "entry.js");
 await build({
   stdin: {
     contents: `
-      export { readDoc, readMeta, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
+      export { readDoc, readMeta, readSeal, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
       export { default as dbHandler } from "./api/db.ts";
       export { default as hopperHandler } from "./api/hopper.ts";
-      export { claimMessage, spentToday, noteTokens, forgetTable, DAILY_MESSAGES } from "./api/_budget.ts";
+      export { claimMessage, spentToday, noteTokens, DAILY_MESSAGES } from "./api/_budget.ts";
       export { default as cronHandler } from "./api/cron/sync.ts";
       export { readAttempt, noteFailure, clearFailures, lockedOutNow, callerKey, MAX_FAILURES } from "./api/_ratelimit.ts";
       export { queuePull, readQueue, clearQueue, trimQueue } from "./api/_store.ts";
@@ -249,6 +249,11 @@ await test("GET ?meta=1 serves the metadata and nothing else", async () => {
   process.env.SYNC_PASSPHRASE = "open sesame";
   const auth = { authorization: "Bearer open sesame" };
 
+  // A document with some bulk to it, so "smaller than the full one" is a
+  // statement about the document and not about which reply has more field
+  // names in it.
+  await M.writeDoc({ transactions: Array.from({ length: 200 }, (_, i) => ({ id: `t${i}`, merchant: "Somewhere" })) }, null, "device");
+
   const fullRes = await invokeWith(M.dbHandler, { method: "GET", headers: auth });
   const full = JSON.parse(fullRes.text);
   const r = await invokeWith(M.dbHandler, { method: "GET", headers: auth, url: "/api/db?meta=1" });
@@ -272,7 +277,6 @@ const wipeUsage = async () => {
   await c.connect();
   await c.query("DROP TABLE IF EXISTS hopper_usage");
   await c.end();
-  M.forgetTable();
 };
 
 await test("the day's allowance is claimed atomically, so a burst cannot overspend it", async () => {
@@ -688,6 +692,24 @@ await test("the queue endpoints round-trip through the real handler", async () =
   assert.deepEqual(JSON.parse((await asServer({ action: "queue" })).text).queued, []);
 });
 
+await test("the version check says whether anything is queued, so nothing has to ask twice", async () => {
+  // The browser polls for the version anyway. Carrying the size of the queue
+  // in the same answer is what lets it stop making a second request, to a
+  // second function, on every round of every day, to be told there is nothing
+  // waiting.
+  await wipe();
+  const at = await unlockCheap(null);
+  await M.writeDoc({ hello: 1 }, 0, "device");
+  assert.equal((await M.readMeta()).queued, 0, "an empty queue says so");
+
+  const id = await M.queuePull(await C.sealTo(at.pub, "overnight"));
+  assert.equal((await M.readMeta()).queued, 1);
+
+  await M.clearQueue([id]);
+  assert.equal((await M.readMeta()).queued, 0, "and says so again once it is drained");
+  await wipe();
+});
+
 await test("the queue does not grow without bound if nobody opens the app", async () => {
   await wipe();
   const at = await unlockCheap(null);
@@ -720,6 +742,30 @@ const BRIDGE = JSON.stringify({
     org: { name: "Wells Fargo", domain: "wellsfargo.com" },
     transactions: [{ id: "sfin-tx-1", posted: Math.floor(Date.parse("2026-09-02T00:00:00Z") / 1000), amount: "-50.00", description: "COSTCO GAS #1234" }],
   }],
+});
+
+await test("whether a document is sealed is answered without fetching it", async () => {
+  // The scheduled job asks this before it fetches anything, because on an
+  // encrypted budget the only part it can use is the public key. The cost of
+  // getting the answer wrong is a merge written over the ciphertext, so the
+  // question is put to the same predicate the rest of the app uses rather
+  // than to a second copy of it written in SQL. This is what pins that.
+  await wipe();
+  await M.writeDoc({ accounts: [], pub: "looks like a key, is not an envelope" }, 0, "device");
+  const plain = await M.readSeal();
+  assert.equal(plain.sealed, false, "a plain document is not sealed by carrying a pub field");
+
+  await wipe();
+  const at = await unlockCheap(null);
+  const env = await C.encryptDocument(M.buildDemoDB(), at);
+  await M.writeDoc(env, 0, "device");
+  const sealed = await M.readSeal();
+  assert.equal(sealed.sealed, true);
+  assert.equal(sealed.version, 1);
+  assert.equal(sealed.pub, env.pub, "and hands back the public key, without the ciphertext");
+
+  await wipe();
+  assert.equal(await M.readSeal(), null, "an empty store is not an error");
 });
 
 await test("the scheduled job never writes over an encrypted document", async () => {

@@ -144,7 +144,7 @@ export async function diagnose(): Promise<StoreDiagnosis> {
   }
 
   try {
-    const { rows } = await withTable(async () =>
+    const { rows } = await documentTable.guard(async () =>
       (await db()).query("SELECT count(*)::int AS n FROM budget_document"),
     );
     out.table.ok = true;
@@ -254,74 +254,100 @@ export async function db(): Promise<Pool> {
   return pool;
 }
 
-/**
- * Idempotent, so first use of a fresh database just works.
- *
- * Every read and every write goes through here first, which makes it the one
- * place a sleeping database has to be woken. Nothing below it needs to know.
- *
- * Remembered per warm instance rather than run per request. It was a second
- * round trip on every call, including every poll, to tell a database that has
- * had the table for months that it would like the table. A serverless instance
- * handles many requests before it is recycled and the answer cannot change
- * under it; a cold start asks again, which is the case that ever needed it.
- *
- * The promise is what is kept, not a boolean, so two requests arriving
- * together on one instance wait on the same statement rather than racing to
- * issue it twice. A failure is forgotten, so a database that was asleep or
- * unreachable is asked again next time instead of being written off for the
- * life of the instance.
- *
- * Remembering is only safe because forgetting is cheap: if the table turns out
- * not to be there after all, `withTable` below clears this and asks again. A
- * memo that could be wrong about the one thing it promises would be worse than
- * no memo, and a test suite that drops the table between cases is the proof
- * that "nothing ever drops it" was an assumption rather than a fact.
- */
-let tableReady: Promise<void> | null = null;
-
-async function ensureTable(): Promise<void> {
-  if (!tableReady) {
-    tableReady = withWake(async () => {
-      await (await db()).query(`
-        CREATE TABLE IF NOT EXISTS budget_document (
-          id integer PRIMARY KEY,
-          version integer NOT NULL,
-          updated_at timestamptz NOT NULL,
-          updated_by text NOT NULL,
-          doc jsonb NOT NULL
-        )
-      `);
-    }).catch((err) => {
-      tableReady = null;
-      throw err;
-    });
-  }
-  await tableReady;
-}
-
 /** Postgres for "that table is not there". */
 const UNDEFINED_TABLE = "42P01";
 
+export interface OnDemandTable {
+  /** Makes sure the table is there. */
+  ensure(): Promise<void>;
+  /** Unremembers it, so the next `ensure` asks the database again. */
+  forget(): void;
+  /** Runs something against it, rebuilding it once if it has gone. */
+  guard<T>(run: () => Promise<T>): Promise<T>;
+}
+
 /**
- * Runs something against the document table, having made sure there is one.
+ * The same guarantee across more than one table, for a query that reads two.
  *
- * The retry is what keeps the memo above honest: the guarantee is that the
- * table exists by the time the work runs, and the only way to keep that while
- * also not asking every time is to notice when the answer was stale and ask
- * again. Once, because a second failure is a real one.
+ * Which table was missing is not in the error in any form worth parsing, so a
+ * 42P01 forgets all of them. Rebuilding one that was there anyway costs a
+ * statement that does nothing.
  */
-async function withTable<T>(run: () => Promise<T>): Promise<T> {
-  await ensureTable();
+export async function guardTables<T>(tables: readonly OnDemandTable[], run: () => Promise<T>): Promise<T> {
+  await Promise.all(tables.map((t) => t.ensure()));
   try {
     return await run();
   } catch (err) {
     if ((err as { code?: string })?.code !== UNDEFINED_TABLE) throw err;
-    tableReady = null;
-    await ensureTable();
+    // Once, because a second failure is a real one.
+    for (const t of tables) t.forget();
+    await Promise.all(tables.map((t) => t.ensure()));
     return run();
   }
 }
+
+/**
+ * A table this app creates on demand, built once per warm instance.
+ *
+ * Idempotent, so first use of a fresh database just works, and the one place
+ * a sleeping database has to be woken - nothing below it needs to know.
+ *
+ * Every read and every write used to open with CREATE TABLE IF NOT EXISTS.
+ * That is a round trip and a catalogue lookup to be told something settled the
+ * first time, on every single request. It is issued once per instance now.
+ *
+ * Remembering is only safe because forgetting is cheap: if the table turns out
+ * not to be there after all, `guard` clears the memo and asks again. A memo
+ * that could be wrong about the one thing it promises would be worse than no
+ * memo, and a test suite that drops the table between cases is the proof that
+ * "nothing ever drops it" was an assumption rather than a fact.
+ */
+export function onDemandTable(ddl: string): OnDemandTable {
+  let ready: Promise<void> | null = null;
+
+  const ensure = async (): Promise<void> => {
+    if (!ready) {
+      ready = withWake(async () => {
+        try {
+          await (await db()).query(ddl);
+        } catch (err) {
+          // CREATE TABLE IF NOT EXISTS is not actually safe against
+          // concurrency: Postgres checks the catalogue and then inserts into
+          // it, and two statements that interleave between those steps make
+          // the second fail with a duplicate key on pg_type rather than
+          // quietly doing nothing. A serverless function that cold-starts
+          // under a burst hits this. Losing that race means the table is
+          // there, which is the only thing this needed.
+          if (!/duplicate key|already exists/i.test(String(err))) throw err;
+        }
+      }).catch((err: unknown) => {
+        // A failure is forgotten, so a database that was asleep or unreachable
+        // is asked again next time rather than written off for the life of the
+        // instance.
+        ready = null;
+        throw err;
+      });
+    }
+    await ready;
+  };
+
+  const self: OnDemandTable = {
+    ensure,
+    forget: () => { ready = null; },
+    guard: (run) => guardTables([self], run),
+  };
+  return self;
+}
+
+const documentTable = onDemandTable(`
+  CREATE TABLE IF NOT EXISTS budget_document (
+    id integer PRIMARY KEY,
+    version integer NOT NULL,
+    updated_at timestamptz NOT NULL,
+    updated_by text NOT NULL,
+    doc jsonb NOT NULL
+  )
+`);
 
 export interface DocMeta {
   version: number;
@@ -329,6 +355,8 @@ export interface DocMeta {
   updatedBy: string;
   /** Whether the stored document is sealed, answered without fetching it. */
   sealed: boolean;
+  /** How many overnight pulls are waiting in the queue. */
+  queued: number;
 }
 
 /**
@@ -342,10 +370,18 @@ export interface DocMeta {
  *
  * `doc ? 'ct'` is evaluated by Postgres and comes back as one boolean, so
  * asking whether the document is sealed costs nothing either.
+ *
+ * The size of the queue rides along for the same reason. The browser used to
+ * ask for the queue itself after every poll, which is a second request, a
+ * second function, a second connection and four more statements - to be told,
+ * on all but a handful of days a year, that there is nothing in it. A count
+ * over a table that holds at most fifty rows answers that here.
  */
 export async function readMeta(): Promise<DocMeta | null> {
-  const { rows } = await withTable(async () => (await db()).query(
-    "SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed FROM budget_document WHERE id = $1",
+  const { rows } = await guardTables([documentTable, queueTable], async () => (await db()).query(
+    `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed,
+            (SELECT count(*)::int FROM sync_queue) AS queued
+       FROM budget_document WHERE id = $1`,
     [ROW_ID],
   ));
   const row = rows[0] as Record<string, unknown> | undefined;
@@ -355,11 +391,55 @@ export async function readMeta(): Promise<DocMeta | null> {
     updatedAt: new Date(row.updated_at as string).toISOString(),
     updatedBy: String(row.updated_by),
     sealed: row.sealed === true,
+    queued: Number(row.queued ?? 0),
+  };
+}
+
+export interface DocSeal {
+  version: number;
+  /** Whether the stored document is an envelope, answered without opening it. */
+  sealed: boolean;
+  /** The public key it carries, for sealing a pull nobody here can read. */
+  pub: string | null;
+}
+
+/**
+ * Just enough of a sealed document to leave something for it in the queue.
+ *
+ * The scheduled job used to pull the whole document down to find out it could
+ * not read it. On an encrypted budget that is a megabyte and a half of
+ * ciphertext fetched, looked at once and thrown away, every single night - and
+ * the only part of it the job can use is the public key in the envelope, which
+ * is a hundred bytes. Postgres picks that out and sends that.
+ */
+export async function readSeal(): Promise<DocSeal | null> {
+  const { rows } = await documentTable.guard(async () => (await db()).query(
+    `SELECT version, doc->'v' AS v, doc->'iv' AS iv, doc->'kdf' AS kdf, doc->>'pub' AS pub,
+            jsonb_typeof(doc->'ct') = 'string' AS ct_is_string
+       FROM budget_document WHERE id = $1`,
+    [ROW_ID],
+  ));
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  // Answered by the same predicate the rest of the app uses, rather than by a
+  // second copy of it written in SQL. The ciphertext is the one field
+  // deliberately left behind, so it is stood in for by what was asked of it:
+  // whether it is a string. Two predicates that have to agree about what an
+  // envelope is would eventually stop agreeing, and the cost of being wrong
+  // here is a merge written over an encrypted document.
+  const header = {
+    v: row.v, iv: row.iv, kdf: row.kdf,
+    ct: row.ct_is_string === true ? "" : undefined,
+  };
+  return {
+    version: Number(row.version),
+    sealed: isEnvelope(header),
+    pub: typeof row.pub === "string" ? row.pub : null,
   };
 }
 
 export async function readDoc(): Promise<StoredDoc | null> {
-  const { rows } = await withTable(async () => (await db()).query(
+  const { rows } = await documentTable.guard(async () => (await db()).query(
     "SELECT version, updated_at, updated_by, doc FROM budget_document WHERE id = $1",
     [ROW_ID],
   ));
@@ -399,7 +479,7 @@ export interface WriteResult {
  * write, which the cron uses because it always reads immediately beforehand.
  */
 export async function writeDoc(doc: unknown, baseVersion: number | null, by: string): Promise<WriteResult> {
-  return withTable(async () => {
+  return documentTable.guard(async () => {
     const client = await (await db()).connect();
     try {
       await client.query("BEGIN");
@@ -498,34 +578,30 @@ export interface QueuedPull {
   ct: string;
 }
 
-async function ensureQueue(): Promise<void> {
-  await (await db()).query(`
-    CREATE TABLE IF NOT EXISTS sync_queue (
-      id bigserial PRIMARY KEY,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      epk text NOT NULL,
-      iv text NOT NULL,
-      ct text NOT NULL
-    )
-  `);
-}
+const queueTable = onDemandTable(`
+  CREATE TABLE IF NOT EXISTS sync_queue (
+    id bigserial PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    epk text NOT NULL,
+    iv text NOT NULL,
+    ct text NOT NULL
+  )
+`);
 
 export async function queuePull(box: { epk: string; iv: string; ct: string }): Promise<number> {
-  await ensureQueue();
-  const { rows } = await (await db()).query(
+  const { rows } = await queueTable.guard(async () => (await db()).query(
     "INSERT INTO sync_queue (epk, iv, ct) VALUES ($1, $2, $3) RETURNING id",
     [box.epk, box.iv, box.ct],
-  );
+  ));
   return Number((rows[0] as { id: number }).id);
 }
 
 /** Oldest first, so a browser applies overnight pulls in the order they happened. */
 export async function readQueue(limit = 50): Promise<QueuedPull[]> {
-  await ensureQueue();
-  const { rows } = await (await db()).query(
+  const { rows } = await queueTable.guard(async () => (await db()).query(
     "SELECT id, created_at, epk, iv, ct FROM sync_queue ORDER BY id ASC LIMIT $1",
     [limit],
-  );
+  ));
   return (rows as Record<string, unknown>[]).map((r) => ({
     id: Number(r.id),
     createdAt: new Date(r.created_at as string).toISOString(),
@@ -538,11 +614,10 @@ export async function readQueue(limit = 50): Promise<QueuedPull[]> {
 /** Dropped only once a browser has merged them in and saved the result. */
 export async function clearQueue(ids: number[]): Promise<number> {
   if (!ids.length) return 0;
-  await ensureQueue();
-  const { rowCount } = await (await db()).query(
+  const { rowCount } = await queueTable.guard(async () => (await db()).query(
     "DELETE FROM sync_queue WHERE id = ANY($1::bigint[])",
     [ids],
-  );
+  ));
   return rowCount ?? 0;
 }
 
@@ -551,10 +626,9 @@ export async function clearQueue(ids: number[]): Promise<number> {
  * A pull older than this is stale anyway — the next one supersedes it.
  */
 export async function trimQueue(keepDays = 30): Promise<number> {
-  await ensureQueue();
-  const { rowCount } = await (await db()).query(
+  const { rowCount } = await queueTable.guard(async () => (await db()).query(
     "DELETE FROM sync_queue WHERE created_at < now() - ($1 || ' days')::interval",
     [String(keepDays)],
-  );
+  ));
   return rowCount ?? 0;
 }

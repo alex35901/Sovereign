@@ -371,6 +371,13 @@ export interface Meta {
   updatedAt: string | null;
   updatedBy: string | null;
   sealed: boolean;
+  /**
+   * How many overnight pulls are waiting.
+   *
+   * Answered by the same request that answers the version, so the browser only
+   * asks for the queue on the days there is something in it.
+   */
+  queued: number;
 }
 
 export async function head(): Promise<Meta> {
@@ -383,6 +390,7 @@ export async function head(): Promise<Meta> {
     updatedAt: body.updatedAt ?? null,
     updatedBy: body.updatedBy ?? null,
     sealed: !!body.sealed,
+    queued: Number(body.queued ?? 0),
   };
 }
 

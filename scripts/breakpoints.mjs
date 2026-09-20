@@ -1208,9 +1208,15 @@ try {
       return "red";
     };
     const bills = cal.marks.filter((m) => !m.paid && m.tone !== cal.pos);
+    // Only the bills still to come carry a mark, so how many there are depends
+    // on what day it is. Demanding four of them made this fail on the 20th of
+    // the month and would have failed every month end from now on, which is a
+    // calendar telling the truth being reported as a bug. The claim worth
+    // making is that the marks shown agree with each other, and a set of size
+    // one says exactly that - it is also false when there are none at all.
     check("every bill in the calendar is marked in one colour",
-      bills.length > 3 && new Set(bills.map((m) => m.tone)).size === 1,
-      `${bills.length} bills in ${[...new Set(bills.map((m) => m.tone))].join(" | ")}`);
+      new Set(bills.map((m) => m.tone)).size === 1,
+      `${bills.length} bills in ${[...new Set(bills.map((m) => m.tone))].join(" | ") || "no colour at all"}`);
     check("and that colour reads as red, not orange and not coral",
       bills.length > 0 && reads(bills[0].tone) === "red",
       `${bills[0]?.tone} reads ${bills[0] ? reads(bills[0].tone) : "nothing"}`);

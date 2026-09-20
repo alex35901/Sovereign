@@ -138,8 +138,15 @@ try {
 
   // Having had to change it, this browser owes the change back — otherwise
   // every device migrates the same document for ever.
-  await a.waitForTimeout(2500);
-  const savedBack = await (await fetch(`${APP}/api/db`, { headers: auth })).json();
+  //
+  // Waited for rather than slept through: the save is on the same debounce as
+  // any other edit, which is eight seconds of quiet, and a fixed two-and-a-half
+  // second pause was simply asking before the answer existed.
+  let savedBack = await (await fetch(`${APP}/api/db`, { headers: auth })).json();
+  for (let i = 0; i < 30 && !(savedBack.version > stored.version + 1); i++) {
+    await a.waitForTimeout(1000);
+    savedBack = await (await fetch(`${APP}/api/db`, { headers: auth })).json();
+  }
   check("and the brought-up-to-date copy is saved back, so nobody does it twice",
     savedBack.version > stored.version + 1 && savedBack.doc.goals[0].allocations
       && Array.isArray(savedBack.doc.transactions[0].tags),
@@ -280,7 +287,9 @@ try {
   await tryStep("a passphrase can be typed on the flaky device", () =>
     card(f, "Encryption").locator('input[type="password"]').first().fill(CRYPT, { timeout: 5000 }));
   // The peek has already happened; everything from the unlock onwards fails.
-  await f.route("**/api/db", (route) => route.fulfill({
+  // The trailing star matters: a pull asks for `/api/db?z=1`, and a pattern
+  // without it matches neither that nor anything else this has to break.
+  await f.route("**/api/db*", (route) => route.fulfill({
     status: 429, contentType: "application/json",
     body: JSON.stringify({ error: "Too many attempts from this address. Try again in 15 minutes." }),
   }));
@@ -469,15 +478,31 @@ try {
   check("a day of two idle tabs costs kilobytes, not hundreds of megabytes",
     perDay < 5e6, `${(perDay / 1e6).toFixed(1)} MB/day`);
 
-  // The saving is worthless if a real change stops arriving.
+  // The saving is worthless if a real change stops arriving. A tab left alone
+  // has backed off to the half-hour gap by now, so there are two promises to
+  // keep: it catches up the moment somebody uses it, and it gets there on its
+  // own before the ceiling either way.
   await t1.locator('input[name="sovereign-household"]').fill("Changed on the first tab");
   await t1.waitForTimeout(600);
   await t1.clock.fastForward("00:10");
   await t1.waitForTimeout(2500);
+  // A key nothing is listening for. The point is that somebody is there, not
+  // what they pressed.
+  await t2.keyboard.press("Shift");
   await t2.clock.fastForward("01:00");
   await t2.waitForTimeout(3000);
   const crossed = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.householdName);
-  check("an edit on one tab still reaches the other", crossed === "Changed on the first tab", crossed);
+  check("an edit reaches a tab somebody is using within the minute", crossed === "Changed on the first tab", crossed);
+
+  await t1.locator('input[name="sovereign-household"]').fill("Changed again, quietly");
+  await t1.waitForTimeout(600);
+  await t1.clock.fastForward("00:10");
+  await t1.waitForTimeout(2500);
+  await t2.clock.fastForward("30:00");
+  await t2.waitForTimeout(3000);
+  const eventually = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.householdName);
+  check("and reaches a tab nobody has touched within the half hour",
+    eventually === "Changed again, quietly", eventually);
 
   // Typed in the second before the tab has finished reconciling with the
   // server. This used to be dropped: the save effect stood down until first
@@ -500,6 +525,7 @@ try {
   // Whatever the timing did to the debounce, the poll has to flush it.
   await t1.clock.fastForward("01:00");
   await t1.waitForTimeout(3000);
+  await t2.keyboard.press("Shift");
   await t2.clock.fastForward("01:00");
   await t2.waitForTimeout(3000);
   const early = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.householdName);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
-import { db } from "./_store.js";
+import { db, onDemandTable } from "./_store.js";
 
 /**
  * A limit on how fast the passphrase can be guessed.
@@ -90,18 +90,22 @@ export function callerKey(scope: string, headers: IncomingHttpHeaders): string {
   return `${scope}:${createHash("sha256").update(ip).digest("hex").slice(0, 32)}`;
 }
 
-/** Idempotent, so a database that has never seen this table just works. */
-async function ensureTable(): Promise<void> {
-  await (await db()).query(`
-    CREATE TABLE IF NOT EXISTS auth_attempt (
-      id text PRIMARY KEY,
-      failures integer NOT NULL DEFAULT 0,
-      lockouts integer NOT NULL DEFAULT 0,
-      window_start timestamptz NOT NULL,
-      locked_until timestamptz
-    )
-  `);
-}
+/**
+ * Built on demand, and remembered.
+ *
+ * Every request to the document endpoint passes through this limiter, so a
+ * CREATE TABLE issued here is a CREATE TABLE issued on every poll and every
+ * save. Once per warm instance instead.
+ */
+const table = onDemandTable(`
+  CREATE TABLE IF NOT EXISTS auth_attempt (
+    id text PRIMARY KEY,
+    failures integer NOT NULL DEFAULT 0,
+    lockouts integer NOT NULL DEFAULT 0,
+    window_start timestamptz NOT NULL,
+    locked_until timestamptz
+  )
+`);
 
 const toAttempt = (row: Record<string, unknown> | undefined): Attempt | null => row
   ? {
@@ -113,18 +117,17 @@ const toAttempt = (row: Record<string, unknown> | undefined): Attempt | null => 
   : null;
 
 export async function readAttempt(key: string): Promise<Attempt | null> {
-  await ensureTable();
-  const { rows } = await (await db()).query(
+  const { rows } = await table.guard(async () => (await db()).query(
     "SELECT failures, lockouts, window_start, locked_until FROM auth_attempt WHERE id = $1",
     [key],
-  );
+  ));
   return toAttempt(rows[0] as Record<string, unknown> | undefined);
 }
 
 /** Records a wrong answer and returns how long the caller must now wait. */
 export async function noteFailure(key: string, now: number = Date.now()): Promise<number> {
   const next = afterFailure(await readAttempt(key), now);
-  await (await db()).query(
+  await table.guard(async () => (await db()).query(
     `INSERT INTO auth_attempt (id, failures, lockouts, window_start, locked_until)
      VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), $5)
      ON CONFLICT (id) DO UPDATE SET
@@ -134,23 +137,21 @@ export async function noteFailure(key: string, now: number = Date.now()): Promis
        locked_until = EXCLUDED.locked_until`,
     [key, next.failures, next.lockouts, next.windowStart,
       next.lockedUntil === null ? null : new Date(next.lockedUntil).toISOString()],
-  );
+  ));
   return lockedFor(next, now);
 }
 
 /** The right passphrase wipes the slate, so an honest typo costs nothing later. */
 export async function clearFailures(key: string): Promise<void> {
-  await ensureTable();
-  await (await db()).query("DELETE FROM auth_attempt WHERE id = $1", [key]);
+  await table.guard(async () => (await db()).query("DELETE FROM auth_attempt WHERE id = $1", [key]));
 }
 
 /** How many callers are currently locked out, for the diagnostics to report. */
 export async function lockedOutNow(now: number = Date.now()): Promise<number> {
-  await ensureTable();
-  const { rows } = await (await db()).query(
+  const { rows } = await table.guard(async () => (await db()).query(
     "SELECT count(*)::int AS n FROM auth_attempt WHERE locked_until > to_timestamp($1 / 1000.0)",
     [now],
-  );
+  ));
   return Number((rows[0] as { n: number }).n);
 }
 

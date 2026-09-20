@@ -133,14 +133,18 @@ export function CloudSync() {
     }
   };
 
-  const drainNow = async () => {
+  const drainNow = async (): Promise<boolean> => {
     const at = cloudState();
     const out = await drainQueue(latest.current, at.version).catch(() => null);
-    if (!out) return;
+    // Nothing opened: an empty queue, or a browser holding no key yet. Either
+    // way the poll must not treat it as movement, or a locked tab with rows
+    // waiting would reset its own backoff for ever.
+    if (!out) return false;
     // The drain pushed what it merged, so this is the stored document too.
     install(out.db);
     setCloudState({ version: out.version, dirty: false });
     if (out.said) act.current.notify(out.said);
+    return true;
   };
 
   // ── first contact: reconcile this browser against the stored document ──
@@ -194,7 +198,8 @@ export function CloudSync() {
 
       // Whatever the scheduled job pulled overnight is waiting encrypted in
       // the queue; this is the first moment there is a key to open it with.
-      if (!isCancelled()) await drainNow();
+      // The version check already said whether there is anything in it.
+      if (!isCancelled() && meta.queued > 0) await drainNow();
     } catch (err) {
       if (!isCancelled()) {
         act.current.notify(err instanceof CloudError ? `Cloud sync: ${err.message}` : "Cloud sync failed.");
@@ -300,7 +305,10 @@ export function CloudSync() {
           moved = true;
         }
       }
-      await drainNow();
+      // Only when the version check said there is something to drain. It used
+      // to be asked on every round, which doubled the requests a poll makes to
+      // be told there was nothing there.
+      if (meta.queued > 0 && await drainNow()) moved = true;
     } catch { /* offline, most likely; the next round tries again */ } finally {
       busy.current = false;
     }
@@ -327,6 +335,14 @@ export function CloudSync() {
      * it has not learned that nothing changed, it simply has not looked.
      */
     let stopped = false;
+    let nextAt = 0;
+
+    const book = (delay: number) => {
+      if (poll.current) window.clearTimeout(poll.current);
+      nextAt = Date.now() + delay;
+      poll.current = window.setTimeout(() => void run(), delay);
+    };
+
     const run = async () => {
       if (poll.current) window.clearTimeout(poll.current);
       const hidden = typeof document !== "undefined" && document.hidden;
@@ -337,7 +353,25 @@ export function CloudSync() {
       // A round can be in flight when this unmounts, and booking the next one
       // from inside it would outlive the component that owns it.
       if (stopped) return;
-      poll.current = window.setTimeout(() => void run(), pollDelay(quiet.current));
+      book(pollDelay(quiet.current));
+    };
+
+    /**
+     * Somebody is using this tab, so it should not be half an hour behind.
+     *
+     * The backoff is for a tab nobody is at. Being visible is not the same as
+     * being read: a window left in the foreground all afternoon fires no
+     * visibility event, and without this it would sit at the half-hour gap
+     * while its owner looked straight at it.
+     *
+     * Clicks and keys rather than movement. A pointer crossing the window on
+     * its way somewhere else is not a reason to ask the server anything, and
+     * the next poll is still a minute out rather than now, so a burst of
+     * typing costs one request at most.
+     */
+    const stir = () => {
+      quiet.current = 0;
+      if (nextAt - Date.now() > POLL_MIN_MS) book(POLL_MIN_MS);
     };
 
     const onVisible = () => {
@@ -354,12 +388,20 @@ export function CloudSync() {
       void run();
     };
     document.addEventListener("visibilitychange", onVisible);
-    poll.current = window.setTimeout(() => void run(), POLL_MIN_MS);
+    // Captured, so a handler that stops the event getting any further cannot
+    // also stop this from noticing that somebody is here.
+    document.addEventListener("pointerdown", stir, true);
+    document.addEventListener("keydown", stir, true);
+    window.addEventListener("focus", stir);
+    book(POLL_MIN_MS);
 
     return () => {
       stopped = true;
       if (poll.current) window.clearTimeout(poll.current);
       document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("pointerdown", stir, true);
+      document.removeEventListener("keydown", stir, true);
+      window.removeEventListener("focus", stir);
     };
   }, []);
 

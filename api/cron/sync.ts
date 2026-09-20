@@ -13,8 +13,8 @@ import type { PlaidItemRef } from "../../src/types.js";
 import { fetchQuotes } from "../_prices.js";
 import { applyQuotes, pricesDue, tickersOf, toQuoteMap } from "../../src/lib/prices.js";
 import { noteRun } from "../../src/lib/usage.js";
-import { connectionString, queuePull, readDoc, trimQueue, writeDoc } from "../_store.js";
-import { isEnvelope, sealTo } from "../../src/lib/crypto.js";
+import { connectionString, queuePull, readDoc, readSeal, trimQueue, writeDoc } from "../_store.js";
+import { sealTo } from "../../src/lib/crypto.js";
 import { bearer, passphraseOk, secretOk } from "../_auth.js";
 import { callerKey, clearFailures, lockedFor, noteFailure, readAttempt, waitMessage } from "../_ratelimit.js";
 
@@ -88,15 +88,19 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   if (limited && seen) await clearFailures(key).catch(() => {});
 
   try {
-    const stored = await readDoc();
-    if (!stored) return send(200, { ran: false, reason: "Nothing saved yet. Open the app once to seed it." });
+    // Asked whether it is sealed before it is fetched. On an encrypted budget
+    // the job cannot use the document at all, only the public key in its
+    // envelope, so pulling the ciphertext down to look at it once was a
+    // megabyte and a half a night spent on nothing.
+    const seal = await readSeal();
+    if (!seal) return send(200, { ran: false, reason: "Nothing saved yet. Open the app once to seed it." });
 
     // An encrypted document cannot be merged into here, and must not be
     // touched: writing a merge over an envelope would destroy it. Instead the
     // pull is encrypted to the public key the envelope carries and left in the
     // queue for the next browser that opens the app. Nothing this job holds
     // can read it back afterwards.
-    if (isEnvelope(stored.doc)) {
+    if (seal.sealed) {
       const accessUrl = (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim();
       const tokens = plaidTokens();
       if (!accessUrl && !tokens.length) {
@@ -108,7 +112,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         });
       }
 
-      const pub = stored.doc.pub;
+      const pub = seal.pub;
+      if (pub === null) {
+        return send(200, {
+          ran: false,
+          reason: "This document is encrypted but carries no public key for the scheduled job to seal a pull to. "
+            + "Open the app once and re-enter the encryption passphrase in Settings.",
+        });
+      }
       const since = new Date(Date.now() - 45 * 24 * 60 * 60_000).toISOString().slice(0, 10);
       const ids: number[] = [];
       const errors: string[] = [];
@@ -166,6 +177,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       });
     }
 
+    const stored = await readDoc();
+    if (!stored) return send(200, { ran: false, reason: "Nothing saved yet. Open the app once to seed it." });
     const db = stored.doc as DB;
     const accessUrl = db.settings?.simplefinAccessUrl;
 
