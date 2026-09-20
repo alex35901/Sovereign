@@ -617,6 +617,59 @@ try {
     await rest.close();
   }
 
+  if (want("budget-actual")) {
+    // ── a phone can see what a category actually did ──
+    //
+    // The Actual column used to be dropped below 720px for room, which left a
+    // phone showing Planned and Remaining and nothing to reconcile them
+    // against. A category with no activity read as its whole plan still
+    // remaining, and there was no way to tell that apart from a plan nobody
+    // had spent against yet. On income it is the number you came to look at:
+    // a month with no income recorded showed Remaining equal to Planned, which
+    // reads as though the income had been ignored.
+    for (const w of [360, 390, 430]) {
+      const page = await browser.newPage({ viewport: { width: w, height: 900 }, hasTouch: true, isMobile: true });
+      await page.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(400);
+      const seen = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll(".list-row")].filter((r) => r.querySelector(".bcol-plan"));
+        const name = rows[0]?.querySelector(".cat-open");
+        const actual = rows[0]?.querySelector(".bcol-actual");
+        return {
+          rows: rows.length,
+          actualShown: actual ? getComputedStyle(actual).display !== "none" : false,
+          // The name is what the third column is paid for, so it is measured
+          // rather than assumed: two letters and a gap is not a name.
+          clipped: name ? name.scrollWidth - Math.ceil(name.getBoundingClientRect().width) > 1 : true,
+          overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        };
+      });
+      check(`${w}px — a budget row shows what was actually spent or received`,
+        seen.rows > 0 && seen.actualShown, JSON.stringify(seen));
+      check(`${w}px — and the category name is still readable beside it`,
+        !seen.clipped && seen.overflow === 0, JSON.stringify(seen));
+      await page.close();
+    }
+
+    // Narrower than any current phone, where the third column would cost the
+    // name instead. Measured: "Paychecks" fits at 360 and is down to two
+    // letters at 344.
+    const tiny = await browser.newPage({ viewport: { width: 320, height: 800 }, hasTouch: true, isMobile: true });
+    await tiny.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+    await tiny.waitForTimeout(400);
+    const small = await tiny.evaluate(() => {
+      const rows = [...document.querySelectorAll(".list-row")].filter((r) => r.querySelector(".bcol-plan"));
+      const name = rows[0]?.querySelector(".cat-open");
+      return {
+        clipped: name ? name.scrollWidth - Math.ceil(name.getBoundingClientRect().width) > 1 : true,
+        overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    check("320px — the name wins over the third column, rather than both losing",
+      !small.clipped && small.overflow === 0, JSON.stringify(small));
+    await tiny.close();
+  }
+
   if (want("phone-account")) {
     // ── the phone keeps a way to reach the account ──
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 } });

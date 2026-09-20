@@ -1560,9 +1560,14 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
      the category name was squeezed to a single letter and the remaining pill
      pushed off the right edge. Actual gives way: it is the one column you
      never edit here, and it is still on the card behind Remaining. */
-  .bcol-actual { display: none; }
-  .bcol-plan { width: 88px; }
-  .bcol-left { width: 84px; }
+  /* Actual stays. It used to be dropped here for room, which left a phone
+     showing Planned and Remaining and nothing to reconcile them against: a
+     category with no activity read as its whole plan still remaining, and
+     there was no way to tell that from the page. On income that is the number
+     you came to look at. */
+  .bcol-plan { width: 82px; }
+  .bcol-actual { width: 68px; }
+  .bcol-left { width: 78px; }
   .budget-head { gap: 8px; }
   .card-head.bgroup-head { padding-left: 12px; padding-right: 12px; }
   .budget-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); flex-basis: 100%; }
@@ -1597,9 +1602,19 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
 
 @media (max-width: 400px) {
   /* 88 + 84 still left the budget's category name 18px on a 320px screen. */
-  .bcol-plan { width: 76px; }
-  .bcol-left { width: 72px; }
+  .bcol-plan { width: 72px; }
+  .bcol-actual { width: 58px; }
+  .bcol-left { width: 66px; }
   .list-row { gap: 6px; padding: 10px 10px; }
   .budget-head { gap: 6px; }
   .card-head.bgroup-head { padding-left: 10px; padding-right: 10px; }
+}
+
+@media (width <= 359px) {
+  /* Below this the third column is paid for out of the category's name:
+     measured, "Paychecks" fits at 360 and is down to two letters at 344. On a
+     screen this narrow, knowing which row you are looking at wins. */
+  .bcol-actual { display: none; }
+  .bcol-plan { width: 76px; }
+  .bcol-left { width: 72px; }
 }
