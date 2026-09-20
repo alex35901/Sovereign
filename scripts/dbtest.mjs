@@ -751,9 +751,13 @@ await test("whether a document is sealed is answered without fetching it", async
   // question is put to the same predicate the rest of the app uses rather
   // than to a second copy of it written in SQL. This is what pins that.
   await wipe();
-  await M.writeDoc({ accounts: [], pub: "looks like a key, is not an envelope" }, 0, "device");
+  await M.writeDoc({ accounts: [], pub: "looks like a key, is not an envelope", secret: "in the clear" }, 0, "device");
   const plain = await M.readSeal();
   assert.equal(plain.sealed, false, "a plain document is not sealed by carrying a pub field");
+  // The header is built by removing the ciphertext from the document, so on a
+  // document that has no ciphertext that would be the whole thing. This is the
+  // check that it is not handed out.
+  assert.equal(plain.header, null, "a plain document yields no header at all");
 
   await wipe();
   const at = await unlockCheap(null);
@@ -763,9 +767,43 @@ await test("whether a document is sealed is answered without fetching it", async
   assert.equal(sealed.sealed, true);
   assert.equal(sealed.version, 1);
   assert.equal(sealed.pub, env.pub, "and hands back the public key, without the ciphertext");
+  assert.equal(sealed.header.ct, undefined, "the ciphertext is left behind");
+  assert.equal(sealed.header.kdf.salt, env.kdf.salt, "and everything a passphrase needs is not");
+  assert.equal(sealed.header.wrappedPriv.ct, env.wrappedPriv.ct);
 
   await wipe();
   assert.equal(await M.readSeal(), null, "an empty store is not an error");
+});
+
+await test("GET ?peek=1 hands a locked browser the key material and none of the budget", async () => {
+  // What a phone that has never been unlocked asks for. It cannot read the
+  // document, so sending it one was a whole encrypted budget downloaded to
+  // get at the salt.
+  process.env.SYNC_PASSPHRASE = "open sesame";
+  const auth = { authorization: "Bearer open sesame" };
+  await wipe(); await clearAttempts();
+
+  const at = await unlockCheap(null);
+  const env = await C.encryptDocument(M.buildDemoDB(), at);
+  await M.writeDoc(env, 0, "device");
+
+  const fullRes = await invokeWith(M.dbHandler, { method: "GET", headers: auth });
+  const r = await invokeWith(M.dbHandler, { method: "GET", headers: auth, url: "/api/db?peek=1" });
+  assert.equal(r.status, 200);
+  const peeked = JSON.parse(r.text);
+  assert.equal(peeked.found, true);
+  assert.equal(peeked.sealed, true);
+  assert.equal(peeked.version, 1);
+  assert.equal(peeked.header.ct, undefined, "?peek=1 must not carry the ciphertext");
+  assert.ok(!r.text.includes(env.ct), "nor any part of it");
+  assert.equal(peeked.header.kdf.iterations, env.kdf.iterations, "but must carry the kdf");
+  assert.ok(r.text.length * 4 < fullRes.text.length, `${r.text.length}B against ${fullRes.text.length}B`);
+
+  const wrong = await invokeWith(M.dbHandler, {
+    method: "GET", headers: { authorization: "Bearer not-it" }, url: "/api/db?peek=1",
+  });
+  assert.equal(wrong.status, 401, "?peek=1 is behind the same passphrase as everything else");
+  await wipe();
 });
 
 await test("the scheduled job never writes over an encrypted document", async () => {

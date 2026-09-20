@@ -75,14 +75,23 @@ export function CloudSync() {
    * fails leaves the work marked unsent and something has to try it again. The
    * poll used to say in a comment that it did this, and simply return.
    */
-  const pushNow = async (force = false) => {
-    if (busy.current || !cloudEnabled()) return;
+  /**
+   * Answers whether the save actually landed.
+   *
+   * The poll asks, because an attempt is not the same as a result: a browser
+   * whose saves are failing was counting every attempt as movement and so kept
+   * polling at the lively rate for as long as it stayed broken, which is the
+   * one state where asking more often helps nobody.
+   */
+  const pushNow = async (force = false): Promise<boolean> => {
+    if (busy.current || !cloudEnabled()) return false;
     const at = cloudState();
     // A save that has failed is not tried again on the next tick. The whole
     // document goes up each time, and a tab left open on a broken connection
     // used to send half a megabyte every sixty seconds until it was closed.
-    if (!force && !mayPush(at)) return;
+    if (!force && !mayPush(at)) return false;
     busy.current = true;
+    let landed = false;
     try {
       const res = await push(latest.current, at.version);
       // The failure is kept through the success that follows it. An
@@ -92,6 +101,7 @@ export function CloudSync() {
         version: res.version, dirty: false,
         lastError: at.lastError, saidAt: at.saidAt, okAt: Date.now(),
       });
+      landed = true;
     } catch (err) {
       if (err instanceof CloudError && err.status === 409) {
         const remote = await pull().catch(() => null);
@@ -100,7 +110,9 @@ export function CloudSync() {
           install(remote.doc);
           setCloudState({ version: remote.version, dirty: false });
           act.current.notify(`${remote.updatedBy} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
-          return;
+          // The save did not land, but the document moved, which is the
+          // question the poll is asking.
+          return true;
         }
       }
       // Everything else stays unsent and waits, longer each time. Said once
@@ -131,6 +143,7 @@ export function CloudSync() {
     } finally {
       busy.current = false;
     }
+    return landed;
   };
 
   const drainNow = async (): Promise<boolean> => {
@@ -287,7 +300,7 @@ export function CloudSync() {
     // this falls through to the version check below instead: that costs a few
     // hundred bytes, and a browser that cannot save should still be able to
     // notice that another device has.
-    if (at.dirty && mayPush(at)) { await pushNow(); return true; }
+    if (at.dirty && mayPush(at)) return pushNow();
     busy.current = true;
     let moved = false;
     try {

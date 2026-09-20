@@ -7,6 +7,10 @@ import {
 } from "../lib/cloud";
 import type { CloudDiagnosis, Meta, Probe } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/ui";
+import { asMB } from "../lib/transfer";
+
+/** What a free Neon project is allowed to store. */
+const FREE_PLAN_BYTES = 512 * 1024 * 1024;
 
 /**
  * Shown when /api/db could not answer at all. Names which of its dependencies
@@ -109,6 +113,18 @@ function Diagnosis({ check }: { check: CloudDiagnosis }) {
       text: check.table.ok
         ? `Table ready, holding ${check.documents} document${check.documents === 1 ? "" : "s"}`
         : `Table unavailable: ${check.table.error}`,
+    });
+  }
+  const used = check.storage?.bytes ?? null;
+  if (used !== null) {
+    // Said as a share of the free plan's ceiling, because the number on its
+    // own means nothing to anyone. Not marked as a problem until it is one:
+    // this line exists to be glanced at, not to be worried about.
+    const share = used / FREE_PLAN_BYTES;
+    lines.push({
+      ok: share < 0.8,
+      text: `Storage: ${asMB(used)} MB of the 512 MB a free Neon project gets`
+        + ` (the budget itself is ${asMB(check.storage?.documentBytes ?? 0)} MB)`,
     });
   }
 

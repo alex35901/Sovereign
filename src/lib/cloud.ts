@@ -1,5 +1,5 @@
 import type { DB } from "../types";
-import type { Envelope } from "./crypto.js";
+import type { Envelope, EnvelopeHeader } from "./crypto.js";
 import { decryptDocument, encryptDocument, isEnvelope } from "./crypto.js";
 import { canCompress, pack, unpack } from "./compress.js";
 import { restore, vault } from "./vault.js";
@@ -397,7 +397,9 @@ export async function head(): Promise<Meta> {
 export interface Peek {
   found: boolean;
   encrypted: boolean;
-  envelope: Envelope | null;
+  /** The envelope without its ciphertext: enough to unlock with, and nothing
+   *  that unlocking would open. */
+  envelope: EnvelopeHeader | null;
   /** The stored version, so a browser that cannot read the document can still
    *  write over it without racing another device. */
   version: number;
@@ -415,19 +417,23 @@ export interface Peek {
  * everything else asks `head` and never touches the document.
  */
 export async function peek(): Promise<Peek> {
-  const res = await call({ method: "GET" });
+  // `?peek=1`: the version, who wrote it, and the envelope minus the
+  // ciphertext. A browser asking this has not been unlocked and could not read
+  // the document if it had it, and the setup flow on a new phone used to begin
+  // by downloading the whole encrypted budget to get at the salt.
+  const res = await call({ method: "GET" }, undefined, "?peek=1");
   if (!res.ok) throw new CloudError(await messageOf(res, `Load failed (${res.status})`), res.status);
   const body = (await res.json()) as {
-    found: boolean; doc?: unknown; version?: number; updatedAt?: string; updatedBy?: string;
+    found: boolean; sealed?: boolean; header?: unknown;
+    version?: number; updatedAt?: string; updatedBy?: string;
   };
   if (!body.found) {
     return { found: false, encrypted: false, envelope: null, version: 0, updatedAt: null, updatedBy: null };
   }
-  const env = isEnvelope(body.doc) ? body.doc : null;
   return {
     found: true,
-    encrypted: env !== null,
-    envelope: env,
+    encrypted: !!body.sealed,
+    envelope: body.sealed ? (body.header as EnvelopeHeader) : null,
     version: Number(body.version ?? 0),
     updatedAt: body.updatedAt ?? null,
     updatedBy: body.updatedBy ?? null,
@@ -486,6 +492,9 @@ export interface CloudDiagnosis {
   connect: { ok: boolean; error: string | null; code: string | null };
   table: { ok: boolean; error: string | null };
   documents: number | null;
+  /** What the stored copy is taking up, so the free plan's half a gigabyte
+   *  is visible somewhere other than Neon's own console. */
+  storage?: { bytes: number | null; documentBytes: number | null };
 }
 
 /**

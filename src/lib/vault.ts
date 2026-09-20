@@ -1,4 +1,4 @@
-import type { Envelope, Unlocked } from "./crypto.js";
+import type { EnvelopeHeader, Unlocked } from "./crypto.js";
 import { unlockExisting, unlockNew } from "./crypto.js";
 import { resumeSync } from "./sync-halt.js";
 
@@ -83,7 +83,7 @@ export async function restore(): Promise<Unlocked | null> {
  * passphrase throws here rather than producing a key that silently decrypts
  * to nothing.
  */
-export async function unlock(env: Envelope | null, passphrase: string): Promise<Unlocked> {
+export async function unlock(env: EnvelopeHeader | null, passphrase: string): Promise<Unlocked> {
   const at = env ? await unlockExisting(env, passphrase) : await unlockNew(passphrase);
   current = at;
   await put(at);

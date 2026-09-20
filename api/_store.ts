@@ -74,6 +74,17 @@ export interface StoreDiagnosis {
   connect: { ok: boolean; error: string | null; code: string | null };
   table: { ok: boolean; error: string | null };
   documents: number | null;
+  /**
+   * How much room the stored copy is taking.
+   *
+   * A free Neon project gets half a gigabyte, and the only place that number
+   * was visible was Neon's own console. `bytes` is the whole database as
+   * Postgres measures it and `documentBytes` is the document table alone,
+   * including the out-of-line storage the document itself lives in. Neon also
+   * counts a window of recent history towards the limit, which Postgres cannot
+   * see from in here, so this is the floor rather than the bill.
+   */
+  storage: { bytes: number | null; documentBytes: number | null };
 }
 
 const describeError = (err: unknown): { error: string; code: string | null } => {
@@ -111,6 +122,7 @@ export async function diagnose(): Promise<StoreDiagnosis> {
     },
     table: { ok: false, error: null },
     documents: null,
+    storage: { bytes: null, documentBytes: null },
   };
   // Checked first and on its own: a driver that will not load is a different
   // problem from a database that will not answer, and looks identical from
@@ -152,6 +164,18 @@ export async function diagnose(): Promise<StoreDiagnosis> {
   } catch (err) {
     out.table.error = describeError(err).error;
   }
+
+  // Its own try, and after the table check rather than inside it: a role
+  // without permission to measure the database is not a broken installation,
+  // and a number nobody can read is not worth failing a diagnosis over.
+  try {
+    const { rows } = await (await db()).query(
+      `SELECT pg_database_size(current_database())::bigint AS total,
+              pg_total_relation_size('budget_document')::bigint AS doc`,
+    );
+    const row = rows[0] as { total: string; doc: string };
+    out.storage = { bytes: Number(row.total), documentBytes: Number(row.doc) };
+  } catch { /* the size is a nicety; the rest of the diagnosis is not */ }
   return out;
 }
 
@@ -397,10 +421,21 @@ export async function readMeta(): Promise<DocMeta | null> {
 
 export interface DocSeal {
   version: number;
+  updatedAt: string;
+  updatedBy: string;
   /** Whether the stored document is an envelope, answered without opening it. */
   sealed: boolean;
   /** The public key it carries, for sealing a pull nobody here can read. */
   pub: string | null;
+  /**
+   * The envelope with its ciphertext left behind.
+   *
+   * Everything a passphrase needs to derive the key and unwrap the private
+   * one, and nothing that key would open. Null for a document that is not
+   * sealed, which matters: `doc - 'ct'` on a plain document is the whole
+   * document, which is the opposite of the point.
+   */
+  header: Record<string, unknown> | null;
 }
 
 /**
@@ -414,27 +449,29 @@ export interface DocSeal {
  */
 export async function readSeal(): Promise<DocSeal | null> {
   const { rows } = await documentTable.guard(async () => (await db()).query(
-    `SELECT version, doc->'v' AS v, doc->'iv' AS iv, doc->'kdf' AS kdf, doc->>'pub' AS pub,
+    `SELECT version, updated_at, updated_by,
+            CASE WHEN jsonb_typeof(doc->'ct') = 'string' THEN doc - 'ct' END AS header,
             jsonb_typeof(doc->'ct') = 'string' AS ct_is_string
        FROM budget_document WHERE id = $1`,
     [ROW_ID],
   ));
   const row = rows[0] as Record<string, unknown> | undefined;
   if (!row) return null;
+  const header = (row.header ?? null) as Record<string, unknown> | null;
   // Answered by the same predicate the rest of the app uses, rather than by a
   // second copy of it written in SQL. The ciphertext is the one field
   // deliberately left behind, so it is stood in for by what was asked of it:
   // whether it is a string. Two predicates that have to agree about what an
   // envelope is would eventually stop agreeing, and the cost of being wrong
   // here is a merge written over an encrypted document.
-  const header = {
-    v: row.v, iv: row.iv, kdf: row.kdf,
-    ct: row.ct_is_string === true ? "" : undefined,
-  };
+  const sealed = isEnvelope({ ...header, ct: row.ct_is_string === true ? "" : undefined });
   return {
     version: Number(row.version),
-    sealed: isEnvelope(header),
-    pub: typeof row.pub === "string" ? row.pub : null,
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    updatedBy: String(row.updated_by),
+    sealed,
+    pub: sealed && typeof header?.pub === "string" ? header.pub : null,
+    header: sealed ? header : null,
   };
 }
 
@@ -609,6 +646,25 @@ export async function readQueue(limit = 50): Promise<QueuedPull[]> {
     iv: String(r.iv),
     ct: String(r.ct),
   }));
+}
+
+/**
+ * How much is waiting, and since when.
+ *
+ * The diagnosis used to answer this by fetching up to two hundred queued
+ * pulls and calling `.length` on them, which on an installation nobody has
+ * opened for a month is megabytes of ciphertext dragged out of the database
+ * to count rows. Postgres counts rows.
+ */
+export async function queueStats(): Promise<{ count: number; oldest: string | null }> {
+  const { rows } = await queueTable.guard(async () => (await db()).query(
+    "SELECT count(*)::int AS n, min(created_at) AS oldest FROM sync_queue",
+  ));
+  const row = rows[0] as { n: number; oldest: string | null };
+  return {
+    count: Number(row.n),
+    oldest: row.oldest ? new Date(row.oldest).toISOString() : null,
+  };
 }
 
 /** Dropped only once a browser has merged them in and saved the result. */

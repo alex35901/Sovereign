@@ -5,7 +5,7 @@ import {
   cloudState, diagnose, head, passphrase, peek, pull, push, setCloudState, subscribeSync, syncEpoch,
 } from "../lib/cloud";
 import type { CloudDiagnosis } from "../lib/cloud";
-import type { Envelope } from "../lib/crypto";
+import type { EnvelopeHeader } from "../lib/crypto";
 import { WrongPassphrase } from "../lib/crypto";
 import { isUnlocked, lock, restore, unlock } from "../lib/vault";
 import { drainQueue } from "../lib/sync/drain";
@@ -227,7 +227,7 @@ export function EncryptionCard(){
 
   const [ready, setReady] = useState(false);
   const [encrypted, setEncrypted] = useState(false);
-  const [envelope, setEnvelope] = useState<Envelope | null>(null);
+  const [envelope, setEnvelope] = useState<EnvelopeHeader | null>(null);
   const [sealed, setSealed] = useState<{ at: string | null; by: string | null }>({ at: null, by: null });
   const [unlocked, setUnlocked] = useState(isUnlocked());
   const [entry, setEntry] = useState("");

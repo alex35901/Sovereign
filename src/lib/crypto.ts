@@ -261,7 +261,17 @@ export class WrongPassphrase extends Error {
  * distinction would mean storing something that confirms a correct guess.
  * Anything after that check is a different kind of problem and says so.
  */
-export async function unlockExisting(env: Envelope, passphrase: string): Promise<Unlocked> {
+/**
+ * Everything about a sealed document except what the key would open.
+ *
+ * Unlocking derives a key from the passphrase and the envelope's kdf, then
+ * unwraps the private key with it. The ciphertext plays no part, so a browser
+ * that only wants to unlock has no business fetching it - and the type says so
+ * rather than leaving it to a comment.
+ */
+export type EnvelopeHeader = Omit<Envelope, "ct">;
+
+export async function unlockExisting(env: EnvelopeHeader, passphrase: string): Promise<Unlocked> {
   const key = await deriveKey(passphrase, fromB64(env.kdf.salt), env.kdf.iterations);
   let privJwk: string;
   try {

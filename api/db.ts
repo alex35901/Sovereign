@@ -4,7 +4,7 @@ import { Buffer } from "node:buffer";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
 import {
-  clearQueue, diagnose, findConnection, readDoc, readMeta, readQueue, writeDoc,
+  clearQueue, diagnose, findConnection, queueStats, readDoc, readMeta, readQueue, readSeal, writeDoc,
 } from "./_store.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
@@ -75,7 +75,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     if (req.method === "POST" && body0?.action === "diagnose") {
       const lockedOut = await lockedOutNow().catch(() => null);
       const meta = await readMeta().catch(() => null);
-      const waiting = await readQueue(200).catch(() => []);
+      const waiting = await queueStats().catch(() => ({ count: 0, oldest: null }));
       return send(200, {
         ...(await diagnose()),
         passphraseSet: true,
@@ -89,8 +89,8 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
           simplefinUrlSet: (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim().length > 0,
           plaidTokensSet: (process.env.PLAID_ACCESS_TOKENS ?? "").trim().length > 0,
           cronSecretSet: (process.env.CRON_SECRET ?? "").trim().length > 0,
-          queued: waiting.length,
-          queuedOldest: waiting[0]?.createdAt ?? null,
+          queued: waiting.count,
+          queuedOldest: waiting.oldest,
         },
       });
     }
@@ -127,6 +127,15 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
       if (/[?&]meta=1(&|$)/.test(req.url ?? "")) {
         const meta = await readMeta();
         return send(200, meta ? { found: true, ...meta } : { found: false });
+      }
+      // ?peek=1 is what a browser that has not been unlocked asks. It needs
+      // the envelope's key material to turn a passphrase into a key, and it
+      // needs none of the ciphertext to do it, so it is not sent any. This
+      // used to be a plain GET, which is to say the whole encrypted budget
+      // fetched to read a hundred bytes of it.
+      if (/[?&]peek=1(&|$)/.test(req.url ?? "")) {
+        const seal = await readSeal();
+        return send(200, seal ? { found: true, ...seal } : { found: false });
       }
       const stored = await readDoc();
       if (!stored) return send(200, { found: false });
