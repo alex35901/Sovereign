@@ -4632,6 +4632,47 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.timedOut, false);
 });
 
+await test("a tombstone does not outlive the account it was for", () => {
+  // Connecting a bank to see what it offers, deleting what it made and then
+  // moving the real accounts onto that same connection is an ordinary
+  // afternoon. The delete is remembered, or the next pull hands the account
+  // straight back and the delete looks as though it failed. But the memory was
+  // outliving the account: every later pull was turned away at the door, with
+  // nineteen transactions going with it and nothing said about any of it.
+  const base = M.emptyDB();
+  const remote = { syncId: "p1", name: "Everyday", institution: "Elements", balance: 500, currency: "USD", type: "checking", balanceDate: "2026-09-21" };
+  const pull = {
+    fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts: [remote],
+    transactions: [{ syncId: "t1", accountSyncId: "p1", date: "2026-09-15", amount: 140000, description: "PAYROLL", pending: false }],
+  };
+  const buried = { ...base, settings: { ...base.settings, deletedAccountKeys: M.accountKeys(remote) } };
+
+  // Still gone, because nothing here is pointed at it. That is the whole
+  // reason the memory exists.
+  const gone = M.mergeSync(buried, pull, "plaid");
+  assert.equal(gone.accountsAdded, 0);
+  assert.equal(gone.transactionsAdded, 0);
+  assert.deepEqual(gone.suppressed, ["Everyday"]);
+  const said = M.skipNotes(gone);
+  assert.match(said[0], /Everyday came back from the provider and was turned away/);
+  assert.match(said[0], /deleted here on purpose/);
+  assert.match(said[0], /Forget the deleted accounts in Settings/);
+
+  // But an account since moved onto that very thing at the bank is not gone:
+  // it is the account the household is looking at.
+  const adopted = {
+    ...buried,
+    accounts: [{ ...base.accounts[0], id: "a1", name: "Everyday", institution: "Elements", syncSource: "plaid", syncId: "p1", history: [] }],
+    transactions: [],
+  };
+  const back = M.mergeSync(adopted, pull, "plaid");
+  assert.equal(back.transactionsAdded, 1, "the paycheck lands");
+  assert.deepEqual(back.suppressed, []);
+  assert.equal(back.accountsUpdated, 1);
+  assert.equal(back.db.accounts.length, 1, "and no second copy of the account");
+  assert.deepEqual(M.skipNotes(back), []);
+});
+
 await test("a pull says what it left out rather than reporting nothing new", () => {
   // "0 new transactions" is the same sentence whether the bank sent nothing or
   // whether it sent a fortnight that every rule in the merge threw away. The

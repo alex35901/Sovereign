@@ -42,6 +42,16 @@ export interface MergeResult {
    * onto a connection that had already made its own copy of it.
    */
   sharedIds: string[];
+  /**
+   * Accounts the provider sent that a tombstone is still turning away.
+   *
+   * Deleting an account is remembered, or the next pull hands it straight back
+   * and the delete looks as though it silently failed. But the memory outlives
+   * the account, and a household that deleted one and later pointed a real
+   * account at that same thing at the bank got nothing, with no explanation
+   * beyond a sync reporting nothing new.
+   */
+  suppressed: string[];
 }
 
 /**
@@ -61,13 +71,26 @@ export function mergeSync(
 
   const tombstones = new Set(db.settings.deletedAccountKeys ?? []);
 
-  for (const r of payload.accounts) {
-    // Deleted on purpose: skip it entirely, so it neither returns as a new
-    // account nor brings its transactions with it.
-    if (accountKeys({ syncId: r.syncId, name: r.name, institution: r.institution }).some((k) => tombstones.has(k))) continue;
+  const suppressed: string[] = [];
 
+  for (const r of payload.accounts) {
     const existing = accounts.find((a) => a.syncId === r.syncId)
       ?? accounts.find((a) => a.syncSource === source && a.name === r.name && a.institution === r.institution);
+
+    // Deleted on purpose: skip it entirely, so it neither returns as a new
+    // account nor brings its transactions with it.
+    //
+    // Unless something here is already pointed at it. A tombstone is a memory
+    // of an account that is gone, and one the household has since moved onto
+    // this very thing at the bank is not gone: it is the account they are
+    // looking at. Testing a connection, deleting what it made and then moving
+    // the real accounts onto it is an ordinary afternoon, and it used to leave
+    // every pull silently turned away at the door.
+    if (!existing
+      && accountKeys({ syncId: r.syncId, name: r.name, institution: r.institution }).some((k) => tombstones.has(k))) {
+      suppressed.push(r.name);
+      continue;
+    }
 
     // A closed account has been settled deliberately. Leave its balance and
     // history alone, and take no further transactions for it.
@@ -372,6 +395,7 @@ export function mergeSync(
     },
     rekeyed,
     sharedIds,
+    suppressed,
   };
 }
 
@@ -474,7 +498,13 @@ export function skipNotes(res: MergeResult): string[] {
       + "is already here under the old connection.",
     );
   }
-  if (res.skipped.noAccount) {
+  if (res.suppressed.length) {
+    out.push(
+      `${res.suppressed.join(" and ")} came back from the provider and ${res.suppressed.length === 1 ? "was" : "were"} `
+      + "turned away, because an account of that name was deleted here on purpose. Its transactions came with it and "
+      + "were left out too. Forget the deleted accounts in Settings to let it return.",
+    );
+  } else if (res.skipped.noAccount) {
     out.push(
       `${rows(res.skipped.noAccount)} arrived for an account this document does not track. `
       + "That is an account deleted on purpose, or one not yet pointed at this connection.",

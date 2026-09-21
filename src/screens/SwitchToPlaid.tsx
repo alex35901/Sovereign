@@ -8,6 +8,7 @@ import { createLinkToken, exchangePublicToken, fetchItem } from "../lib/sync/pla
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { syncPlaidItem } from "../lib/sync";
 import { adopt, floorFor, itemFor } from "../lib/sync/adopt";
+import { accountKeys } from "../lib/sync/merge";
 import { Btn, Modal } from "../components/ui";
 
 /**
@@ -95,9 +96,17 @@ export function SwitchToPlaid({ account }: { account: Account }) {
       // Appended only when it is new. Moving a second account onto a
       // connection already held must not file that connection twice.
       const kept = db.settings.plaidItems ?? [];
-      if (!kept.some((i) => i.itemId === item.itemId)) {
-        actions.patchSettings({ plaidItems: [...kept, item] });
-      }
+      // Whatever this account was called when it was deleted here before, it
+      // is being adopted on purpose now. Leaving the tombstone would have
+      // every later pull turn it away at the door and say nothing.
+      const buried = accountKeys({ syncId: pick.syncId, name: pick.name, institution: pick.institution });
+      const held = db.settings.deletedAccountKeys ?? [];
+      const tombstones = held.filter((k) => !buried.includes(k));
+      const patch = {
+        ...(kept.some((i) => i.itemId === item.itemId) ? {} : { plaidItems: [...kept, item] }),
+        ...(tombstones.length !== held.length ? { deletedAccountKeys: tombstones } : {}),
+      };
+      if (Object.keys(patch).length) actions.patchSettings(patch);
       apply((cur) => ({
         ...cur,
         accounts: cur.accounts.map((a) => (a.id === account.id ? adopt(a, pick, from) : a)),
