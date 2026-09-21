@@ -131,6 +131,45 @@ export function mergeSync(
    * looked at, the hold it names is either something stored or nothing at all.
    */
   const byKey = new Map<string, Transaction>(heldByKey);
+
+  /**
+   * The same transaction, arriving under an id it did not have before.
+   *
+   * A connection remade at the bank is a new Plaid item, and a new item mints
+   * a new id for every transaction in it. Nothing recognised them, so a
+   * remake filed a second copy of everything already held, with the
+   * categories and notes on the first copy and the provider's attention on
+   * the second. That is the cost that stopped a connection being remade, and
+   * remaking it is the only way to widen the history of some banks.
+   *
+   * Matched on the account, the day and the amount, and claimed rather than
+   * merely found: two five dollar coffees on one Tuesday are two rows, and
+   * each incoming one takes a different stored one.
+   *
+   * Only rows this payload has not already named by id are eligible, which is
+   * what keeps an ordinary sync out of this entirely. A provider sends its
+   * whole window every time, so everything inside it is spoken for and the
+   * only rows left here are older than anything arriving. A genuinely new
+   * transaction cannot match one of those, because it is not old enough.
+   */
+  const restated = new Set<string>();
+  for (const r of payload.transactions) {
+    restated.add(keyFor(r.syncId));
+    if (r.replacesSyncId) restated.add(keyFor(r.replacesSyncId));
+  }
+  const twinKey = (accountId: string, date: string, amount: number) => `${accountId}|${date}|${amount}`;
+  const twins = new Map<string, Transaction[]>();
+  for (const t of db.transactions) {
+    if (!t.importKey || restated.has(t.importKey)) continue;
+    const k = twinKey(t.accountId, t.date, t.amount);
+    const held = twins.get(k);
+    if (held) held.push(t);
+    else twins.set(k, [t]);
+  }
+  /** The oldest unclaimed stored row for this day and figure, if there is one. */
+  const claimTwin = (accountId: string, date: string, amount: number): Transaction | undefined =>
+    twins.get(twinKey(accountId, date, amount))?.shift();
+
   const fresh: Transaction[] = [];
   for (const r of payload.transactions) {
     const key = keyFor(r.syncId);
@@ -186,6 +225,21 @@ export function mergeSync(
     if (known.has(key)) continue;
     const accountId = idBySyncId.get(r.accountSyncId);
     if (!accountId) continue;
+
+    // Held already, under the id it had before the connection was remade.
+    // Re-keyed rather than added, so the household keeps the category, the
+    // notes and the tags it put on it, and the provider keeps track of it.
+    const twin = claimTwin(accountId, r.date, r.amount);
+    if (twin) {
+      revised.set(twin.id, {
+        importKey: key,
+        // A hold that settled while the connection was being remade.
+        ...(twin.pending && !r.pending ? { pending: false, statement: r.description } : {}),
+      });
+      known.add(key);
+      continue;
+    }
+
     // An account moved from one provider to another already holds its older
     // history, under the other provider's ids. Taking the backfill as well
     // would file a second copy of all of it.

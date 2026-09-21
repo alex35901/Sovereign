@@ -1,11 +1,11 @@
 import { useRef, useState } from "react";
-import { Building2, History, KeyRound, LineChart, RefreshCw, Stethoscope } from "lucide-react";
+import { Building2, History, KeyRound, LineChart, RefreshCw, RotateCcw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { syncPlaid, syncPlaidItem } from "../lib/sync";
 import { recordRun } from "../lib/usage";
-import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, reportHistory } from "../lib/sync/plaid";
+import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, releaseItem, reportHistory } from "../lib/sync/plaid";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
 import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
@@ -84,7 +84,7 @@ export function PlaidCard() {
   /** What the Full history wait is doing, while it is doing it. */
   const [note, setNote] = useState<string | null>(null);
   /** What Plaid said it holds, once a press of Full history has finished. */
-  const [reach, setReach] = useState<{ line: string; detail: string } | null>(null);
+  const [reach, setReach] = useState<{ itemId: string; line: string; detail: string; short: boolean } | null>(null);
   /**
    * Items whose backfill was still running when the last wait gave up.
    *
@@ -286,7 +286,7 @@ export function PlaidCard() {
         const said = await reportHistory(item, since).catch(() => null);
         if (said) {
           const told = describeReach(said, item.institution);
-          setReach({ line: told.line, detail: told.detail });
+          setReach({ itemId: item.itemId, line: told.line, detail: told.detail, short: told.short });
           if (told.short) stillFetching.current.delete(item.itemId);
         }
       }
@@ -298,8 +298,64 @@ export function PlaidCard() {
     }
   };
 
+  /**
+   * The same bank, connected again from scratch.
+   *
+   * How far back Plaid reaches is settled when an item is created. Update mode
+   * can ask for more and some banks will not give it: the connection sits at
+   * ninety days whatever is requested, which is what the report under the
+   * button says when it happens. A new item created asking for two years is
+   * the way past that, and this is it without losing anything.
+   *
+   * What used to make this unthinkable was the cost. A new item mints a new id
+   * for every transaction in it, so remaking a connection filed a second copy
+   * of everything already held. The merge recognises them now, by account, day
+   * and figure, and re-keys what it already has instead of adding to it, so
+   * the categories, notes and tags put on those rows survive.
+   *
+   * The old token is handed back to Plaid afterwards, or the bank being
+   * replaced would go on occupying one of the plan's ten connections for ever.
+   */
+  const remake = async (item: PlaidItemRef) => {
+    setBusy(item.itemId);
+    setError(null);
+    setNote(null);
+    setReach(null);
+    try {
+      const token = await createLinkToken(item.kind);
+      const publicToken = await openPlaidLink(token);
+      if (!publicToken) return; // closed the dialog, and nothing has changed
+      const fresh = await exchangePublicToken(publicToken, item.kind);
+
+      // Swapped in place, so the bank keeps its position in the list, and the
+      // reach is recorded because a new item was created asking for it.
+      actions.patchSettings({
+        plaidItems: items.map((i) =>
+          (i.itemId === item.itemId ? { ...fresh, historyDays: FIRST_PULL_DAYS } : i)),
+      });
+      notify(`Reconnected ${fresh.institution} from scratch. Fetching its history…`);
+
+      // A brand new item does fetch its history by itself, so this waits on
+      // that rather than on a backfill that has to be nudged.
+      stillFetching.current.add(fresh.itemId);
+      await fullHistory({ ...fresh, historyDays: FIRST_PULL_DAYS });
+
+      // Only once the replacement is in place and has been pulled. A token
+      // handed back before that is a bank with no way in at all.
+      await releaseItem(item);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remake the connection.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const disconnect = (item: PlaidItemRef) => {
     actions.patchSettings({ plaidItems: items.filter((i) => i.itemId !== item.itemId) });
+    // Handed back, or the bank goes on occupying one of the plan's ten
+    // connections with nothing in the app ever mentioning it again. Nothing
+    // waits on it and nothing fails if Plaid refuses.
+    void releaseItem(item);
     notify(`Disconnected ${item.institution}. Its accounts and history stay put.`);
   };
 
@@ -379,6 +435,29 @@ export function PlaidCard() {
               <div className="small muted">
                 {reach.line}
                 {reach.detail ? <div className="tiny faint" style={{ marginTop: 2 }}>{reach.detail}</div> : null}
+                {/* Offered where it is relevant rather than on every row: a
+                    fourth button beside the others does not fit a phone, and
+                    remaking a connection that reaches back fine is work for
+                    nothing. */}
+                {reach.short && items.some((i) => i.itemId === reach.itemId && i.kind === "bank") ? (
+                  <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
+                    <Btn
+                      size="sm"
+                      onClick={() => {
+                        const found = items.find((i) => i.itemId === reach.itemId);
+                        if (found) void remake(found);
+                      }}
+                      disabled={busy !== null}
+                      title="Connect this bank again from scratch, which is the only way to widen a reach a reconnect cannot"
+                    >
+                      <RotateCcw size={12} /> Remake this connection
+                    </Btn>
+                    <span className="tiny faint">
+                      Your categories, notes and tags are kept: rows already held are recognised by their day and
+                      figure rather than by an id the bank is about to change.
+                    </span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {items.some((i) => i.lastError) ? (

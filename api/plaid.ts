@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PlaidEnv } from "./_plaid.js";
-import { HISTORY_DAYS, PlaidError, countTransactions, fetchItemRaw, refreshTransactions, reportItem, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
+import { HISTORY_DAYS, PlaidError, countTransactions, fetchItemRaw, refreshTransactions, removeItem, reportItem, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
 
 /**
  * Server-side proxy for Plaid.
@@ -30,11 +30,12 @@ interface InstitutionBody { action: "institution"; accessToken: string }
 interface CountBody { action: "count"; accessToken: string; startDate: string; endDate: string }
 interface ReportBody { action: "report"; accessToken: string; startDate: string; endDate: string }
 interface RefreshBody { action: "refresh"; accessToken: string }
+interface RemoveBody { action: "remove"; accessToken: string }
 interface SyncBody {
   action: "sync"; accessToken: string; startDate: string; endDate: string;
   withHoldings?: boolean; withTransactions?: boolean;
 }
-type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | CountBody | ReportBody | RefreshBody | SyncBody;
+type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | CountBody | ReportBody | RefreshBody | RemoveBody | SyncBody;
 
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
@@ -173,6 +174,13 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       return send(200, await countTransactions(creds, {
         accessToken: body.accessToken, startDate: body.startDate, endDate: body.endDate,
       }));
+    }
+
+    if (body.action === "remove") {
+      if (!body.accessToken) return send(400, { error: "No access token supplied." });
+      // Handed back so it stops counting against the plan's ceiling. Never
+      // fatal: see removeItem.
+      return send(200, { removed: await removeItem(creds, body.accessToken) });
     }
 
     if (body.action === "refresh") {

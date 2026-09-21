@@ -217,6 +217,16 @@ export async function countHistory(item: { accessToken: string }, since: string)
 }
 
 /**
+ * Hands an access token back to Plaid, so a connection no longer used stops
+ * counting against the plan's ceiling of ten. False when Plaid would not,
+ * which is never worth blocking anything over.
+ */
+export const releaseItem = (item: { accessToken: string }): Promise<boolean> =>
+  postJSON<{ removed: boolean }>(PROXY, { action: "remove", accessToken: item.accessToken })
+    .then((r) => r.removed)
+    .catch(() => false);
+
+/**
  * Asks Plaid to go and fetch this item's transactions now, rather than on its
  * own schedule. False when Plaid would not, which costs nothing but time.
  */

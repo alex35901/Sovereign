@@ -259,6 +259,26 @@ export async function refreshTransactions(creds: PlaidCreds, accessToken: string
   }
 }
 
+/**
+ * Hands an access token back to Plaid.
+ *
+ * Worth doing whenever an item stops being used, because the free plan counts
+ * connected items rather than banks: an item left behind by a remade
+ * connection occupies one of ten for ever, and nothing in the app would ever
+ * mention it again.
+ *
+ * Never fatal. A token Plaid has already forgotten, or will not let go of,
+ * must not be what stops a connection being replaced.
+ */
+export async function removeItem(creds: PlaidCreds, accessToken: string): Promise<boolean> {
+  try {
+    await plaidCall(creds, "/item/remove", { access_token: accessToken });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** What Plaid actually holds for an item, in its own words. */
 export interface ItemReport {
   /** How many transactions Plaid has in the window asked about. */

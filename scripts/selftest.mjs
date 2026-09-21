@@ -81,7 +81,7 @@ await build({
       export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
-      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, releaseItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor } from "./src/lib/sync/adopt.ts";
@@ -4194,6 +4194,7 @@ function plaidServer({ accounts = [plaidAccount()], transactions = [], holdings 
     }
     if (path === "/accounts/get") return new Response(JSON.stringify({ accounts }));
     if (path === "/transactions/refresh") return new Response(JSON.stringify({ request_id: "r1" }));
+    if (path === "/item/remove") return new Response(JSON.stringify({ request_id: "r2" }));
     if (path === "/transactions/get") {
       const offset = body.options.offset;
       return new Response(JSON.stringify({
@@ -4674,6 +4675,183 @@ await test("a window that came back short is told from a backfill still running"
   assert.match(detailed.detail, /Last transactions update 2026-09-21 06:14/);
 });
 
+await test("a connection remade does not file a second copy of everything", async () => {
+  // A new Plaid item mints a new id for every transaction in it, so remaking a
+  // connection used to double the ledger: the categories and notes on one
+  // copy, the provider's attention on the other. That cost is what made a
+  // remake unthinkable, and a remake is the only way to widen the history of a
+  // bank that will not take a longer window on the item it already has.
+  const account = { syncId: "old-a", name: "Everyday", institution: "Elements", balance: 1000, currency: "USD", type: "checking", balanceDate: "2026-09-20" };
+  const txn = (over) => ({ syncId: "old-1", accountSyncId: "old-a", date: "2026-08-01", amount: -1234, description: "TARGET 3026", pending: false, ...over });
+  const pull = (accounts, transactions) => ({ fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts, transactions });
+
+  const first = M.mergeSync(M.emptyDB(), pull([account], [txn(), txn({ syncId: "old-2", date: "2026-08-02", amount: -500 })]), "plaid");
+  assert.equal(first.transactionsAdded, 2);
+  console.log("DBG txns", JSON.stringify(first.db.transactions.map((t) => [t.accountId, t.date, t.amount, t.importKey])));
+
+  // The household files it away: a category, a note, a tag. None of that comes
+  // from the bank and none of it may be lost to a reconnection.
+  const filed = {
+    ...first.db,
+    transactions: first.db.transactions.map((t) => ({ ...t, categoryId: "c-groceries", notes: "school shoes", tags: ["t1"] })),
+  };
+
+  // Same bank, new item: every id different, and the older months that were
+  // the point of remaking it arriving alongside.
+  const again = M.mergeSync(filed, pull(
+    [{ ...account, syncId: "new-a" }],
+    [
+      txn({ syncId: "new-1", accountSyncId: "new-a" }),
+      txn({ syncId: "new-2", accountSyncId: "new-a", date: "2026-08-02", amount: -500 }),
+      txn({ syncId: "new-3", accountSyncId: "new-a", date: "2025-03-11", amount: -9900 }),
+    ],
+  ), "plaid");
+
+  console.log("DBG2 txns", JSON.stringify(again.db.transactions.map((t) => [t.accountId, t.date, t.amount, t.importKey])));
+  assert.equal(again.transactionsAdded, 1, "only the month that was actually new");
+  assert.equal(again.db.transactions.length, 3);
+  assert.equal(again.db.accounts.length, 1, "and one account, not two");
+  assert.equal(again.db.accounts[0].syncId, "new-a", "re-pointed at the new item");
+
+  const held = again.db.transactions.find((t) => t.date === "2026-08-01");
+  assert.equal(held.importKey, "pl:new-1", "re-keyed, so the new item keeps track of it");
+  assert.equal(held.categoryId, "c-groceries", "and everything the household put on it survives");
+  assert.equal(held.notes, "school shoes");
+  assert.deepEqual(held.tags, ["t1"]);
+
+  // Pressing it twice is not a second remake's worth of duplicates either.
+  const third = M.mergeSync(again.db, pull([{ ...account, syncId: "new-a" }], [txn({ syncId: "new-1", accountSyncId: "new-a" })]), "plaid");
+  assert.equal(third.transactionsAdded, 0);
+  assert.equal(third.db.transactions.length, 3);
+});
+
+await test("two identical charges on one day stay two charges", () => {
+  // Matching on the day and the figure is only safe if a match is claimed
+  // rather than merely found: two five dollar coffees on one Tuesday are two
+  // rows, and folding them into one loses money that was really spent.
+  const account = { syncId: "old-a", name: "A", institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-09-20" };
+  const coffee = (id, on = "old-a") => ({ syncId: id, accountSyncId: on, date: "2026-08-04", amount: -500, description: "COFFEE", pending: false });
+  const pull = (accounts, transactions) => ({ fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts, transactions });
+
+  const first = M.mergeSync(M.emptyDB(), pull([account], [coffee("a"), coffee("b")]), "plaid");
+  assert.equal(first.db.transactions.length, 2);
+
+  const again = M.mergeSync(first.db, pull([{ ...account, syncId: "new-a" }], [coffee("x", "new-a"), coffee("y", "new-a")]), "plaid");
+  assert.equal(again.transactionsAdded, 0, "both recognised, each taking a different stored row");
+  assert.equal(again.db.transactions.length, 2);
+  assert.deepEqual(again.db.transactions.map((t) => t.importKey).sort(), ["pl:x", "pl:y"]);
+
+  // Three arriving against two held is one genuinely new coffee.
+  const third = M.mergeSync(first.db, pull([{ ...account, syncId: "new-a" }], [coffee("p", "new-a"), coffee("q", "new-a"), coffee("r", "new-a")]), "plaid");
+  assert.equal(third.transactionsAdded, 1);
+  assert.equal(third.db.transactions.length, 3);
+});
+
+await test("an ordinary sync never reaches for a row by day and figure", () => {
+  // The guard that keeps this out of everyday syncing: a provider sends its
+  // whole window every time, so everything inside it is already spoken for by
+  // id, and the only rows left to match are older than anything arriving. A
+  // genuinely new transaction that happens to look like an old one is still a
+  // new transaction.
+  const account = { syncId: "a1", name: "A", institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-09-20" };
+  const row = (id, date) => ({ syncId: id, accountSyncId: "a1", date, amount: -2500, description: "GYM", pending: false });
+  const pull = (transactions) => ({ fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts: [account], transactions });
+
+  const first = M.mergeSync(M.emptyDB(), pull([row("t1", "2026-09-01")]), "plaid");
+  // Next month's window carries last month's row again, by id, plus this
+  // month's charge for the same gym at the same price.
+  const next = M.mergeSync(first.db, pull([row("t1", "2026-09-01"), row("t2", "2026-10-01")]), "plaid");
+  assert.equal(next.transactionsAdded, 1, "the new month is a new charge, not the old one wearing a new id");
+  assert.equal(next.db.transactions.length, 2);
+
+  // And a row the window no longer covers is not claimed by something new on
+  // a different day either.
+  const later = M.mergeSync(next.db, pull([row("t3", "2026-11-01")]), "plaid");
+  assert.equal(later.transactionsAdded, 1);
+  assert.equal(later.db.transactions.length, 3);
+
+  // The case the guard is really for: a second identical charge on a day the
+  // pull is also restating. The stored row is spoken for by its own id in this
+  // very payload, so it is not available to be claimed, and the new charge is
+  // a new charge. Without that, one of the two is swallowed and the money
+  // simply disappears from the month.
+  const twice = M.mergeSync(first.db, pull([row("t1", "2026-09-01"), row("t9", "2026-09-01")]), "plaid");
+  assert.equal(twice.transactionsAdded, 1, "two gym charges on one day are two gym charges");
+  assert.equal(twice.db.transactions.length, 2);
+  assert.deepEqual(twice.db.transactions.map((t) => t.importKey).sort(), ["pl:t1", "pl:t9"]);
+});
+
+await test("a hold a pull is settling is not claimed by something else in it", () => {
+  // The hold is spoken for: this very payload names it as the thing its
+  // settled row replaces. If an unrelated charge on the same day for the same
+  // figure could claim it first, the settling would overwrite that claim and
+  // the unrelated charge would vanish without trace.
+  const account = { syncId: "a1", name: "A", institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-09-20" };
+  const pull = (transactions) => ({ fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts: [account], transactions });
+  const at = { accountSyncId: "a1", date: "2026-08-10", amount: -5000, description: "FUEL" };
+
+  const held = M.mergeSync(M.emptyDB(), pull([{ syncId: "h1", ...at, pending: true }]), "plaid");
+  assert.equal(held.db.transactions[0].pending, true);
+
+  // The settled row comes second in the payload, so an unguarded match would
+  // let the other one take the hold first.
+  const done = M.mergeSync(held.db, pull([
+    { syncId: "x", ...at, pending: false },
+    { syncId: "s1", ...at, pending: false, replacesSyncId: "h1" },
+  ]), "plaid");
+
+  assert.equal(done.db.transactions.length, 2, "the hold settled, and the other charge is still a charge");
+  assert.deepEqual(done.db.transactions.map((t) => t.importKey).sort(), ["pl:s1", "pl:x"]);
+  assert.equal(done.db.transactions.every((t) => !t.pending), true);
+});
+
+await test("one account's history is never claimed by another's", () => {
+  // Two accounts at the same bank pay the same standing order on the same day.
+  // Remaking the connection must not file one account's row against the other.
+  const acct = (syncId, name) => ({ syncId, name, institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-09-20" });
+  const row = (id, on) => ({ syncId: id, accountSyncId: on, date: "2026-08-15", amount: -7500, description: "RENT", pending: false });
+  const pull = (accounts, transactions) => ({ fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts, transactions });
+
+  const first = M.mergeSync(M.emptyDB(), pull([acct("a1", "Joint"), acct("a2", "Spare")], [row("t1", "a1"), row("t2", "a2")]), "plaid");
+  assert.equal(first.db.transactions.length, 2);
+  const byAccount = new Map(first.db.accounts.map((a) => [a.name, a.id]));
+
+  // Remade: new ids everywhere, and only the Spare account's row arriving.
+  const again = M.mergeSync(first.db, pull(
+    [acct("b1", "Joint"), acct("b2", "Spare")],
+    [row("n2", "b2")],
+  ), "plaid");
+  assert.equal(again.transactionsAdded, 0);
+  assert.equal(again.db.transactions.length, 2);
+
+  const spare = again.db.transactions.find((t) => t.accountId === byAccount.get("Spare"));
+  const joint = again.db.transactions.find((t) => t.accountId === byAccount.get("Joint"));
+  assert.equal(spare.importKey, "pl:n2", "the account it actually belongs to is re-keyed");
+  assert.equal(joint.importKey, "pl:t1", "and the other one is left entirely alone");
+});
+
+await test("a connection no longer used is handed back to Plaid", async () => {
+  // The free plan counts connected items, not banks. An item left behind by a
+  // remade or disconnected connection occupies one of ten for ever, and
+  // nothing in the app would ever mention it again.
+  const server = plaidServer();
+  const r = await withEnv(creds, () =>
+    withFetch(server.impl, () => invokePlaid({ action: "remove", accessToken: "tok" })));
+  const asked = server.calls.find((c) => c.path === "/item/remove");
+  assert.ok(asked, "the token really goes back");
+  assert.equal(asked.body.access_token, "tok");
+  assert.deepEqual(JSON.parse(r.text), { removed: true });
+
+  // A token Plaid has already forgotten must not be what stops a connection
+  // being replaced.
+  const gone = plaidServer({ fail: { "/item/remove": { code: "ITEM_NOT_FOUND" } } });
+  const soft = await withEnv(creds, () =>
+    withFetch(gone.impl, () => invokePlaid({ action: "remove", accessToken: "tok" })));
+  assert.equal(soft.status, 200);
+  assert.deepEqual(JSON.parse(soft.text), { removed: false });
+  assert.equal(await withFetch(async () => new Response("no", { status: 500 }), () => M.releaseItem({ accessToken: "t" })), false);
+});
+
 await test("Plaid is asked to go and fetch, not just asked what it has", async () => {
   // Raising an item's reach says what is wanted, not when. Plaid refreshes on
   // its own cycle, so a wait without this can be four minutes of watching a
@@ -4974,10 +5152,13 @@ await test("a queued overnight pull is merged under the provider that fetched it
   const old = await M.applyQueue(M.emptyDB(), [await row(payload, 1)], at.priv);
   assert.equal(old.db.transactions[0].importKey, "sf:pt1");
 
-  // And the same pull under both names really would double it, which is what
-  // the tag is for.
+  // And the same pull under both names is still one transaction: the tag puts
+  // it under the right prefix, and the merge recognises the row it already has
+  // by its account, its day and its figure rather than by an id that changed
+  // underneath it.
   const both = await M.applyQueue(plaid.db, [await row(payload, 2)], at.priv);
-  assert.equal(both.db.transactions.length, 2);
+  assert.equal(both.db.transactions.length, 1);
+  assert.equal(both.db.transactions[0].importKey, "sf:pt1");
 });
 
 await test("what the overnight queue says it did counts holdings too", async () => {
@@ -8953,12 +9134,25 @@ await test("holdings replace the account's previous positions", () => {
 
 await test("the two providers cannot collide on transaction ids", () => {
   const db = M.emptyDB();
-  const shared = { syncId: "same-id", accountSyncId: "a1", date: "2026-08-01", amount: -100, description: "X", pending: false };
   const account = { syncId: "a1", name: "A", institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-08-01" };
-  const base = { fetchedAt: "2026-08-29T00:00:00.000Z", errors: [], accounts: [account], transactions: [shared] };
-  const first = M.mergeSync(db, base, "simplefin");
-  const second = M.mergeSync(first.db, base, "plaid");
+  const txn = (over) => ({ syncId: "same-id", accountSyncId: "a1", date: "2026-08-01", amount: -100, description: "X", pending: false, ...over });
+  const payload = (t) => ({ fetchedAt: "2026-08-29T00:00:00.000Z", errors: [], accounts: [account], transactions: [t] });
+
+  // One id, two providers, two different transactions. The prefix is what
+  // keeps them apart; without it the second would be read as the first.
+  const first = M.mergeSync(db, payload(txn()), "simplefin");
+  const second = M.mergeSync(first.db, payload(txn({ date: "2026-08-02", amount: -250 })), "plaid");
   assert.equal(second.transactionsAdded, 1, "the same id from a different provider is a different transaction");
+  assert.deepEqual(second.db.transactions.map((t) => t.importKey).sort(), ["pl:same-id", "sf:same-id"]);
+
+  // But the same transaction arriving from the other provider is the same
+  // transaction, whatever id it wears. A household migrating from one to the
+  // other runs both for a while, and two copies of every row is what that
+  // used to cost.
+  const again = M.mergeSync(first.db, payload(txn({ syncId: "plaid-id" })), "plaid");
+  assert.equal(again.transactionsAdded, 0, "recognised by its account, its day and its figure");
+  assert.equal(again.db.transactions.length, 1);
+  assert.equal(again.db.transactions[0].importKey, "pl:plaid-id", "and re-keyed, so the new provider keeps track of it");
 });
 
 /* ── time ranges ──────────────────────────────────────────────────────── */
