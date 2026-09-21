@@ -1,6 +1,6 @@
 import type { DB, PlaidItemRef } from "../../types";
 import { simplefin } from "./simplefin";
-import { mergeSync, syncWindowStart } from "./merge";
+import { mergeSync, syncWindowStart, windowFor } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
 import { reason, recordRun } from "../usage";
 import { syncDue } from "./schedule";
@@ -89,15 +89,18 @@ async function withInstitution(item: PlaidItemRef): Promise<PlaidItemRef> {
  * two copies of this would drift.
  */
 export async function syncPlaidItem(
-  db: DB,
   apply: (fn: (cur: DB) => DB, label?: string) => void,
   rawItem: PlaidItemRef,
+  opts: { fullHistory?: boolean } = {},
 ): Promise<SyncOutcome> {
   const item = await withInstitution(rawItem);
 
   let payload;
   try {
-    payload = await fetchItem(item, syncWindowStart(db));
+    // This item's own clock, not the document's. The document's belongs to
+    // whichever connection last ran, and a bank connected today was being
+    // handed the narrow window of one that had been syncing for months.
+    payload = await fetchItem(item, windowFor(opts.fullHistory ? undefined : item.lastSyncAt));
   } catch (err) {
     // Named, because a Plaid item whose login has expired fails silently on
     // every later sync and the integrations table is where that shows up.
@@ -147,7 +150,7 @@ export async function syncPlaid(
 ): Promise<SyncOutcome> {
   const items = db.settings.plaidItems ?? [];
   if (!items.length) throw new Error("No Plaid accounts are connected.");
-  return runItems(db, apply, items);
+  return runItems(apply, items);
 }
 
 /**
@@ -171,11 +174,10 @@ export async function syncPlaidDue(
   const due = (db.settings.plaidItems ?? [])
     .filter((i) => syncDue(cadence, i.lastSyncAt, now, sessionStart));
   if (!due.length) return null;
-  return runItems(db, apply, due);
+  return runItems(apply, due);
 }
 
 async function runItems(
-  db: DB,
   apply: (fn: (cur: DB) => DB, label?: string) => void,
   items: readonly PlaidItemRef[],
 ): Promise<SyncOutcome> {
@@ -185,7 +187,7 @@ async function runItems(
 
   for (const item of items) {
     try {
-      const out = await syncPlaidItem(db, apply, item);
+      const out = await syncPlaidItem(apply, item);
       summaries.push(out.summary);
       errors.push(...out.errors);
       changed = changed || out.changed;

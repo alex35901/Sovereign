@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Building2, KeyRound, LineChart, RefreshCw, Stethoscope } from "lucide-react";
+import { Building2, History, KeyRound, LineChart, RefreshCw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
@@ -114,8 +114,8 @@ export function PlaidCard() {
 
   /** Both of these now live in lib/sync/run beside the SimpleFIN pull, so the
    *  integrations table can offer the same thing without a second copy. */
-  const syncItem = async (item: PlaidItemRef) => {
-    const out = await syncPlaidItem(db, apply, item);
+  const syncItem = async (item: PlaidItemRef, opts: { fullHistory?: boolean } = {}) => {
+    const out = await syncPlaidItem(apply, item, opts);
     recordRun(apply, "plaid", "ever", { error: out.errors[0] });
     notify(out.summary);
     // A window Plaid could not be read to the end of has transactions missing
@@ -164,6 +164,27 @@ export function PlaidCard() {
       await syncItem({ ...item, lastError: undefined });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reconnect.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Everything the bank still has, rather than everything since last time.
+   *
+   * A connection is asked for two years on its first pull and for a narrow
+   * window after that, which is right until the first pull was the one that
+   * asked for a fortnight. This is how to go back for the rest without
+   * disconnecting and starting again, and it is safe to press twice: a
+   * transaction already held is recognised by its id and skipped.
+   */
+  const fullHistory = async (item: PlaidItemRef) => {
+    setBusy(item.itemId);
+    setError(null);
+    try {
+      await syncItem(item, { fullHistory: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not fetch the history.");
     } finally {
       setBusy(null);
     }
@@ -228,6 +249,14 @@ export function PlaidCard() {
                     title="Sign in again without changing this item's access token"
                   >
                     <KeyRound size={12} /> {busy === item.itemId ? "Opening…" : "Reconnect"}
+                  </Btn>
+                  <Btn
+                    size="sm"
+                    onClick={() => void fullHistory(item)}
+                    disabled={busy !== null}
+                    title="Ask this bank for everything it still holds, not just what is new"
+                  >
+                    <History size={12} /> Full history
                   </Btn>
                   <ConfirmButton
                     label="Disconnect"

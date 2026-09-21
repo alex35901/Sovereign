@@ -82,7 +82,7 @@ export function SwitchToPlaid({ account }: { account: Account }) {
       }), `move ${account.name} to Plaid`);
       setChoices(null);
       notify(`${account.name} now comes from Plaid. Its history is untouched; anything from ${from} is taken from the new connection.`);
-      await syncPlaidItem(db, apply, item);
+      await syncPlaidItem(apply, item);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not finish the switch.");
     } finally {

@@ -35,7 +35,7 @@ const entry = join(dir, "entry.js");
 await build({
   stdin: {
     contents: `
-      export { mergeSync, cleanMerchant, syncWindowStart, accountKeys } from "./src/lib/sync/merge.ts";
+      export { mergeSync, cleanMerchant, syncWindowStart, windowFor, FIRST_PULL_DAYS, accountKeys } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
@@ -4371,6 +4371,33 @@ await test("a window that cannot be read to the end of says so rather than losin
   assert.equal(out.transactions, M.PLAID_MAX_PAGES * M.PLAID_PAGE_SIZE, "the ceiling holds");
   assert.match(out.errors[0], /Third National: /);
   assert.match(out.errors[0], /999999 transactions in this window/);
+});
+
+await test("a connection that has never run is asked for everything, not for a fortnight", () => {
+  // The window used to be one figure for the whole document, taken from the
+  // SimpleFIN clock. A Plaid bank connected today was handed the window of a
+  // SimpleFIN connection that had been syncing daily for months, so its first
+  // pull asked for a fortnight and brought back eighteen transactions where
+  // two years were available.
+  const now = Date.parse("2026-09-21T12:00:00.000Z");
+
+  const first = M.windowFor(undefined, M.FIRST_PULL_DAYS, now);
+  assert.equal(first, "2024-09-21", "two years, which is what Plaid keeps");
+
+  // One that ran yesterday asks from a fortnight before that: overlap enough
+  // for a transaction that posts days after it happened, and no more.
+  const daily = M.windowFor("2026-09-20T06:00:00.000Z", M.FIRST_PULL_DAYS, now);
+  assert.equal(daily, "2026-09-06");
+
+  // One that lapsed in January is capped at ninety days rather than trying to
+  // swallow the gap in one request. Closing that gap is what the full history
+  // button is for.
+  const lapsed = M.windowFor("2026-01-10T06:00:00.000Z", M.FIRST_PULL_DAYS, now);
+  assert.equal(lapsed, "2026-06-23", "ninety days, not back to January");
+
+  // A stamp that is not a date is treated as never having run, because the
+  // alternative is asking for a window computed from NaN.
+  assert.equal(M.windowFor("not a date", M.FIRST_PULL_DAYS, now), "2024-09-21");
 });
 
 await test("an item connected for investments is not asked for transactions", async () => {

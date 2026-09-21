@@ -295,12 +295,52 @@ export function cleanMerchant(raw: string): string {
     .join(" ");
 }
 
-/** Suggested start date for the next pull: 90 days back, or the last sync. */
+/** As far back as Plaid keeps transactions, which is what a first pull wants. */
+export const FIRST_PULL_DAYS = 730;
+/** The ordinary window for a connection that has been running. */
+const WINDOW_DAYS = 90;
+/** Overlap on a repeat pull, so a transaction that posts late is still seen. */
+const BACKFILL_DAYS = 14;
+
+const daysAgo = (days: number, now: number): string =>
+  new Date(now - days * 86400000).toISOString().slice(0, 10);
+
+/**
+ * How far back to ask a connection for.
+ *
+ * A connection that has never been pulled has no history here, so it is asked
+ * for everything it has.
+ *
+ * One that has been running is asked from a fortnight before its own last
+ * pull, which is overlap enough for a transaction that posts days after it
+ * happened. Never from more than ninety days ago, though: a connection that
+ * lapsed a year ago should not try to swallow the year in one request, and
+ * the gap it left is what the full history button is for.
+ *
+ * Per connection, because the alternative was one window for the whole
+ * document, taken from the SimpleFIN clock. A Plaid bank connected today was
+ * handed the window of a SimpleFIN connection that had been syncing daily for
+ * months, and got a fortnight of history where two years were available.
+ */
+export function windowFor(
+  lastSyncAt: string | undefined,
+  firstPullDays = FIRST_PULL_DAYS,
+  now: number = Date.now(),
+): string {
+  if (!lastSyncAt) return daysAgo(firstPullDays, now);
+  const last = Date.parse(lastSyncAt);
+  if (!Number.isFinite(last)) return daysAgo(firstPullDays, now);
+  const ordinary = daysAgo(WINDOW_DAYS, now);
+  const backfill = new Date(last - BACKFILL_DAYS * 86400000).toISOString().slice(0, 10);
+  return backfill > ordinary ? backfill : ordinary;
+}
+
+/**
+ * The document-wide window, for the callers that have no one connection in
+ * mind: the scheduled job, which pulls everything on one clock, and the line
+ * in Settings that says when the next pull starts from.
+ */
 export function syncWindowStart(db: DB): string {
-  const last = db.settings.lastSyncAt ? db.settings.lastSyncAt.slice(0, 10) : null;
-  const ninety = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-  if (!last) return ninety;
-  const backfill = new Date(Date.parse(last) - 14 * 86400000).toISOString().slice(0, 10);
-  return backfill > ninety ? backfill : ninety;
+  return windowFor(db.settings.lastSyncAt, WINDOW_DAYS);
 }
 
