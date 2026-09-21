@@ -19,23 +19,23 @@
     "check": "npm run build && npm run audit && npm run eol && node scripts/selftest.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.123.0",
-    "lucide-react": "^1.24.0",
+    "@anthropic-ai/sdk": "^0.127.0",
+    "lucide-react": "^1.47.0",
     "pg": "^8.23.0",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "react-router-dom": "^7.18.1"
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.6.1",
     "@types/pg": "^8.23.1",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.0.3",
     "esbuild": "^0.28.2",
-    "playwright": "^1.62.1",
+    "playwright": "^1.63.0",
     "typescript": "~6.0.2",
-    "vite": "^8.1.1"
+    "vite": "^8.3.0"
   },
   "engines": {
     "node": ">=22 <25"
