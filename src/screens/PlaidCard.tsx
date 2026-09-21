@@ -8,6 +8,7 @@ import { recordRun } from "../lib/usage";
 import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, releaseItem, reportHistory } from "../lib/sync/plaid";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
 import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
+import type { ReachState } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -84,7 +85,7 @@ export function PlaidCard() {
   /** What the Full history wait is doing, while it is doing it. */
   const [note, setNote] = useState<string | null>(null);
   /** What Plaid said it holds, once a press of Full history has finished. */
-  const [reach, setReach] = useState<{ itemId: string; line: string; detail: string; short: boolean } | null>(null);
+  const [reach, setReach] = useState<{ itemId: string; line: string; detail: string; state: ReachState } | null>(null);
   /**
    * Items whose backfill was still running when the last wait gave up.
    *
@@ -285,9 +286,27 @@ export function PlaidCard() {
       if (item.kind === "bank" && !pulled.errors.length) {
         const said = await reportHistory(item, since).catch(() => null);
         if (said) {
-          const told = describeReach(said, item.institution);
-          setReach({ itemId: item.itemId, line: told.line, detail: told.detail, short: told.short });
-          if (told.short) stillFetching.current.delete(item.itemId);
+          // What Plaid said last time, read from before this press changed
+          // anything, and written back for the next one. Kept on the item so
+          // the comparison survives closing the page.
+          const told = describeReach(said, item.institution, {
+            want: FIRST_PULL_DAYS,
+            previous: item.historyTotal,
+          });
+          // Through apply rather than patchSettings, because the sync above
+          // has just stamped this item and the array in hand predates that.
+          apply((cur) => ({
+            ...cur,
+            settings: {
+              ...cur.settings,
+              plaidItems: (cur.settings.plaidItems ?? []).map((i) =>
+                (i.itemId === item.itemId ? { ...i, historyTotal: said.total } : i)),
+            },
+          }), `record what Plaid holds for ${item.institution}`);
+          setReach({ itemId: item.itemId, line: told.line, detail: told.detail, state: told.state });
+          // Nothing more is coming for a connection stuck at Plaid's default,
+          // so a later press should not sit through a wait for it.
+          if (told.state !== "partial") stillFetching.current.delete(item.itemId);
         }
       }
     } catch (err) {
@@ -439,7 +458,7 @@ export function PlaidCard() {
                     fourth button beside the others does not fit a phone, and
                     remaking a connection that reaches back fine is work for
                     nothing. */}
-                {reach.short && items.some((i) => i.itemId === reach.itemId && i.kind === "bank") ? (
+                {reach.state === "default" && items.some((i) => i.itemId === reach.itemId && i.kind === "bank") ? (
                   <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
                     <Btn
                       size="sm"

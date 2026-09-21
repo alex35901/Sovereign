@@ -502,6 +502,14 @@ export interface PlaidItemRef {
    * and asking every single time somebody presses Full history.
    */
   historyDays?: number;
+  /**
+   * How many transactions Plaid last said it held for this item.
+   *
+   * A bank that serves fourteen months and never will looks exactly like a
+   * backfill halfway through fetching twenty-four. Two readings tell them
+   * apart and nothing else does, so the first one is kept.
+   */
+  historyTotal?: number;
 }
 
 import type { ForecastPlan } from "./lib/forecast.js";

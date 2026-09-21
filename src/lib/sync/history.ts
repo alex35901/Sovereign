@@ -207,11 +207,28 @@ export interface ItemReach {
  * leaves somebody pressing a button for ever against a bank that already sent
  * everything it had.
  */
+/**
+ * How much of what was asked for actually arrived.
+ *
+ * "default" is Plaid's ninety days, which means the longer window never took
+ * effect. "full" is near enough everything asked for. "partial" is the band
+ * between, and it is the ambiguous one: a bank that serves fourteen months and
+ * never will looks exactly like a backfill halfway through fetching
+ * twenty-four. Only a second reading can tell those apart, which is why the
+ * reading is remembered.
+ */
+export type ReachState = "default" | "partial" | "full";
+
+/** How close to the window asked for still counts as all of it. */
+export const REACH_SLACK_DAYS = 60;
+
 export function describeReach(
   reach: ItemReach,
   institution: string,
-  now: number = Date.now(),
-): { line: string; detail: string; short: boolean } {
+  opts: { want?: number; previous?: number; now?: number } = {},
+): { line: string; detail: string; state: ReachState } {
+  const now = opts.now ?? Date.now();
+  const want = opts.want ?? 730;
   const detail = [
     reach.consented.length ? `Consented: ${reach.consented.join(", ")}.` : "",
     reach.billed.length ? `Billed: ${reach.billed.join(", ")}.` : "",
@@ -219,7 +236,7 @@ export function describeReach(
   ].filter(Boolean).join(" ");
 
   if (reach.notReady) {
-    return { line: `Plaid is still preparing ${institution}. Press Full history again in a minute.`, detail, short: false };
+    return { line: `Plaid is still preparing ${institution}. Press Full history again in a minute.`, detail, state: "partial" };
   }
 
   // An item that never agreed to hand over transactions has none, and no
@@ -231,23 +248,47 @@ export function describeReach(
         ? `Plaid holds no transactions for ${institution}: this connection never agreed to hand them over. Reconnect it and tick transactions when the bank asks.`
         : `Plaid holds no transactions at all for ${institution} over the last two years.`,
       detail,
-      short: true,
+      state: "default",
     };
   }
 
   const days = reach.oldest ? Math.round((now - Date.parse(`${reach.oldest}T00:00:00Z`)) / 86400000) : 0;
   const months = Math.max(1, Math.round(days / 30.4));
-  const short = days < DEFAULT_REACH_DAYS + REACH_MARGIN_DAYS;
+  const state: ReachState = days < DEFAULT_REACH_DAYS + REACH_MARGIN_DAYS
+    ? "default"
+    : days >= want - REACH_SLACK_DAYS ? "full" : "partial";
+
   const held = `Plaid holds ${reach.total.toLocaleString()} transaction${reach.total === 1 ? "" : "s"} for `
     + `${institution}, back to ${reach.oldest} (about ${months} month${months === 1 ? "" : "s"})`;
 
-  return {
-    line: short
-      ? `${held}. That is Plaid's default reach, so the request for two years has not taken effect: `
+  if (state === "default") {
+    return {
+      line: `${held}. That is Plaid's default reach, so the request for two years has not taken effect: `
         + "either this bank serves no more than 90 days through Plaid, or this connection has to be "
-        + "remade rather than reconnected."
-      : `${held}.`,
+        + "remade rather than reconnected.",
+      detail,
+      state,
+    };
+  }
+  if (state === "full") return { line: `${held}.`, detail, state };
+
+  // The ambiguous band, answered from evidence rather than from a guess. A
+  // figure that has not moved between two readings is a bank that has nothing
+  // more to give, and saying "press again in a few minutes" about that is how
+  // somebody ends up pressing a button for ever.
+  const asked = Math.round(want / 30.4);
+  const grew = typeof opts.previous === "number" && reach.total > opts.previous;
+  const same = typeof opts.previous === "number" && reach.total <= opts.previous;
+  return {
+    line: `${held}, short of the ${asked} months asked for. `
+      + (grew
+        ? `That is up from ${opts.previous!.toLocaleString()} at the last check, so Plaid is still filling it in. `
+          + "Press Full history again in a few minutes for the rest."
+        : same
+          ? `Unchanged since the last check, so ${institution} gives Plaid no more than this.`
+          : "Plaid fills older months in the background, so press Full history again in a few minutes: "
+            + "if the figure has not moved by then, this is as far back as this bank goes."),
     detail,
-    short,
+    state,
   };
 }

@@ -4640,39 +4640,78 @@ await test("a window that came back short is told from a backfill still running"
   const now = Date.parse("2026-09-21T12:00:00.000Z");
   const day = (back) => new Date(now - back * 86400000).toISOString().slice(0, 10);
   const reach = (over) => ({ total: 0, notReady: false, consented: [], products: [], billed: [], ...over });
+  const said = (r, opts = {}) => M.HW.describeReach(r, "Elements", { want: 730, now, ...opts });
 
-  const stuck = M.HW.describeReach(reach({ total: 101, oldest: day(90), newest: day(0) }), "Elements", now);
-  assert.equal(stuck.short, true);
+  const stuck = said(reach({ total: 101, oldest: day(90), newest: day(0) }));
+  assert.equal(stuck.state, "default");
   assert.match(stuck.line, /101 transactions/);
   assert.match(stuck.line, /Plaid's default reach/);
   assert.ok(!/still fetching|few minutes/i.test(stuck.line),
     "never tells somebody to come back for history that is not coming");
 
-  const deep = M.HW.describeReach(reach({ total: 4210, oldest: day(700), newest: day(0) }), "Elements", now);
-  assert.equal(deep.short, false);
+  const deep = said(reach({ total: 4210, oldest: day(700), newest: day(0) }));
+  assert.equal(deep.state, "full");
   assert.match(deep.line, /back to 2024-/);
   assert.match(deep.line, /about 23 months/);
+  assert.ok(!/short of/.test(deep.line), "near enough all of it is all of it");
 
   // A connection that never agreed to hand transactions over is a different
   // problem with a different button, and saying "no history" would send
   // somebody looking for it in the wrong place.
-  const unconsented = M.HW.describeReach(reach({ consented: ["auth", "balance"] }), "Elements", now);
+  const unconsented = said(reach({ consented: ["auth", "balance"] }));
   assert.match(unconsented.line, /never agreed/);
   assert.match(unconsented.line, /Reconnect/);
-  assert.equal(unconsented.short, true);
+  assert.equal(unconsented.state, "default");
 
   // Not ready is neither: it is a brand new item, and waiting is right.
-  const cold = M.HW.describeReach(reach({ notReady: true }), "Elements", now);
-  assert.equal(cold.short, false, "nothing is concluded about the reach of an item Plaid has not prepared");
+  const cold = said(reach({ notReady: true }));
+  assert.equal(cold.state, "partial", "nothing is concluded about the reach of an item Plaid has not prepared");
   assert.match(cold.line, /still preparing/);
 
   // What Plaid said, kept alongside, so a connection that misbehaves can be
   // described rather than guessed at.
-  const detailed = M.HW.describeReach(
-    reach({ total: 5, oldest: day(10), newest: day(1), consented: ["transactions"], billed: ["transactions"], lastUpdate: "2026-09-21T06:14:00Z" }),
-    "Elements", now);
+  const detailed = said(reach({
+    total: 5, oldest: day(10), newest: day(1), consented: ["transactions"], billed: ["transactions"],
+    lastUpdate: "2026-09-21T06:14:00Z",
+  }));
   assert.match(detailed.detail, /Consented: transactions\./);
   assert.match(detailed.detail, /Last transactions update 2026-09-21 06:14/);
+});
+
+await test("a bank that gives fourteen months is told from one still filling in", () => {
+  // Deeper than Plaid's default but short of what was asked for, which is the
+  // genuinely ambiguous case: fourteen months can be a bank's limit or a
+  // backfill halfway through. Only a second reading tells them apart, so the
+  // first is remembered and the sentence is written from the difference rather
+  // than from a guess.
+  const now = Date.parse("2026-09-21T12:00:00.000Z");
+  const day = (back) => new Date(now - back * 86400000).toISOString().slice(0, 10);
+  const partial = {
+    total: 497, notReady: false, oldest: day(412), newest: day(0),
+    consented: ["transactions"], products: [], billed: ["transactions"],
+  };
+  const said = (r, opts = {}) => M.HW.describeReach(r, "Elements", { want: 730, now, ...opts });
+
+  const first = said(partial);
+  assert.equal(first.state, "partial");
+  assert.match(first.line, /497 transactions/);
+  assert.match(first.line, /short of the 24 months asked for/);
+  assert.match(first.line, /press Full history again/, "nothing has been seen twice yet, so it is worth another look");
+
+  const growing = said({ ...partial, total: 720, oldest: day(600) }, { previous: 497 });
+  assert.equal(growing.state, "partial");
+  assert.match(growing.line, /up from 497/);
+  assert.match(growing.line, /still filling it in/);
+
+  // And the answer that stops the loop.
+  const settled = said(partial, { previous: 497 });
+  assert.match(settled.line, /Unchanged since the last check/);
+  assert.match(settled.line, /Elements gives Plaid no more than this/);
+  assert.ok(!/press Full history again/i.test(settled.line),
+    "a figure that has not moved between two readings is a bank with nothing more to give");
+
+  // A reading that went backwards is not growth either.
+  assert.match(said({ ...partial, total: 480 }, { previous: 497 }).line, /Unchanged since the last check/);
 });
 
 await test("a connection remade does not file a second copy of everything", async () => {
