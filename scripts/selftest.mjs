@@ -4373,6 +4373,79 @@ await test("a window that cannot be read to the end of says so rather than losin
   assert.match(out.errors[0], /999999 transactions in this window/);
 });
 
+await test("an item connected for investments is not asked for transactions", async () => {
+  // Asking one is refused with ADDITIONAL_CONSENT_REQUIRED, which is Plaid
+  // being right: that item consented to investments. The caller that knows
+  // what the item is for simply does not ask.
+  let asked = false;
+  const server = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/transactions/get") {
+      asked = true;
+      return new Response(JSON.stringify({ error_code: "ADDITIONAL_CONSENT_REQUIRED", error_message: "no consent" }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
+  };
+  const out = await withEnv(creds, () => withFetch(server, () =>
+    M.plaidRaw(M.plaidCreds(), {
+      accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21",
+      withTransactions: false, readyWaitMs: 0,
+    })));
+  assert.equal(asked, false, "not asked at all");
+  assert.deepEqual(out.transactions, []);
+  assert.equal(out.accounts.length, 1, "and the balances still arrive");
+});
+
+await test("a bank item refused transactions says so; a bare token does not", async () => {
+  const server = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/transactions/get") {
+      return new Response(JSON.stringify({ error_code: "ADDITIONAL_CONSENT_REQUIRED", error_message: "no consent" }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
+  };
+
+  // The caller said this item is for transactions, so being refused them is
+  // news, and fixable by reconnecting.
+  const msg = await withEnv(creds, () => withFetch(server, () => caught(() =>
+    M.plaidRaw(M.plaidCreds(), {
+      accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21",
+      withTransactions: true, readyWaitMs: 0,
+    }))));
+  assert.match(msg, /without permission to read its transactions/i, msg);
+  assert.match(msg, /Reconnect/i, "and says what fixes it");
+
+  // The scheduled job works from bare access tokens and cannot know what an
+  // item is for, so it asks on the off chance and takes no for an answer.
+  const quiet = await withEnv(creds, () => withFetch(server, () =>
+    M.plaidRaw(M.plaidCreds(), {
+      accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21", readyWaitMs: 0,
+    })));
+  assert.deepEqual(quiet.transactions, [], "no transactions, and no failed run either");
+  assert.equal(quiet.accounts.length, 1);
+});
+
+await test("reconnecting a bank that was never consented asks for transactions back", async () => {
+  let seen;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      seen = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "link-consent" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", accessToken: "tok", consentTo: ["transactions"] })));
+  assert.equal(seen.access_token, "tok");
+  assert.deepEqual(seen.additional_consented_products, ["transactions"]);
+  assert.equal(seen.products, undefined, "still update mode, which takes none");
+
+  // And an ordinary reconnect does not ask for consent it already has.
+  let plain;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      plain = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "link-plain" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", accessToken: "tok" })));
+  assert.equal(plain.additional_consented_products, undefined);
+});
+
 await test("a bank just connected is not mistaken for one with no transactions", async () => {
   // Plaid fetches an item's history in the background after the link, so the
   // first ask lands before there is anything to answer with. Every 400 used to

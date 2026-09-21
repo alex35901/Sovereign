@@ -20,10 +20,13 @@ type ApiRequest = IncomingMessage & { body?: unknown };
 type ApiResponse = ServerResponse;
 
 interface DiagnoseBody { action: "diagnose" }
-interface LinkTokenBody { action: "link_token"; products?: string[]; accessToken?: string }
+interface LinkTokenBody { action: "link_token"; products?: string[]; accessToken?: string; consentTo?: string[] }
 interface ExchangeBody { action: "exchange"; publicToken: string }
 interface InstitutionBody { action: "institution"; accessToken: string }
-interface SyncBody { action: "sync"; accessToken: string; startDate: string; endDate: string; withHoldings?: boolean }
+interface SyncBody {
+  action: "sync"; accessToken: string; startDate: string; endDate: string;
+  withHoldings?: boolean; withTransactions?: boolean;
+}
 type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | SyncBody;
 
 
@@ -111,7 +114,15 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         country_codes: ["US"],
         language: "en",
         ...(update
-          ? { access_token: body.accessToken }
+          ? {
+              access_token: body.accessToken,
+              // An item connected without agreeing to transactions refuses
+              // them with ADDITIONAL_CONSENT_REQUIRED for ever. Update mode
+              // is where that is put right, and naming what to ask for is
+              // the whole of the difference between reconnecting and
+              // reconnecting usefully.
+              ...(body.consentTo?.length ? { additional_consented_products: body.consentTo } : {}),
+            }
           : { products: body.products?.length ? body.products : ["transactions"] }),
       });
       return send(200, { linkToken: data.link_token, environment: plaidEnv() });
@@ -138,6 +149,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         startDate: body.startDate,
         endDate: body.endDate,
         withHoldings: body.withHoldings,
+        withTransactions: body.withTransactions,
       });
       return send(200, {
         accounts: raw.accounts,

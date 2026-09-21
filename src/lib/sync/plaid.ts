@@ -127,8 +127,13 @@ export async function createLinkToken(kind: "bank" | "investment"): Promise<stri
  * token, which on an encrypted document means editing an environment variable
  * in Vercel and redeploying before the overnight pull can see the bank again.
  */
-export async function reconnectLinkToken(accessToken: string): Promise<string> {
-  const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, { action: "link_token", accessToken });
+export async function reconnectLinkToken(accessToken: string, consentTo?: string[]): Promise<string> {
+  const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, {
+    action: "link_token", accessToken,
+    // Asked for only when something is actually missing. Requesting consent
+    // that was already given is noise in the dialog the person has to read.
+    ...(consentTo?.length ? { consentTo } : {}),
+  });
   return linkToken;
 }
 
@@ -191,6 +196,10 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
     startDate: since,
     endDate: today(),
     withHoldings: item.kind === "investment",
+    // An investment item consented to investments. Asking it for transactions
+    // is refused, correctly, and the refusal is not worth reporting because
+    // nobody asked for them.
+    withTransactions: item.kind !== "investment",
   });
   return toPlaidPayload(raw, item);
 }

@@ -149,7 +149,10 @@ export function PlaidCard() {
     setBusy(item.itemId);
     setError(null);
     try {
-      const token = await reconnectLinkToken(item.accessToken);
+      // A bank item that was refused transactions needs to be asked for them
+      // again, which only update mode can do.
+      const missing = item.kind === "bank" && /ADDITIONAL_CONSENT_REQUIRED|consent/i.test(item.lastError?.message ?? "");
+      const token = await reconnectLinkToken(item.accessToken, missing ? ["transactions"] : undefined);
       // Update mode has nothing to exchange: the item coming back is the one
       // that was already there, with the same access token. Closing the
       // dialog and finishing it look the same from here, and both are fine.

@@ -66,6 +66,10 @@ export function describe(body: Record<string, unknown>): string {
   if (code === "PRODUCTS_NOT_SUPPORTED") return "That institution doesn't offer this data through Plaid. Try connecting it as the other account type.";
   if (code === "NO_INVESTMENT_ACCOUNTS") return "Plaid found no investment accounts on that login.";
   if (code === "RATE_LIMIT_EXCEEDED") return "Plaid is rate-limiting this request. Wait a minute and try again.";
+  if (code === "ADDITIONAL_CONSENT_REQUIRED") {
+    return "This connection was set up without permission to read its transactions. Reconnect it below and "
+      + "tick transactions when the bank asks, or leave it as an investment connection if that is all it is for.";
+  }
   if (code === PRODUCT_NOT_READY) {
     return "Plaid is still preparing this connection's transactions. It pulls the history in the background "
       + "after a bank is linked, which usually takes a minute or two. Press Sync again shortly.";
@@ -101,6 +105,17 @@ export const NO_TRANSACTIONS_CODES = new Set([
   "PRODUCTS_NOT_SUPPORTED",
   "NO_ACCOUNTS",
 ]);
+
+/**
+ * The item never agreed to hand over transactions.
+ *
+ * Fixable, by reconnecting and consenting, so it is reported rather than
+ * swallowed wherever the caller knows what the item is meant to be for. The
+ * scheduled job does not: it works from bare access tokens, and an
+ * investment item refusing to discuss transactions there is the expected
+ * answer rather than news.
+ */
+export const NEEDS_CONSENT = "ADDITIONAL_CONSENT_REQUIRED";
 
 export async function plaidCall(
   creds: PlaidCreds,
@@ -144,6 +159,16 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
   startDate: string;
   endDate: string;
   withHoldings?: boolean;
+  /**
+   * Whether to ask for transactions at all.
+   *
+   * An item connected for investments consented to investments, and asking it
+   * for transactions is refused with ADDITIONAL_CONSENT_REQUIRED, which is
+   * Plaid being correct rather than anything being broken. The caller that
+   * knows what the item is for says so; the scheduled job works from bare
+   * tokens and cannot know, so it asks and takes the refusal quietly.
+   */
+  withTransactions?: boolean;
   /**
    * How long to give a brand new item to finish preparing. Defaults to the
    * budget below; a test that wants to see the refusal rather than wait for
@@ -199,7 +224,8 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
   let total = 0;
   let pages = 0;
   try {
-    for (;;) {
+    // Asked for unless the caller knows this item does not carry them.
+    for (; opts.withTransactions !== false;) {
       const got = await page(rows.length) as { transactions?: unknown[]; total_transactions?: number };
       const batch = got.transactions ?? [];
       total = typeof got.total_transactions === "number" ? got.total_transactions : rows.length + batch.length;
@@ -217,7 +243,18 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
     // moment ago returns while Plaid is still fetching its history, and the
     // one a bank returns when it wants a new login. Both produced an account
     // with balances, no transactions, and no explanation anywhere.
-    if (!(err instanceof PlaidError) || !NO_TRANSACTIONS_CODES.has(err.code)) throw err;
+    //
+    // Consent is the one that depends on who is asking. A caller that said
+    // this item is for transactions wants to hear that it cannot have them,
+    // because that is fixable by reconnecting. A caller that did not say,
+    // which is the scheduled job working from a bare access token, is asking
+    // on the off chance and an investment item's refusal is the expected
+    // answer rather than news.
+    const known = err instanceof PlaidError && NO_TRANSACTIONS_CODES.has(err.code);
+    const consent = err instanceof PlaidError
+      && err.code === NEEDS_CONSENT
+      && opts.withTransactions === undefined;
+    if (!known && !consent) throw err;
     rows = [];
     total = 0;
   }
