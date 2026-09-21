@@ -74,7 +74,7 @@ await build({
       export { default as plaidHandler } from "./api/plaid.ts";
       export { default as dbHandler } from "./api/db.ts";
       export { default as cronHandler, refreshPlaid } from "./api/cron/sync.ts";
-      export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE } from "./api/_plaid.ts";
+      export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE, PRODUCT_NOT_READY } from "./api/_plaid.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
       export { withWake } from "./api/_store.ts";
       export { findConnection } from "./api/_store.ts";
@@ -4371,6 +4371,65 @@ await test("a window that cannot be read to the end of says so rather than losin
   assert.equal(out.transactions, M.PLAID_MAX_PAGES * M.PLAID_PAGE_SIZE, "the ceiling holds");
   assert.match(out.errors[0], /Third National: /);
   assert.match(out.errors[0], /999999 transactions in this window/);
+});
+
+await test("a bank just connected is not mistaken for one with no transactions", async () => {
+  // Plaid fetches an item's history in the background after the link, so the
+  // first ask lands before there is anything to answer with. Every 400 used to
+  // be read as "this item has no transactions product", so a brand new bank
+  // arrived with balances, no transactions, and nothing said about it. This is
+  // the exact shape of connecting a bank and watching nothing come through.
+  const notReady = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/transactions/get") {
+      return new Response(JSON.stringify({ error_code: "PRODUCT_NOT_READY", error_message: "not ready" }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
+  };
+  const msg = await withEnv(creds, () => withFetch(notReady, () => caught(() =>
+    M.plaidRaw(M.plaidCreds(), { accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21", readyWaitMs: 0 }))));
+  assert.match(msg, /still preparing/i, msg);
+  assert.match(msg, /Sync again/i, "and says what to do about it");
+
+  // A login that has expired is not an empty item either.
+  const expired = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/transactions/get") {
+      return new Response(JSON.stringify({ error_code: "ITEM_LOGIN_REQUIRED", error_message: "login" }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
+  };
+  const said = await withEnv(creds, () => withFetch(expired, () => caught(() =>
+    M.plaidRaw(M.plaidCreds(), { accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21", readyWaitMs: 0 }))));
+  assert.match(said, /re-authenticating/i, said);
+});
+
+await test("and one that becomes ready while we wait is simply synced", async () => {
+  // The common case: a few seconds after the link, the history is there.
+  let asks = 0;
+  const server = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/transactions/get") {
+      asks += 1;
+      if (asks === 1) {
+        return new Response(JSON.stringify({ error_code: "PRODUCT_NOT_READY", error_message: "not ready" }), { status: 400 });
+      }
+      return new Response(JSON.stringify({
+        transactions: [{ transaction_id: "t1", account_id: "a", date: "2026-09-11", amount: 12.34, name: "A SHOP" }],
+        total_transactions: 1,
+      }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
+  };
+  const out = await withEnv(creds, () => withFetch(server, () =>
+    M.plaidRaw(M.plaidCreds(), {
+      accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21",
+      // Long enough for one more ask, short enough that the suite does not
+      // wait around for it.
+      readyWaitMs: 60,
+    })));
+  assert.equal(asks, 2, "asked again rather than giving up on the first refusal");
+  assert.equal(out.transactions.length, 1);
 });
 
 await test("an investment-only item has no transactions, which is not a failure", async () => {

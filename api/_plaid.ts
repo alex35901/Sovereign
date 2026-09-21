@@ -66,8 +66,41 @@ export function describe(body: Record<string, unknown>): string {
   if (code === "PRODUCTS_NOT_SUPPORTED") return "That institution doesn't offer this data through Plaid. Try connecting it as the other account type.";
   if (code === "NO_INVESTMENT_ACCOUNTS") return "Plaid found no investment accounts on that login.";
   if (code === "RATE_LIMIT_EXCEEDED") return "Plaid is rate-limiting this request. Wait a minute and try again.";
+  if (code === PRODUCT_NOT_READY) {
+    return "Plaid is still preparing this connection's transactions. It pulls the history in the background "
+      + "after a bank is linked, which usually takes a minute or two. Press Sync again shortly.";
+  }
   return code ? `${message} (${code})` : message;
 }
+
+/**
+ * Plaid has the item, and not the transactions yet.
+ *
+ * A bank linked a moment ago answers /accounts/get immediately and
+ * /transactions/get with this, because the history is pulled in the background
+ * after the link. Balances arrive, transactions do not, and nothing about it
+ * is wrong except the timing.
+ */
+export const PRODUCT_NOT_READY = "PRODUCT_NOT_READY";
+
+/** How long to give a brand new item to finish preparing, in total. */
+export const READY_WAIT_MS = 12_000;
+/** How long to leave it between asks while waiting. */
+const READY_GAP_MS = 4_000;
+
+/**
+ * The codes that genuinely mean "there are no transactions to be had here",
+ * as opposed to "not yet" or "not until you sign in again".
+ *
+ * Kept as a list of what is known rather than as "any refusal", because the
+ * previous rule was that every 400 meant an item without the transactions
+ * product, and a brand new bank connection returns exactly that. Balances
+ * appeared, no transaction ever did, and nothing was reported.
+ */
+export const NO_TRANSACTIONS_CODES = new Set([
+  "PRODUCTS_NOT_SUPPORTED",
+  "NO_ACCOUNTS",
+]);
 
 export async function plaidCall(
   creds: PlaidCreds,
@@ -111,6 +144,12 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
   startDate: string;
   endDate: string;
   withHoldings?: boolean;
+  /**
+   * How long to give a brand new item to finish preparing. Defaults to the
+   * budget below; a test that wants to see the refusal rather than wait for
+   * it passes zero.
+   */
+  readyWaitMs?: number;
 }): Promise<PlaidRaw> {
   const accounts = await plaidCall(creds, "/accounts/get", { access_token: opts.accessToken });
 
@@ -119,12 +158,42 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
   // total_transactions how many there really are — so asking once for 500
   // and stopping silently discarded everything older than the newest 500 in
   // the window. A busy account loses whole weeks that way and says nothing.
-  const page = (offset: number) => plaidCall(creds, "/transactions/get", {
+  const once = (offset: number) => plaidCall(creds, "/transactions/get", {
     access_token: opts.accessToken,
     start_date: opts.startDate,
     end_date: opts.endDate,
     options: { count: PAGE_SIZE, offset },
   });
+
+  /**
+   * The same call, giving a brand new item a moment to be ready.
+   *
+   * Plaid fetches an item's history in the background after it is linked, so
+   * the first ask often lands before there is anything to answer with. Waiting
+   * a few seconds turns "connected, and no transactions ever appeared" into
+   * "connected, and they were there" for most banks. When it is not enough the
+   * error says so in words, and says to press Sync again, which is the whole
+   * of what anyone needs to do about it.
+   *
+   * Only the first page waits: later pages are being served from data that by
+   * definition already exists.
+   */
+  const page = async (offset: number): Promise<unknown> => {
+    const budget = opts.readyWaitMs ?? READY_WAIT_MS;
+    const until = Date.now() + (offset === 0 ? budget : 0);
+    for (;;) {
+      try {
+        return await once(offset);
+      } catch (err) {
+        const notReady = err instanceof PlaidError && err.code === PRODUCT_NOT_READY;
+        const left = until - Date.now();
+        if (!notReady || left <= 0) throw err;
+        // Never longer than what is left, or a budget shorter than the gap
+        // would spend none of itself and give up on the first refusal.
+        await new Promise((r) => setTimeout(r, Math.min(READY_GAP_MS, left)));
+      }
+    }
+  };
 
   let rows: unknown[] = [];
   let total = 0;
@@ -142,8 +211,13 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
       if (batch.length < PAGE_SIZE || rows.length >= total || pages >= MAX_PAGES) break;
     }
   } catch (err: unknown) {
-    // an investment-only item has no transactions product; that isn't fatal
-    if (!(err instanceof PlaidError && err.status === 400)) throw err;
+    // An item that carries no transactions product has none to give, and that
+    // is not a failure. Anything else is, and used to be swallowed: every 400
+    // was read as "investment-only item", including the one a bank linked a
+    // moment ago returns while Plaid is still fetching its history, and the
+    // one a bank returns when it wants a new login. Both produced an account
+    // with balances, no transactions, and no explanation anywhere.
+    if (!(err instanceof PlaidError) || !NO_TRANSACTIONS_CODES.has(err.code)) throw err;
     rows = [];
     total = 0;
   }
