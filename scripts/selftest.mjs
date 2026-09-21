@@ -83,6 +83,7 @@ await build({
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
+      export { adopt, floorFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -1317,6 +1318,46 @@ const payload = {
     { syncId: "tx-2", accountSyncId: "acct-1", date: "2026-08-19", amount: 210000, description: "DIRECT DEP ACME PAYROLL", pending: false },
   ],
 };
+
+await test("a switched provider does not refile the history already held", () => {
+  // Connecting the same bank through Plaid backfills up to two years, and the
+  // same real transaction arriving from a second provider carries a different
+  // id, so nothing recognises it. Without a floor, switching files a second
+  // copy of everything already categorised.
+  const first = M.mergeSync(M.emptyDB(), payload, "simplefin");
+  assert.equal(first.transactionsAdded, 2);
+
+  // The account is moved across, starting the day after what it already has.
+  const account = first.db.accounts[0];
+  const from = M.floorFor(first.db, account.id, "2026-01-01");
+  assert.equal(from, "2026-08-20", "the day after the newest it holds");
+  const moved = {
+    ...first.db,
+    accounts: [M.adopt(account, { syncId: "pl-acct-1", institution: "Stub Bank" }, from)],
+  };
+
+  // Plaid now offers the same two days again, plus one that is genuinely new.
+  const backfill = {
+    fetchedAt: "2026-09-21T12:00:00.000Z",
+    errors: [],
+    accounts: [{
+      syncId: "pl-acct-1", name: "Premier Checking", institution: "Stub Bank",
+      balance: 430000, currency: "USD", type: "checking", balanceDate: "2026-09-20",
+    }],
+    transactions: [
+      { syncId: "pl-1", accountSyncId: "pl-acct-1", date: "2026-08-18", amount: -4210, description: "WHOLEFDS MKT 10412", pending: false },
+      { syncId: "pl-2", accountSyncId: "pl-acct-1", date: "2026-08-19", amount: 210000, description: "ACME PAYROLL", pending: false },
+      { syncId: "pl-3", accountSyncId: "pl-acct-1", date: "2026-09-15", amount: -1500, description: "A NEW ONE", pending: false },
+    ],
+  };
+  const after = M.mergeSync(moved, backfill, "plaid");
+  assert.equal(after.transactionsAdded, 1, "only the one that is actually new");
+  assert.equal(after.db.transactions.length, 3);
+  assert.ok(after.db.transactions.some((t) => t.statement === "A NEW ONE"));
+  // And the account was recognised rather than duplicated.
+  assert.equal(after.db.accounts.length, 1);
+  assert.equal(after.accountsAdded, 0);
+});
 
 await test("merge creates the account and its transactions", () => {
   const res = M.mergeSync(M.emptyDB(), payload, "simplefin");
@@ -3926,6 +3967,45 @@ await test("missing credentials are reported as configuration, not failure", asy
   const body = JSON.parse(r.text);
   assert.equal(body.configured, false);
   assert.match(body.error, /PLAID_CLIENT_ID and PLAID_SECRET/);
+});
+
+await test("an account moved to another provider keeps everything but where its data comes from", () => {
+  const account = {
+    id: "a_joint", name: "Joint Bills", institution: "Elements Financial", type: "checking",
+    balance: 421_00, includeInNetWorth: true, hidden: false, order: 3,
+    history: [{ date: "2026-09-01", balance: 400_00 }],
+    syncSource: "simplefin", syncId: "sf-123",
+    syncNote: { message: "We are upgrading this connection.", at: "2026-09-20T00:00:00.000Z" },
+  };
+  const moved = M.adopt(account, { syncId: "pl-987", institution: "Elements Financial", logo: "data:image/png;base64,x" }, "2026-09-03");
+
+  // The same account, reached a different way.
+  assert.equal(moved.id, "a_joint", "the id is what every transaction, rule and goal points at");
+  assert.equal(moved.name, "Joint Bills", "and the name is the household's, not the provider's");
+  assert.deepEqual(moved.history, account.history);
+  assert.equal(moved.balance, 421_00);
+  assert.equal(moved.order, 3);
+
+  assert.equal(moved.syncSource, "plaid");
+  assert.equal(moved.syncId, "pl-987");
+  assert.equal(moved.syncFrom, "2026-09-03");
+  assert.equal(moved.syncNote, undefined, "the old provider's complaint is no longer about this account");
+  assert.equal(moved.logo, "data:image/png;base64,x", "a mark it did not have is taken");
+});
+
+await test("the new provider starts the day after the history already held", () => {
+  const db = {
+    ...M.emptyDB(),
+    transactions: [
+      { id: "t1", accountId: "a1", date: "2026-09-02", amount: -100, merchant: "M", categoryId: "c", tags: [] },
+      { id: "t2", accountId: "a1", date: "2026-08-30", amount: -100, merchant: "M", categoryId: "c", tags: [] },
+      { id: "t3", accountId: "other", date: "2026-09-19", amount: -100, merchant: "M", categoryId: "c", tags: [] },
+    ],
+  };
+  assert.equal(M.floorFor(db, "a1", "2026-01-01"), "2026-09-03",
+    "the day after this account's newest, and another account's does not count");
+  assert.equal(M.floorFor(db, "empty", "2026-01-01"), "2026-01-01",
+    "an account with no history takes what it is given");
 });
 
 await test("reconnecting an item reopens it rather than making a new one", async () => {

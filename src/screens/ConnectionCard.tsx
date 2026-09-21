@@ -6,6 +6,7 @@ import { sinceLabel } from "../lib/date";
 import { connectionOf } from "../lib/connection";
 import type { ConnectionState } from "../lib/connection";
 import { Card, CardHead, cx } from "../components/ui";
+import { SwitchToPlaid } from "./SwitchToPlaid";
 
 /**
  * Where this account's balance comes from, and whether it is still coming.
@@ -69,6 +70,11 @@ export function ConnectionCard({ account }: { account: Account }) {
           has merely gone quiet is not the same news as one that is broken and
           should not be painted as though it were. */}
       {c.detail ? <div className={cx("conn-detail small", TONE[c.state])}>{c.detail}</div> : null}
+      {/* Offered where it is a real choice: an account fed by SimpleFIN. Not
+          gated on Plaid being configured, because the browser cannot know
+          that without asking the server, and the link endpoint already
+          answers "PLAID_CLIENT_ID and PLAID_SECRET are not set" in words. */}
+      {account.syncSource === "simplefin" ? <SwitchToPlaid account={account} /> : null}
     </Card>
   );
 }

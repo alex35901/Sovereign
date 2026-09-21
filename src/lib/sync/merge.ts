@@ -186,6 +186,11 @@ export function mergeSync(
     if (known.has(key)) continue;
     const accountId = idBySyncId.get(r.accountSyncId);
     if (!accountId) continue;
+    // An account moved from one provider to another already holds its older
+    // history, under the other provider's ids. Taking the backfill as well
+    // would file a second copy of all of it.
+    const floor = accounts.find((a) => a.id === accountId)?.syncFrom;
+    if (floor && r.date < floor) continue;
     known.add(key);
     const base: Transaction = {
       id: uid("t"),

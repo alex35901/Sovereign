@@ -113,6 +113,20 @@ export interface Account {
    * the next pull that brings that account back without complaint.
    */
   syncNote?: { message: string; at: string };
+  /**
+   * The first day this account's provider is allowed to contribute.
+   *
+   * Set when an account is moved from one provider to another. The same real
+   * transaction arriving from a second provider carries a different id, so
+   * nothing dedupes it against the one already held, and Plaid backfills up
+   * to two years: switching without this would import a second copy of every
+   * transaction you have already categorised.
+   *
+   * A floor rather than a merge, because the alternative is matching two
+   * providers' descriptions and amounts against each other and guessing, and
+   * a wrong guess silently welds two real transactions into one.
+   */
+  syncFrom?: ISODate;
   /** Street address, for property accounts that can be valued automatically. */
   address?: string;
   /** The most recent automated valuation, kept for provenance. */
