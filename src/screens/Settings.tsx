@@ -21,6 +21,8 @@ export default function Settings() {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** What a pull left out, which is never an error and never worth swallowing. */
+  const [note, setNote] = useState<string | null>(null);
 
   const adapter = ADAPTERS[0];
   const connected = adapter.isConnected(db.settings);
@@ -44,10 +46,12 @@ export default function Settings() {
     if (!db.settings.simplefinAccessUrl) return;
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
-      const { summary, errors } = await syncSimplefin(db, apply);
+      const { summary, errors, notes } = await syncSimplefin(db, apply);
       notify(summary);
       if (errors.length) setError(errors.join(" · "));
+      setNote(notes.length ? notes.join(" ") : null);
       // Prices ride along, but only if one is owed: this button gets pressed
       // repeatedly while someone waits for a transaction to show up, and a
       // closing price does not change in between. The Refresh now button on
@@ -182,6 +186,7 @@ export default function Settings() {
           )}
 
           {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+          {note ? <div className="small muted" style={{ marginTop: 10 }}>{note}</div> : null}
 
           {(db.settings.deletedAccountKeys?.length ?? 0) > 0 ? (
             <>

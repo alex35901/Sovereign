@@ -1,6 +1,6 @@
 import type { DB, PlaidItemRef } from "../../types";
 import { simplefin } from "./simplefin";
-import { mergeSync, syncWindowStart, windowFor } from "./merge";
+import { mergeSync, skipNotes, syncWindowStart, windowFor } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
 import { reason, recordRun } from "../usage";
 import { syncDue } from "./schedule";
@@ -10,6 +10,12 @@ import type { SyncCadence } from "./schedule";
 export interface SyncOutcome {
   summary: string;
   errors: string[];
+  /**
+   * What the pull did that nobody asked about but everybody would want to
+   * know: rows it left out, and accounts that shadow each other. Not errors,
+   * and not worth colouring red, but never worth swallowing either.
+   */
+  notes: string[];
   /** Whether anything actually landed — the scheduler stays quiet when nothing did. */
   changed: boolean;
 }
@@ -36,8 +42,10 @@ export async function syncSimplefin(
   }
   let summary = "";
   let changed = false;
+  let notes: string[] = [];
   apply((cur) => {
     const res = mergeSync(cur, payload, "simplefin");
+    notes = skipNotes(res);
     const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
     summary =
       `${plural(res.transactionsAdded, "new transaction")}, ` +
@@ -62,7 +70,7 @@ export async function syncSimplefin(
     error: unclaimed(db.accounts.filter((a) => a.syncSource === "simplefin"), payload.errors)[0],
   });
 
-  return { summary, errors: payload.errors, changed };
+  return { summary, errors: payload.errors, changed, notes };
 }
 
 /* ── plaid ────────────────────────────────────────────────────────────── */
@@ -121,8 +129,10 @@ export async function syncPlaidItem(
 
   let summary = "";
   let changed = false;
+  let notes: string[] = [];
   apply((cur) => {
     const res = mergeSync(cur, payload, "plaid");
+    notes = skipNotes(res);
     const accounts = res.accountsAdded + res.accountsUpdated;
     summary =
       `${item.institution}: ${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}` +
@@ -135,7 +145,7 @@ export async function syncPlaidItem(
     return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
   }, `sync ${item.institution}`);
 
-  return { summary, errors: payload.errors, changed };
+  return { summary, errors: payload.errors, changed, notes };
 }
 
 /**
@@ -183,6 +193,7 @@ async function runItems(
 ): Promise<SyncOutcome> {
   const summaries: string[] = [];
   const errors: string[] = [];
+  const notes: string[] = [];
   let changed = false;
 
   for (const item of items) {
@@ -190,6 +201,7 @@ async function runItems(
       const out = await syncPlaidItem(apply, item);
       summaries.push(out.summary);
       errors.push(...out.errors);
+      notes.push(...out.notes);
       changed = changed || out.changed;
     } catch (err) {
       errors.push(`${item.institution}: ${reason(err, "the sync failed")}`);
@@ -201,5 +213,5 @@ async function runItems(
   // call the whole thing healthy.
   recordRun(apply, "plaid", "ever", { error: errors[0] });
 
-  return { summary: summaries.join(" · ") || "Nothing came back.", errors, changed };
+  return { summary: summaries.join(" · ") || "Nothing came back.", errors, changed, notes };
 }

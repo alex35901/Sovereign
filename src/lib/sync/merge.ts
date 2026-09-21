@@ -1,4 +1,4 @@
-import type { DB, Holding, Transaction } from "../../types.js";
+import type { DB, Holding, ISODate, Transaction } from "../../types.js";
 import { noteFor } from "./notes.js";
 import type { SyncPayload } from "./types.js";
 import type { RemoteHolding } from "./plaid.js";
@@ -17,6 +17,31 @@ export interface MergeResult {
   /** Pending rows the provider has since restated or settled. */
   transactionsRevised: number;
   holdingsUpdated: number;
+  /**
+   * Rows the provider sent that did not become transactions, and why.
+   *
+   * Every one of these used to be a bare `continue`. A pull would report "0
+   * new transactions" while quietly dropping a fortnight of them, and there
+   * was no way at all to tell that apart from a bank with nothing to send.
+   */
+  skipped: {
+    /** Named an account this document does not track, or no longer does. */
+    noAccount: number;
+    /** Older than the day the account was told to start taking history from. */
+    beforeFloor: number;
+    /** Which accounts those were, and from what day, for a sentence about it. */
+    floors: { name: string; from: ISODate; count: number }[];
+  };
+  /** Rows recognised as something already held, under an id that changed. */
+  rekeyed: number;
+  /**
+   * Accounts that claim the same provider account as another one.
+   *
+   * Only the first of them is ever fed, so the others go quiet for ever while
+   * the connection reports itself healthy. It happens when an account is moved
+   * onto a connection that had already made its own copy of it.
+   */
+  sharedIds: string[];
 }
 
 /**
@@ -101,6 +126,20 @@ export function mergeSync(
     }
   }
 
+  // Two accounts claiming one provider account: only the first is ever found,
+  // so the rest go quiet while the connection calls itself healthy.
+  const seenSyncIds = new Map<string, string>();
+  const sharedIds: string[] = [];
+  for (const a of accounts) {
+    if (!a.syncId || a.closedAt) continue;
+    const first = seenSyncIds.get(a.syncId);
+    if (first) sharedIds.push(`${first} and ${a.name}`);
+    else seenSyncIds.set(a.syncId, a.name);
+  }
+
+  let skippedNoAccount = 0;
+  const floorCounts = new Map<string, { name: string; from: ISODate; count: number }>();
+
   const prefix = source === "plaid" ? "pl" : "sf";
   const keyFor = (syncId: string) => `${prefix}:${syncId}`;
   const known = new Set(db.transactions.map((t) => t.importKey).filter(Boolean) as string[]);
@@ -166,6 +205,8 @@ export function mergeSync(
     if (held) held.push(t);
     else twins.set(k, [t]);
   }
+  let rekeyed = 0;
+
   /** The oldest unclaimed stored row for this day and figure, if there is one. */
   const claimTwin = (accountId: string, date: string, amount: number): Transaction | undefined =>
     twins.get(twinKey(accountId, date, amount))?.shift();
@@ -224,7 +265,7 @@ export function mergeSync(
 
     if (known.has(key)) continue;
     const accountId = idBySyncId.get(r.accountSyncId);
-    if (!accountId) continue;
+    if (!accountId) { skippedNoAccount += 1; continue; }
 
     // Held already, under the id it had before the connection was remade.
     // Re-keyed rather than added, so the household keeps the category, the
@@ -237,14 +278,22 @@ export function mergeSync(
         ...(twin.pending && !r.pending ? { pending: false, statement: r.description } : {}),
       });
       known.add(key);
+      rekeyed += 1;
       continue;
     }
 
     // An account moved from one provider to another already holds its older
     // history, under the other provider's ids. Taking the backfill as well
     // would file a second copy of all of it.
-    const floor = accounts.find((a) => a.id === accountId)?.syncFrom;
-    if (floor && r.date < floor) continue;
+    const held = accounts.find((a) => a.id === accountId);
+    const floor = held?.syncFrom;
+    if (floor && r.date < floor) {
+      const at = floorCounts.get(accountId)
+        ?? { name: held?.name ?? "an account", from: floor, count: 0 };
+      at.count += 1;
+      floorCounts.set(accountId, at);
+      continue;
+    }
     known.add(key);
     const base: Transaction = {
       id: uid("t"),
@@ -316,6 +365,13 @@ export function mergeSync(
     },
     accountsAdded, accountsUpdated, transactionsAdded: fresh.length,
     transactionsRevised: revised.size, holdingsUpdated,
+    skipped: {
+      noAccount: skippedNoAccount,
+      beforeFloor: [...floorCounts.values()].reduce((n, f) => n + f.count, 0),
+      floors: [...floorCounts.values()],
+    },
+    rekeyed,
+    sharedIds,
   };
 }
 
@@ -398,3 +454,38 @@ export function syncWindowStart(db: DB): string {
   return windowFor(db.settings.lastSyncAt, WINDOW_DAYS);
 }
 
+
+/**
+ * What a pull quietly did not file, in plain words.
+ *
+ * "0 new transactions" is the same sentence whether the bank sent nothing or
+ * whether it sent a fortnight that every one of the merge's rules threw away.
+ * The household has no way to tell those apart, and the second one is the
+ * failure that hides for weeks.
+ */
+export function skipNotes(res: MergeResult): string[] {
+  const out: string[] = [];
+  const rows = (n: number) => `${n} transaction${n === 1 ? "" : "s"}`;
+
+  for (const f of res.skipped.floors) {
+    out.push(
+      `${f.name}: ${rows(f.count)} before ${f.from} were left out, because that is the day this `
+      + "account was told to start taking history from when it moved to Plaid. Everything before it "
+      + "is already here under the old connection.",
+    );
+  }
+  if (res.skipped.noAccount) {
+    out.push(
+      `${rows(res.skipped.noAccount)} arrived for an account this document does not track. `
+      + "That is an account deleted on purpose, or one not yet pointed at this connection.",
+    );
+  }
+  for (const pair of res.sharedIds) {
+    out.push(
+      `${pair} both claim the same account at the bank. Only the first of them is fed, so the other `
+      + "will go quiet while the connection still reports itself healthy. Delete the empty one, or "
+      + "point it somewhere else.",
+    );
+  }
+  return out;
+}

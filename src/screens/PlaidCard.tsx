@@ -149,16 +149,21 @@ export function PlaidCard() {
     // from it. Showing the count is the only thing that turns silent data loss
     // into something anyone can act on.
     if (out.errors.length) setError(out.errors.join(" · "));
+    // Not an error and not red, but a pull that reports nothing new while
+    // quietly dropping a fortnight is the failure that hides for weeks.
+    if (out.notes.length) setNote(out.notes.join(" "));
     return out;
   };
 
   const syncAll = async () => {
     setBusy("sync");
     setError(null);
+    setNote(null);
     try {
       const out = await syncPlaid(db, apply);
       notify(out.summary);
       if (out.errors.length) setError(out.errors.join(" · "));
+      if (out.notes.length) setNote(out.notes.join(" "));
     } finally {
       setBusy(null);
     }

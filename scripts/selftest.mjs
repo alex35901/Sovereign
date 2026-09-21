@@ -35,7 +35,7 @@ const entry = join(dir, "entry.js");
 await build({
   stdin: {
     contents: `
-      export { mergeSync, cleanMerchant, syncWindowStart, windowFor, FIRST_PULL_DAYS, accountKeys } from "./src/lib/sync/merge.ts";
+      export { mergeSync, cleanMerchant, syncWindowStart, windowFor, FIRST_PULL_DAYS, accountKeys, skipNotes } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
@@ -4630,6 +4630,78 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
   assert.equal(flaky.total, 900);
   assert.equal(flaky.timedOut, false);
+});
+
+await test("a pull says what it left out rather than reporting nothing new", () => {
+  // "0 new transactions" is the same sentence whether the bank sent nothing or
+  // whether it sent a fortnight that every rule in the merge threw away. The
+  // second is the failure that hides for weeks, and there was no way at all to
+  // tell them apart.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{
+      ...base.accounts[0], id: "a1", name: "Everyday", institution: "Elements",
+      syncSource: "plaid", syncId: "p1", syncFrom: "2026-09-10", history: [],
+    }],
+    transactions: [],
+  };
+  const row = (id, date) => ({ syncId: id, accountSyncId: "p1", date, amount: -1500, description: "X", pending: false });
+  const pull = (transactions) => ({
+    fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], transactions,
+    accounts: [{ syncId: "p1", name: "Everyday", institution: "Elements", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-09-21" }],
+  });
+
+  const res = M.mergeSync(db, pull([
+    row("t1", "2026-09-02"), row("t2", "2026-09-03"), row("t3", "2026-09-15"),
+    { ...row("t4", "2026-09-16"), accountSyncId: "gone" },
+  ]), "plaid");
+
+  assert.equal(res.transactionsAdded, 1, "only the one inside the window and on a known account");
+  assert.equal(res.skipped.beforeFloor, 2);
+  assert.equal(res.skipped.noAccount, 1);
+  assert.deepEqual(res.skipped.floors, [{ name: "Everyday", from: "2026-09-10", count: 2 }]);
+
+  const said = M.skipNotes(res);
+  assert.equal(said.length, 2);
+  assert.match(said[0], /Everyday: 2 transactions before 2026-09-10 were left out/);
+  assert.match(said[0], /moved to Plaid/);
+  assert.match(said[1], /1 transaction arrived for an account this document does not track/);
+
+  // A clean pull has nothing to say, or every sync would end in a paragraph.
+  assert.deepEqual(M.skipNotes(M.mergeSync(db, pull([row("t9", "2026-09-18")]), "plaid")), []);
+});
+
+await test("two accounts claiming one account at the bank is said out loud", () => {
+  // It happens when an account is moved onto a connection that had already
+  // made its own copy of it. Only the first is ever found, so the other goes
+  // quiet for ever while the connection reports itself perfectly healthy.
+  const base = M.emptyDB();
+  const acct = (id, name) => ({
+    ...base.accounts[0], id, name, institution: "Elements",
+    syncSource: "plaid", syncId: "p1", history: [],
+  });
+  const db = { ...base, accounts: [acct("a1", "Everyday"), acct("a2", "Everyday (Plaid)")], transactions: [] };
+  const pull = {
+    fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], transactions: [],
+    accounts: [{ syncId: "p1", name: "Everyday", institution: "Elements", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-09-21" }],
+  };
+
+  const res = M.mergeSync(db, pull, "plaid");
+  assert.deepEqual(res.sharedIds, ["Everyday and Everyday (Plaid)"]);
+  const said = M.skipNotes(res);
+  assert.match(said[0], /both claim the same account at the bank/);
+  assert.match(said[0], /Only the first of them is fed/);
+
+  // One account, one claim, nothing to report.
+  const fine = M.mergeSync({ ...db, accounts: [acct("a1", "Everyday")] }, pull, "plaid");
+  assert.deepEqual(fine.sharedIds, []);
+
+  // An account settled on purpose is not competing for anything.
+  const closed = M.mergeSync(
+    { ...db, accounts: [acct("a1", "Everyday"), { ...acct("a2", "Old"), closedAt: "2026-01-01" }] },
+    pull, "plaid");
+  assert.deepEqual(closed.sharedIds, []);
 });
 
 await test("one login is one connection, however many accounts sit behind it", () => {
