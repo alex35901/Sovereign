@@ -43,6 +43,9 @@ const TARGETS = [
   ["public/apple-touch-icon.png", 180, "iOS home screen, and what Safari and DuckDuckGo look for first"],
   ["public/icon-192.png", 192, "the manifest's small icon — Android home screen, install prompts"],
   ["public/icon-512.png", 512, "the manifest's large icon — splash screens and app listings"],
+  // Not served: a brand asset, for the places that ask for a file rather
+  // than a URL. Plaid's compliance centre wants exactly this size.
+  ["design/logo-1024.png", 1024, "the logo uploaded to third parties, Plaid among them"],
 ];
 
 let chromium;

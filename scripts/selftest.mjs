@@ -83,6 +83,7 @@ await build({
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, releaseItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
+      export * as LE from "./src/lib/sync/link-error.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
@@ -4630,6 +4631,47 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
   assert.equal(flaky.total, 900);
   assert.equal(flaky.timedOut, false);
+});
+
+await test("Plaid Link saying nothing is not the same as nothing going wrong", () => {
+  // Link reports trouble twice. An ERROR event fires the moment it happens,
+  // carrying the code; the exit callback fires when the dialog closes, and its
+  // error is null when somebody pressed Exit rather than being thrown out,
+  // which is exactly what anybody does when a screen says "Something went
+  // wrong". So the whole event was arriving here as nothing at all.
+  const fail = (over) => M.LE.describeLinkFailure(over);
+
+  const internal = fail({
+    code: "INTERNAL_SERVER_ERROR", institution: "Capital One",
+    requestId: "req-1", sessionId: "sess-1",
+  });
+  assert.match(internal, /could not finish with Capital One/);
+  assert.match(internal, /at its own end rather than anything to do with this app/,
+    "or somebody spends an evening retyping a password that was always right");
+  assert.match(internal, /INTERNAL_SERVER_ERROR/, "the code as well, because that is what Plaid's support is indexed by");
+  assert.match(internal, /Plaid's reference: session sess-1, request req-1\./);
+
+  // A bank that is down is not a password that is wrong, and the difference is
+  // what somebody does next.
+  assert.match(fail({ code: "INSTITUTION_NOT_RESPONDING" }), /not answering Plaid/);
+  assert.match(fail({ code: "INVALID_CREDENTIALS" }), /rejected that username or password/);
+  assert.match(fail({ code: "ITEM_LOCKED" }), /locked this login/);
+
+  // A code with no gloss still says what Plaid said, rather than swallowing it.
+  const odd = fail({ code: "SOMETHING_NEW", message: "the bank refused politely" });
+  assert.match(odd, /the bank refused politely/);
+  assert.match(odd, /SOMETHING_NEW/);
+
+  // And a failure with nothing attached at all still says so out loud.
+  const bare = fail({});
+  assert.match(bare, /Plaid gave no reason for it\./);
+  assert.ok(!/reference/.test(bare), "no reference is better than an empty one");
+
+  // The reference on its own, for the cases that have a clear cause and still
+  // need the id nobody can recover once the dialog has closed.
+  assert.equal(M.LE.linkReference({ sessionId: "s" }), "Plaid's reference: session s.");
+  assert.equal(M.LE.linkReference({ requestId: "r" }), "Plaid's reference: request r.");
+  assert.equal(M.LE.linkReference({}), "");
 });
 
 await test("a tombstone does not outlive the account it was for", () => {
