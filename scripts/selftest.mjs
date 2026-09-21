@@ -81,7 +81,8 @@ await build({
       export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
-      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
+      export * as HW from "./src/lib/sync/history.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
@@ -4551,6 +4552,150 @@ await test("a bank is linked asking for two years, not for Plaid's ninety days",
       return new Response(JSON.stringify({ link_token: "lt" }), { status: 200 });
     }, () => invokePlaid({ action: "link_token", products: ["transactions"] })));
   assert.equal(none.transactions, undefined);
+});
+
+await test("the wait for Plaid's backfill ends when the count stops climbing", async () => {
+  // Raising an item's reach does not hand back the older months: Plaid goes
+  // and fetches them, and until it has, every pull returns the ninety days it
+  // already held. The first version of this made that the household's problem:
+  // press the button, get nothing, come back later and press it again with no
+  // way of knowing when later was.
+  const clock = { t: 0 };
+  const drive = (answers) => {
+    let i = 0;
+    return M.HW.waitForHistory(async () => answers[Math.min(i++, answers.length - 1)], {
+      now: () => clock.t,
+      sleep: async (ms) => { clock.t += ms; },
+      pollMs: 1000,
+      budgetMs: 60_000,
+    });
+  };
+
+  const grew = await drive([90, 400, 1200, 1200, 1200]);
+  assert.equal(grew.total, 1200);
+  assert.equal(grew.grew, true);
+  assert.equal(grew.timedOut, false, "two readings the same after it climbed is a backfill that has finished");
+
+  // A backfill arrives in chunks with pauses between them. One steady reading
+  // is a pause; stopping on it pulls a third of the history and calls it all
+  // of it, which is the original bug wearing a different hat.
+  clock.t = 0;
+  const chunked = await drive([90, 400, 400, 900, 900, 900]);
+  assert.equal(chunked.total, 900, "a pause mid-backfill is not the end of the backfill");
+  assert.equal(chunked.timedOut, false);
+
+  // The figure standing still before anything arrives is a backfill that has
+  // not started, not one that is over. Stopping there would pull the same
+  // ninety days the button was pressed to get past.
+  clock.t = 0;
+  const slow = await drive([90, 90, 90, 90, 90, 90, 90]);
+  assert.equal(slow.grew, false);
+  assert.equal(slow.timedOut, true, "the budget ends this, not two identical answers");
+  assert.equal(slow.total, 90);
+
+  // A refusal mid-wait is Plaid rate-limiting, not the backfill failing.
+  clock.t = 0;
+  let asked = 0;
+  const flaky = await M.HW.waitForHistory(async () => {
+    asked += 1;
+    if (asked === 2) throw new Error("429");
+    return asked < 4 ? 90 : 900;
+  }, { now: () => clock.t, sleep: async (ms) => { clock.t += ms; }, pollMs: 1000, budgetMs: 60_000 });
+  assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
+  assert.equal(flaky.total, 900);
+  assert.equal(flaky.timedOut, false);
+});
+
+await test("an item whose history is already deep is not sent back through the dialog", async () => {
+  // The complaint this exists for: Full history asked for a bank login every
+  // single time it was pressed. The reach only has to be raised once, and an
+  // item raised before the app kept a note of it can be recognised from what
+  // is already in the document.
+  const now = Date.parse("2026-09-21T12:00:00.000Z");
+  const day = (back) => new Date(now - back * 86400000).toISOString().slice(0, 10);
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [
+      { ...base.accounts[0], id: "a1", name: "Checking", institution: "Third National", syncSource: "plaid", history: [] },
+      { ...base.accounts[0], id: "a2", name: "Other", institution: "Elsewhere", syncSource: "plaid", history: [] },
+    ],
+    transactions: [],
+  };
+  const txn = (over) => ({ id: "t", accountId: "a1", date: day(300), amount: -100, importKey: "pl:1", ...over });
+
+  assert.equal(M.HW.historyAlreadyDeep(db, { institution: "Third National" }, now), false,
+    "no transactions at all proves nothing about the reach");
+
+  assert.equal(
+    M.HW.historyAlreadyDeep({ ...db, transactions: [txn({ date: day(100) })] }, { institution: "Third National" }, now),
+    false, "inside Plaid's default reach, so it says nothing either way");
+
+  assert.equal(
+    M.HW.historyAlreadyDeep({ ...db, transactions: [txn()] }, { institution: "Third National" }, now),
+    true, "a row Plaid filed from further back than Plaid reaches by default");
+
+  // Imported history is older history. It says nothing whatever about what
+  // the connection can fetch, and taking it as proof would skip the dialog
+  // that is the only way to raise the reach.
+  assert.equal(
+    M.HW.historyAlreadyDeep({ ...db, transactions: [txn({ importKey: "csv:1" })] }, { institution: "Third National" }, now),
+    false, "a CSV is not evidence about Plaid");
+  assert.equal(
+    M.HW.historyAlreadyDeep({ ...db, transactions: [txn({ importKey: undefined })] }, { institution: "Third National" }, now),
+    false, "and nor is a row typed in by hand");
+
+  // Another bank's depth is another bank's.
+  assert.equal(
+    M.HW.historyAlreadyDeep({ ...db, transactions: [txn({ accountId: "a2" })] }, { institution: "Third National" }, now),
+    false);
+});
+
+await test("Full history asks for a bank login once, not on every press", async () => {
+  const now = Date.parse("2026-09-21T12:00:00.000Z");
+  const day = (back) => new Date(now - back * 86400000).toISOString().slice(0, 10);
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{ ...base.accounts[0], id: "a1", institution: "Third National", syncSource: "plaid", history: [] }],
+    transactions: [],
+  };
+  const bank = { kind: "bank", institution: "Third National" };
+
+  assert.equal(M.HW.needsRaising(db, bank, 730, now), true, "never raised, so the dialog is the only way");
+  assert.equal(M.HW.needsRaising(db, { ...bank, historyDays: 730 }, 730, now), false,
+    "raised once and remembered: asking again is asking for a sign-in for nothing");
+  assert.equal(M.HW.needsRaising(db, { ...bank, historyDays: 90 }, 730, now), true,
+    "raised, but not this far");
+  assert.equal(M.HW.needsRaising(db, { kind: "investment", institution: "Third National" }, 730, now), false,
+    "an investments item has no transactions to reach back through");
+  assert.equal(
+    M.HW.needsRaising(
+      { ...db, transactions: [{ id: "t", accountId: "a1", date: day(300), amount: -1, importKey: "pl:1" }] },
+      bank, 730, now),
+    false, "already deep, from before the app kept a note of it");
+});
+
+await test("the backfill is watched with one row, not with every row", async () => {
+  // Polling the real pull to read one number off the top would page through
+  // thousands of transactions every few seconds for four minutes.
+  const server = plaidServer({ transactions: Array.from({ length: 1500 }, (_, i) => plaidTxn({ transaction_id: `p${i}` })) });
+  const r = await withEnv(creds, () => withFetch(server.impl, () => invokePlaid({
+    action: "count", accessToken: "tok", startDate: "2024-09-21", endDate: "2026-09-21",
+  })));
+  const asked = server.calls.filter((c) => c.path === "/transactions/get");
+  assert.equal(asked.length, 1, "one call");
+  assert.equal(asked[0].body.options.count, 1, "for one row");
+  assert.deepEqual(JSON.parse(r.text), { total: 1500, notReady: false }, "and the figure that was wanted");
+
+  // A brand new item says it is not ready yet. That is an answer to a loop
+  // whose job is to wait, not a failure to report.
+  const cold = plaidServer({ fail: { "/transactions/get": { code: "PRODUCT_NOT_READY" } } });
+  const waiting = await withEnv(creds, () => withFetch(cold.impl, () => invokePlaid({
+    action: "count", accessToken: "tok", startDate: "2024-09-21", endDate: "2026-09-21",
+  })));
+  assert.equal(waiting.status, 200);
+  assert.deepEqual(JSON.parse(waiting.text), { total: 0, notReady: true });
 });
 
 await test("a link token Plaid will not take every field of still opens", async () => {

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PlaidEnv } from "./_plaid.js";
-import { HISTORY_DAYS, PlaidError, fetchItemRaw, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
+import { HISTORY_DAYS, PlaidError, countTransactions, fetchItemRaw, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
 
 /**
  * Server-side proxy for Plaid.
@@ -27,11 +27,12 @@ interface LinkTokenBody {
 }
 interface ExchangeBody { action: "exchange"; publicToken: string }
 interface InstitutionBody { action: "institution"; accessToken: string }
+interface CountBody { action: "count"; accessToken: string; startDate: string; endDate: string }
 interface SyncBody {
   action: "sync"; accessToken: string; startDate: string; endDate: string;
   withHoldings?: boolean; withTransactions?: boolean;
 }
-type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | SyncBody;
+type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | CountBody | SyncBody;
 
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
@@ -160,6 +161,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     if (body.action === "institution") {
       if (!body.accessToken) return send(400, { error: "No access token supplied." });
       return send(200, await identify(body.accessToken));
+    }
+
+    if (body.action === "count") {
+      if (!body.accessToken) return send(400, { error: "No access token supplied." });
+      // How many, not which: this is what the Full history wait watches while
+      // Plaid fills in the older months, and paging the real pull to read one
+      // number off the top would be thousands of rows every few seconds.
+      return send(200, await countTransactions(creds, {
+        accessToken: body.accessToken, startDate: body.startDate, endDate: body.endDate,
+      }));
     }
 
     if (body.action === "sync") {

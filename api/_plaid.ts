@@ -205,6 +205,38 @@ export interface PlaidRaw {
   truncated: boolean;
 }
 
+/**
+ * How many transactions Plaid holds in a window, and nothing else.
+ *
+ * One upstream call asking for a single row, because the answer wanted is
+ * total_transactions rather than any of the transactions. Plaid fills an
+ * item's older history in the background after the reach is raised, and this
+ * is the signal that it has: the figure climbs while the backfill runs and
+ * stops when it is done. Polling the real pull for that would page through
+ * thousands of rows every few seconds to read one number off the top.
+ *
+ * "Not ready" is an answer rather than a failure here. A brand new item says
+ * it, and the caller is a loop whose whole job is to wait.
+ */
+export async function countTransactions(creds: PlaidCreds, opts: {
+  accessToken: string;
+  startDate: string;
+  endDate: string;
+}): Promise<{ total: number; notReady: boolean }> {
+  try {
+    const got = await plaidCall(creds, "/transactions/get", {
+      access_token: opts.accessToken,
+      start_date: opts.startDate,
+      end_date: opts.endDate,
+      options: { count: 1, offset: 0 },
+    }) as { total_transactions?: number };
+    return { total: typeof got.total_transactions === "number" ? got.total_transactions : 0, notReady: false };
+  } catch (err) {
+    if (err instanceof PlaidError && err.code === PRODUCT_NOT_READY) return { total: 0, notReady: true };
+    throw err;
+  }
+}
+
 export async function fetchItemRaw(creds: PlaidCreds, opts: {
   accessToken: string;
   startDate: string;

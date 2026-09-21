@@ -202,6 +202,19 @@ export interface PlaidPayload extends SyncPayload {
   holdings: RemoteHolding[];
 }
 
+/**
+ * How many transactions Plaid holds in a window, without fetching any of them.
+ *
+ * What the Full history wait watches: the figure climbs while Plaid fills in
+ * the older months and stops when it has finished. See lib/sync/history.
+ */
+export async function countHistory(item: { accessToken: string }, since: string): Promise<number> {
+  const { total } = await postJSON<{ total: number; notReady: boolean }>(PROXY, {
+    action: "count", accessToken: item.accessToken, startDate: since, endDate: today(),
+  });
+  return total;
+}
+
 export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPayload> {
   const raw = await postJSON<SyncResponse>(PROXY, {
     action: "sync",

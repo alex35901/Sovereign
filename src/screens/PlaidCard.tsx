@@ -1,12 +1,13 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Building2, History, KeyRound, LineChart, RefreshCw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { syncPlaid, syncPlaidItem } from "../lib/sync";
 import { recordRun } from "../lib/usage";
-import { createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken } from "../lib/sync/plaid";
-import { FIRST_PULL_DAYS } from "../lib/sync/merge";
+import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken } from "../lib/sync/plaid";
+import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
+import { needsRaising, waitForHistory } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -80,6 +81,17 @@ export function PlaidCard() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [check, setCheck] = useState<PlaidDiagnosis | null>(null);
+  /** What the Full history wait is doing, while it is doing it. */
+  const [note, setNote] = useState<string | null>(null);
+  /**
+   * Items whose backfill was still running when the last wait gave up.
+   *
+   * Pressing Full history again on one of these should wait again rather than
+   * pull straight away, and pressing it on an item that finished long ago
+   * should not wait at all. Held for the session only: the question is about
+   * something happening right now at Plaid.
+   */
+  const stillFetching = useRef(new Set<string>());
 
   const runCheck = async () => {
     setBusy("check");
@@ -161,11 +173,21 @@ export function PlaidCard() {
         ...(item.kind === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
       });
       // Update mode has nothing to exchange: the item coming back is the one
-      // that was already there, with the same access token. Closing the
-      // dialog and finishing it look the same from here, and both are fine.
-      await openPlaidLink(linkToken);
+      // that was already there, with the same access token. Closing the dialog
+      // and finishing it look the same from here, and both are fine, except
+      // for the reach below: only a sign-in that finished raised anything.
+      const signedIn = (await openPlaidLink(linkToken)) !== null;
+      // Signing in again raised this item's reach too, so remember it, or Full
+      // history will open this very dialog again to ask for what it has. And
+      // remember that Plaid is now off fetching the older months, so that the
+      // next press waits for them rather than pulling the ninety days that are
+      // still all there is.
+      const raised = signedIn && item.kind === "bank";
+      if (raised) stillFetching.current.add(item.itemId);
       actions.patchSettings({
-        plaidItems: items.map((i) => (i.itemId === item.itemId ? { ...i, lastError: undefined } : i)),
+        plaidItems: items.map((i) => (i.itemId === item.itemId
+          ? { ...i, lastError: undefined, ...(raised ? { historyDays: FIRST_PULL_DAYS } : {}) }
+          : i)),
       });
       notify(`Reconnected ${item.institution}. Syncing…`);
       await syncItem({ ...item, lastError: undefined });
@@ -179,36 +201,74 @@ export function PlaidCard() {
   /**
    * Everything the bank still has, rather than everything since last time.
    *
-   * Two separate limits, and only one of them lives in this app. A pull asks
-   * for a narrow window once a connection has been syncing for a while, and
-   * that is what the flag below widens. The other is Plaid's: an item fetches
-   * ninety days of history unless it was created asking for more, and no later
-   * request can widen it, because /transactions/get returns what Plaid holds
-   * rather than what the bank has. Raising that on an item that already exists
-   * takes update mode, which is the dialog this opens first.
+   * Three things stand between a press of this button and two years of
+   * history, and only one of them used to be handled.
    *
-   * Safe to press twice: a transaction already held is recognised by its id
-   * and skipped.
+   * The first is this app's own window, which narrows once a connection has
+   * been syncing for a while. The flag below widens it.
+   *
+   * The second is Plaid's reach, settled when an item is linked and raised
+   * only through the Link dialog. That is a sign-in, so it is asked for once
+   * and remembered: an item that has already been raised is never sent
+   * through it again.
+   *
+   * The third is time. Plaid does not hand back the older months when the
+   * dialog closes; it goes and fetches them, over a minute or several, and
+   * until it has, every pull returns the ninety days it already held. So this
+   * waits and watches the count climb rather than telling somebody to come
+   * back later and press the same button again.
+   *
+   * Safe to press twice regardless: a transaction already held is recognised
+   * by its id and skipped.
    */
   const fullHistory = async (item: PlaidItemRef) => {
     setBusy(item.itemId);
     setError(null);
+    setNote(null);
     try {
+      // Raised already, by this app or before it kept track. Either way there
+      // is nothing to ask the bank for and no reason to open a dialog.
+      const raised = !needsRaising(db, item, FIRST_PULL_DAYS);
+
+      let wait = stillFetching.current.has(item.itemId);
       let refused = false;
-      if (item.kind === "bank") {
+
+      if (!raised) {
         const { linkToken, dropped } = await reconnectLinkToken(item.accessToken, { historyDays: FIRST_PULL_DAYS });
         refused = dropped.includes("transactions");
-        await openPlaidLink(linkToken);
+        const done = await openPlaidLink(linkToken);
+        // Closed rather than finished: nothing was raised, so nothing is
+        // remembered and the next press asks again.
+        if (done !== null && !refused) {
+          actions.patchSettings({
+            plaidItems: items.map((i) => (i.itemId === item.itemId ? { ...i, historyDays: FIRST_PULL_DAYS } : i)),
+          });
+          wait = true;
+        }
       }
-      const out = await syncItem(item, { fullHistory: true });
+
+      if (wait) {
+        const since = windowFor(undefined);
+        setNote("Plaid is fetching the older months. This takes a few minutes, and this page will pull them in as soon as they arrive.");
+        const out = await waitForHistory(() => countHistory(item, since), {
+          onProgress: (total) =>
+            setNote(`Plaid is fetching the older months. ${total.toLocaleString()} transaction${total === 1 ? "" : "s"} ready so far.`),
+        });
+        if (out.timedOut) stillFetching.current.add(item.itemId);
+        else stillFetching.current.delete(item.itemId);
+        setNote(out.timedOut
+          ? `Plaid is still fetching. ${out.total.toLocaleString()} transactions are ready and are being pulled in now; press Full history again in a few minutes for the rest.`
+          : null);
+      }
+
+      const pulled = await syncItem(item, { fullHistory: true });
       if (refused) {
         setError("Plaid would not take a request for a longer history, so this connection still holds its last 90 days only.");
-      } else if (item.kind === "bank" && !out.errors.length) {
-        // Plaid fetches the older months after the dialog closes, not during
-        // it, so the pull that follows immediately can still come back short.
-        notify(`${out.summary}. Plaid fetches the older months in the background, so press Full history again in a few minutes if earlier years are still missing.`);
+      } else if (!wait && !pulled.errors.length && item.kind === "bank") {
+        setNote("This connection already reaches back two years, so nothing had to be fetched first.");
       }
     } catch (err) {
+      setNote(null);
       setError(err instanceof Error ? err.message : "Could not fetch the history.");
     } finally {
       setBusy(null);
@@ -281,7 +341,7 @@ export function PlaidCard() {
                     disabled={busy !== null}
                     title="Ask Plaid for two years of this bank rather than the 90 days it fetches by default"
                   >
-                    <History size={12} /> Full history
+                    <History size={12} /> {busy === item.itemId && note ? "Fetching…" : "Full history"}
                   </Btn>
                   <ConfirmButton
                     label="Disconnect"
@@ -291,6 +351,7 @@ export function PlaidCard() {
                 </span>
               </div>
             ))}
+            {note ? <div className="small muted">{note}</div> : null}
             {items.some((i) => i.lastError) ? (
               <div className="small warn">
                 {items.filter((i) => i.lastError).map((i) => `${i.institution}: ${i.lastError!.message}`).join(" · ")}

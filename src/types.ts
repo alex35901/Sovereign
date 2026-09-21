@@ -493,6 +493,15 @@ export interface PlaidItemRef {
    * are not told to go and fix something that is fine.
    */
   lastError?: { message: string; at: string };
+  /**
+   * How far back Plaid was last asked to reach for this item, in days.
+   *
+   * Plaid settles an item's reach when it is linked, not when it is read, and
+   * raising it on an item that already exists takes a trip through the Link
+   * dialog. Remembering that it worked is the difference between asking once
+   * and asking every single time somebody presses Full history.
+   */
+  historyDays?: number;
 }
 
 import type { ForecastPlan } from "./lib/forecast.js";
