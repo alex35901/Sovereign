@@ -3928,6 +3928,44 @@ await test("missing credentials are reported as configuration, not failure", asy
   assert.match(body.error, /PLAID_CLIENT_ID and PLAID_SECRET/);
 });
 
+await test("reconnecting an item reopens it rather than making a new one", async () => {
+  // Plaid calls this update mode, and what matters about it is what it does
+  // not do: the access token is unchanged. Remove-and-re-add works too and
+  // mints a new one, which on an encrypted document means editing
+  // PLAID_ACCESS_TOKENS in Vercel and redeploying before the overnight pull
+  // can see the bank again.
+  let seen;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      seen = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "link-update-1" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", accessToken: "access-sandbox-existing" })));
+  assert.equal(seen.access_token, "access-sandbox-existing");
+  assert.equal(seen.products, undefined,
+    "update mode takes no products: the item's were fixed when it was created, and sending them is an error");
+
+  // And the ordinary path is untouched.
+  let fresh;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      fresh = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "link-new-1" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", products: ["transactions"] })));
+  assert.deepEqual(fresh.products, ["transactions"]);
+  assert.equal(fresh.access_token, undefined);
+
+  // An empty token is not a token, or a fumbled call would open update mode
+  // against nothing and fail in a way nobody could read.
+  let blank;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      blank = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "link-new-2" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", accessToken: "" })));
+  assert.deepEqual(blank.products, ["transactions"]);
+  assert.equal(blank.access_token, undefined);
+});
+
 await test("credentials go to Plaid's body, never to the browser", async () => {
   let seen;
   const r = await withEnv(creds, () =>

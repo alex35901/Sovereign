@@ -472,6 +472,13 @@ export interface PlaidItemRef {
   kind: "bank" | "investment";
   addedAt: string;
   lastSyncAt?: string;
+  /**
+   * What went wrong the last time this item was pulled, cleared by the next
+   * pull that works. Kept per item rather than per provider so that the bank
+   * asking for a new login is the one offered the button, and the other seven
+   * are not told to go and fix something that is fine.
+   */
+  lastError?: { message: string; at: string };
 }
 
 import type { ForecastPlan } from "./lib/forecast.js";

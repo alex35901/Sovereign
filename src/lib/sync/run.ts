@@ -101,7 +101,18 @@ export async function syncPlaidItem(
   } catch (err) {
     // Named, because a Plaid item whose login has expired fails silently on
     // every later sync and the integrations table is where that shows up.
-    recordRun(apply, "plaid", "ever", { error: `${item.institution}: ${reason(err, "the sync failed")}` });
+    const message = reason(err, "the sync failed");
+    recordRun(apply, "plaid", "ever", { error: `${item.institution}: ${message}` });
+    // And kept on the item itself, so the row for this bank can offer to
+    // reconnect it while the others are left alone.
+    apply((cur) => ({
+      ...cur,
+      settings: {
+        ...cur.settings,
+        plaidItems: (cur.settings.plaidItems ?? []).map((i) =>
+          i.itemId === item.itemId ? { ...i, lastError: { message, at: new Date().toISOString() } } : i),
+      },
+    }));
     throw err;
   }
 
@@ -116,7 +127,8 @@ export async function syncPlaidItem(
       (res.holdingsUpdated ? `, ${res.holdingsUpdated} holdings` : "");
     changed = res.transactionsAdded > 0 || res.accountsAdded > 0 || res.holdingsUpdated > 0;
     const stamped = (cur.settings.plaidItems ?? []).map((i) =>
-      i.itemId === item.itemId ? { ...i, ...item, lastSyncAt: payload!.fetchedAt } : i);
+      // A pull that worked clears whatever the last one said.
+      i.itemId === item.itemId ? { ...i, ...item, lastSyncAt: payload!.fetchedAt, lastError: undefined } : i);
     return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
   }, `sync ${item.institution}`);
 

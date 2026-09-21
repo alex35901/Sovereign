@@ -118,6 +118,20 @@ export async function createLinkToken(kind: "bank" | "investment"): Promise<stri
   return linkToken;
 }
 
+/**
+ * A link token that reopens an item already connected, for the login a bank
+ * has decided to stop accepting.
+ *
+ * The access token is unchanged by this: that is what makes it worth doing.
+ * Removing the item and adding it again would work too, and would mint a new
+ * token, which on an encrypted document means editing an environment variable
+ * in Vercel and redeploying before the overnight pull can see the bank again.
+ */
+export async function reconnectLinkToken(accessToken: string): Promise<string> {
+  const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, { action: "link_token", accessToken });
+  return linkToken;
+}
+
 export async function exchangePublicToken(publicToken: string, kind: "bank" | "investment"): Promise<PlaidItem> {
   const res = await postJSON<{
     accessToken: string; itemId: string; institution: string; logo?: string; domain?: string;

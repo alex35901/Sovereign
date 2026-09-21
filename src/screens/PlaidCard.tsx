@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { Building2, LineChart, RefreshCw, Stethoscope } from "lucide-react";
+import { Building2, KeyRound, LineChart, RefreshCw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { syncPlaid, syncPlaidItem } from "../lib/sync";
 import { recordRun } from "../lib/usage";
-import { createLinkToken, diagnosePlaid, exchangePublicToken } from "../lib/sync/plaid";
+import { createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken } from "../lib/sync/plaid";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -136,6 +136,36 @@ export function PlaidCard() {
     }
   };
 
+  /**
+   * The login again, on the item that already exists.
+   *
+   * Plaid calls this update mode, and the thing that matters about it is what
+   * it does not do: the access token is unchanged. Removing the bank and
+   * adding it back would also work and would mint a new one, which on an
+   * encrypted document means editing PLAID_ACCESS_TOKENS in Vercel and
+   * redeploying before the overnight pull can see it again.
+   */
+  const reconnect = async (item: PlaidItemRef) => {
+    setBusy(item.itemId);
+    setError(null);
+    try {
+      const token = await reconnectLinkToken(item.accessToken);
+      // Update mode has nothing to exchange: the item coming back is the one
+      // that was already there, with the same access token. Closing the
+      // dialog and finishing it look the same from here, and both are fine.
+      await openPlaidLink(token);
+      actions.patchSettings({
+        plaidItems: items.map((i) => (i.itemId === item.itemId ? { ...i, lastError: undefined } : i)),
+      });
+      notify(`Reconnected ${item.institution}. Syncing…`);
+      await syncItem({ ...item, lastError: undefined });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reconnect.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const disconnect = (item: PlaidItemRef) => {
     actions.patchSettings({ plaidItems: items.filter((i) => i.itemId !== item.itemId) });
     notify(`Disconnected ${item.institution}. Its accounts and history stay put.`);
@@ -184,6 +214,18 @@ export function PlaidCard() {
                   <span className="tiny faint nowrap">
                     {item.lastSyncAt ? `synced ${dateLabel(item.lastSyncAt.slice(0, 10))}` : "never synced"}
                   </span>
+                  {/* Offered on every item, because a bank can start refusing
+                      a login without the last pull having failed yet, and
+                      made the obvious thing to press on the one that has. */}
+                  <Btn
+                    size="sm"
+                    variant={item.lastError ? "primary" : undefined}
+                    onClick={() => void reconnect(item)}
+                    disabled={busy !== null}
+                    title="Sign in again without changing this item's access token"
+                  >
+                    <KeyRound size={12} /> {busy === item.itemId ? "Opening…" : "Reconnect"}
+                  </Btn>
                   <ConfirmButton
                     label="Disconnect"
                     confirmLabel="Click again to disconnect"
@@ -192,6 +234,11 @@ export function PlaidCard() {
                 </span>
               </div>
             ))}
+            {items.some((i) => i.lastError) ? (
+              <div className="small warn">
+                {items.filter((i) => i.lastError).map((i) => `${i.institution}: ${i.lastError!.message}`).join(" · ")}
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}

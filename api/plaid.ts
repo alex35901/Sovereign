@@ -20,7 +20,7 @@ type ApiRequest = IncomingMessage & { body?: unknown };
 type ApiResponse = ServerResponse;
 
 interface DiagnoseBody { action: "diagnose" }
-interface LinkTokenBody { action: "link_token"; products?: string[] }
+interface LinkTokenBody { action: "link_token"; products?: string[]; accessToken?: string }
 interface ExchangeBody { action: "exchange"; publicToken: string }
 interface InstitutionBody { action: "institution"; accessToken: string }
 interface SyncBody { action: "sync"; accessToken: string; startDate: string; endDate: string; withHoldings?: boolean }
@@ -88,13 +88,31 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
     }
 
     if (body.action === "link_token") {
-      const products = body.products?.length ? body.products : ["transactions"];
+      /**
+       * Two shapes, and the difference is the whole point of this endpoint.
+       *
+       * Without an access token this opens a bank chooser and ends in a new
+       * item: a new access token, which on an encrypted document means
+       * editing PLAID_ACCESS_TOKENS in Vercel and redeploying before the
+       * nightly job can see it.
+       *
+       * With one, Plaid opens the same institution in update mode. The person
+       * re-authenticates and the access token they already have keeps working,
+       * so nothing outside the document has to change. That is what a bank
+       * asking for a new login should cost: one dialog.
+       *
+       * Update mode takes no `products`. Sending them is an error rather than
+       * a hint, because the item's products were fixed when it was created.
+       */
+      const update = typeof body.accessToken === "string" && body.accessToken.length > 0;
       const data = await call("/link/token/create", {
         user: { client_user_id: "sovereign-local-user" },
         client_name: "Sovereign",
-        products,
         country_codes: ["US"],
         language: "en",
+        ...(update
+          ? { access_token: body.accessToken }
+          : { products: body.products?.length ? body.products : ["transactions"] }),
       });
       return send(200, { linkToken: data.link_token, environment: plaidEnv() });
     }
