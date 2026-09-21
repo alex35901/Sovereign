@@ -7,6 +7,7 @@ import { syncPlaid, syncPlaidItem } from "../lib/sync";
 import { recordRun } from "../lib/usage";
 import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, releaseItem, reportHistory } from "../lib/sync/plaid";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
+import { itemFor } from "../lib/sync/adopt";
 import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
 import type { ReachState } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
@@ -118,8 +119,18 @@ export function PlaidCard() {
       const publicToken = await openPlaidLink(token);
       if (!publicToken) return; // closed the dialog
       const item = await exchangePublicToken(publicToken, kind);
+      // A connection is one login and holds every account behind it, so a
+      // second one for the same bank is usually a mistake and always costs
+      // another of the plan's ten. Said rather than prevented: two logins at
+      // one institution is a real arrangement, and only the household knows.
+      const twin = itemFor(items, item.institution, kind);
       actions.patchSettings({ plaidItems: [...items, item] });
       notify(`Connected ${item.institution}. Syncing…`);
+      if (twin) {
+        setNote(`This is a second connection to ${twin.institution}, and it counts separately against the plan's ten. `
+          + "One connection already holds every account behind its login, so unless these are two different "
+          + "logins, disconnect one of them.");
+      }
       await syncItem(item);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not connect.");

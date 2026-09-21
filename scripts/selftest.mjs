@@ -84,7 +84,7 @@ await build({
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, releaseItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
-      export { adopt, floorFor } from "./src/lib/sync/adopt.ts";
+      export { adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -4630,6 +4630,49 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
   assert.equal(flaky.total, 900);
   assert.equal(flaky.timedOut, false);
+});
+
+await test("one login is one connection, however many accounts sit behind it", () => {
+  // A Plaid connection is a login, not an account: the same item holds every
+  // account behind it. Moving the chequing and the savings across separately
+  // would have opened two, which is two of the plan's ten, and then both
+  // would return both accounts and take turns renaming each other's ids.
+  const bank = (institution, itemId) => ({ institution, itemId, kind: "bank" });
+  const items = [bank("Elements Financial Credit Union", "i1"), bank("Vanguard", "i2")];
+
+  assert.equal(M.itemFor(items, "Elements Financial Credit Union")?.itemId, "i1");
+
+  // Two providers rarely spell a credit union the same way, and the account
+  // being moved came from the other one. A fuller name and a shorter one are
+  // the same bank, either way round.
+  assert.equal(M.itemFor(items, "Elements Financial")?.itemId, "i1", "the shorter spelling");
+  assert.equal(M.itemFor([bank("Chase", "i9")], "JPMorgan Chase Bank")?.itemId, "i9", "and the longer one");
+  assert.equal(M.itemFor(items, "elements  financial ")?.itemId, "i1", "case and spacing are not a difference");
+  assert.equal(M.itemFor(items, "Elements Financial, Inc.")?.itemId, "i1", "nor is punctuation");
+
+  assert.equal(M.itemFor([bank("Navy Federal Credit Union", "i8")], "Navy Federal")?.itemId, "i8");
+
+  // A different bank is a different bank, and the words that say what kind of
+  // institution it is are not what tells them apart.
+  assert.equal(M.itemFor(items, "Fidelity"), undefined);
+  assert.equal(M.itemFor([bank("First National Bank", "i3")], "First Republic"), undefined);
+  assert.equal(M.itemFor([bank("Bank of America", "i5")], "First American Bank"), undefined);
+  assert.equal(M.itemFor([bank("Elements Financial", "i1")], "Fifth Third Bank"), undefined);
+
+  // An investment connection is not somewhere to put a chequing account, and
+  // asking for one kind never returns the other.
+  assert.equal(M.itemFor([{ institution: "Vanguard", itemId: "i2", kind: "investment" }], "Vanguard"), undefined);
+  assert.equal(M.itemFor([{ institution: "Vanguard", itemId: "i2", kind: "investment" }], "Vanguard", "investment")?.itemId, "i2");
+
+  // A bank whose name is nothing but those words keeps them, or it would have
+  // no name left to be matched on and would quietly match nothing.
+  assert.equal(M.itemFor([bank("Savings Bank", "i7")], "Savings Bank")?.itemId, "i7");
+  assert.equal(M.itemFor([bank("Savings Bank", "i7")], "Elements Financial"), undefined);
+
+  // A name too short to mean anything matches nothing, rather than everything.
+  assert.equal(M.itemFor(items, "El"), undefined);
+  assert.equal(M.itemFor(items, ""), undefined);
+  assert.equal(M.itemFor([bank("US", "i4")], "US Bank"), undefined);
 });
 
 await test("a window that came back short is told from a backfill still running", async () => {

@@ -62,3 +62,61 @@ export function adopt(account: Account, to: Adoption, from: ISODate): Account {
     syncNote: undefined,
   };
 }
+
+/** Names differ in punctuation and in how much of the bank they spell out. */
+const norm = (s: string): string =>
+  s.trim().toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+
+/**
+ * The words that say what kind of institution it is rather than which one.
+ *
+ * One provider calls it "Elements Financial", another "Elements Financial
+ * Credit Union", a statement "Elements Financial, Inc." Strip these and all
+ * three say the same thing.
+ */
+const GENERIC = new Set([
+  "bank", "banking", "credit", "union", "fcu", "cu", "federal",
+  "financial", "finance", "savings", "trust", "na",
+  "inc", "incorporated", "llc", "co", "company", "corp", "corporation",
+  "the", "of", "and",
+]);
+
+/** What is left of a name once the kind of institution is taken out of it. */
+const core = (s: string): string[] => {
+  const all = norm(s).split(" ").filter(Boolean);
+  const named = all.filter((w) => !GENERIC.has(w));
+  // A name that is nothing but generic words is all it has, so it keeps them.
+  return named.length ? named : all;
+};
+
+const within = (a: readonly string[], b: readonly string[]): boolean => a.every((w) => b.includes(w));
+
+/**
+ * The connection already held for this bank, if there is one.
+ *
+ * A Plaid connection is one login, not one account: the same item holds every
+ * account behind it. Opening a second one for the savings account beside the
+ * chequing account costs a second of the plan's ten connections, and then both
+ * items return both accounts and take turns renaming each other's ids.
+ *
+ * Matched on what is left of the name once the kind of institution is taken
+ * out of it, because the account being moved came from somewhere else and two
+ * providers rarely spell a credit union the same way. Loose is safe here: the
+ * answer is only ever a suggestion, the accounts behind that login are shown
+ * before anything is chosen, and a different login is one press away.
+ */
+export function itemFor<T extends { institution: string; kind: "bank" | "investment" }>(
+  items: readonly T[],
+  institution: string,
+  kind: "bank" | "investment" = "bank",
+): T | undefined {
+  const want = core(institution);
+  // Too little to be a name. Matching on it would match everything.
+  if (want.join("").length < 4) return undefined;
+  return items.find((i) => {
+    if (i.kind !== kind) return false;
+    const held = core(i.institution);
+    if (held.join("").length < 4) return false;
+    return within(want, held) || within(held, want);
+  });
+}
