@@ -237,6 +237,108 @@ export async function countTransactions(creds: PlaidCreds, opts: {
   }
 }
 
+/**
+ * Asks Plaid to go and fetch this item's transactions now.
+ *
+ * Raising an item's reach through update mode says what is wanted; it does not
+ * say when. Plaid refreshes an item on its own cycle, and a household watching
+ * a count that has not moved has no way to tell "the longer window was not
+ * applied" from "it was, and nothing has run since". This is the nudge, and it
+ * is the difference between a wait that means something and a spinner.
+ *
+ * Never fatal. It is an optimisation on top of waiting, not a requirement, and
+ * a plan that does not include it should cost nothing more than the wait it
+ * would have shortened.
+ */
+export async function refreshTransactions(creds: PlaidCreds, accessToken: string): Promise<boolean> {
+  try {
+    await plaidCall(creds, "/transactions/refresh", { access_token: accessToken });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** What Plaid actually holds for an item, in its own words. */
+export interface ItemReport {
+  /** How many transactions Plaid has in the window asked about. */
+  total: number;
+  notReady: boolean;
+  /** The oldest and newest days Plaid holds, or undefined when it holds none. */
+  oldest?: string;
+  newest?: string;
+  /** What the item agreed to, was created for, and is billed for. */
+  consented: string[];
+  products: string[];
+  billed: string[];
+  /** When Plaid last successfully refreshed this item's transactions. */
+  lastUpdate?: string;
+  institutionId?: string;
+}
+
+/**
+ * The honest answer to "how far back does this connection actually go".
+ *
+ * Raising an item's reach is a request, not a guarantee: Plaid applies it when
+ * the institution can serve it, and plenty of banks hand over ninety days and
+ * nothing more whatever is asked for. Without this the two cases look
+ * identical from the outside - a window that came back short reads as a
+ * backfill still running, for ever - and the app kept saying "still fetching"
+ * about a bank that had already sent everything it had.
+ *
+ * Three calls: the count, the far end of it, and what Plaid says about the
+ * item. The far end is read by asking for one row at each end of the window
+ * and taking the earlier and later of the two days, rather than by trusting
+ * which way round Plaid sorts a page.
+ */
+export async function reportItem(creds: PlaidCreds, opts: {
+  accessToken: string;
+  startDate: string;
+  endDate: string;
+}): Promise<ItemReport> {
+  const { total, notReady } = await countTransactions(creds, opts);
+
+  const dayAt = async (offset: number): Promise<string | undefined> => {
+    const got = await plaidCall(creds, "/transactions/get", {
+      access_token: opts.accessToken,
+      start_date: opts.startDate,
+      end_date: opts.endDate,
+      options: { count: 1, offset },
+    }).catch(() => null) as { transactions?: { date?: string }[] } | null;
+    const day = got?.transactions?.[0]?.date;
+    return typeof day === "string" ? day : undefined;
+  };
+
+  // One row from each end. Asking for the same row twice when there is only
+  // one is a wasted call, so it is not made.
+  const ends = total > 0
+    ? await Promise.all([dayAt(0), total > 1 ? dayAt(total - 1) : Promise.resolve(undefined)])
+    : [];
+  const days = ends.filter((d): d is string => typeof d === "string").sort();
+
+  const got = await plaidCall(creds, "/item/get", { access_token: opts.accessToken }).catch(() => null);
+  const item = (got?.item ?? {}) as {
+    consented_products?: unknown; products?: unknown; billed_products?: unknown;
+    institution_id?: unknown;
+    status?: { transactions?: { last_successful_update?: unknown } };
+  };
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  const last = item.status?.transactions?.last_successful_update;
+
+  return {
+    total,
+    notReady,
+    oldest: days[0],
+    newest: days[days.length - 1],
+    consented: list(item.consented_products),
+    products: list(item.products),
+    billed: list(item.billed_products),
+    lastUpdate: typeof last === "string" ? last : undefined,
+    institutionId: typeof item.institution_id === "string" ? item.institution_id : undefined,
+  };
+}
+
 export async function fetchItemRaw(creds: PlaidCreds, opts: {
   accessToken: string;
   startDate: string;

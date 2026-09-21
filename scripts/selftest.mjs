@@ -81,7 +81,7 @@ await build({
       export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
-      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor } from "./src/lib/sync/adopt.ts";
@@ -4193,6 +4193,7 @@ function plaidServer({ accounts = [plaidAccount()], transactions = [], holdings 
       return new Response(JSON.stringify({ institution: { name: "Third National", url: "https://www.third.com/" } }));
     }
     if (path === "/accounts/get") return new Response(JSON.stringify({ accounts }));
+    if (path === "/transactions/refresh") return new Response(JSON.stringify({ request_id: "r1" }));
     if (path === "/transactions/get") {
       const offset = body.options.offset;
       return new Response(JSON.stringify({
@@ -4568,6 +4569,8 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
       sleep: async (ms) => { clock.t += ms; },
       pollMs: 1000,
       budgetMs: 60_000,
+      patienceMs: 15_000,
+      settlePolls: 2,
     });
   };
 
@@ -4590,8 +4593,30 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   clock.t = 0;
   const slow = await drive([90, 90, 90, 90, 90, 90, 90]);
   assert.equal(slow.grew, false);
-  assert.equal(slow.timedOut, true, "the budget ends this, not two identical answers");
+  assert.equal(slow.timedOut, true, "a count that never moves is not a finished backfill");
   assert.equal(slow.total, 90);
+  // But it does not sit there for the whole budget either. A backfill that is
+  // going to happen has shown itself long before this, and four minutes of
+  // spinner ending in the answer ninety seconds would have given is four
+  // minutes of somebody waiting to be told nothing happened.
+  assert.ok(clock.t <= 20_000, `gave up after ${clock.t}ms rather than the full minute`);
+
+  // And that short fuse is for a backfill that has not started. Once one has
+  // shown itself it gets the full budget, however long it pauses for.
+  clock.t = 0;
+  let n = 0;
+  const patient = await M.HW.waitForHistory(async () => (n++ === 0 ? 90 : 400), {
+    now: () => clock.t, sleep: async (ms) => { clock.t += ms; },
+    pollMs: 1000, budgetMs: 60_000, patienceMs: 5000, settlePolls: 10,
+  });
+  assert.ok(clock.t > 5000, `kept waiting past the patience window (stopped at ${clock.t}ms)`);
+  assert.equal(patient.grew, true);
+  assert.equal(patient.timedOut, false);
+
+  // Half a minute of a steady count before it is called finished. Plaid
+  // delivers in chunks, and a shorter quiet window reads a pause as the end.
+  assert.ok(M.HW.SETTLE_POLLS * M.HW.POLL_MS >= 30_000,
+    `${M.HW.SETTLE_POLLS} polls of ${M.HW.POLL_MS}ms is not long enough to call a chunked backfill finished`);
 
   // A refusal mid-wait is Plaid rate-limiting, not the backfill failing.
   clock.t = 0;
@@ -4604,6 +4629,109 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
   assert.equal(flaky.total, 900);
   assert.equal(flaky.timedOut, false);
+});
+
+await test("a window that came back short is told from a backfill still running", async () => {
+  // The complaint this exists for: Full history stalled at 101 transactions
+  // and said "Plaid is still fetching, press again in a few minutes", for
+  // ever, about a bank that had already sent everything it had. The two cases
+  // look identical from the outside, so the app has to ask and say which.
+  const now = Date.parse("2026-09-21T12:00:00.000Z");
+  const day = (back) => new Date(now - back * 86400000).toISOString().slice(0, 10);
+  const reach = (over) => ({ total: 0, notReady: false, consented: [], products: [], billed: [], ...over });
+
+  const stuck = M.HW.describeReach(reach({ total: 101, oldest: day(90), newest: day(0) }), "Elements", now);
+  assert.equal(stuck.short, true);
+  assert.match(stuck.line, /101 transactions/);
+  assert.match(stuck.line, /Plaid's default reach/);
+  assert.ok(!/still fetching|few minutes/i.test(stuck.line),
+    "never tells somebody to come back for history that is not coming");
+
+  const deep = M.HW.describeReach(reach({ total: 4210, oldest: day(700), newest: day(0) }), "Elements", now);
+  assert.equal(deep.short, false);
+  assert.match(deep.line, /back to 2024-/);
+  assert.match(deep.line, /about 23 months/);
+
+  // A connection that never agreed to hand transactions over is a different
+  // problem with a different button, and saying "no history" would send
+  // somebody looking for it in the wrong place.
+  const unconsented = M.HW.describeReach(reach({ consented: ["auth", "balance"] }), "Elements", now);
+  assert.match(unconsented.line, /never agreed/);
+  assert.match(unconsented.line, /Reconnect/);
+  assert.equal(unconsented.short, true);
+
+  // Not ready is neither: it is a brand new item, and waiting is right.
+  const cold = M.HW.describeReach(reach({ notReady: true }), "Elements", now);
+  assert.equal(cold.short, false, "nothing is concluded about the reach of an item Plaid has not prepared");
+  assert.match(cold.line, /still preparing/);
+
+  // What Plaid said, kept alongside, so a connection that misbehaves can be
+  // described rather than guessed at.
+  const detailed = M.HW.describeReach(
+    reach({ total: 5, oldest: day(10), newest: day(1), consented: ["transactions"], billed: ["transactions"], lastUpdate: "2026-09-21T06:14:00Z" }),
+    "Elements", now);
+  assert.match(detailed.detail, /Consented: transactions\./);
+  assert.match(detailed.detail, /Last transactions update 2026-09-21 06:14/);
+});
+
+await test("Plaid is asked to go and fetch, not just asked what it has", async () => {
+  // Raising an item's reach says what is wanted, not when. Plaid refreshes on
+  // its own cycle, so a wait without this can be four minutes of watching a
+  // figure that was never going to move today.
+  const server = plaidServer();
+  const r = await withEnv(creds, () =>
+    withFetch(server.impl, () => invokePlaid({ action: "refresh", accessToken: "tok" })));
+  const asked = server.calls.find((c) => c.path === "/transactions/refresh");
+  assert.ok(asked, "the nudge actually goes to Plaid");
+  assert.equal(asked.body.access_token, "tok");
+  assert.deepEqual(JSON.parse(r.text), { asked: true });
+
+  // A plan that does not include it, or an item that will not take it, costs
+  // the wait it would have shortened and nothing else. This is an
+  // optimisation on top of waiting, never a requirement.
+  const refused = plaidServer({ fail: { "/transactions/refresh": { code: "PRODUCTS_NOT_SUPPORTED" } } });
+  const soft = await withEnv(creds, () =>
+    withFetch(refused.impl, () => invokePlaid({ action: "refresh", accessToken: "tok" })));
+  assert.equal(soft.status, 200, "a refusal here is not an error the household has to read");
+  assert.deepEqual(JSON.parse(soft.text), { asked: false });
+
+  // And the client says the same, rather than throwing into the middle of a
+  // Full history press.
+  const quiet = await withFetch(async () => new Response("nope", { status: 500 }), () => M.refreshItem({ accessToken: "t" }));
+  assert.equal(quiet, false);
+});
+
+await test("what Plaid holds is read from both ends of the window", async () => {
+  // Which way round Plaid sorts a page is not worth depending on: one row
+  // from each end and the earlier of the two days is the oldest, whichever
+  // order they came in.
+  const rows = [
+    plaidTxn({ transaction_id: "new", date: "2026-09-20" }),
+    plaidTxn({ transaction_id: "mid", date: "2025-05-05" }),
+    plaidTxn({ transaction_id: "old", date: "2024-10-02" }),
+  ];
+  const server = plaidServer({ transactions: rows });
+  const r = await withEnv(creds, () => withFetch(server.impl, () => invokePlaid({
+    action: "report", accessToken: "tok", startDate: "2024-09-21", endDate: "2026-09-21",
+  })));
+  const out = JSON.parse(r.text);
+  assert.equal(out.total, 3);
+  assert.equal(out.oldest, "2024-10-02");
+  assert.equal(out.newest, "2026-09-20");
+
+  const asked = server.calls.filter((c) => c.path === "/transactions/get");
+  assert.deepEqual(asked.map((c) => c.body.options.count), [1, 1, 1], "one row at a time, never a page");
+  assert.deepEqual(asked.map((c) => c.body.options.offset).sort(), [0, 0, 2],
+    "the count, then each end of it");
+
+  // A window Plaid holds nothing in asks for no rows at all.
+  const empty = plaidServer({ transactions: [] });
+  const none = await withEnv(creds, () => withFetch(empty.impl, () => invokePlaid({
+    action: "report", accessToken: "tok", startDate: "2024-09-21", endDate: "2026-09-21",
+  })));
+  assert.equal(JSON.parse(none.text).total, 0);
+  assert.equal(JSON.parse(none.text).oldest, undefined);
+  assert.equal(empty.calls.filter((c) => c.path === "/transactions/get").length, 1);
 });
 
 await test("an item whose history is already deep is not sent back through the dialog", async () => {

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PlaidEnv } from "./_plaid.js";
-import { HISTORY_DAYS, PlaidError, countTransactions, fetchItemRaw, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
+import { HISTORY_DAYS, PlaidError, countTransactions, fetchItemRaw, refreshTransactions, reportItem, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
 
 /**
  * Server-side proxy for Plaid.
@@ -28,11 +28,13 @@ interface LinkTokenBody {
 interface ExchangeBody { action: "exchange"; publicToken: string }
 interface InstitutionBody { action: "institution"; accessToken: string }
 interface CountBody { action: "count"; accessToken: string; startDate: string; endDate: string }
+interface ReportBody { action: "report"; accessToken: string; startDate: string; endDate: string }
+interface RefreshBody { action: "refresh"; accessToken: string }
 interface SyncBody {
   action: "sync"; accessToken: string; startDate: string; endDate: string;
   withHoldings?: boolean; withTransactions?: boolean;
 }
-type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | CountBody | SyncBody;
+type Body = DiagnoseBody | LinkTokenBody | ExchangeBody | InstitutionBody | CountBody | ReportBody | RefreshBody | SyncBody;
 
 
 export default async function handler(req: ApiRequest, res: ApiResponse): Promise<void> {
@@ -169,6 +171,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
       // Plaid fills in the older months, and paging the real pull to read one
       // number off the top would be thousands of rows every few seconds.
       return send(200, await countTransactions(creds, {
+        accessToken: body.accessToken, startDate: body.startDate, endDate: body.endDate,
+      }));
+    }
+
+    if (body.action === "refresh") {
+      if (!body.accessToken) return send(400, { error: "No access token supplied." });
+      // A nudge, not a requirement: see refreshTransactions.
+      return send(200, { asked: await refreshTransactions(creds, body.accessToken) });
+    }
+
+    if (body.action === "report") {
+      if (!body.accessToken) return send(400, { error: "No access token supplied." });
+      // What Plaid holds, said plainly, so a window that came back short can
+      // be told from a backfill that is still running.
+      return send(200, await reportItem(creds, {
         accessToken: body.accessToken, startDate: body.startDate, endDate: body.endDate,
       }));
     }

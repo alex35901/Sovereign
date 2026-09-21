@@ -2,6 +2,7 @@ import type { AssetClass, PlaidItemRef } from "../../types.js";
 import type { RemoteAccount, RemoteTransaction, SyncPayload } from "./types.js";
 import { postJSON } from "../api.js";
 import { FIRST_PULL_DAYS, cleanMerchant } from "./merge.js";
+import type { ItemReach } from "./history.js";
 import { today } from "../date.js";
 
 /**
@@ -214,6 +215,25 @@ export async function countHistory(item: { accessToken: string }, since: string)
   });
   return total;
 }
+
+/**
+ * Asks Plaid to go and fetch this item's transactions now, rather than on its
+ * own schedule. False when Plaid would not, which costs nothing but time.
+ */
+export const refreshItem = (item: { accessToken: string }): Promise<boolean> =>
+  postJSON<{ asked: boolean }>(PROXY, { action: "refresh", accessToken: item.accessToken })
+    .then((r) => r.asked)
+    .catch(() => false);
+
+/**
+ * What Plaid holds for this item, rather than what it will hand over now.
+ *
+ * The one question the app could not answer while Full history was stalling:
+ * whether a short window meant a backfill still running or a bank that gives
+ * ninety days and no more. See lib/sync/history describeReach.
+ */
+export const reportHistory = (item: { accessToken: string }, since: string): Promise<ItemReach> =>
+  postJSON<ItemReach>(PROXY, { action: "report", accessToken: item.accessToken, startDate: since, endDate: today() });
 
 export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPayload> {
   const raw = await postJSON<SyncResponse>(PROXY, {

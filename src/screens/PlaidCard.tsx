@@ -5,9 +5,9 @@ import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
 import { syncPlaid, syncPlaidItem } from "../lib/sync";
 import { recordRun } from "../lib/usage";
-import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken } from "../lib/sync/plaid";
+import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, reportHistory } from "../lib/sync/plaid";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
-import { needsRaising, waitForHistory } from "../lib/sync/history";
+import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -83,6 +83,8 @@ export function PlaidCard() {
   const [check, setCheck] = useState<PlaidDiagnosis | null>(null);
   /** What the Full history wait is doing, while it is doing it. */
   const [note, setNote] = useState<string | null>(null);
+  /** What Plaid said it holds, once a press of Full history has finished. */
+  const [reach, setReach] = useState<{ line: string; detail: string } | null>(null);
   /**
    * Items whose backfill was still running when the last wait gave up.
    *
@@ -225,7 +227,9 @@ export function PlaidCard() {
     setBusy(item.itemId);
     setError(null);
     setNote(null);
+    setReach(null);
     try {
+      const since = windowFor(undefined);
       // Raised already, by this app or before it kept track. Either way there
       // is nothing to ask the bank for and no reason to open a dialog.
       const raised = !needsRaising(db, item, FIRST_PULL_DAYS);
@@ -248,15 +252,24 @@ export function PlaidCard() {
       }
 
       if (wait) {
-        const since = windowFor(undefined);
+        // Raising the reach says what is wanted, not when. Plaid refreshes an
+        // item on its own cycle, so without this the wait can be four minutes
+        // of watching a figure that was never going to move until tomorrow.
+        await refreshItem(item);
         setNote("Plaid is fetching the older months. This takes a few minutes, and this page will pull them in as soon as they arrive.");
         const out = await waitForHistory(() => countHistory(item, since), {
           onProgress: (total) =>
             setNote(`Plaid is fetching the older months. ${total.toLocaleString()} transaction${total === 1 ? "" : "s"} ready so far.`),
         });
-        if (out.timedOut) stillFetching.current.add(item.itemId);
+        // Still arriving is worth coming back for. Never having arrived is
+        // not: a count that has not moved in four minutes is a bank that has
+        // nothing more to send, and telling somebody to press again in a few
+        // minutes leaves them doing it for ever. The report below says which
+        // of the two this was.
+        const arriving = out.timedOut && out.grew;
+        if (arriving) stillFetching.current.add(item.itemId);
         else stillFetching.current.delete(item.itemId);
-        setNote(out.timedOut
+        setNote(arriving
           ? `Plaid is still fetching. ${out.total.toLocaleString()} transactions are ready and are being pulled in now; press Full history again in a few minutes for the rest.`
           : null);
       }
@@ -264,8 +277,18 @@ export function PlaidCard() {
       const pulled = await syncItem(item, { fullHistory: true });
       if (refused) {
         setError("Plaid would not take a request for a longer history, so this connection still holds its last 90 days only.");
-      } else if (!wait && !pulled.errors.length && item.kind === "bank") {
-        setNote("This connection already reaches back two years, so nothing had to be fetched first.");
+      }
+
+      // Said out loud on every press, because "it stalled at 101" and "this
+      // bank only has 101" look identical from the outside and only one of
+      // them is worth pressing the button again for.
+      if (item.kind === "bank" && !pulled.errors.length) {
+        const said = await reportHistory(item, since).catch(() => null);
+        if (said) {
+          const told = describeReach(said, item.institution);
+          setReach({ line: told.line, detail: told.detail });
+          if (told.short) stillFetching.current.delete(item.itemId);
+        }
       }
     } catch (err) {
       setNote(null);
@@ -352,6 +375,12 @@ export function PlaidCard() {
               </div>
             ))}
             {note ? <div className="small muted">{note}</div> : null}
+            {reach ? (
+              <div className="small muted">
+                {reach.line}
+                {reach.detail ? <div className="tiny faint" style={{ marginTop: 2 }}>{reach.detail}</div> : null}
+              </div>
+            ) : null}
             {items.some((i) => i.lastError) ? (
               <div className="small warn">
                 {items.filter((i) => i.lastError).map((i) => `${i.institution}: ${i.lastError!.message}`).join(" · ")}

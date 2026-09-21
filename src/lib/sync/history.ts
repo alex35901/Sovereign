@@ -26,8 +26,24 @@ import type { DB } from "../../types.js";
 export const POLL_MS = 6_000;
 /** How long to wait in total before handing back whatever has arrived. */
 export const MAX_WAIT_MS = 4 * 60_000;
-/** How many unchanged asks in a row mean the backfill has stopped. */
-export const SETTLE_POLLS = 2;
+/**
+ * How many unchanged asks in a row mean the backfill has stopped.
+ *
+ * Half a minute of a steady count, at the poll above. Plaid delivers the older
+ * months in chunks with pauses between them, and a shorter quiet window reads
+ * a pause as the end: the history gets truncated at whatever had arrived, and
+ * nothing ever says so.
+ */
+export const SETTLE_POLLS = 5;
+/**
+ * How long to wait for the first sign of anything before giving up.
+ *
+ * A backfill that is going to happen starts producing well inside this. A
+ * count that has not moved by now is a bank that has nothing more to send,
+ * and spending the full budget on it is four minutes of a spinner ending in
+ * the same answer ninety seconds would have given.
+ */
+export const PATIENCE_MS = 90_000;
 /** How far back Plaid reaches when it has not been told otherwise. */
 export const DEFAULT_REACH_DAYS = 90;
 /**
@@ -58,10 +74,10 @@ export const startWatch = (baseline: number): Watch =>
  * that has not started yet also reports the same figure twice in a row, and
  * stopping there is stopping before it began.
  */
-export function observe(prev: Watch, total: number): Watch {
+export function observe(prev: Watch, total: number, settlePolls: number = SETTLE_POLLS): Watch {
   const grew = prev.grew || total > prev.baseline;
   const settled = grew && total === prev.total ? prev.settled + 1 : 0;
-  return { baseline: prev.baseline, total, grew, settled, done: grew && settled >= SETTLE_POLLS };
+  return { baseline: prev.baseline, total, grew, settled, done: grew && settled >= settlePolls };
 }
 
 export interface HistoryWait {
@@ -86,18 +102,24 @@ export async function waitForHistory(
     now?: () => number;
     budgetMs?: number;
     pollMs?: number;
+    patienceMs?: number;
+    settlePolls?: number;
   } = {},
 ): Promise<HistoryWait> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   const pollMs = opts.pollMs ?? POLL_MS;
-  const until = now() + (opts.budgetMs ?? MAX_WAIT_MS);
+  const started = now();
+  const until = started + (opts.budgetMs ?? MAX_WAIT_MS);
+  const patience = opts.patienceMs ?? PATIENCE_MS;
+  /** The full budget is for a backfill that has shown itself. */
+  const deadline = () => (watch.grew ? until : Math.min(until, started + patience));
 
   let watch = startWatch(await probe());
   opts.onProgress?.(watch.total);
 
-  while (!watch.done && now() < until) {
-    await sleep(Math.min(pollMs, Math.max(0, until - now())));
+  while (!watch.done && now() < deadline()) {
+    await sleep(Math.min(pollMs, Math.max(0, deadline() - now())));
     let seen: number;
     try {
       seen = await probe();
@@ -107,7 +129,7 @@ export async function waitForHistory(
       // waiting. The budget is what ends this, not one bad answer.
       continue;
     }
-    watch = observe(watch, seen);
+    watch = observe(watch, seen, opts.settlePolls);
     opts.onProgress?.(watch.total);
   }
 
@@ -161,4 +183,71 @@ export function needsRaising(
   if ((item.historyDays ?? 0) >= want) return false;
   // Raised already, before the app kept a note of it.
   return !historyAlreadyDeep(db, item, now);
+}
+
+/** What Plaid says it holds for one item. See api/_plaid reportItem. */
+export interface ItemReach {
+  total: number;
+  notReady: boolean;
+  oldest?: string;
+  newest?: string;
+  consented: string[];
+  products: string[];
+  billed: string[];
+  lastUpdate?: string;
+}
+
+/**
+ * What Plaid holds, in a sentence, and whether that is as shallow as the
+ * default.
+ *
+ * The distinction this draws is the one the app was getting wrong. A window
+ * that comes back short can mean the backfill is still running or it can mean
+ * there is nothing more to come, and saying "still fetching" about the second
+ * leaves somebody pressing a button for ever against a bank that already sent
+ * everything it had.
+ */
+export function describeReach(
+  reach: ItemReach,
+  institution: string,
+  now: number = Date.now(),
+): { line: string; detail: string; short: boolean } {
+  const detail = [
+    reach.consented.length ? `Consented: ${reach.consented.join(", ")}.` : "",
+    reach.billed.length ? `Billed: ${reach.billed.join(", ")}.` : "",
+    reach.lastUpdate ? `Last transactions update ${reach.lastUpdate.slice(0, 16).replace("T", " ")}.` : "",
+  ].filter(Boolean).join(" ");
+
+  if (reach.notReady) {
+    return { line: `Plaid is still preparing ${institution}. Press Full history again in a minute.`, detail, short: false };
+  }
+
+  // An item that never agreed to hand over transactions has none, and no
+  // amount of waiting changes that. It is a different button that fixes it.
+  const refused = reach.consented.length > 0 && !reach.consented.includes("transactions");
+  if (!reach.total) {
+    return {
+      line: refused
+        ? `Plaid holds no transactions for ${institution}: this connection never agreed to hand them over. Reconnect it and tick transactions when the bank asks.`
+        : `Plaid holds no transactions at all for ${institution} over the last two years.`,
+      detail,
+      short: true,
+    };
+  }
+
+  const days = reach.oldest ? Math.round((now - Date.parse(`${reach.oldest}T00:00:00Z`)) / 86400000) : 0;
+  const months = Math.max(1, Math.round(days / 30.4));
+  const short = days < DEFAULT_REACH_DAYS + REACH_MARGIN_DAYS;
+  const held = `Plaid holds ${reach.total.toLocaleString()} transaction${reach.total === 1 ? "" : "s"} for `
+    + `${institution}, back to ${reach.oldest} (about ${months} month${months === 1 ? "" : "s"})`;
+
+  return {
+    line: short
+      ? `${held}. That is Plaid's default reach, so the request for two years has not taken effect: `
+        + "either this bank serves no more than 90 days through Plaid, or this connection has to be "
+        + "remade rather than reconnected."
+      : `${held}.`,
+    detail,
+    short,
+  };
 }
