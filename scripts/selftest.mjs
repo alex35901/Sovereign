@@ -84,6 +84,7 @@ await build({
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, releaseItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
       export * as LE from "./src/lib/sync/link-error.ts";
+      export { checkEol, majorOf, NODE_EOL, WARN_DAYS } from "./scripts/eol.mjs";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
@@ -4631,6 +4632,51 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
   assert.equal(flaky.total, 900);
   assert.equal(flaky.timedOut, false);
+});
+
+await test("software past the end of its support is a failing check, not a surprise", () => {
+  // A policy document saying end-of-life software is monitored is not
+  // monitoring. The date arrives quietly, the runtime carries on working, and
+  // nobody finds out until an advisory is published against a line that will
+  // never be patched again.
+  const table = { 20: "2026-04-30", 22: "2027-04-30" };
+  const on = (d) => Date.parse(`${d}T00:00:00Z`);
+
+  assert.equal(M.checkEol("node", 22, table, on("2026-09-21")).level, "ok");
+  assert.match(M.checkEol("node", 22, table, on("2026-09-21")).line, /supported until 2027-04-30/);
+
+  // Already gone. This is the one that stops a release.
+  const dead = M.checkEol("node", 20, table, on("2026-09-21"));
+  assert.equal(dead.level, "expired");
+  assert.match(dead.line, /out of support since 2026-04-30/);
+
+  // Inside the warning window, which says so without stopping anything: a
+  // release blocked by an approaching date is a release blocked for nothing.
+  const soon = M.checkEol("node", 22, table, on("2027-03-01"));
+  assert.equal(soon.level, "soon");
+  assert.match(soon.line, /in 60 days/);
+  assert.equal(M.checkEol("node", 22, table, on("2027-01-01")).level, "ok",
+    `${M.WARN_DAYS} days is the window, and January is outside it`);
+
+  // The day itself is still supported, and the day after is not.
+  assert.equal(M.checkEol("node", 22, table, on("2027-04-30")).level, "soon");
+  assert.equal(M.checkEol("node", 22, table, on("2027-05-01")).level, "expired");
+
+  // A version nobody wrote down cannot be checked, and saying so is the point:
+  // silence would read exactly like a pass.
+  assert.equal(M.checkEol("node", 26, table, on("2026-09-21")).level, "unknown");
+  assert.equal(M.checkEol("node", null, table, on("2026-09-21")).level, "unknown");
+  assert.match(M.checkEol("node", null, table, on("2026-09-21")).line, /no version is pinned/);
+
+  // The major out of whatever shape the range is written in.
+  assert.equal(M.majorOf(">=22 <25"), 22);
+  assert.equal(M.majorOf("22.22.2"), 22);
+  assert.equal(M.majorOf("^24.0.0"), 24);
+  assert.equal(M.majorOf(undefined), null);
+  assert.equal(M.majorOf("lts/*"), null);
+
+  // And the table this repository actually ships has the line it pins.
+  assert.ok(M.NODE_EOL[22], "the pinned Node line is one the check knows the date for");
 });
 
 await test("Plaid Link saying nothing is not the same as nothing going wrong", () => {

@@ -1,0 +1,19 @@
+# Advisories arrive as pull requests rather than as something to remember to go
+# and look for. The windows they have to be merged in are in SECURITY.md.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One pull request for the ordinary weekly drift, so that a security
+      # advisory arriving on its own is visibly not that.
+      routine:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

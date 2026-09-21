@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy, retention and deletion | Sovereign</title>
+<meta name="description" content="What Sovereign stores, where it goes, how long it is kept and how to delete it.">
+<link rel="icon" href="/favicon-32.png">
+<style>
+  :root {
+    --bg: #17120e; --surface: #221a14; --line: #3a2c22;
+    --ink: #f3ece6; --muted: #b5a498; --accent: #ec7132;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #faf7f4; --surface: #ffffff; --line: #e6ddd5;
+      --ink: #221a14; --muted: #6b5a4e; --accent: #cd5213;
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 96px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  header img { width: 40px; height: 40px; border-radius: 9px; }
+  h1 { font-size: 1.6rem; line-height: 1.25; margin: 0; }
+  h2 { font-size: 1.1rem; margin: 40px 0 10px; }
+  p, li { color: var(--ink); }
+  .lede, .meta { color: var(--muted); }
+  .meta { font-size: .85rem; margin-top: 4px; }
+  a { color: var(--accent); }
+  ul { padding-left: 20px; }
+  li { margin: 6px 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 18px; margin: 20px 0;
+  }
+  .card p:first-child { margin-top: 0; }
+  .card p:last-child { margin-bottom: 0; }
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="/icon-192.png" alt="">
+    <h1>Privacy, retention and deletion</h1>
+  </header>
+  <p class="meta">Sovereign. Last updated 21 September 2026.</p>
+
+  <p class="lede">
+    Sovereign is a self-hosted household budgeting application. One household runs one copy of it,
+    on infrastructure that household rents in its own name. There is no company behind it, no
+    account to sign up for, and nobody else's data in it.
+  </p>
+
+  <h2>What is stored, and who can read it</h2>
+  <p>
+    Everything Sovereign holds lives in a single document: accounts, transactions, budgets, rules,
+    goals and settings. That document is encrypted in the browser with AES-GCM, under a key derived
+    from a passphrase that is never transmitted. Only the encrypted result is uploaded.
+  </p>
+  <div class="card">
+    <p>
+      <b>The server cannot read the document.</b> It is stored as ciphertext in a Postgres database
+      and handed back as ciphertext. The hosting provider, the database provider and anyone with
+      access to either see an opaque blob. Losing the passphrase means losing the data, because
+      there is no recovery path and deliberately so.
+    </p>
+  </div>
+
+  <h2>What leaves the browser</h2>
+  <ul>
+    <li><b>The encrypted document</b>, to the database, so the same household can open it on another device.</li>
+    <li>
+      <b>Requests to financial data providers</b>, through this application's own server so that
+      provider credentials never reach the browser. Plaid and SimpleFIN for accounts and
+      transactions, Tiingo for security prices, RentCast for property valuations. Each receives only
+      what its own request needs.
+    </li>
+    <li>
+      <b>Questions asked of the assistant</b>, to Anthropic, only when the assistant is used. It is
+      given read-only access to answer the question asked and nothing is kept on the server
+      afterwards. Not using the assistant sends nothing.
+    </li>
+  </ul>
+  <p>
+    There is no analytics, no tracking, no advertising and no third-party script beyond Plaid Link,
+    which is loaded from Plaid's own network only when a bank is being connected. Bank credentials
+    are entered inside Plaid's dialog and never touch this application.
+  </p>
+
+  <h2>Credentials</h2>
+  <p>
+    Credentials that authorise every request, such as Plaid's client identifier and secret, are held
+    in server environment variables and never sent to the browser. Credentials that belong to the
+    household, such as a SimpleFIN access URL or a Plaid access token, live inside the encrypted
+    document, which means they are unreadable to the server in the same way everything else is.
+  </p>
+
+  <h2>Retention</h2>
+  <p>
+    The document is kept for as long as the household keeps running Sovereign. It is not archived,
+    copied to a second system, or retained after deletion. There are no backups held by anyone
+    except the household, and any backup it exports is a file under its own control.
+  </p>
+  <p>
+    Nothing is retained server-side from a provider pull or an assistant question. The overnight job
+    reads the document, writes it back, and keeps nothing of its own beyond a short queue of
+    encrypted pulls waiting to be merged, which is emptied as soon as a browser opens them.
+  </p>
+
+  <h2>Deletion</h2>
+  <ul>
+    <li><b>An account or a transaction</b> can be deleted inside the application at any time, and the change is written to the document immediately.</li>
+    <li><b>A bank connection</b> can be disconnected in Settings. Its access token is handed back to the provider, so the provider stops holding it too.</li>
+    <li><b>Everything</b> is deleted by deleting the row in the database, or by deleting the database. No copy survives it, and no request to anyone is required.</li>
+  </ul>
+  <p>
+    Because the data is encrypted end to end, deleting the passphrase is itself a deletion: what
+    remains is ciphertext that nobody, including the people who run the infrastructure, can turn
+    back into anything.
+  </p>
+
+  <h2>Changes</h2>
+  <p>
+    This page is part of the application's source and changes with it. The date at the top is the
+    date it last changed.
+  </p>
+
+  <footer>
+    Sovereign is open source. The behaviour described here is visible in the code, which is the
+    authoritative version of it.
+  </footer>
+</main>
+</body>
+</html>

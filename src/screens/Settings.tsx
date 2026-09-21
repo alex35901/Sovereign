@@ -205,6 +205,14 @@ export default function Settings() {
             </>
           ) : null}
 
+          <div className="divider" />
+          <div className="small muted">
+            {/* Published rather than described: a provider asking for a privacy
+                policy is asking for an address, and this is the one to give
+                them. Static, so it answers even when the application does not. */}
+            What this holds, where it goes, how long it is kept and how to delete it:{" "}
+            <a href="/privacy" target="_blank" rel="noreferrer">privacy, retention and deletion</a>.
+          </div>
 
         </Card>
 

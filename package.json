@@ -13,7 +13,10 @@
     "check:api": "node scripts/check-api.mjs",
     "test:ui": "node scripts/breakpoints.mjs",
     "icons": "node scripts/icons.mjs",
-    "test:e2e": "node scripts/e2etest.mjs"
+    "test:e2e": "node scripts/e2etest.mjs",
+    "audit": "npm audit --audit-level=moderate --omit=dev",
+    "eol": "node scripts/eol.mjs",
+    "check": "npm run build && npm run audit && npm run eol && node scripts/selftest.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
@@ -33,5 +36,8 @@
     "playwright": "^1.62.1",
     "typescript": "~6.0.2",
     "vite": "^8.1.1"
+  },
+  "engines": {
+    "node": ">=22 <25"
   }
 }
