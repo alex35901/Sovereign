@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DB } from "../../src/types.js";
-import { mergeSync, syncWindowStart } from "../../src/lib/sync/merge.js";
+import { mergeSync, syncWindowStart, windowFor } from "../../src/lib/sync/merge.js";
 import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
 import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
 import { fetchAccountsText } from "../_simplefin.js";
@@ -337,7 +337,12 @@ export async function refreshPlaid(db: DB, deadline: number): Promise<{
       continue;
     }
     try {
-      const payload = await pullItem(creds, item, syncWindowStart(out.db));
+      // This item's own clock, not the document's. The document's belongs to
+      // whichever connection last ran, so a bank connected this afternoon was
+      // handed the narrow window of one that had been syncing for months and
+      // arrived overnight with a fortnight of history. The hands-on pull was
+      // put right in lib/sync/run; this is the same rule on the schedule.
+      const payload = await pullItem(creds, item, windowFor(item.lastSyncAt));
       const merged = mergeSync(out.db, payload, "plaid");
       const stamped = (merged.db.settings.plaidItems ?? []).map((i) =>
         i.itemId === item.itemId ? { ...i, lastSyncAt: payload.fetchedAt } : i);

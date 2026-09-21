@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { PlaidEnv } from "./_plaid.js";
-import { PlaidError, fetchItemRaw, identifyItem, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
+import { HISTORY_DAYS, PlaidError, fetchItemRaw, identifyItem, linkTokenCreate, plaidCall, plaidCreds, plaidEnv } from "./_plaid.js";
 
 /**
  * Server-side proxy for Plaid.
@@ -20,7 +20,11 @@ type ApiRequest = IncomingMessage & { body?: unknown };
 type ApiResponse = ServerResponse;
 
 interface DiagnoseBody { action: "diagnose" }
-interface LinkTokenBody { action: "link_token"; products?: string[]; accessToken?: string; consentTo?: string[] }
+interface LinkTokenBody {
+  action: "link_token"; products?: string[]; accessToken?: string; consentTo?: string[];
+  /** How many days of history to ask the bank for, capped at Plaid's 730. */
+  historyDays?: number;
+}
 interface ExchangeBody { action: "exchange"; publicToken: string }
 interface InstitutionBody { action: "institution"; accessToken: string }
 interface SyncBody {
@@ -108,24 +112,40 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
        * a hint, because the item's products were fixed when it was created.
        */
       const update = typeof body.accessToken === "string" && body.accessToken.length > 0;
-      const data = await call("/link/token/create", {
+      const base = {
         user: { client_user_id: "sovereign-local-user" },
         client_name: "Sovereign",
         country_codes: ["US"],
         language: "en",
         ...(update
-          ? {
-              access_token: body.accessToken,
-              // An item connected without agreeing to transactions refuses
-              // them with ADDITIONAL_CONSENT_REQUIRED for ever. Update mode
-              // is where that is put right, and naming what to ask for is
-              // the whole of the difference between reconnecting and
-              // reconnecting usefully.
-              ...(body.consentTo?.length ? { additional_consented_products: body.consentTo } : {}),
-            }
+          ? { access_token: body.accessToken }
           : { products: body.products?.length ? body.products : ["transactions"] }),
-      });
-      return send(200, { linkToken: data.link_token, environment: plaidEnv() });
+      };
+
+      /**
+       * The two fields that steer the dialog, in the order they matter.
+       *
+       * Both are dropped rather than allowed to fail the call, because a
+       * reconnect that will not open is worse than a reconnect that opens
+       * asking for less. See linkTokenCreate.
+       */
+      const optional: [string, unknown][] = [];
+      // An item connected without agreeing to transactions refuses them with
+      // ADDITIONAL_CONSENT_REQUIRED for ever. Update mode is where that is put
+      // right, and naming what to ask for is the whole of the difference
+      // between reconnecting and reconnecting usefully.
+      if (update && body.consentTo?.length) optional.push(["additional_consented_products", body.consentTo]);
+      // How far back Plaid fetches, which is decided here and nowhere else:
+      // a start date on /transactions/get can only narrow what an item already
+      // holds, never widen it. Ninety days is Plaid's default and was what
+      // every connection here silently got.
+      const days = Math.min(Math.max(Math.round(Number(body.historyDays) || 0), 0), HISTORY_DAYS);
+      if (days > 0) optional.push(["transactions", { days_requested: days }]);
+
+      const { data, dropped } = await linkTokenCreate(creds, base, optional);
+      // Said out loud: a dialog that opened without the field that was the
+      // point of opening it has not done what was asked.
+      return send(200, { linkToken: data.link_token, environment: plaidEnv(), dropped });
     }
 
     const identify = (accessToken: string) => identifyItem(creds, accessToken);

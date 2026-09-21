@@ -117,6 +117,57 @@ export const NO_TRANSACTIONS_CODES = new Set([
  */
 export const NEEDS_CONSENT = "ADDITIONAL_CONSENT_REQUIRED";
 
+/**
+ * How far back a bank is asked to go when it is linked.
+ *
+ * Plaid fetches 90 days when an item is created unless the link token says
+ * otherwise, and /transactions/get can only ever return what Plaid already
+ * holds. So a start date two years back is not enough on its own: an item
+ * created without this answers a two-year request with ninety days and no
+ * error, which reads exactly like a bank that has no older history. 730 is
+ * Plaid's maximum.
+ */
+export const HISTORY_DAYS = 730;
+
+/**
+ * The refusals that mean "I do not accept that field", as opposed to anything
+ * about the item or the credentials.
+ */
+const REFUSED_FIELD = new Set(["INVALID_FIELD", "INVALID_BODY", "UNKNOWN_FIELDS"]);
+
+/**
+ * A link token, with the optional parts dropped one at a time if Plaid will
+ * not take them.
+ *
+ * Two of the fields sent here steer the dialog rather than define it:
+ * additional_consented_products, which repairs an item linked without
+ * permission to read transactions, and transactions.days_requested, which
+ * sets how far back the history goes. Neither is worth failing over. A
+ * reconnect that opens is a bank a household can get back; a reconnect that
+ * errors because Plaid renamed a field is a dead end in the one screen that
+ * exists to escape dead ends.
+ *
+ * Least important first from the end: the ordering decides what is given up
+ * first, and permission to read transactions at all outranks how far back
+ * they go.
+ */
+export async function linkTokenCreate(
+  creds: PlaidCreds,
+  base: Record<string, unknown>,
+  optional: readonly (readonly [string, unknown])[],
+): Promise<{ data: Record<string, unknown>; dropped: string[] }> {
+  const dropped: string[] = [];
+  for (let keep = optional.length; ; keep--) {
+    const extra = Object.fromEntries(optional.slice(0, keep));
+    try {
+      return { data: await plaidCall(creds, "/link/token/create", { ...base, ...extra }), dropped };
+    } catch (err) {
+      if (keep === 0 || !(err instanceof PlaidError) || !REFUSED_FIELD.has(err.code)) throw err;
+      dropped.unshift(optional[keep - 1]![0]);
+    }
+  }
+}
+
 export async function plaidCall(
   creds: PlaidCreds,
   path: string,

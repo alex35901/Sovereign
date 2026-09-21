@@ -6,6 +6,7 @@ import { dateLabel } from "../lib/date";
 import { syncPlaid, syncPlaidItem } from "../lib/sync";
 import { recordRun } from "../lib/usage";
 import { createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken } from "../lib/sync/plaid";
+import { FIRST_PULL_DAYS } from "../lib/sync/merge";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
 import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
@@ -122,6 +123,7 @@ export function PlaidCard() {
     // from it. Showing the count is the only thing that turns silent data loss
     // into something anyone can act on.
     if (out.errors.length) setError(out.errors.join(" · "));
+    return out;
   };
 
   const syncAll = async () => {
@@ -152,11 +154,16 @@ export function PlaidCard() {
       // A bank item that was refused transactions needs to be asked for them
       // again, which only update mode can do.
       const missing = item.kind === "bank" && /ADDITIONAL_CONSENT_REQUIRED|consent/i.test(item.lastError?.message ?? "");
-      const token = await reconnectLinkToken(item.accessToken, missing ? ["transactions"] : undefined);
+      const { linkToken } = await reconnectLinkToken(item.accessToken, {
+        ...(missing ? { consentTo: ["transactions"] } : {}),
+        // Signing in again is also the moment to raise how far back this item
+        // reaches, for the ones created before the app asked for two years.
+        ...(item.kind === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+      });
       // Update mode has nothing to exchange: the item coming back is the one
       // that was already there, with the same access token. Closing the
       // dialog and finishing it look the same from here, and both are fine.
-      await openPlaidLink(token);
+      await openPlaidLink(linkToken);
       actions.patchSettings({
         plaidItems: items.map((i) => (i.itemId === item.itemId ? { ...i, lastError: undefined } : i)),
       });
@@ -172,17 +179,35 @@ export function PlaidCard() {
   /**
    * Everything the bank still has, rather than everything since last time.
    *
-   * A connection is asked for two years on its first pull and for a narrow
-   * window after that, which is right until the first pull was the one that
-   * asked for a fortnight. This is how to go back for the rest without
-   * disconnecting and starting again, and it is safe to press twice: a
-   * transaction already held is recognised by its id and skipped.
+   * Two separate limits, and only one of them lives in this app. A pull asks
+   * for a narrow window once a connection has been syncing for a while, and
+   * that is what the flag below widens. The other is Plaid's: an item fetches
+   * ninety days of history unless it was created asking for more, and no later
+   * request can widen it, because /transactions/get returns what Plaid holds
+   * rather than what the bank has. Raising that on an item that already exists
+   * takes update mode, which is the dialog this opens first.
+   *
+   * Safe to press twice: a transaction already held is recognised by its id
+   * and skipped.
    */
   const fullHistory = async (item: PlaidItemRef) => {
     setBusy(item.itemId);
     setError(null);
     try {
-      await syncItem(item, { fullHistory: true });
+      let refused = false;
+      if (item.kind === "bank") {
+        const { linkToken, dropped } = await reconnectLinkToken(item.accessToken, { historyDays: FIRST_PULL_DAYS });
+        refused = dropped.includes("transactions");
+        await openPlaidLink(linkToken);
+      }
+      const out = await syncItem(item, { fullHistory: true });
+      if (refused) {
+        setError("Plaid would not take a request for a longer history, so this connection still holds its last 90 days only.");
+      } else if (item.kind === "bank" && !out.errors.length) {
+        // Plaid fetches the older months after the dialog closes, not during
+        // it, so the pull that follows immediately can still come back short.
+        notify(`${out.summary}. Plaid fetches the older months in the background, so press Full history again in a few minutes if earlier years are still missing.`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not fetch the history.");
     } finally {
@@ -254,7 +279,7 @@ export function PlaidCard() {
                     size="sm"
                     onClick={() => void fullHistory(item)}
                     disabled={busy !== null}
-                    title="Ask this bank for everything it still holds, not just what is new"
+                    title="Ask Plaid for two years of this bank rather than the 90 days it fetches by default"
                   >
                     <History size={12} /> Full history
                   </Btn>

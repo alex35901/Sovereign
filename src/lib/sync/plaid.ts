@@ -1,7 +1,7 @@
 import type { AssetClass, PlaidItemRef } from "../../types.js";
 import type { RemoteAccount, RemoteTransaction, SyncPayload } from "./types.js";
 import { postJSON } from "../api.js";
-import { cleanMerchant } from "./merge.js";
+import { FIRST_PULL_DAYS, cleanMerchant } from "./merge.js";
 import { today } from "../date.js";
 
 /**
@@ -114,7 +114,14 @@ export const diagnosePlaid = (): Promise<PlaidDiagnosis> => postJSON<PlaidDiagno
 
 export async function createLinkToken(kind: "bank" | "investment"): Promise<string> {
   const products = kind === "investment" ? ["investments"] : ["transactions"];
-  const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, { action: "link_token", products });
+  const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, {
+    action: "link_token", products,
+    // How far back Plaid fetches is settled when the item is created, not when
+    // it is read. Left unsaid it is ninety days, and no later request can widen
+    // it: /transactions/get returns what Plaid holds, and a two-year window
+    // over ninety days of history looks exactly like a bank with no past.
+    ...(kind === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+  });
   return linkToken;
 }
 
@@ -127,14 +134,20 @@ export async function createLinkToken(kind: "bank" | "investment"): Promise<stri
  * token, which on an encrypted document means editing an environment variable
  * in Vercel and redeploying before the overnight pull can see the bank again.
  */
-export async function reconnectLinkToken(accessToken: string, consentTo?: string[]): Promise<string> {
-  const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, {
+export async function reconnectLinkToken(
+  accessToken: string,
+  opts: { consentTo?: string[]; historyDays?: number } = {},
+): Promise<{ linkToken: string; dropped: string[] }> {
+  const res = await postJSON<{ linkToken: string; dropped?: string[] }>(PROXY, {
     action: "link_token", accessToken,
     // Asked for only when something is actually missing. Requesting consent
     // that was already given is noise in the dialog the person has to read.
-    ...(consentTo?.length ? { consentTo } : {}),
+    ...(opts.consentTo?.length ? { consentTo: opts.consentTo } : {}),
+    // Update mode is the only place an item that already exists can be told to
+    // go further back than it was created with.
+    ...(opts.historyDays ? { historyDays: opts.historyDays } : {}),
   });
-  return linkToken;
+  return { linkToken: res.linkToken, dropped: res.dropped ?? [] };
 }
 
 export async function exchangePublicToken(publicToken: string, kind: "bank" | "investment"): Promise<PlaidItem> {

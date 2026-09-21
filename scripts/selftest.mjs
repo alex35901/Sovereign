@@ -81,7 +81,7 @@ await build({
       export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
       export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
-      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
+      export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
@@ -4249,6 +4249,32 @@ await test("a second overnight run adds nothing the first already took", async (
   assert.equal(twice.ran, false, "a run that changed nothing should not claim it did");
 });
 
+await test("the overnight run asks each item from its own last sync", async () => {
+  // The document's clock belongs to whichever connection last ran. A bank
+  // connected this afternoon was being handed the narrow window of one that
+  // had been syncing for months, so its first overnight pull brought back a
+  // fortnight and the rest of its history never arrived at all.
+  const server = plaidServer({ transactions: [] });
+  const fresh = item({ itemId: "item-new" });
+  delete fresh.lastSyncAt;
+  const old = item({ itemId: "item-old", accessToken: "access-sandbox-2", lastSyncAt: "2026-09-19T00:00:00.000Z" });
+  const db = withPlaidItems([fresh, old]);
+  await withEnv(creds, () =>
+    withFetch(server.impl, () => M.refreshPlaid({
+      ...db, settings: { ...db.settings, lastSyncAt: "2026-09-20T00:00:00.000Z" },
+    }, FUTURE())));
+
+  const asked = server.calls.filter((c) => c.path === "/transactions/get");
+  assert.equal(asked.length, 2);
+  const since = (days) => new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  assert.equal(asked[0].body.start_date, since(M.FIRST_PULL_DAYS),
+    "a bank that has never synced is asked for its history, not for a fortnight");
+  assert.equal(asked[1].body.start_date, M.windowFor(old.lastSyncAt),
+    "and one that syncs nightly is asked from where it left off");
+  assert.ok(asked[1].body.start_date > asked[0].body.start_date,
+    "which is a far narrower window than the one a new item gets");
+});
+
 await test("the run stamps the item it pulled, and only that one", async () => {
   const server = plaidServer({ transactions: [plaidTxn()] });
   const two = [item(), item({ itemId: "item-2", accessToken: "access-sandbox-2", institution: "Second" })];
@@ -4313,11 +4339,15 @@ await test("no Plaid connections means no Plaid calls at all", async () => {
 
 await test("the window Plaid is asked for is the one the browser would ask for", async () => {
   const server = plaidServer();
-  const db = withPlaidItems([item()]);
-  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-01T00:00:00.000Z" } };
+  const synced = item({ lastSyncAt: "2026-09-01T00:00:00.000Z" });
+  const db = withPlaidItems([synced]);
+  // The document's own clock is deliberately set to something else, because
+  // the rule is the item's clock and a shared one would hide the difference.
+  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-06-01T00:00:00.000Z" } };
   await withEnv(creds, () => withFetch(server.impl, () => M.refreshPlaid(recent, FUTURE())));
   const asked = server.calls.find((c) => c.path === "/transactions/get");
-  assert.equal(asked.body.start_date, M.syncWindowStart(recent), "one window, shared with the hands-on sync");
+  assert.equal(asked.body.start_date, M.windowFor(synced.lastSyncAt),
+    "one rule, shared with the hands-on sync");
   assert.ok(asked.body.end_date >= asked.body.start_date);
 });
 
@@ -4471,6 +4501,105 @@ await test("reconnecting a bank that was never consented asks for transactions b
       return new Response(JSON.stringify({ link_token: "link-plain" }), { status: 200 });
     }, () => invokePlaid({ action: "link_token", accessToken: "tok" })));
   assert.equal(plain.additional_consented_products, undefined);
+});
+
+await test("a bank is linked asking for two years, not for Plaid's ninety days", async () => {
+  // The bug this exists for: Full history asked /transactions/get for a window
+  // two years wide and got back ninety days, because how far back an item
+  // reaches is settled when it is created and a read can only narrow it. No
+  // error, no warning, and a household with two years of history at the bank
+  // looked like one that opened the account in June.
+  let bank;
+  await withFetch(async (url, init) => {
+    bank = JSON.parse(init.body);
+    return new Response(JSON.stringify({ linkToken: "lt-bank" }), { status: 200 });
+  }, () => M.createLinkToken("bank"));
+  assert.equal(bank.historyDays, 730, "Plaid's maximum, asked for at the one moment it can be");
+
+  // An investments item has no transactions to go back through.
+  let inv;
+  await withFetch(async (url, init) => {
+    inv = JSON.parse(init.body);
+    return new Response(JSON.stringify({ linkToken: "lt-inv" }), { status: 200 });
+  }, () => M.createLinkToken("investment"));
+  assert.equal(inv.historyDays, undefined);
+
+  // And the number reaches Plaid in Plaid's own shape.
+  let sent;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      sent = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "lt" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", products: ["transactions"], historyDays: 730 })));
+  assert.deepEqual(sent.transactions, { days_requested: 730 });
+
+  // Capped, because a number from the client is a number from the client.
+  let capped;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      capped = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "lt" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", products: ["transactions"], historyDays: 99999 })));
+  assert.deepEqual(capped.transactions, { days_requested: 730 });
+
+  // Unasked for, absent: an item that wants Plaid's default should send no
+  // opinion at all rather than a number that happens to match it.
+  let none;
+  await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      none = JSON.parse(init.body);
+      return new Response(JSON.stringify({ link_token: "lt" }), { status: 200 });
+    }, () => invokePlaid({ action: "link_token", products: ["transactions"] })));
+  assert.equal(none.transactions, undefined);
+});
+
+await test("a link token Plaid will not take every field of still opens", async () => {
+  // A reconnect is the screen that exists to escape a dead end, so it must not
+  // become one. If Plaid refuses a field that only steers the dialog, the
+  // field goes and the dialog opens; the request for a longer history is given
+  // up before permission to read transactions at all.
+  const bodies = [];
+  const r = await withEnv(creds, () =>
+    withFetch(async (url, init) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.transactions) {
+        return new Response(JSON.stringify({
+          error_code: "INVALID_FIELD", error_message: "transactions is not accepted here",
+        }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ link_token: "lt-degraded" }), { status: 200 });
+    }, () => invokePlaid({
+      action: "link_token", accessToken: "tok", consentTo: ["transactions"], historyDays: 730,
+    })));
+  assert.equal(bodies.length, 2, "one attempt with everything, one without the part refused");
+  assert.deepEqual(bodies[1].additional_consented_products, ["transactions"],
+    "consent outranks how far back the history goes and is the last thing given up");
+  assert.equal(bodies[1].transactions, undefined);
+  const out = JSON.parse(r.text);
+  assert.equal(out.linkToken, "lt-degraded");
+  assert.deepEqual(out.dropped, ["transactions"], "what was given up is reported, not swallowed");
+
+  // A refusal that is about the item rather than a field is not worked around.
+  let tries = 0;
+  const refused = await withEnv(creds, () =>
+    withFetch(async () => {
+      tries++;
+      return new Response(JSON.stringify({
+        error_code: "ITEM_LOGIN_REQUIRED", error_message: "no",
+      }), { status: 400 });
+    }, () => invokePlaid({ action: "link_token", accessToken: "tok", historyDays: 730 })));
+  assert.equal(tries, 1, "dropping a field would not have helped, so nothing is dropped");
+  assert.equal(refused.status, 400);
+
+  // The client hands the two apart, so the card can say which one happened.
+  let asked;
+  const got = await withFetch(async (url, init) => {
+    asked = JSON.parse(init.body);
+    return new Response(JSON.stringify({ linkToken: "lt", dropped: ["transactions"] }), { status: 200 });
+  }, () => M.reconnectLinkToken("tok", { historyDays: 730 }));
+  assert.equal(asked.historyDays, 730);
+  assert.deepEqual(got, { linkToken: "lt", dropped: ["transactions"] });
 });
 
 await test("a bank just connected is not mistaken for one with no transactions", async () => {
