@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { CalendarDays, ChevronDown, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
 import { useDB, useStore } from "../store";
@@ -11,6 +11,11 @@ import { Btn, Card, HoverCard, Money, Progress, cx } from "../components/ui";
 import { BudgetAmountPopover } from "./BudgetAmountPopover";
 import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
+import { COLUMN_LABEL, DEFAULT_COLUMN, otherColumn, readColumn, toggleHint } from "../lib/budget-column";
+import type { BudgetColumn } from "../lib/budget-column";
+
+/** Where the column choice is remembered, per browser. */
+const COLUMN_KEY = "sovereign.budget.column";
 
 export default function Budget() {
   const db = useDB();
@@ -18,6 +23,30 @@ export default function Budget() {
   const [month, setMonth] = useState(thisMonth());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const summary = useMemo(() => budgetSummary(db, month), [db, month]);
+
+  /**
+   * Which of Actual and Remaining a narrow screen shows. Wide screens show
+   * both and never read this.
+   *
+   * In localStorage rather than in the document, because it is one viewer's
+   * convenience on one device rather than anything about the household's
+   * money, and a phone choosing Remaining should not change what the laptop
+   * shows. Read lazily and written in an effect, both guarded: storage throws
+   * in a private window and comes back empty when site data is cleared, and
+   * neither is a reason for the budget not to render.
+   */
+  const [column, setColumn] = useState<BudgetColumn>(() => {
+    try {
+      return readColumn(localStorage.getItem(COLUMN_KEY));
+    } catch {
+      return DEFAULT_COLUMN;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLUMN_KEY, column);
+    } catch { /* a preference not remembered is not worth failing over */ }
+  }, [column]);
 
   const toggleGroup = (id: string) =>
     setCollapsed((prev) => {
@@ -44,7 +73,10 @@ export default function Budget() {
           </>
         }
       />
-      <div className="page stack">
+      {/* The chosen column is read in CSS rather than in each row: the rule
+          that hides the other one belongs with the widths it is trading
+          against, and a row should not have to know how wide the screen is. */}
+      <div className="page stack" data-bcol={column}>
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
             <div className="row wrap" style={{ gap: 8 }}>
@@ -95,6 +127,7 @@ export default function Budget() {
           <GroupCard
             key={g.group.id} data={g} month={month}
             collapsed={collapsed.has(g.group.id)} onToggle={() => toggleGroup(g.group.id)}
+            column={column} onColumn={setColumn}
           />
         ))}
       </div>
@@ -120,8 +153,9 @@ function Stat({ label, value, actual, tone }: {
   );
 }
 
-function GroupCard({ data, month, collapsed, onToggle }: {
+function GroupCard({ data, month, collapsed, onToggle, column, onColumn }: {
   data: BudgetGroupRow; month: string; collapsed: boolean; onToggle: () => void;
+  column: BudgetColumn; onColumn: (c: BudgetColumn) => void;
 }) {
   const income = data.group.kind === "income";
   return (
@@ -137,11 +171,11 @@ function GroupCard({ data, month, collapsed, onToggle }: {
             <div className="num small bold"><Money value={data.planned} cents={false} /></div>
           </div>
           <div className="bcol bcol-actual">
-            <div className="tile-label">Actual</div>
+            <ColumnHead column="actual" showing={column} onColumn={onColumn} />
             <div className="num small bold"><Money value={data.actual} cents={false} /></div>
           </div>
           <div className="bcol bcol-left">
-            <div className="tile-label">Remaining</div>
+            <ColumnHead column="remaining" showing={column} onColumn={onColumn} />
             <div className={cx("num small bold", remainingTone(data.remaining, data.group.kind as "income" | "expense" | "transfer"))}>
               <Money value={data.remaining} cents={false} />
             </div>
@@ -153,6 +187,33 @@ function GroupCard({ data, month, collapsed, onToggle }: {
         <RowLine key={r.category.id} row={r} month={month} income={income} />
       ))}
     </Card>
+  );
+}
+
+/**
+ * A column's heading, which on a narrow screen is how the other column is
+ * asked for.
+ *
+ * Both headings are always rendered. On a wide screen both columns are there
+ * and this is an ordinary label that does nothing; on a narrow one the other
+ * column is hidden, so exactly one of these is on screen and it is the switch.
+ * That is why the dotted underline is applied by the same media query that
+ * does the hiding rather than here: the affordance and the behaviour have to
+ * appear together or it is a label that lies.
+ */
+function ColumnHead({ column, showing, onColumn }: {
+  column: BudgetColumn; showing: BudgetColumn; onColumn: (c: BudgetColumn) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="tile-label bcol-toggle"
+      // The card head collapses the group, and this sits inside it.
+      onClick={(e) => { e.stopPropagation(); onColumn(otherColumn(showing)); }}
+      aria-label={`${COLUMN_LABEL[column]}. ${toggleHint(showing)}`}
+    >
+      {COLUMN_LABEL[column]}
+    </button>
   );
 }
 

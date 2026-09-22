@@ -618,56 +618,112 @@ try {
   }
 
   if (want("budget-actual")) {
-    // ── a phone can see what a category actually did ──
+    // ── a phone sees one of the two figures, and can ask for the other ──
     //
-    // The Actual column used to be dropped below 720px for room, which left a
-    // phone showing Planned and Remaining and nothing to reconcile them
-    // against. A category with no activity read as its whole plan still
-    // remaining, and there was no way to tell that apart from a plan nobody
-    // had spent against yet. On income it is the number you came to look at:
-    // a month with no income recorded showed Remaining equal to Planned, which
-    // reads as though the income had been ignored.
+    // Planned, Actual and Remaining is three columns of numbers against a
+    // category name, and on a phone the name loses. Dropping Actual outright
+    // was worse: a category with no activity read as its whole plan still
+    // remaining, with nothing on the page to tell that apart from a plan
+    // nobody had spent against, and on income it is the number you came to
+    // look at. So one is shown and its heading swaps them.
     for (const w of [360, 390, 430]) {
       const page = await browser.newPage({ viewport: { width: w, height: 900 }, hasTouch: true, isMobile: true });
       await page.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
       await page.waitForTimeout(400);
-      const seen = await page.evaluate(() => {
+
+      const read = () => page.evaluate(() => {
         const rows = [...document.querySelectorAll(".list-row")].filter((r) => r.querySelector(".bcol-plan"));
+        const shown = (el) => Boolean(el) && getComputedStyle(el).display !== "none";
+        const head = document.querySelector(".bgroup-head");
         const name = rows[0]?.querySelector(".cat-open");
-        const actual = rows[0]?.querySelector(".bcol-actual");
+        const live = [...(head?.querySelectorAll(".bcol-toggle") ?? [])]
+          .filter((b) => b.offsetParent !== null);
+        const style = live[0] ? getComputedStyle(live[0]) : null;
         return {
           rows: rows.length,
-          actualShown: actual ? getComputedStyle(actual).display !== "none" : false,
-          // The name is what the third column is paid for, so it is measured
+          actual: shown(rows[0]?.querySelector(".bcol-actual")),
+          remaining: shown(rows[0]?.querySelector(".bcol-left")),
+          headings: live.map((b) => b.textContent.trim()),
+          dotted: style ? style.textDecorationStyle === "dotted" && /underline/.test(style.textDecorationLine) : false,
+          pressable: style ? style.pointerEvents !== "none" && style.cursor === "pointer" : false,
+          // The name is what the second column is paid for, so it is measured
           // rather than assumed: two letters and a gap is not a name.
           clipped: name ? name.scrollWidth - Math.ceil(name.getBoundingClientRect().width) > 1 : true,
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         };
       });
-      check(`${w}px — a budget row shows what was actually spent or received`,
-        seen.rows > 0 && seen.actualShown, JSON.stringify(seen));
-      check(`${w}px — and the category name is still readable beside it`,
-        !seen.clipped && seen.overflow === 0, JSON.stringify(seen));
+
+      const first = await read();
+      check(`${w}px — the budget shows one of Actual and Remaining, not both`,
+        first.rows > 0 && first.actual !== first.remaining, JSON.stringify(first));
+      check(`${w}px — and it is Remaining, which is the one that is acted on`,
+        first.remaining && first.headings.length === 1 && first.headings[0] === "Remaining", JSON.stringify(first));
+      check(`${w}px — its heading is dotted and pressable, so it reads as the switch it is`,
+        first.dotted && first.pressable, JSON.stringify(first));
+      check(`${w}px — and the category name is readable beside it`,
+        !first.clipped && first.overflow === 0, JSON.stringify(first));
+
+      // Pressing it swaps them, and does not collapse the group it sits in:
+      // the heading lives inside the card head, whose own job is collapsing.
+      await page.locator(".bgroup-head .bcol-toggle:visible").first().click({ timeout: 5000 });
+      await page.waitForTimeout(250);
+      const after = await read();
+      check(`${w}px — pressing the heading shows the other figure`,
+        after.actual && !after.remaining && after.headings[0] === "Actual", JSON.stringify(after));
+      check(`${w}px — and the group it sits in stays open`,
+        after.rows === first.rows, `${first.rows} rows before, ${after.rows} after`);
+      check(`${w}px — the name survives the swap too`,
+        !after.clipped && after.overflow === 0, JSON.stringify(after));
+
+      // And back, so neither figure is a one-way door.
+      await page.locator(".bgroup-head .bcol-toggle:visible").first().click({ timeout: 5000 });
+      await page.waitForTimeout(250);
+      const back = await read();
+      check(`${w}px — and pressing it again goes back`,
+        back.remaining && !back.actual, JSON.stringify(back));
       await page.close();
     }
 
-    // Narrower than any current phone, where the third column would cost the
-    // name instead. Measured: "Paychecks" fits at 360 and is down to two
-    // letters at 344.
+    // Narrower than any current phone, where the name is what is at risk.
+    // Measured: "Paychecks" fits at 360 and was down to two letters at 344
+    // when a third column was still being asked for.
     const tiny = await browser.newPage({ viewport: { width: 320, height: 800 }, hasTouch: true, isMobile: true });
     await tiny.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
     await tiny.waitForTimeout(400);
     const small = await tiny.evaluate(() => {
       const rows = [...document.querySelectorAll(".list-row")].filter((r) => r.querySelector(".bcol-plan"));
       const name = rows[0]?.querySelector(".cat-open");
+      const shown = (el) => Boolean(el) && getComputedStyle(el).display !== "none";
       return {
+        one: shown(rows[0]?.querySelector(".bcol-actual")) !== shown(rows[0]?.querySelector(".bcol-left")),
         clipped: name ? name.scrollWidth - Math.ceil(name.getBoundingClientRect().width) > 1 : true,
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       };
     });
-    check("320px — the name wins over the third column, rather than both losing",
-      !small.clipped && small.overflow === 0, JSON.stringify(small));
+    check("320px — still one figure and a readable name, rather than both losing",
+      small.one && !small.clipped && small.overflow === 0, JSON.stringify(small));
     await tiny.close();
+
+    // On a screen with room for both, there is nothing to switch to, so the
+    // heading is a label again. An affordance without a behaviour is a lie.
+    const wide = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+    await wide.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(400);
+    const both = await wide.evaluate(() => {
+      const rows = [...document.querySelectorAll(".list-row")].filter((r) => r.querySelector(".bcol-plan"));
+      const shown = (el) => Boolean(el) && getComputedStyle(el).display !== "none";
+      const b = document.querySelector(".bgroup-head .bcol-toggle");
+      const style = b ? getComputedStyle(b) : null;
+      return {
+        actual: shown(rows[0]?.querySelector(".bcol-actual")),
+        remaining: shown(rows[0]?.querySelector(".bcol-left")),
+        inert: style ? style.pointerEvents === "none" : false,
+        plain: style ? style.textDecorationStyle !== "dotted" : false,
+      };
+    });
+    check("1200px — both figures are there, so the heading is a label and not a switch",
+      both.actual && both.remaining && both.inert && both.plain, JSON.stringify(both));
+    await wide.close();
   }
 
   if (want("phone-account")) {

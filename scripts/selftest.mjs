@@ -84,6 +84,7 @@ await build({
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, releaseItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
       export * as LE from "./src/lib/sync/link-error.ts";
+      export * as BC from "./src/lib/budget-column.ts";
       export { checkEol, majorOf, NODE_EOL, WARN_DAYS } from "./scripts/eol.mjs";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
@@ -4632,6 +4633,33 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.grew, true, "one bad answer does not end a wait whose whole job is waiting");
   assert.equal(flaky.total, 900);
   assert.equal(flaky.timedOut, false);
+});
+
+await test("the budget's two figures share one column on a narrow screen", () => {
+  // Planned, Actual and Remaining is three columns of numbers against a
+  // category name, and on a phone the name loses. One of the two is shown and
+  // its heading swaps them.
+  assert.equal(M.BC.DEFAULT_COLUMN, "remaining",
+    "the one that is acted on, and the one carrying the control that moves money between categories");
+  assert.equal(M.BC.otherColumn("remaining"), "actual");
+  assert.equal(M.BC.otherColumn("actual"), "remaining");
+
+  // It comes out of localStorage, which outlives the version that wrote it.
+  assert.equal(M.BC.readColumn("actual"), "actual");
+  assert.equal(M.BC.readColumn("remaining"), "remaining");
+  assert.equal(M.BC.readColumn(null), "remaining", "nothing stored is the default, not a crash");
+  assert.equal(M.BC.readColumn(undefined), "remaining");
+  assert.equal(M.BC.readColumn(""), "remaining");
+  assert.equal(M.BC.readColumn("Actual"), "remaining", "and neither is something almost right");
+  assert.equal(M.BC.readColumn("left"), "remaining", "nor a name an older version might have used");
+
+  // A dotted underline says "press me" to somebody who can see it and nothing
+  // at all to anybody else, so the label has to say both things.
+  assert.match(M.BC.toggleHint("remaining"), /Showing remaining\./);
+  assert.match(M.BC.toggleHint("remaining"), /Press to show actual instead\./);
+  assert.match(M.BC.toggleHint("actual"), /Showing actual\./);
+  assert.match(M.BC.toggleHint("actual"), /Press to show remaining instead\./);
+  assert.deepEqual(M.BC.COLUMN_LABEL, { actual: "Actual", remaining: "Remaining" });
 });
 
 await test("software past the end of its support is a failing check, not a surprise", () => {

@@ -732,6 +732,17 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .bcol-plan { width: 116px; }
 .bcol-actual { width: 100px; }
 .bcol-left { width: 100px; }
+/* A column heading that is a button everywhere and behaves like one only
+   where there is a choice to make. Wide screens show Actual and Remaining
+   both, so there is nothing to switch to and it is an ordinary label: no
+   underline, no pointer, and not in the tab order. The narrow rule further
+   down turns it back on at the same width that hides one of the columns. */
+.bcol-toggle {
+  display: block; width: 100%;
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: inherit;
+  cursor: default; pointer-events: none;
+}
 /* margin-left:auto, not the card head's space-between: once a long group name
    pushes these onto a second line, space-between has nothing to space and the
    columns go hard left. 180px out of step with the rows they label. */
@@ -1590,6 +1601,28 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
 }
 
 @media (max-width: 560px) {
+  /* ── budget ──
+     Planned, Actual and Remaining is three columns of numbers against a
+     category name, and on a phone the name loses: at 390px it was down to
+     about a word and a half. So one of the two is shown and its heading
+     swaps them, which is the trade a narrow screen is actually asking for.
+     Both are still reachable, and the card behind Remaining states the
+     actual anyway.
+     Driven from the page's data-bcol rather than from each row, so the rule
+     that hides a column sits with the widths it is buying. */
+  [data-bcol="remaining"] .bcol-actual,
+  [data-bcol="actual"] .bcol-left { display: none; }
+  .bcol-plan { width: 82px; }
+  .bcol-actual, .bcol-left { width: 92px; }
+  /* Now it is a switch, so it has to look like one. Dotted rather than solid:
+     a solid underline in a table of figures reads as a link to the row. */
+  .bcol-toggle {
+    pointer-events: auto; cursor: pointer;
+    text-decoration: underline dotted;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+
   .g3 { grid-template-columns: minmax(0, 1fr); }
   /* The name, then the two controls under it: three across leaves the account
      name about forty pixels. */
@@ -1601,20 +1634,20 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
 }
 
 @media (max-width: 400px) {
-  /* 88 + 84 still left the budget's category name 18px on a 320px screen. */
-  .bcol-plan { width: 72px; }
-  .bcol-actual { width: 58px; }
-  .bcol-left { width: 66px; }
+  /* Two columns rather than three, so both can keep a width a four-figure
+     sum actually fits in. */
+  .bcol-plan { width: 76px; }
+  .bcol-actual, .bcol-left { width: 84px; }
   .list-row { gap: 6px; padding: 10px 10px; }
   .budget-head { gap: 6px; }
   .card-head.bgroup-head { padding-left: 10px; padding-right: 10px; }
 }
 
 @media (width <= 359px) {
-  /* Below this the third column is paid for out of the category's name:
-     measured, "Paychecks" fits at 360 and is down to two letters at 344. On a
-     screen this narrow, knowing which row you are looking at wins. */
-  .bcol-actual { display: none; }
-  .bcol-plan { width: 76px; }
-  .bcol-left { width: 72px; }
+  /* The third column used to be dropped here, which is what the heading
+     switch now does at every phone width. What is left to give is a few
+     pixels off each of the two that remain, so that "Paychecks" still reads
+     as "Paychecks" at 320. */
+  .bcol-plan { width: 70px; }
+  .bcol-actual, .bcol-left { width: 76px; }
 }
