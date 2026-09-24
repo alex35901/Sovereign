@@ -641,8 +641,20 @@ export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number
   if (categoryKind(db, categoryId) === "income") return 0;
   const budgeted = Object.keys(db.budgets).filter((m) => m < month).sort();
   if (!budgeted.length) return 0;
+  /**
+   * Every month from the first budgeted one up to this one, rather than only
+   * the months that have a budget row in them.
+   *
+   * A month nobody planned is still a month money was spent in. Walking the
+   * keys of `budgets` skipped those months entirely, so their spending never
+   * came off the carry: plan a hundred in July, budget nothing in August,
+   * spend three hundred in August, and September still opened with a hundred
+   * carried in. The surplus was real once and never stopped being reported.
+   */
+  const months: MonthKey[] = [];
+  for (let m = budgeted[0]!; m < month; m = addMonths(m, 1)) months.push(m);
   let carry = 0;
-  for (const m of budgeted.slice(-24)) {
+  for (const m of months.slice(-24)) {
     const planned = plannedFor(db, m, categoryId);
     if (!planned && carry === 0) continue;
     const actual = actualsFor(db, m).get(categoryId) ?? 0;

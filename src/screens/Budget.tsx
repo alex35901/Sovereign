@@ -280,7 +280,13 @@ function RemainingCard({ row }: { row: BudgetRow }) {
     <>
       <div className="hc-title">{row.category.icon} {row.category.name}</div>
       <div className="hc-body">
-        {row.rollover && !income ? <HcLine label="Rollover from last month" value={row.rollover} tone="pos" /> : null}
+        {/* Shown at zero too, for a category with rollover switched on. A
+            line that appears only when something carried leaves "rollover is
+            off" and "rollover is on and nothing was left" looking identical,
+            which is the difference somebody is actually trying to see. */}
+        {row.category.rollover && !income
+          ? <HcLine label="Carried in" value={row.rollover} tone={row.rollover ? "pos" : undefined} />
+          : null}
         <HcLine label={income ? "Expected" : "Planned"} value={row.planned} />
         {income ? null : <HcLine label="Available to spend" value={available} />}
         <HcLine label={income ? "Received" : "Actual"} value={row.actual} />
@@ -296,6 +302,9 @@ function RemainingCard({ row }: { row: BudgetRow }) {
           value={row.actual} max={Math.max(available, row.actual, 1)}
           color={row.category.color} over={over}
         />
+        {row.category.rollover && !income && !row.rollover ? (
+          <div className="tiny faint">Nothing was left over in the months before this one.</div>
+        ) : null}
         <div className="tiny faint">
           {income
             ? (share === null

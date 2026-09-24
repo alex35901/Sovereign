@@ -2,6 +2,7 @@ import type { Account, DB } from "../types.js";
 import { cadenceHours, DEFAULT_CADENCE } from "./sync/schedule.js";
 import { meterOf } from "./usage.js";
 import { quietFor } from "./quiet.js";
+import { noteFor, unclaimed } from "./sync/notes.js";
 
 /**
  * Where an account's balance comes from, and whether it is still coming.
@@ -73,11 +74,28 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
     return { state: "attention", provider, lastAt, status: "Needs attention", detail: account.syncNote.message };
   }
 
-  // The provider's own last word, which is what the Settings health column
-  // reads. An error here names no institution, so it is about the whole
-  // connection, and it is cleared by the next run that comes back at all.
+  /**
+   * The provider's own last word, which is what the Settings health column
+   * reads. Cleared by the next run that comes back at all.
+   *
+   * Only one error is kept per provider, and the Plaid path writes it as
+   * "Valon Mortgage: ...", so every Plaid account in the document was
+   * reporting one mortgage's trouble as its own: a chequing account at a
+   * different bank, sitting under a red line about a connection it has
+   * nothing to do with. The comment here used to assert that an error at this
+   * level names no institution. It was true of the path it was written for
+   * and not of the one added later, which is exactly the kind of invariant
+   * worth checking rather than believing.
+   *
+   * So a message that names a bank is shown on that bank's accounts and
+   * nowhere else. One that names nobody is about the connection as a whole
+   * and is still shown on all of them.
+   */
   const error = meterOf(db.settings.usage, source, "ever", now).error;
-  if (error) return { state: "attention", provider, lastAt, status: "Needs attention", detail: error };
+  const mine = error
+    ? Boolean(noteFor(account, [error])) || unclaimed(db.accounts, [error]).length > 0
+    : false;
+  if (error && mine) return { state: "attention", provider, lastAt, status: "Needs attention", detail: error };
 
   if (!lastAt) return { state: "stale", provider, status: "Waiting for its first update" };
 

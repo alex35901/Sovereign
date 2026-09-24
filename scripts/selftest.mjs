@@ -4635,6 +4635,82 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.timedOut, false);
 });
 
+await test("one bank's trouble is not reported against every other account", () => {
+  // Only one error is kept per provider, and the Plaid path writes it as
+  // "Valon Mortgage: ...". Every Plaid account in the document was showing
+  // that mortgage's trouble as its own: a chequing account at a different bank
+  // under a red line about a connection it has nothing to do with.
+  const base = M.emptyDB();
+  const acct = (id, institution) => ({
+    ...base.accounts[0], id, name: `${institution} account`, institution,
+    syncSource: "plaid", syncId: id, lastSyncedAt: "2026-09-24T09:00:00.000Z", history: [],
+  });
+  const withError = (message) => ({
+    ...base,
+    accounts: [acct("a1", "Valon Mortgage"), acct("a2", "Elements Financial")],
+    transactions: [],
+    settings: {
+      ...base.settings,
+      usage: { plaid: { period: "ever", at: "2026-09-24T09:00:00.000Z", error: message, calls: 1 } },
+    },
+  });
+  const now = Date.parse("2026-09-24T09:05:00.000Z");
+  const at = (db, id) => M.connectionOf(db.accounts.find((a) => a.id === id), db, now);
+
+  const named = withError("Valon Mortgage: Plaid is still preparing this connection's transactions.");
+  assert.equal(at(named, "a1").state, "attention", "the bank it names hears about it");
+  assert.match(at(named, "a1").detail, /still preparing/);
+  assert.notEqual(at(named, "a2").state, "attention",
+    "and a different bank at a different institution does not");
+  assert.equal(at(named, "a2").detail, undefined);
+
+  // A message that names nobody is about the whole connection, and every
+  // account fed by it should still say so.
+  const general = withError("Plaid isn't configured on the server.");
+  assert.equal(at(general, "a1").state, "attention");
+  assert.equal(at(general, "a2").state, "attention");
+  assert.match(at(general, "a2").detail, /isn't configured/);
+});
+
+await test("a month nobody budgeted is still a month money was spent in", () => {
+  // The carry walked the keys of the budgets object, so a month with no plan
+  // in it was skipped entirely and its spending never came off the carry.
+  // Plan a hundred in July, budget nothing in August, spend three hundred in
+  // August, and September opened with a hundred carried in.
+  const base = M.emptyDB();
+  const group = base.groups.find((g) => g.kind === "expense");
+  const cat = { id: "c1", name: "Auto Maintenance", groupId: group.id, rollover: true, order: 0, icon: "x" };
+  const db0 = {
+    ...base,
+    accounts: [{ ...base.accounts[0], id: "a1", history: [] }],
+    categories: [...base.categories, cat],
+    transactions: [], budgets: {},
+  };
+  const txn = (date, amount) => ({
+    id: `t-${date}-${amount}`, accountId: "a1", date, merchant: "m", amount,
+    categoryId: "c1", tags: [], reviewed: false, hideFromReports: false, createdAt: date,
+  });
+  const carry = (budgets, transactions) =>
+    M.rolloverFor({ ...db0, budgets, transactions }, "2026-09", "c1");
+
+  assert.equal(carry({ "2026-08": { c1: 10000 }, "2026-09": { c1: 10000 } }, [txn("2026-08-05", -1200)]), 8800,
+    "the ordinary case: planned a hundred, spent twelve, eighty-eight carries");
+
+  assert.equal(carry({ "2026-07": { c1: 10000 }, "2026-09": { c1: 10000 } }, []), 10000,
+    "a quiet unbudgeted month carries the surplus through it");
+
+  assert.equal(
+    carry({ "2026-07": { c1: 10000 }, "2026-09": { c1: 10000 } }, [txn("2026-08-09", -30000)]),
+    0, "and a spent one takes it away, which it never used to");
+
+  // Overspending is not a debt carried forward, only a surplus is.
+  assert.equal(carry({ "2026-08": { c1: 10000 } }, [txn("2026-08-09", -30000)]), 0);
+
+  // A category with rollover off carries nothing, whatever the months say.
+  const off = { ...db0, categories: [...base.categories, { ...cat, rollover: false }] };
+  assert.equal(M.rolloverFor({ ...off, budgets: { "2026-08": { c1: 10000 } } }, "2026-09", "c1"), 0);
+});
+
 await test("the budget's two figures share one column on a narrow screen", () => {
   // Planned, Actual and Remaining is three columns of numbers against a
   // category name, and on a phone the name loses. One of the two is shown and

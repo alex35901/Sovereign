@@ -2429,7 +2429,10 @@ try {
       ...baseDoc,
       settings: {
         ...baseDoc.settings, syncCadence: "daily",
-        usage: { ...(baseDoc.settings.usage ?? {}), plaid: { period: "", count: 3, error: "Wells Fargo: login required" } },
+        // Names no bank, so it is about the whole connection and belongs on
+        // every account fed by it. The message that names one is seeded
+        // separately below, because those are two different rules.
+        usage: { ...(baseDoc.settings.usage ?? {}), plaid: { period: "", count: 3, error: "Plaid could not be reached." } },
       },
       accounts: baseDoc.accounts.map((a, i) =>
         i === 0 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(2) }
@@ -2438,11 +2441,11 @@ try {
         : { ...a, syncSource: undefined, lastSyncedAt: undefined }),
     };
 
-    const connPage = async (index) => {
+    const connPage = async (index, doc = connDoc) => {
       const ctx = await browser.newContext({ viewport: { width: 390, height: 900 } });
       await ctx.addInitScript((d) => {
         if (!localStorage.getItem("sovereign.db.v1")) localStorage.setItem("sovereign.db.v1", d);
-      }, JSON.stringify(connDoc));
+      }, JSON.stringify(doc));
       const page = await ctx.newPage();
       await page.goto(`${BASE}/accounts/${connDoc.accounts[index].id}`, { waitUntil: "networkidle" });
       await page.waitForTimeout(600);
@@ -2475,8 +2478,37 @@ try {
     check("a provider that is failing shows up as needing attention",
       /needs attention/i.test(attention?.values.Status ?? ""), attention?.values.Status);
     check("and says out loud what to go and do about it",
-      /login required/i.test(attention?.detail ?? ""), attention?.detail || "nothing said");
+      /could not be reached/i.test(attention?.detail ?? ""), attention?.detail || "nothing said");
     await broke.close();
+
+    // ── one bank's trouble is not everybody's ──
+    //
+    // Only one error is kept per provider, and the Plaid path writes it as
+    // "Valon Mortgage: ...". Every Plaid account in the document was showing
+    // that mortgage's trouble as its own: a chequing account at another bank
+    // under a red line about a connection it has nothing to do with.
+    // Named outright rather than taken from the demo data, which has more
+    // than one account at the same bank and would let this pass by accident.
+    const elsewhere = {
+      ...connDoc,
+      accounts: connDoc.accounts.map((a, i) =>
+        (i === 0 ? { ...a, institution: "Elements Financial" }
+        : i === 2 ? { ...a, institution: "Valon Mortgage", syncSource: "plaid" }
+        : a)),
+      settings: {
+        ...connDoc.settings,
+        usage: {
+          ...connDoc.settings.usage,
+          plaid: { period: "", count: 3, error: "Valon Mortgage: login required" },
+        },
+      },
+    };
+    const other = await connPage(0, elsewhere);
+    const spared = await readConn(other);
+    check("a failure naming another bank is not reported against this account",
+      !/needs attention/i.test(spared?.values.Status ?? "") && !/login required/i.test(spared?.detail ?? ""),
+      `${spared?.values.Status} — ${spared?.detail || "nothing said"}`);
+    await other.close();
 
     const fine = await connPage(1);
     const connected = await readConn(fine);
