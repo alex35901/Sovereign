@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRight, Filter, Search, X } from "lucide-react";
+import { ChevronRight, Filter, Merge, Search, X } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { merchantRows } from "../lib/select";
 import { Btn, Card, Empty, Field, Money, Popover, SelectInput, TextInput, cx } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
+import { MergeMerchants } from "./MergeMerchants";
 
 /** How many to draw before the list has to be asked for more. */
 const PAGE = 60;
@@ -17,6 +18,8 @@ export default function Merchants() {
   const [by, setBy] = useState<"count" | "total">("count");
   const [scope, setScope] = useState<"spending" | "all">("spending");
   const [groupId, setGroupId] = useState("");
+  /** Whether the combine dialog is open. */
+  const [merging, setMerging] = useState(false);
 
   const rows = useMemo(
     () => merchantRows(db, { scope, groupId: groupId || undefined }),
@@ -97,6 +100,16 @@ export default function Merchants() {
               )}
             </Popover>
           </div>
+          {/* Offered where the question is actually asked. Searching a shop
+              and getting five rows back is the moment somebody wants them to
+              be one row, and it is also the moment the app knows which five. */}
+          {q.trim().length >= 2 && shown.length > 1 ? (
+            <div className="row" style={{ marginTop: 10 }}>
+              <Btn onClick={() => setMerging(true)}>
+                <Merge size={14} /> Combine these {shown.length} into one merchant
+              </Btn>
+            </div>
+          ) : null}
           <div className="spread small muted" style={{ marginTop: 10 }}>
             <span>
               {shown.length.toLocaleString()} merchant{shown.length === 1 ? "" : "s"}
@@ -111,6 +124,15 @@ export default function Merchants() {
             </span>
           </div>
         </Card>
+
+        {merging ? (
+          <MergeMerchants
+            rows={shown.map((r) => ({ name: r.name, count: r.count }))}
+            all={rows.map((r) => ({ name: r.name, count: r.count }))}
+            match={q}
+            onClose={() => setMerging(false)}
+          />
+        ) : null}
 
         <Card pad={false}>
           {shown.slice(0, limit).map((r) => (

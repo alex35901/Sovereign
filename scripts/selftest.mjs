@@ -85,6 +85,7 @@ await build({
       export * as HW from "./src/lib/sync/history.ts";
       export * as LE from "./src/lib/sync/link-error.ts";
       export * as BC from "./src/lib/budget-column.ts";
+      export * as MM from "./src/lib/merchant-merge.ts";
       export { checkEol, majorOf, NODE_EOL, WARN_DAYS } from "./scripts/eol.mjs";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
@@ -4688,6 +4689,114 @@ await test("a connection Plaid has no transactions for still brings its balances
   // And a connection that is simply ready says nothing at all.
   const fine = M.toPlaidPayload({ accounts: [], transactions: [], holdings: [], securities: [] }, { institution: "X" });
   assert.deepEqual(fine.errors, []);
+});
+
+await test("five spellings of one shop can be made one merchant", () => {
+  // A restaurant group bills as Coopershawk, Coopers Hawk Indianapoli,
+  // Cooper's Hawk Winery & Restaurant, Coopers Hawk Wine and Coopers Hawk
+  // Member Si. Every one is a separate merchant and, worse, a separate
+  // recurring bill, so a monthly charge is never ticked off: the name it
+  // arrived under is not the name the schedule is filed under.
+  const hawk = [
+    { name: "Coopershawk", count: 26 },
+    { name: "Coopers Hawk Indianapoli", count: 7 },
+    { name: "Cooper's Hawk Winery & Restaurant", count: 2 },
+    { name: "Coopers Hawk Wine", count: 2 },
+    { name: "Coopers Hawk Member Si", count: 1 },
+  ];
+  const all = [...hawk, { name: "Costco", count: 40 }, { name: "Kroger", count: 12 }];
+
+  // The spelling the most transactions already use, so the fewest rows move
+  // and the name on the page is the familiar one.
+  assert.equal(M.MM.suggestName(hawk), "Coopershawk");
+  // Ties go to the longer spelling, which is likelier to be the full name
+  // rather than a truncation of it.
+  assert.equal(M.MM.suggestName([{ name: "Coopers Hawk Win", count: 3 }, { name: "Coopers Hawk Wine", count: 3 }]),
+    "Coopers Hawk Wine");
+  assert.equal(M.MM.suggestName([]), "");
+
+  // Everything but the kept spelling gets rewritten.
+  assert.equal(M.MM.movedBy(hawk, "Coopershawk"), 12);
+  assert.equal(M.MM.movedBy(hawk, "Coopers Hawk Wine"), 36);
+
+  const ok = M.MM.checkMerge(all, hawk, "cooper", "Coopershawk");
+  assert.equal(ok.clean, true, ok.warning);
+  assert.equal(ok.moving, 12);
+  assert.deepEqual(ok.missed, []);
+  assert.deepEqual(ok.extra, []);
+
+  // A match that misses one of them leaves that spelling behind as its own
+  // merchant and its own recurring bill, which is the problem unfixed and now
+  // harder to see.
+  const partial = M.MM.checkMerge(all, hawk, "coopers hawk", "Coopershawk");
+  assert.equal(partial.clean, false);
+  // Both of these, and the second one is why this is checked literally rather
+  // than cleverly: the rule that ends up doing the renaming compares with a
+  // plain substring test, so an apostrophe really does break "coopers hawk".
+  // A preview that were more forgiving than the rule would be a preview that
+  // lies about what is going to happen.
+  assert.deepEqual(partial.missed.map((r) => r.name),
+    ["Coopershawk", "Cooper's Hawk Winery & Restaurant"]);
+  assert.match(partial.warning, /would not be matched/);
+
+  // A rule is pointed at every transaction in the document, so what else it
+  // would rename is the thing worth seeing before pressing the button.
+  const wide = M.MM.checkMerge(all, hawk, "co", "Coopershawk");
+  assert.equal(wide.clean, false);
+  assert.match(wide.warning, /too short/);
+  // And it does not go on to list everything a match that short would sweep
+  // up. The answer to "co" is that it is not a match worth reasoning about,
+  // not a page of merchants that happen to contain those two letters.
+  assert.deepEqual(wide.extra, []);
+
+  const sweeping = M.MM.checkMerge([...all, { name: "Cooper Tire", count: 3 }], hawk, "cooper", "Coopershawk");
+  assert.equal(sweeping.clean, false);
+  assert.deepEqual(sweeping.extra.map((r) => r.name), ["Cooper Tire"]);
+  assert.match(sweeping.warning, /also rename 1 other merchant/);
+
+  // Case and spacing are not a difference, in either direction.
+  assert.deepEqual(M.MM.missedBy(hawk, "  COOPER "), []);
+  assert.deepEqual(M.MM.alsoCaught(all, "cooper", hawk.map((r) => r.name)), []);
+  // And the kept spelling is never reported as something the merge also caught.
+  assert.deepEqual(M.MM.alsoCaught(all, "costco", ["Costco"]), []);
+});
+
+await test("and the combined merchant is one recurring bill, not five", () => {
+  // The point of the whole thing. A recurring schedule is filed under the
+  // merchant's name, so five spellings were five bills and a monthly charge
+  // was never ticked off: the name it arrived under was not the name the
+  // schedule was under.
+  const rule = {
+    id: "r1", name: "Combine into Coopershawk", enabled: true, order: 0,
+    criteria: { merchantContains: "cooper", merchantMatch: "contains" },
+    actions: { renameMerchant: "Coopershawk" },
+  };
+  const txn = (merchant, date) => ({
+    id: `t-${merchant}-${date}`, accountId: "a1", date, merchant, amount: -5000,
+    categoryId: "c1", tags: [], reviewed: false, hideFromReports: false, createdAt: date,
+  });
+  const arrivals = [
+    txn("Coopers Hawk Indianapoli", "2026-07-14"),
+    txn("Cooper's Hawk Winery & Restaurant", "2026-08-14"),
+    txn("Coopers Hawk Member Si", "2026-09-14"),
+  ];
+
+  const before = new Set(arrivals.map((t) => M.RC.recurringIdFor(t.merchant)));
+  assert.equal(before.size, 3, "three months, three bills, none of them ever ticked off");
+
+  const after = new Set(arrivals
+    .map((t) => M.applyRules([rule], t))
+    .map((t) => M.RC.recurringIdFor(t.merchant)));
+  assert.equal(after.size, 1, "one bill, whichever spelling the bank sent");
+  assert.equal([...after][0], M.RC.recurringIdFor("Coopershawk"));
+
+  // The rule reads the statement as well as the merchant, so a charge whose
+  // merchant name Plaid never worked out is caught by what the bank printed.
+  const raw = { ...txn("SQ *MERCHANT", "2026-10-14"), statement: "SQ *COOPERS HAWK 4412" };
+  assert.equal(M.applyRules([rule], raw).merchant, "Coopershawk");
+
+  // And a shop that merely shares a word is left alone.
+  assert.equal(M.applyRules([rule], txn("Costco", "2026-10-02")).merchant, "Costco");
 });
 
 await test("one bank's trouble is not reported against every other account", () => {
