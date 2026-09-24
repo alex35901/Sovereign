@@ -25,6 +25,39 @@ import type { Transaction } from "../types";
  * pages cannot drift into being subtly different screens.
  */
 
+/**
+ * The period value meaning "none of them: show the whole chart".
+ *
+ * A word in the URL rather than an absent parameter, because absent already
+ * means something else here: it means "you have not chosen, so land on the
+ * newest period with anything in it". Those are different answers and the
+ * difference has to survive a reload and the back button.
+ */
+export const ALL = "all";
+
+/**
+ * Which period the detail describes, or null for all of them.
+ *
+ * Pulled out of the component because it is the one piece of this with rules
+ * rather than layout: an asked-for period that is no longer on the chart, the
+ * newest populated one as a default, and the explicit "all".
+ */
+export function pickedBucket(
+  asked: string | null,
+  buckets: readonly string[],
+  populated: ReadonlySet<string>,
+): string | null {
+  if (asked === ALL) return null;
+  if (asked && buckets.includes(asked)) return asked;
+  // The newest with anything in it, not simply the newest. Daily on something
+  // you touch once a week means most bars are empty, and landing on an empty
+  // Tuesday answers no question anybody had.
+  for (let i = buckets.length - 1; i >= 0; i--) {
+    if (populated.has(buckets[i]!)) return buckets[i]!;
+  }
+  return buckets.at(-1) ?? null;
+}
+
 /** How much history to draw at each grain, so the bars stay readable. */
 const SPAN: Record<Grain, number> = { day: 60, week: 26, month: 24, quarter: 12, year: 8 };
 
@@ -85,7 +118,10 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
     // with anything in it, which is where the eye goes anyway.
     const next = new URLSearchParams(params);
     next.set("by", by);
-    next.delete("at");
+    // "All of them" still means all of them at any grain, so it survives the
+    // change. A particular period does not: "Q3" is not a week.
+    if (params.get("at") === ALL) next.set("at", ALL);
+    else next.delete("at");
     setLimit(120);
     setParams(next, { replace: true });
   };
@@ -118,36 +154,36 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
     return out;
   }, [wide.entries, grain]);
 
-  /**
-   * Which period the detail below describes.
-   *
-   * The default is the newest one with anything in it, not simply the newest.
-   * Daily on something you touch once a week means most bars are empty, and
-   * landing on an empty Tuesday answers no question anybody had.
-   */
-  const selected = (() => {
-    const asked = params.get("at");
-    if (asked && buckets.includes(asked)) return asked;
-    for (let i = buckets.length - 1; i >= 0; i--) {
-      if (populated.has(buckets[i]!)) return buckets[i]!;
-    }
-    return buckets.at(-1)!;
-  })();
+  /** Which period the detail below describes, or null for the whole chart. */
+  const selected = pickedBucket(params.get("at"), buckets, populated);
 
-  const span = bucketSpan(selected, grain);
+  // The whole chart when nothing is picked, which is the same span the bars
+  // were drawn over, so what is listed is exactly what is shown above it.
+  const span = selected
+    ? bucketSpan(selected, grain)
+    : { from: bucketSpan(buckets[0]!, grain).from, to: bucketSpan(buckets.at(-1)!, grain).to };
+
   const period: Period = useMemo(() => {
-    const entries = wide.entries.filter((e) => e.txn.date >= span.from && e.txn.date <= span.to);
+    // Unfiltered when nothing is picked. The same rows, not a second read of
+    // them: the filter below would keep every one anyway.
+    const entries = selected
+      ? wide.entries.filter((e) => e.txn.date >= span.from && e.txn.date <= span.to)
+      : wide.entries;
     return {
-      key: selected,
+      key: selected ?? ALL,
       grain,
       from: span.from,
       to: span.to,
-      title: bucketTitle(selected, grain),
+      title: selected
+        ? bucketTitle(selected, grain)
+        : `${bucketTitle(buckets[0]!, grain)} to ${bucketTitle(buckets.at(-1)!, grain)}`,
       entries,
       stats: entryStats(entries),
-      skipped: load(span.from, span.to).skipped,
+      // Already counted over this exact span by the read above, so asking
+      // again would be a second pass over every transaction for one number.
+      skipped: selected ? load(span.from, span.to).skipped : wide.skipped,
     };
-  }, [wide.entries, span.from, span.to, selected, grain, load]);
+  }, [wide.entries, wide.skipped, span.from, span.to, selected, grain, load, buckets]);
 
   // The unselected bars are the subject's own colour, dimmed — not a neutral
   // grey, which disappears into the card and makes the chart look like it
@@ -160,7 +196,9 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
       // Spending is stored negative and a chart of downward bars reads as
       // losses, not as a grocery bill. Drawn by size, signed in the tooltip.
       value: Math.abs(totals.get(key) ?? 0),
-      tone: key === selected ? `var(${tone})` : dim,
+      // All of them at full strength when nothing is picked: the list below is
+      // showing all of them, and a chart of dimmed bars would say the opposite.
+      tone: selected === null || key === selected ? `var(${tone})` : dim,
     }],
   }));
 
@@ -176,7 +214,9 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
         <Card>
           <CardHead
             title="Over time"
-            sub={`${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"}, click one to look at it`}
+            sub={selected === null
+              ? `${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"}, all of them. Click one to look at it`
+              : `${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"}, click one to look at it, click it again for all`}
             right={<Segmented value={grain} options={GRAINS} onChange={setGrain} />}
           />
           {earliest ? (
@@ -185,7 +225,11 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
               height={210}
               onClickGroup={(i) => {
                 const key = buckets[i];
-                if (key) setSelected(key);
+                // Pressing the one already picked lets it go, rather than
+                // picking it again, which does nothing and looks broken. Same
+                // gesture as a cross-filter anywhere else: click to narrow,
+                // click again to stop narrowing.
+                if (key) setSelected(key === selected ? ALL : key);
               }}
             />
           ) : (
@@ -193,7 +237,14 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
           )}
         </Card>
 
-        <h2 className="period-title">{period.title}</h2>
+        <div className="row wrap period-head" style={{ gap: 10 }}>
+          <h2 className="period-title">{period.title}</h2>
+          {/* A second way out, because a bar three pixels wide is a hard
+              thing to press twice on a phone. */}
+          {selected !== null ? (
+            <Btn size="sm" onClick={() => setSelected(ALL)}>Show all {grainWord}s</Btn>
+          ) : null}
+        </div>
 
         <div className="grid g-2-1">
           <Card pad={false}>

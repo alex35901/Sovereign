@@ -5357,6 +5357,15 @@ try {
           return bar && !/color-mix/.test(bar.getAttribute("fill") ?? "");
         }),
         heights: groups.map((g) => Number(g.querySelectorAll("rect")[1]?.getAttribute("height") ?? 0)),
+        // How many are drawn at full strength. One while a period is picked,
+        // all of them once it is let go: a chart of dimmed bars over a list
+        // showing everything would say the opposite of what is happening.
+        lit: groups.filter((g) => {
+          const bar = g.querySelectorAll("rect")[1];
+          return bar && !/color-mix/.test(bar.getAttribute("fill") ?? "");
+        }).length,
+        clear: Boolean([...document.querySelectorAll("button")]
+          .find((b) => /^Show all /.test(b.innerText.trim()))),
         empty: /Nothing in/.test(document.querySelector(".empty")?.innerText ?? ""),
         counted: document.querySelector(".card-head .tiny.faint")?.innerText ?? "",
       };
@@ -5366,6 +5375,17 @@ try {
       await dp.waitForTimeout(500);
       return state();
     };
+    /**
+     * Open this bar, whatever was open before.
+     *
+     * Clicking is a toggle now, so pressing the bar that happens to be picked
+     * already lets it go instead. For the checks about which bar opens which
+     * month, that is noise: they want the bar open.
+     */
+    const pick = async (i) => {
+      const once = await clickBar(i);
+      return once.lit === 1 ? once : clickBar(i);
+    };
 
     await dp.goto(`${BASE}/categories/c_groceries?by=month`, { waitUntil: "networkidle" });
     await dp.waitForTimeout(1200);
@@ -5374,7 +5394,7 @@ try {
     check("two years of months are drawn", start.count === 24, String(start.count));
 
     if (start.count === 24) {
-      const last = await clickBar(23);
+      const last = await pick(23);
       const year = await dp.evaluate(() => new Date().getFullYear());
       const thisMonthName = await dp.evaluate(() =>
         new Date().toLocaleString("en-US", { month: "long", year: "numeric" }));
@@ -5384,7 +5404,7 @@ try {
 
       // The whole bug in one check: the bar a year earlier carries the same
       // label and must open a different month.
-      const before = await clickBar(11);
+      const before = await pick(11);
       check("the bar with the same label a year earlier opens the earlier year",
         before.title.endsWith(String(year - 1)) && before.title !== last.title,
         `${last.title} then ${before.title}`);
@@ -5394,7 +5414,7 @@ try {
       // A bar with height has something behind it. An empty panel under a
       // full bar is what the user sees when the wrong month was picked.
       const tall = start.heights.indexOf(Math.max(...start.heights));
-      const opened = await clickBar(tall);
+      const opened = await pick(tall);
       check("a bar with height opens a month with transactions in it",
         !opened.empty && /[1-9]/.test(opened.counted),
         `${opened.title}: ${opened.counted || "no count"}${opened.empty ? " (empty panel)" : ""}`);
@@ -5403,9 +5423,42 @@ try {
       // Every bar opens its own month: twenty-four clicks, twenty-four
       // different headings.
       const seen = [];
-      for (const i of [0, 5, 11, 17, 23]) seen.push((await clickBar(i)).title);
+      for (const i of [0, 5, 11, 17, 23]) seen.push((await pick(i)).title);
       check("each bar opens a month of its own",
         new Set(seen).size === seen.length, seen.join(" / "));
+
+      // ── and clicking it again lets it go ──
+      //
+      // Click to narrow, click again to stop narrowing. Pressing the bar that
+      // is already picked used to pick it a second time, which does nothing
+      // and reads as broken.
+      const picked = await pick(23);
+      check("a picked bar is the only one lit", picked.lit === 1, `${picked.lit} lit`);
+      check("and it offers a second way out, for a bar too thin to press twice",
+        picked.clear === true);
+
+      const released = await clickBar(23);
+      check("clicking the picked bar again shows the whole range",
+        released.title !== picked.title && / to /.test(released.title), released.title);
+      check("every bar is lit, because every bar is being shown",
+        released.lit === 24, `${released.lit} of 24 lit`);
+      check("and the list underneath holds more than the one month did",
+        Number((released.counted.match(/\d[\d,]*/) ?? ["0"])[0].replace(/,/g, ""))
+          > Number((picked.counted.match(/\d[\d,]*/) ?? ["0"])[0].replace(/,/g, "")),
+        `${picked.counted} then ${released.counted}`);
+      check("the way out goes away once there is nothing to get out of",
+        released.clear === false);
+
+      // And it is not a one-way door.
+      const again = await pick(11);
+      check("a bar can be picked again afterwards", again.lit === 1 && again.title !== released.title, again.title);
+
+      // The choice survives a reload, because it lives in the URL rather than
+      // in a variable that a refresh forgets.
+      await dp.goto(`${BASE}/categories/c_groceries?by=month&at=all`, { waitUntil: "networkidle" });
+      await dp.waitForTimeout(1000);
+      const reloaded = await state();
+      check("and it survives a reload", reloaded.lit === 24 && / to /.test(reloaded.title), reloaded.title);
     }
 
     // Quarterly is the other grain broken at the width the app draws: twelve
@@ -5418,8 +5471,8 @@ try {
     if (q.count >= 5) {
       const last = q.count - 1;
       const yearBefore = q.count - 5;
-      const newest = await clickBar(last);
-      const oldest = await clickBar(yearBefore);
+      const newest = await pick(last);
+      const oldest = await pick(yearBefore);
       check("the same quarter in a different year is a different quarter",
         newest.title !== oldest.title
         && newest.title.slice(0, 2) === oldest.title.slice(0, 2)

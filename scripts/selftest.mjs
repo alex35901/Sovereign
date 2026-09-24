@@ -100,6 +100,7 @@ await build({
       export * as FD from "./src/lib/funds.ts";
       export * as SS from "./src/lib/social-security.ts";
       export { compareValues, sortRows } from "./src/components/sort.tsx";
+      export { pickedBucket, ALL as ALL_PERIODS } from "./src/screens/Drilldown.tsx";
       export * as PR from "./src/lib/prices.ts";
       export * as U from "./src/lib/usage.ts";
       export { integrations, healthOf, PERIOD_LABEL, NEAR, staleSince, quietSince } from "./src/lib/integrations.ts";
@@ -4689,6 +4690,34 @@ await test("a connection Plaid has no transactions for still brings its balances
   // And a connection that is simply ready says nothing at all.
   const fine = M.toPlaidPayload({ accounts: [], transactions: [], holdings: [], securities: [] }, { institution: "X" });
   assert.deepEqual(fine.errors, []);
+});
+
+await test("a drill-down chart can be un-picked to show the whole range", () => {
+  // Click a bar to narrow to it, click it again to stop narrowing. The state
+  // that needed inventing is "none of them", because an absent period already
+  // meant something else: "you have not chosen, so land somewhere sensible".
+  const months = ["2026-05", "2026-06", "2026-07", "2026-08", "2026-09"];
+  const busy = new Set(["2026-05", "2026-07", "2026-08"]);
+
+  assert.equal(M.pickedBucket(null, months, busy), "2026-08",
+    "nothing asked for lands on the newest month with anything in it");
+  assert.equal(M.pickedBucket("2026-06", months, busy), "2026-06",
+    "and an empty month is a fine thing to ask for on purpose");
+  assert.equal(M.pickedBucket(M.ALL_PERIODS, months, busy), null, "asked for all of them, so none is picked");
+
+  // A period from a URL that no longer fits the chart, because the grain
+  // changed or the window moved on.
+  assert.equal(M.pickedBucket("2024-01", months, busy), "2026-08");
+  assert.equal(M.pickedBucket("nonsense", months, busy), "2026-08");
+
+  // Nothing populated anywhere: the newest bar rather than nothing at all, or
+  // the page would open on the whole range without being asked to.
+  assert.equal(M.pickedBucket(null, months, new Set()), "2026-09");
+  assert.equal(M.pickedBucket(M.ALL_PERIODS, months, new Set()), null, "unless it was asked for");
+
+  // And a chart with no bars at all has nothing to pick.
+  assert.equal(M.pickedBucket(null, [], new Set()), null);
+  assert.equal(M.pickedBucket("2026-09", [], new Set()), null);
 });
 
 await test("five spellings of one shop can be made one merchant", () => {

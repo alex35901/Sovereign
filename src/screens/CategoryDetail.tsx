@@ -7,7 +7,7 @@ import { monthLabel } from "../lib/date";
 import { toCSV } from "../lib/csv";
 import { download } from "../lib/storage";
 import { categoryActivity, categoryBudget, remainingTone } from "../lib/select";
-import { alignsToMonths, monthsIn } from "../lib/buckets";
+import { alignsToMonths, monthsBetween } from "../lib/buckets";
 import { Btn, Card, CardHead, Empty, Money } from "../components/ui";
 import { CategoryModal } from "./SettingsPanels";
 import type { Period } from "./Drilldown";
@@ -106,7 +106,9 @@ function BudgetCard({ categoryId, period, excluded }: {
   categoryId: string; period: Period; excluded: boolean;
 }) {
   const db = useDB();
-  const months = monthsIn(period.key, period.grain);
+  // From the period's own span, not from its key: a chart that has been
+  // un-picked describes every month on it at once, and "all" is not a month.
+  const months = monthsBetween(period.from, period.to);
   const budget = useMemo(
     () => categoryBudget(db, categoryId, months),
     [db, categoryId, months.join()],

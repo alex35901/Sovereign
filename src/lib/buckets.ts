@@ -149,6 +149,18 @@ export function bucketTitle(key: string, grain: Grain): string {
  */
 export function monthsIn(key: string, grain: Grain): MonthKey[] {
   const { from, to } = bucketSpan(key, grain);
+  return monthsBetween(from, to);
+}
+
+/**
+ * Every month two dates touch, from the span rather than from a bucket key.
+ *
+ * What a caller with a period in hand actually has. Deriving it from the key
+ * instead assumed every period is one bucket, which stopped being true the
+ * moment a chart could be un-picked to show all of them: "all" is not a month
+ * and splitting it on a dash produces nonsense.
+ */
+export function monthsBetween(from: ISODate, to: ISODate): MonthKey[] {
   const out: MonthKey[] = [];
   for (let m = monthOf(from); m <= monthOf(to); m = addMonths(m, 1)) out.push(m);
   return out;
