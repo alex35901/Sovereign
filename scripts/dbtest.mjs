@@ -30,6 +30,7 @@ await build({
   stdin: {
     contents: `
       export { readDoc, readMeta, readSeal, writeDoc, writeAllowed, connectionString } from "./api/_store.ts";
+      export { listHistory, readHistory, KEEP_VERSIONS } from "./api/_store.ts";
       export { default as dbHandler } from "./api/db.ts";
       export { default as hopperHandler } from "./api/hopper.ts";
       export { claimMessage, spentToday, noteTokens, DAILY_MESSAGES } from "./api/_budget.ts";
@@ -58,6 +59,7 @@ const wipe = async () => {
   await c.query("DROP TABLE IF EXISTS budget_document");
   await c.query("DROP TABLE IF EXISTS auth_attempt");
   await c.query("DROP TABLE IF EXISTS sync_queue");
+  await c.query("DROP TABLE IF EXISTS budget_history");
   await c.end();
 };
 
@@ -94,6 +96,59 @@ await wipe();
 await test("the table is created on first use, and reading an empty store is not an error", async () => {
   assert.equal(await M.readDoc(), null);
   assert.equal(await M.readDoc(), null, "a second call must not trip over the existing table");
+});
+
+await test("a save keeps the version it replaced, so an overwrite can be undone", async () => {
+  // The row is overwritten in place, which was fine until a device holding an
+  // old copy saved it over a day's work. There was no history, no backup on
+  // the server, and nothing at all to go back to.
+  await wipe();
+  await M.writeDoc({ accounts: ["plaid"] }, 0, "desktop");
+  await M.writeDoc({ accounts: ["plaid", "more"] }, 1, "desktop");
+  // The accident: a stale device, saving the world as it was two versions ago.
+  await M.writeDoc({ accounts: ["simplefin"] }, 2, "an old phone");
+
+  const kept = await M.listHistory();
+  assert.deepEqual(kept.map((h) => h.version), [2, 1], "newest first, and the one just replaced is there");
+  assert.equal(kept[0].updatedBy, "desktop");
+  assert.ok(kept[0].bytes > 0, "the size is reported, which is the one clue a locked browser can read");
+
+  const back = await M.readHistory(2);
+  assert.deepEqual(back.doc, { accounts: ["plaid", "more"] }, "in full, and exactly as it was");
+  assert.equal(await M.readHistory(99), null, "a version never kept is null rather than a throw");
+
+  // And the current document is untouched by any of that looking.
+  assert.deepEqual((await M.readDoc()).doc, { accounts: ["simplefin"] });
+  await wipe();
+});
+
+await test("the history is capped, so it cannot grow without bound", async () => {
+  // Deep enough to be useful, pinned rather than derived: a device saving
+  // every few minutes can bury the version somebody wants within an hour, and
+  // a budget is a fraction of a megabyte against half a gigabyte of room.
+  assert.ok(M.KEEP_VERSIONS >= 20, `${M.KEEP_VERSIONS} is not far enough back to be worth having`);
+  await wipe();
+  const n = M.KEEP_VERSIONS + 6;
+  for (let i = 0; i < n; i++) await M.writeDoc({ i }, i, "device");
+  const kept = await M.listHistory(500);
+  assert.equal(kept.length, M.KEEP_VERSIONS, `kept ${kept.length}, cap is ${M.KEEP_VERSIONS}`);
+  assert.equal(kept[0].version, n - 1, "the newest replaced version is the one that survives");
+  assert.equal(await M.readHistory(1), null, "and the oldest has been let go");
+  await wipe();
+});
+
+await test("a refused write leaves no trace in the history either", async () => {
+  // A stale save that the version check turns away must not quietly file the
+  // current document as though something had happened.
+  await wipe();
+  await M.writeDoc({ n: 1 }, 0, "device");
+  await M.writeDoc({ n: 2 }, 1, "device");
+  const before = await M.listHistory();
+  const refused = await M.writeDoc({ n: 99 }, 0, "a stale device");
+  assert.equal(refused.ok, false);
+  assert.deepEqual((await M.listHistory()).map((h) => h.version), before.map((h) => h.version));
+  assert.deepEqual((await M.readDoc()).doc, { n: 2 }, "and the document is untouched");
+  await wipe();
 });
 
 await test("the table is remembered, but a table that disappears is rebuilt rather than assumed", async () => {

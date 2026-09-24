@@ -12,6 +12,7 @@ import { Btn, Card, CardHead, ConfirmButton, Field, TextInput } from "../compone
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
+import { HistoryCard } from "./HistoryCard";
 import { EncryptionCard } from "./EncryptionCard";
 
 export default function Settings() {
@@ -217,6 +218,7 @@ export default function Settings() {
         </Card>
 
         <CloudCard />
+        <HistoryCard />
         <EncryptionCard />
 
         <PlaidCard />

@@ -69,6 +69,25 @@ export function CloudSync() {
   };
 
   /**
+   * Take the stored document, setting aside anything unsent first.
+   *
+   * The rule when the two disagree is that the server wins, and this is the
+   * only place that rule is carried out, so that no path can quietly implement
+   * it differently. A local edit that would be lost to it is stashed, never
+   * dropped.
+   */
+  const takeRemote = async (say: (by: string) => string | null): Promise<boolean> => {
+    const remote = await pull().catch(() => null);
+    if (!remote) return false;
+    if (cloudState().dirty) stashConflict(latest.current);
+    install(remote.doc);
+    setCloudState({ version: remote.version, dirty: false });
+    const said = say(remote.updatedBy);
+    if (said) act.current.notify(said);
+    return true;
+  };
+
+  /**
    * Send what this browser is holding.
    *
    * Shared by the debounce after an edit and by the poll, because a push that
@@ -104,16 +123,10 @@ export function CloudSync() {
       landed = true;
     } catch (err) {
       if (err instanceof CloudError && err.status === 409) {
-        const remote = await pull().catch(() => null);
-        if (remote) {
-          stashConflict(latest.current);
-          install(remote.doc);
-          setCloudState({ version: remote.version, dirty: false });
-          act.current.notify(`${remote.updatedBy} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
-          // The save did not land, but the document moved, which is the
-          // question the poll is asking.
-          return true;
-        }
+        // The save did not land, but the document moved, which is the question
+        // the poll is asking.
+        if (await takeRemote((by) =>
+          `${by} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`)) return true;
       }
       // Everything else stays unsent and waits, longer each time. Said once
       // when it starts failing rather than on every attempt: a toast a minute
@@ -185,24 +198,50 @@ export function CloudSync() {
       }
 
       const local = cloudState();
-      if (meta.version > local.version) {
-        const remote = await pull();
-        if (isCancelled() || !remote) return;
-        if (local.dirty) {
-          // Both moved. Keep the newer shared copy, but don't throw this
-          // browser's unsent work away — Settings can hand it back.
-          stashConflict(latest.current);
-          act.current.notify(`Loaded a newer copy saved by ${remote.updatedBy}. This device's unsent changes were set aside, see Settings.`);
-        }
-        install(remote.doc);
-        setCloudState({ version: remote.version, dirty: false });
-      } else if (local.dirty || local.version === 0) {
-        // This browser is ahead, or has never agreed with the server. Through
-        // the same door as the debounce, so a failing save backs off here too
-        // rather than being retried by every tick of the poll.
+      /**
+       * Anything but exact agreement means the stored document is the one to
+       * take.
+       *
+       * Higher is the ordinary case: another device saved. Different without
+       * being higher is the one that used to do damage. The rule was "newer
+       * than mine, or else adopt the number and keep what I have", so a stored
+       * document that had gone backwards — restored from a backup, rolled back
+       * after an accident — left this browser holding a stale copy stamped
+       * with the server's own version number, and the next edit pushed it
+       * straight back over the recovery.
+       */
+      if (meta.version !== local.version) {
+        // Both moved. Keep the shared copy, but don't throw this browser's
+        // unsent work away: Settings can hand it back.
+        const stale = local.dirty;
+        const took = await takeRemote((by) => (stale
+          ? `Loaded the copy saved by ${by}. This device's unsent changes were set aside, see Settings.`
+          : null));
+        if (isCancelled() || !took) return;
+      } else if (local.dirty) {
+        // This browser has work the server has not got. Through the same door
+        // as the debounce, so a failing save backs off here too rather than
+        // being retried by every tick of the poll.
         if (!mayPush(local)) return;
-        const res = await push(latest.current, meta.version);
-        setCloudState({ version: res.version, dirty: false });
+        /**
+         * This browser's own base version, never the server's.
+         *
+         * Handing the server back the number it just reported is asking it not
+         * to check, and the check is the only thing standing between a device
+         * holding an old copy and everybody else's work. It was written this
+         * way because in this branch the two are equal anyway — which is true
+         * until the moment it is not, and that moment is a race with whatever
+         * else is saving.
+         */
+        const res = await push(latest.current, local.version).catch(async (err: unknown) => {
+          if (err instanceof CloudError && err.status === 409) {
+            await takeRemote((by) =>
+              `${by} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
+            return null;
+          }
+          throw err;
+        });
+        if (res) setCloudState({ version: res.version, dirty: false });
       } else {
         // Already in step. Nothing crosses the wire, which is the common case
         // every single time the app is opened.
@@ -309,9 +348,14 @@ export function CloudSync() {
       // megabyte a minute, per open tab, which is how a month's database
       // allowance went in two days.
       const meta = await head();
-      if (meta.found && meta.version > at.version) {
+      // Different, rather than newer. A stored document that has gone
+      // backwards is one that was restored from a backup or rolled back after
+      // an accident, and a poll that only looks forwards sails straight past
+      // it: this browser keeps the copy that was rolled back and saves it
+      // again at the next edit.
+      if (meta.found && meta.version !== at.version) {
         const remote = await pull();
-        if (remote && remote.version > at.version) {
+        if (remote && remote.version !== at.version) {
           install(remote.doc);
           setCloudState({ version: remote.version, dirty: false });
           if (remote.updatedBy !== deviceName()) notifyUpdate(act.current.notify, remote.updatedBy);

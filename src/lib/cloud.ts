@@ -394,6 +394,52 @@ export async function head(): Promise<Meta> {
   };
 }
 
+/** One version the server still has, from before it was replaced. */
+export interface HistoryEntry {
+  version: number;
+  updatedAt: string;
+  updatedBy: string;
+  sealed: boolean;
+  bytes: number;
+}
+
+/**
+ * What the document used to be, and the way back to one of them.
+ *
+ * The stored row is overwritten in place, so until this existed a device
+ * holding an old copy could save it over a day's work and there was nothing
+ * left to go back to. The versions replaced are kept now, and this is how they
+ * are seen and chosen.
+ */
+export async function history(): Promise<HistoryEntry[]> {
+  const res = await call({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "history" }),
+  });
+  if (!res.ok) throw new CloudError(await messageOf(res, `Could not read the history (${res.status})`), res.status);
+  const body = (await res.json()) as { versions?: HistoryEntry[] };
+  return body.versions ?? [];
+}
+
+/**
+ * Puts a past version back, as a new version on top of the current one.
+ *
+ * Not by rewinding the counter: every other device notices a version it does
+ * not have and takes it, which is the path they already follow rather than a
+ * special case nobody has tested.
+ */
+export async function restoreVersion(version: number): Promise<number> {
+  const res = await call({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "restore", version }),
+  });
+  if (!res.ok) throw new CloudError(await messageOf(res, `Could not restore (${res.status})`), res.status);
+  const body = (await res.json()) as { version?: number };
+  return Number(body.version ?? 0);
+}
+
 export interface Peek {
   found: boolean;
   encrypted: boolean;

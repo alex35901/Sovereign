@@ -4,7 +4,8 @@ import { Buffer } from "node:buffer";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
 import {
-  clearQueue, diagnose, findConnection, queueStats, readDoc, readMeta, readQueue, readSeal, writeDoc,
+  clearQueue, diagnose, findConnection, listHistory, queueStats, readDoc, readHistory, readMeta,
+  readQueue, readSeal, writeDoc,
 } from "./_store.js";
 
 type ApiRequest = IncomingMessage & { body?: unknown };
@@ -149,6 +150,32 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         return send(200, { found: true, ...rest, z });
       }
       return send(200, { found: true, ...stored });
+    }
+
+    if (req.method === "POST" && body0?.action === "history") {
+      // The list, not the documents. A restore fetches the one it needs.
+      return send(200, { versions: await listHistory() });
+    }
+
+    if (req.method === "POST" && body0?.action === "restore") {
+      const want = Number((body0 as { version?: unknown }).version);
+      if (!Number.isInteger(want) || want < 1) return send(400, { error: "Which version?" });
+      const past = await readHistory(want);
+      if (!past) {
+        return send(404, { error: `Version ${want} is no longer kept. Only the most recent are.` });
+      }
+      // Written as a new version on top rather than by rewinding the counter:
+      // every other device notices a version it does not have and takes it,
+      // which is the ordinary path and not a special case. Forced, because the
+      // caller has said which version they want restored and the point is to
+      // replace whatever is there now.
+      const meta = await readMeta();
+      const done = await writeDoc(past.doc, meta?.version ?? null, `a restore of version ${want}`);
+      if (done.wouldDecrypt) {
+        return send(409, { error: "That version is readable and the current one is encrypted. It cannot be put back.", locked: true });
+      }
+      if (!done.ok) return send(409, { error: "Something saved while this was running. Try again." });
+      return send(200, { version: done.stored?.version, restored: want });
     }
 
     if (req.method === "PUT" || req.method === "POST") {

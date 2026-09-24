@@ -373,6 +373,73 @@ const documentTable = onDemandTable(`
   )
 `);
 
+/**
+ * What the document used to be.
+ *
+ * The one row is overwritten in place, which is cheap and was fine until the
+ * day a device holding an old copy saved it over a day's work. There was then
+ * no way back at all: no history, no backup, and a single row that had already
+ * been replaced. Storage is not the constraint here - a budget is a fraction of
+ * a megabyte and the free tier has half a gigabyte - so the versions that were
+ * about to be thrown away are kept instead.
+ *
+ * Trimmed to KEEP, oldest first, so it cannot grow without bound.
+ */
+const historyTable = onDemandTable(`
+  CREATE TABLE IF NOT EXISTS budget_history (
+    version integer PRIMARY KEY,
+    updated_at timestamptz NOT NULL,
+    updated_by text NOT NULL,
+    doc jsonb NOT NULL
+  )
+`);
+
+/** How many past versions to keep. Deep enough to cover a weekend of saves. */
+export const KEEP_VERSIONS = 40;
+
+export interface HistoryEntry {
+  version: number;
+  updatedAt: string;
+  updatedBy: string;
+  /** Whether that version was sealed, so a list can be shown without a key. */
+  sealed: boolean;
+  /** Roughly how big it was, which is the one clue a locked browser can read. */
+  bytes: number;
+}
+
+/** The versions available to go back to, newest first. */
+export async function listHistory(limit = KEEP_VERSIONS): Promise<HistoryEntry[]> {
+  const { rows } = await historyTable.guard(async () => (await db()).query(
+    `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed,
+            pg_column_size(doc) AS bytes
+       FROM budget_history ORDER BY version DESC LIMIT $1`,
+    [limit],
+  ));
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    version: Number(r.version),
+    updatedAt: new Date(r.updated_at as string).toISOString(),
+    updatedBy: String(r.updated_by),
+    sealed: r.sealed === true,
+    bytes: Number(r.bytes ?? 0),
+  }));
+}
+
+/** One past version in full, or null when it has been trimmed away. */
+export async function readHistory(version: number): Promise<StoredDoc | null> {
+  const { rows } = await historyTable.guard(async () => (await db()).query(
+    "SELECT version, updated_at, updated_by, doc FROM budget_history WHERE version = $1",
+    [version],
+  ));
+  const row = rows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    version: Number(row.version),
+    updatedAt: new Date(row.updated_at as string).toISOString(),
+    updatedBy: String(row.updated_by),
+    doc: row.doc,
+  };
+}
+
 export interface DocMeta {
   version: number;
   updatedAt: string;
@@ -516,7 +583,9 @@ export interface WriteResult {
  * write, which the cron uses because it always reads immediately beforehand.
  */
 export async function writeDoc(doc: unknown, baseVersion: number | null, by: string): Promise<WriteResult> {
-  return documentTable.guard(async () => {
+  // Both tables, because the write touches both and a missing one must heal
+  // rather than fail the save.
+  return guardTables([documentTable, historyTable], async () => {
     const client = await (await db()).connect();
     try {
       await client.query("BEGIN");
@@ -576,6 +645,34 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
 
       const version = currentVersion + 1;
       const updatedAt = new Date().toISOString();
+
+      /**
+       * The version about to be replaced, kept before it is.
+       *
+       * Inside the same transaction as the write, so a crash between the two
+       * cannot leave the history with a gap exactly where the accident was.
+       * SELECT from the row being replaced rather than from what the caller
+       * sent, because what is being preserved is what is stored.
+       */
+      if (row) {
+        await client.query(
+          `INSERT INTO budget_history (version, updated_at, updated_by, doc)
+           SELECT version, updated_at, updated_by, doc FROM budget_document WHERE id = $1
+           ON CONFLICT (version) DO NOTHING`,
+          [ROW_ID],
+        );
+        // Trimmed here rather than on a schedule: this is the only moment a
+        // new one arrives, and nothing else runs often enough to be trusted
+        // with it.
+        await client.query(
+          `DELETE FROM budget_history
+            WHERE version <= (
+              SELECT version FROM budget_history ORDER BY version DESC OFFSET $1 LIMIT 1
+            )`,
+          [KEEP_VERSIONS],
+        );
+      }
+
       await client.query(
         `INSERT INTO budget_document (id, version, updated_at, updated_by, doc)
          VALUES ($1, $2, $3, $4, $5::jsonb)
