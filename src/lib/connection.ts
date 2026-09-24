@@ -2,7 +2,7 @@ import type { Account, DB } from "../types.js";
 import { cadenceHours, DEFAULT_CADENCE } from "./sync/schedule.js";
 import { meterOf } from "./usage.js";
 import { quietFor } from "./quiet.js";
-import { noteFor, unclaimed } from "./sync/notes.js";
+import { namesABank, noteFor } from "./sync/notes.js";
 
 /**
  * Where an account's balance comes from, and whether it is still coming.
@@ -92,8 +92,19 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
    * and is still shown on all of them.
    */
   const error = meterOf(db.settings.usage, source, "ever", now).error;
+  /**
+   * Every bank this document knows by name, whether or not an account has
+   * arrived for it.
+   *
+   * The connections themselves count, not just the accounts. "Plaid is still
+   * preparing this connection's transactions" is by definition a message about
+   * a bank that has no accounts here yet, so matching only against accounts
+   * decided it named nobody, which meant showing it against everybody: the one
+   * case this rule exists for was the one case it got wrong.
+   */
+  const known = [...db.accounts, ...(db.settings.plaidItems ?? [])];
   const mine = error
-    ? Boolean(noteFor(account, [error])) || unclaimed(db.accounts, [error]).length > 0
+    ? Boolean(noteFor(account, [error])) || !namesABank(known, error)
     : false;
   if (error && mine) return { state: "attention", provider, lastAt, status: "Needs attention", detail: error };
 

@@ -214,6 +214,9 @@ export default async function handler(req: ApiRequest, res: ApiResponse): Promis
         // could not read to the end of is a window with transactions missing.
         total: raw.total,
         truncated: raw.truncated,
+        // Said rather than thrown: the balances are here, the transactions
+        // are not ready yet, and for some connections they never will be.
+        notReady: raw.notReady,
         holdings: raw.holdings,
         securities: raw.securities,
       });

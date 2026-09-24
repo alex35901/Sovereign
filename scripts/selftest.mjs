@@ -687,7 +687,14 @@ await test("a failure is remembered until the next success clears it", () => {
 });
 
 await test("an error is trimmed to something a table cell can hold", () => {
-  assert.equal(M.U.reason(new Error("x".repeat(400)), "fallback").length, 160);
+  // Bounded, but long enough to reach the end of the sentence that says what
+  // to do. At 160 the most useful message this app produces was cut at
+  // "...usually takes a minute or two. Pre", losing its whole point.
+  const longest = "Valon Mortgage: Plaid is still preparing this connection's transactions. It pulls the "
+    + "history in the background after a bank is linked, which usually takes a minute or two. "
+    + "Press Sync again shortly.";
+  assert.equal(M.U.reason(new Error(longest), "fallback"), longest, "a real message survives whole");
+  assert.equal(M.U.reason(new Error("x".repeat(400)), "fallback").length, 300);
   assert.equal(M.U.reason(new Error("   "), "fallback"), "fallback");
   assert.equal(M.U.reason(undefined, "fallback"), "fallback");
   assert.equal(M.U.reason("plain string", "fallback"), "plain string");
@@ -3210,13 +3217,29 @@ await test("a connection that is keeping up says so", () => {
 });
 
 await test("the provider's own error is the account's status", () => {
-  // It is the whole institution that is broken, not this one account, and the
-  // health column in Settings reads the same field.
-  const db = withUsage({ plaid: { period: "", count: 1, error: "Wells Fargo: login required" } });
+  // When it is about the provider. A message with no bank's name in it is
+  // about the connection as a whole, and the health column in Settings reads
+  // the same field.
+  const db = withUsage({ plaid: { period: "", count: 1, error: "Plaid could not be reached." } });
   const c = M.connectionOf(linked(), db, CONN_NOW);
   assert.equal(c.state, "attention");
   assert.equal(c.status, "Needs attention");
-  assert.equal(c.detail, "Wells Fargo: login required", "and it says what to go and do");
+  assert.equal(c.detail, "Plaid could not be reached.", "and it says what to go and do");
+
+  // A message addressed to one bank is that bank's, even when this document
+  // has never heard of it. The message that matters most here is the one
+  // about a connection with no accounts in it yet, so a rule that only knows
+  // banks it has already seen gets exactly that case wrong.
+  const named = withUsage({ plaid: { period: "", count: 1, error: "Valon Mortgage: still preparing" } });
+  assert.notEqual(M.connectionOf(linked(), named, CONN_NOW).state, "attention");
+  assert.equal(M.connectionOf(linked(), named, CONN_NOW).detail, undefined);
+
+  // But a sentence that merely contains a colon is not addressed to anybody.
+  const sentence = withUsage({ plaid: {
+    period: "", count: 1,
+    error: "Plaid isn't configured on the server: add PLAID_CLIENT_ID and PLAID_SECRET.",
+  } });
+  assert.equal(M.connectionOf(linked(), sentence, CONN_NOW).state, "attention");
 });
 
 await test("a connection falling behind its own schedule is flagged", () => {
@@ -4635,6 +4658,38 @@ await test("the wait for Plaid's backfill ends when the count stops climbing", a
   assert.equal(flaky.timedOut, false);
 });
 
+await test("a connection Plaid has no transactions for still brings its balances", async () => {
+  // A mortgage served as a liability may never carry transactions at all, and
+  // "still preparing" is what Plaid says about it for ever. Failing the whole
+  // pull on that meant the balance never arrived either, so the connection sat
+  // at "never synced" with an error no amount of pressing Sync could clear:
+  // every attempt failed in exactly the same place.
+  const server = plaidServer({ fail: { "/transactions/get": { code: "PRODUCT_NOT_READY" } } });
+  const raw = await withEnv(creds, () => withFetch(server.impl, () =>
+    M.plaidRaw(M.plaidCreds(), {
+      accessToken: "tok", startDate: "2026-07-01", endDate: "2026-09-24", readyWaitMs: 0,
+    })));
+
+  assert.equal(raw.accounts.length, 1, "the balances came back and are worth keeping");
+  assert.deepEqual(raw.transactions, []);
+  assert.equal(raw.notReady, true, "and the reason there are none is said rather than thrown");
+
+  // It becomes a note against that bank, not a failure of the pull, and it
+  // carries the institution so it lands on that account and stays off the
+  // others.
+  const payload = M.toPlaidPayload(
+    { accounts: raw.accounts, transactions: [], holdings: [], securities: [], notReady: true },
+    { institution: "Valon Mortgage" },
+  );
+  assert.equal(payload.errors.length, 1);
+  assert.match(payload.errors[0], /^Valon Mortgage: /);
+  assert.match(payload.errors[0], /Balances are up to date/);
+
+  // And a connection that is simply ready says nothing at all.
+  const fine = M.toPlaidPayload({ accounts: [], transactions: [], holdings: [], securities: [] }, { institution: "X" });
+  assert.deepEqual(fine.errors, []);
+});
+
 await test("one bank's trouble is not reported against every other account", () => {
   // Only one error is kept per provider, and the Plaid path writes it as
   // "Valon Mortgage: ...". Every Plaid account in the document was showing
@@ -4670,6 +4725,25 @@ await test("one bank's trouble is not reported against every other account", () 
   assert.equal(at(general, "a1").state, "attention");
   assert.equal(at(general, "a2").state, "attention");
   assert.match(at(general, "a2").detail, /isn't configured/);
+
+  // The case the first attempt at this got wrong, and the only case it is
+  // really for. "Plaid is still preparing this connection's transactions" is
+  // by definition about a bank with no accounts here yet, so matching the name
+  // against accounts alone decided it named nobody, and a message that names
+  // nobody is shown against everybody. The connections count as names too.
+  const fresh = {
+    ...withError("Valon Mortgage: Plaid is still preparing this connection's transactions."),
+  };
+  fresh.accounts = [acct("a2", "Elements Financial")];
+  assert.notEqual(at(fresh, "a2").state, "attention",
+    "a bank with no account yet still owns its own error");
+  assert.equal(at(fresh, "a2").detail, undefined);
+
+  fresh.settings = {
+    ...fresh.settings,
+    plaidItems: [{ accessToken: "t", itemId: "i1", institution: "Valon Mortgage", kind: "bank", addedAt: "2026-09-24T09:00:00.000Z" }],
+  };
+  assert.notEqual(at(fresh, "a2").state, "attention", "and is still not everybody's problem once it is listed");
 });
 
 await test("a month nobody budgeted is still a month money was spent in", () => {
@@ -5453,10 +5527,17 @@ await test("a bank just connected is not mistaken for one with no transactions",
     }
     return new Response(JSON.stringify({ accounts: [{ account_id: "a" }], holdings: [], securities: [] }), { status: 200 });
   };
-  const msg = await withEnv(creds, () => withFetch(notReady, () => caught(() =>
-    M.plaidRaw(M.plaidCreds(), { accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21", readyWaitMs: 0 }))));
-  assert.match(msg, /still preparing/i, msg);
-  assert.match(msg, /Sync again/i, "and says what to do about it");
+  const waiting = await withEnv(creds, () => withFetch(notReady, () =>
+    M.plaidRaw(M.plaidCreds(), { accessToken: "tok", startDate: "2026-01-01", endDate: "2026-09-21", readyWaitMs: 0 })));
+  // Said, not thrown. Throwing lost the balances that had already arrived, and
+  // a connection whose transactions Plaid never finishes preparing then sat at
+  // "never synced" for ever with an error nothing could clear.
+  assert.equal(waiting.notReady, true, "the silence is accounted for");
+  assert.equal(waiting.accounts.length, 1, "and the balances survive it");
+  assert.deepEqual(waiting.transactions, []);
+  // The words are still there for whoever shows them.
+  assert.match(M.plaidDescribe({ error_code: M.PRODUCT_NOT_READY }), /still preparing/i);
+  assert.match(M.plaidDescribe({ error_code: M.PRODUCT_NOT_READY }), /Sync again/i, "and says what to do about it");
 
   // A login that has expired is not an empty item either.
   const expired = async (url) => {

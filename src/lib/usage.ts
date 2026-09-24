@@ -125,8 +125,14 @@ export function recordRun(
   }));
 }
 
-/** An error worth storing: short, and never a stack trace. */
+/**
+ * An error worth storing: short, and never a stack trace.
+ *
+ * Long enough to reach the end of the sentence that says what to do. At 160
+ * the most useful message this app produces was cut at "...which usually
+ * takes a minute or two. Pre", losing the instruction it existed to give.
+ */
 export const reason = (err: unknown, fallback: string): string => {
   const text = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  return (text.trim() || fallback).slice(0, 160);
+  return (text.trim() || fallback).slice(0, 300);
 };

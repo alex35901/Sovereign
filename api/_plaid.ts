@@ -203,6 +203,14 @@ export interface PlaidRaw {
   total: number;
   /** Set when the window could not be read to the end of. */
   truncated: boolean;
+  /**
+   * Set when Plaid still had no transactions ready by the end of the wait.
+   *
+   * Not a failure of the pull. The balances are there and came back fine; it
+   * is the transactions that are not ready, and for some connections they
+   * never will be.
+   */
+  notReady: boolean;
 }
 
 /**
@@ -428,6 +436,7 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
   let rows: unknown[] = [];
   let total = 0;
   let pages = 0;
+  let notReady = false;
   try {
     // Asked for unless the caller knows this item does not carry them.
     for (; opts.withTransactions !== false;) {
@@ -459,7 +468,18 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
     const consent = err instanceof PlaidError
       && err.code === NEEDS_CONSENT
       && opts.withTransactions === undefined;
-    if (!known && !consent) throw err;
+    /**
+     * Still preparing, after the wait above already gave it every chance.
+     *
+     * Kept rather than thrown, because the accounts came back fine a few lines
+     * up and the balances on them are worth having. Failing the whole pull on
+     * it meant a bank whose transactions Plaid never finishes preparing - a
+     * mortgage served as a liability, for one - sat at "never synced" for
+     * ever, with an error no amount of pressing Sync could clear, because
+     * every attempt failed in exactly the same place.
+     */
+    if (err instanceof PlaidError && err.code === PRODUCT_NOT_READY) notReady = true;
+    else if (!known && !consent) throw err;
     rows = [];
     total = 0;
   }
@@ -475,6 +495,7 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
     transactions: rows,
     total,
     truncated: rows.length < total,
+    notReady,
     holdings: (holdings.holdings as unknown[]) ?? [],
     securities: (holdings.securities as unknown[]) ?? [],
   };
