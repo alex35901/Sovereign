@@ -32,7 +32,15 @@ import { isSeen, markRead, notices, unread } from "../lib/notifications";
  * only a way back for the first screenful of it.
  */
 export function TopBar({ title, back, actions, primary }: {
-  title: string;
+  /**
+   * The screen's name, or what stands in for it.
+   *
+   * A node rather than a string for the one case that earns it: on a phone
+   * the budget's bar carries the month here instead, because the month is
+   * what everything under it is about and the word "Budget" is already on
+   * the rail. Anything passing a string gets the heading it has always had.
+   */
+  title: ReactNode;
   /** Where a drill-down sits under, named so the arrow is not a guess. */
   back?: { to: string; label: string };
   /** This screen's own controls, on the far left with the way back. */
@@ -56,7 +64,9 @@ export function TopBar({ title, back, actions, primary }: {
         ) : null}
         {actions}
       </div>
-      <h1 className="truncate topbar-title">{title}</h1>
+      {typeof title === "string"
+        ? <h1 className="truncate topbar-title">{title}</h1>
+        : <div className="topbar-title">{title}</div>}
       <div className="row topbar-actions" style={{ gap: 6 }}>
         <SaveState />
         <Notifications />

@@ -110,6 +110,7 @@ await build({
       export { domainFor, logoFor, normalize, BRAND_COUNT } from "./src/lib/merchant-domain.ts";
       export { default as iconHandler, forgetPlaceholders } from "./api/icon.ts";
       export { NAV, NAV_PLAN, NAV_CONFIG, NAV_FOOT } from "./src/shell/Sidebar.tsx";
+      export * as SW from "./src/lib/swipe.ts";
       export { readBalanceCSV, guessBalanceColumns, buildBalancePlan, compress, mergeHistory, defaultNegate } from "./src/lib/balance-csv.ts";
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
@@ -1250,6 +1251,44 @@ await test("the icon function answers nothing but GET", async () => {
 await test("Hopper sits with Settings at the foot, not among the Plan screens", () => {
   assert.equal(M.NAV_PLAN.some((i) => i.to === "/hopper"), false, "it is no longer one more report");
   assert.deepEqual(M.NAV_FOOT.map((i) => i.to), ["/hopper", "/settings"]);
+});
+
+/* ── a flick sideways ─────────────────────────────────────────────────── */
+
+await test("a flick left is the next month and a flick right the last one", () => {
+  const { direction, SWIPE_MIN } = M.SW;
+  assert.equal(direction(-SWIPE_MIN - 1, 0, 120), "left");
+  assert.equal(direction(SWIPE_MIN + 1, 0, 120), "right");
+});
+
+await test("a scroll down a long sheet is not a flick sideways", () => {
+  // The one thing a reader scrolling a budget will not forgive is the screen
+  // paging out from under them, and a thumb travelling down a phone drifts
+  // sideways the whole way.
+  const { direction, SWIPE_SLOPE } = M.SW;
+  assert.equal(direction(-80, -300, 200), null, "mostly down");
+  assert.equal(direction(-80, 300, 200), null, "mostly up");
+  // Right at the line: it has to be this much straighter than 45 degrees.
+  assert.equal(direction(-100, 100 / SWIPE_SLOPE - 1, 120), "left");
+  assert.equal(direction(-100, 100 / SWIPE_SLOPE + 1, 120), null);
+  // And in real numbers, so the slope is pinned rather than read back from
+  // itself: a hundred across and eighty down is a diagonal, not a flick.
+  assert.equal(direction(-100, 80, 120), null);
+  assert.equal(direction(-100, 40, 120), "left");
+});
+
+await test("a nudge is not a flick, and neither is a slow drag", () => {
+  const { direction, SWIPE_MIN, SWIPE_MS } = M.SW;
+  // A finger shifts while tapping. That is not a request for anything.
+  assert.equal(direction(-SWIPE_MIN + 1, 0, 120), null);
+  assert.equal(direction(0, 0, 10), null);
+  // In real numbers too: half an inch of travel is the line, and thirty
+  // pixels is a thumb settling on a row.
+  assert.equal(direction(-30, 0, 120), null);
+  assert.equal(direction(-90, 0, 120), "left");
+  // And a finger held down and moved is somebody dragging, not flicking.
+  assert.equal(direction(-200, 0, SWIPE_MS + 1), null);
+  assert.equal(direction(-200, 0, SWIPE_MS - 1), "left");
 });
 
 await test("the rail lists no screen the app does not have", () => {

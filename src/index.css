@@ -230,6 +230,22 @@ h3 { font-size: 14px; }
    the pair reads as one thing, and never shrinking: it is the control most
    worth keeping when a long title is competing for the same line. */
 .topbar-back { flex: none; margin-left: -8px; text-decoration: none; }
+/* Wide enough that the arrows either side of it do not move as the month
+   does: "May 2026" and "September 2026" are 40px apart, and a control that
+   shifts under the finger about to press it again is a control you have to
+   aim at twice. */
+.month-nav-label { min-width: 132px; text-align: center; font-size: inherit; }
+.topbar-title .month-nav { margin: -4px 0; }
+
+/* The budget's month, turned by a flick. Short, and only far enough to say
+   which way it went: the sheet is already the new month by the time this
+   runs, so a long slide is a wait to read it. */
+@keyframes month-from-left { from { transform: translateX(-14px); opacity: 0.35; } to { transform: none; opacity: 1; } }
+@keyframes month-from-right { from { transform: translateX(14px); opacity: 0.35; } to { transform: none; opacity: 1; } }
+.month-turned { animation: month-from-left 180ms ease-out both; }
+.month-turned.from-right { animation-name: month-from-right; }
+/* Asked for less of this: the month simply changes. */
+@media (prefers-reduced-motion: reduce) { .month-turned { animation: none; } }
 
 /* ── card ─────────────────────────────────────────────────────────────── */
 .card {

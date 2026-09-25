@@ -109,14 +109,27 @@ export function CategoryTag({ categoryId, onClick }: { categoryId: string; onCli
   );
 }
 
-export function MonthNav({ month, onChange, max }: { month: string; onChange: (m: string) => void; max?: string }) {
+export function MonthNav({ month, onChange, max, heading }: {
+  month: string; onChange: (m: string) => void; max?: string;
+  /**
+   * Draw the month itself as the page's heading.
+   *
+   * For the one screen where it is: on a phone the budget's bar says the month
+   * instead of saying "Budget", because every figure under it is about that
+   * month and the rail already says which screen this is.
+   */
+  heading?: boolean;
+}) {
   const canForward = !max || month < max;
+  const label = monthLabel(month);
   return (
-    <div className="row" style={{ gap: 2 }}>
+    <div className="row month-nav" style={{ gap: 2 }}>
       <button className="btn btn-ghost btn-icon" onClick={() => onChange(addMonths(month, -1))} aria-label="Previous month">
         <ChevronLeft size={17} />
       </button>
-      <span className="bold nowrap" style={{ minWidth: 132, textAlign: "center" }}>{monthLabel(month)}</span>
+      {heading
+        ? <h1 className="nowrap month-nav-label">{label}</h1>
+        : <span className="bold nowrap month-nav-label">{label}</span>}
       <button
         className="btn btn-ghost btn-icon" disabled={!canForward}
         onClick={() => canForward && onChange(addMonths(month, 1))} aria-label="Next month"

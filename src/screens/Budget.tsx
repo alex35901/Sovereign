@@ -3,7 +3,9 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronDown, ChevronRight } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { monthLabel, thisMonth } from "../lib/date";
+import { addMonths, monthLabel, thisMonth } from "../lib/date";
+import { PHONE, useMediaQuery } from "../lib/media";
+import { useSwipe } from "../lib/swipe";
 import { budgetSummary, remainingTone, spentShare } from "../lib/select";
 import { fmt0 } from "../lib/money";
 import type { BudgetGroupRow, BudgetRow } from "../lib/select";
@@ -20,6 +22,22 @@ const COLUMN_KEY = "sovereign.budget.column";
 export default function Budget() {
   const db = useDB();
   const [month, setMonth] = useState(thisMonth());
+  const phone = useMediaQuery(PHONE);
+
+  /**
+   * Which way the last swipe went, until the slide it starts has finished.
+   *
+   * The gesture needs an answer: a sheet that changes silently under a finger
+   * reads as a misfire, and the direction is the part worth confirming. Set on
+   * the swipe and cleared when the animation ends, so a reader who prefers no
+   * motion gets the new month and nothing else.
+   */
+  const [swiped, setSwiped] = useState<"next" | "previous" | null>(null);
+  const turn = (by: number) => {
+    setMonth((m) => addMonths(m, by));
+    setSwiped(by > 0 ? "next" : "previous");
+  };
+  const swipe = useSwipe(() => turn(1), () => turn(-1));
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const summary = useMemo(() => budgetSummary(db, month), [db, month]);
 
@@ -54,30 +72,41 @@ export default function Budget() {
       return next;
     });
 
+  const back = (
+    <Btn
+      onClick={() => setMonth(thisMonth())}
+      disabled={month === thisMonth()}
+      title={`Jump back to ${monthLabel(thisMonth())}`}
+    >
+      <CalendarDays size={14} /> <span className="btn-label">This month</span>
+    </Btn>
+  );
+  const nav = <MonthNav month={month} onChange={setMonth} heading={phone} />;
+
   return (
     <>
-      {/* The month is the whole context for this screen: every figure on it
-          is about one month, and the way to another one used to sit inside
-          the first card, where it scrolled away with the card. */}
+      {/* The month is the whole context for this screen: every figure on it is
+          about one month, and the way to another one used to sit inside the
+          first card, where it scrolled away with the card.
+          On a phone it is the heading as well. The word "Budget" is already on
+          the rail at the bottom of the screen, and spending a third of the bar
+          repeating it left the month sharing what was left with a button. */}
       <TopBar
-        title="Budget"
-        actions={
-          <>
-            <MonthNav month={month} onChange={setMonth} />
-            <Btn
-              onClick={() => setMonth(thisMonth())}
-              disabled={month === thisMonth()}
-              title={`Jump back to ${monthLabel(thisMonth())}`}
-            >
-              <CalendarDays size={14} /> <span className="btn-label">This month</span>
-            </Btn>
-          </>
-        }
+        title={phone ? nav : "Budget"}
+        actions={phone ? back : <>{nav}{back}</>}
       />
       {/* The chosen column is read in CSS rather than in each row: the rule
           that hides the other one belongs with the widths it is trading
           against, and a row should not have to know how wide the screen is. */}
-      <div className="page stack" data-bcol={column}>
+      <div
+        className={cx("page stack", swiped && "month-turned", swiped === "next" && "from-right")}
+        data-bcol={column}
+        // A flick left is next, the way every calendar on the device works.
+        {...swipe}
+        // This element's own slide, not a chart's wipe inside it: animation
+        // events bubble, and a bar finishing first would cut the slide short.
+        onAnimationEnd={(e) => { if (e.target === e.currentTarget) setSwiped(null); }}
+      >
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
             {/* An even grid rather than a row of content-sized columns: four

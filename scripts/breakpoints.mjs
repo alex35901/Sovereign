@@ -2215,6 +2215,94 @@ try {
     }
     await bmonth.close();
 
+    // ── on a phone the month is the heading, and a flick turns it ──
+    //
+    // The bar there is a title and three marks wide. Spending a third of it
+    // repeating a word that is already on the rail at the bottom of the screen
+    // left the month sharing what was left with a button, so the month is the
+    // heading and the way back to today is a mark on the far left.
+    const ph = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    await ph.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+    await ph.waitForTimeout(900);
+    const phoneBar = await ph.evaluate(() => {
+      const title = document.querySelector(".topbar-title");
+      const own = document.querySelector(".topbar-own");
+      const mid = (n) => { const b = n.getBoundingClientRect(); return b.left + b.width / 2; };
+      return {
+        title: title?.textContent.replace(/\s+/g, " ").trim() ?? "",
+        arrows: title ? title.querySelectorAll("button[aria-label$='month']").length : 0,
+        heading: title?.querySelector("h1")?.textContent.trim() ?? "",
+        ownTitles: own ? [...own.querySelectorAll("button")].map((b) => b.getAttribute("title") ?? "") : [],
+        ownLeft: own ? own.getBoundingClientRect().left : -1,
+        titleMid: title ? mid(title) : -1,
+        words: own ? own.innerText.replace(/\s+/g, "") : "x",
+      };
+    });
+    check("the budget's heading on a phone is the month itself",
+      /^[A-Z][a-z]+ \d{4}$/.test(phoneBar.heading) && phoneBar.arrows === 2,
+      `${phoneBar.title} (${phoneBar.arrows} arrows)`);
+    check("and the way back to today is a mark on the far left",
+      phoneBar.ownTitles.length === 1 && /Jump back to/.test(phoneBar.ownTitles[0])
+      && phoneBar.words === "" && phoneBar.ownLeft < phoneBar.titleMid,
+      `${phoneBar.ownTitles.join(" | ")} at ${Math.round(phoneBar.ownLeft)}, month at ${Math.round(phoneBar.titleMid)}`);
+
+    /** A finger dragged across the sheet, from one point to another. */
+    const drag = (dx, dy, ms = 120) => ph.evaluate(({ dx, dy, ms }) => {
+      const x = window.innerWidth / 2;
+      const y = 420;
+      const el = document.elementFromPoint(x, y);
+      if (!el) return false;
+      const fire = (type, cx, cy) => {
+        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: cy });
+        const empty = type === "touchend";
+        el.dispatchEvent(new TouchEvent(type, {
+          bubbles: true, cancelable: true,
+          touches: empty ? [] : [t], targetTouches: empty ? [] : [t], changedTouches: [t],
+        }));
+      };
+      fire("touchstart", x, y);
+      fire("touchmove", x + dx / 2, y + dy / 2);
+      return new Promise((done) => setTimeout(() => {
+        fire("touchend", x + dx, y + dy);
+        done(true);
+      }, ms));
+    }, { dx, dy, ms });
+    const monthNow = () => ph.evaluate(() =>
+      document.querySelector(".topbar-title h1")?.textContent.trim() ?? "");
+
+    const opened = await monthNow();
+    await drag(-140, 4);
+    await ph.waitForTimeout(500);
+    const next = await monthNow();
+    check("a flick left turns the sheet to the next month",
+      next !== opened && next !== "", `${opened} -> ${next}`);
+    await drag(150, -6);
+    await ph.waitForTimeout(500);
+    check("and a flick right turns it back", (await monthNow()) === opened,
+      `${next} -> ${await monthNow()}`);
+    check("and stays on the budget rather than opening what was under the finger",
+      (await ph.evaluate(() => location.pathname)) === "/budget",
+      await ph.evaluate(() => location.pathname));
+
+    // The gesture a long sheet is full of. Paging the screen out from under a
+    // scroll is the one thing a reader will not forgive.
+    await drag(-30, -160);
+    await ph.waitForTimeout(400);
+    check("a scroll down the sheet is not a flick sideways", (await monthNow()) === opened,
+      `${opened} -> ${await monthNow()}`);
+    // Nor is a nudge: a finger that shifts while tapping has not asked for
+    // anything.
+    await drag(-40, 2);
+    await ph.waitForTimeout(400);
+    check("nor is a nudge too short to have been meant", (await monthNow()) === opened,
+      `${opened} -> ${await monthNow()}`);
+    // And a slow drag is a drag.
+    await drag(-160, 0, 900);
+    await ph.waitForTimeout(400);
+    check("nor a drag too slow to have been a flick", (await monthNow()) === opened,
+      `${opened} -> ${await monthNow()}`);
+    await ph.close();
+
     // Every width, because the head's padding and gap track the row's at each
     // one and they are set in three separate places.
     for (const w of [1180, 700, 390, 360]) {
