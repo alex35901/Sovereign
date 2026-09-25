@@ -134,7 +134,6 @@ await build({
       export * as C from "./src/lib/crypto.ts";
       export * as Z from "./src/lib/compress.ts";
       export * as RI from "./src/lib/rules-import.ts";
-      export * as D from "./src/lib/dedupe.ts";
       export { groupColor, withGroupColors, GROUP_TONES } from "./src/lib/category-colors.ts";
     `,
     resolveDir: process.cwd(),
@@ -1251,6 +1250,18 @@ await test("the icon function answers nothing but GET", async () => {
 await test("Hopper sits with Settings at the foot, not among the Plan screens", () => {
   assert.equal(M.NAV_PLAN.some((i) => i.to === "/hopper"), false, "it is no longer one more report");
   assert.deepEqual(M.NAV_FOOT.map((i) => i.to), ["/hopper", "/settings"]);
+});
+
+await test("the rail lists no screen the app does not have", () => {
+  // Year in Review was a page that restated a year the reports screen already
+  // draws, and the rail went on offering it after it went. A dead entry in a
+  // navigation list is a link to a blank screen.
+  const all = [...M.NAV, ...M.NAV_PLAN, ...M.NAV_CONFIG, ...M.NAV_FOOT].map((i) => i.to);
+  assert.equal(all.includes("/year"), false, "the year in review is gone");
+  // Read from the router itself rather than from a list kept beside it: a
+  // second list of the app's screens is a second thing to forget to update.
+  const routes = [...readFileSync("src/App.tsx", "utf8").matchAll(/<Route path="([^"]+)"/g)].map((m) => m[1]);
+  for (const to of all) assert.ok(routes.includes(to), `${to} is on the rail with no route behind it`);
 });
 
 await test("no screen is offered in two places at once", () => {
@@ -8865,147 +8876,6 @@ await test("the demo budget's groups each come out with one colour", () => {
   for (const g of db.groups) {
     const tones = new Set(db.categories.filter((c) => c.groupId === g.id).map((c) => c.color));
     assert.ok(tones.size <= 1, `${g.name} has ${tones.size} colours: ${[...tones].join(", ")}`);
-  }
-});
-
-/* ── finding duplicate transactions ───────────────────────────────────── */
-
-let dupeSeq = 0;
-const tx = (over = {}) => ({
-  id: `t${++dupeSeq}`, accountId: "a1", date: "2026-09-02", merchant: "Philz Coffee",
-  amount: -1000, categoryId: "uncat", tags: [], pending: false, reviewed: false,
-  hideFromReports: false, createdAt: "2026-09-02T10:00:00Z", ...over,
-});
-
-await test("a straight double upload is found", () => {
-  const groups = D.findDuplicates([
-    tx({ id: "a", createdAt: "2026-09-02T10:00:00Z" }),
-    tx({ id: "b", createdAt: "2026-09-05T10:00:00Z" }),
-    tx({ id: "c", merchant: "Costco Gas", amount: -6829 }),
-  ]);
-  assert.equal(groups.length, 1);
-  assert.equal(groups[0].keep.id, "a", "the older of the two is the original");
-  assert.deepEqual(groups[0].drop.map((t) => t.id), ["b"]);
-  assert.deepEqual(D.idsToDrop(groups), ["b"]);
-});
-
-await test("two real coffees on one day are not a duplicate of each other", () => {
-  // The reason this does not just match on date and amount. Same day, same
-  // price, different shop — an ordinary Tuesday, and deleting one is a loss.
-  const groups = D.findDuplicates([
-    tx({ id: "a", merchant: "Philz Coffee", amount: -550 }),
-    tx({ id: "b", merchant: "Blue Bottle", amount: -550 }),
-  ]);
-  assert.deepEqual(groups, [], "different merchants are different transactions");
-});
-
-await test("dropping the merchant from the key finds a re-import that renamed it", () => {
-  // Which is how these got in: the second upload mapped a different column, so
-  // the import's own guard saw two different merchants and let both through.
-  const rows = [
-    tx({ id: "a", merchant: "Philz Coffee" }),
-    tx({ id: "b", merchant: "SQ *PHILZ COFFEE 4471", createdAt: "2026-09-06T10:00:00Z" }),
-  ];
-  assert.deepEqual(D.findDuplicates(rows), [], "with merchants compared, these look distinct");
-
-  const loose = D.findDuplicates(rows, { ...D.DEFAULT_OPTIONS, sameMerchant: false });
-  assert.equal(loose.length, 1);
-  assert.equal(loose[0].keep.id, "a");
-});
-
-await test("the same file imported into two accounts is found only when asked", () => {
-  const rows = [tx({ id: "a" }), tx({ id: "b", accountId: "a2", createdAt: "2026-09-06T10:00:00Z" })];
-  assert.deepEqual(D.findDuplicates(rows), [], "two accounts, two transactions, by default");
-  assert.equal(D.findDuplicates(rows, { ...D.DEFAULT_OPTIONS, sameAccount: false }).length, 1);
-});
-
-await test("a transfer between accounts is never a duplicate of itself", () => {
-  // Even with the account ignored: the two halves have opposite signs.
-  const rows = [
-    tx({ id: "out", accountId: "a1", amount: -50000, merchant: "Transfer" }),
-    tx({ id: "in", accountId: "a2", amount: 50000, merchant: "Transfer" }),
-  ];
-  assert.deepEqual(D.findDuplicates(rows, { sameMerchant: false, sameAccount: false, dayTolerance: 3 }), []);
-});
-
-await test("a date tolerance clusters a run without dragging in the next one", () => {
-  const rows = [
-    tx({ id: "a", date: "2026-09-01" }),
-    tx({ id: "b", date: "2026-09-02" }),
-    tx({ id: "c", date: "2026-09-03" }),
-    tx({ id: "d", date: "2026-09-09" }),
-  ];
-  const none = D.findDuplicates(rows);
-  assert.deepEqual(none, [], "on the same day only, four different days are four transactions");
-
-  const within2 = D.findDuplicates(rows, { ...D.DEFAULT_OPTIONS, dayTolerance: 2 });
-  assert.equal(within2.length, 1);
-  assert.deepEqual(within2[0].drop.map((t) => t.id).sort(), ["b", "c"]);
-  assert.equal(within2[0].keep.id, "a");
-  assert.equal(within2[0].drop.some((t) => t.id === "d"), false, "the 9th is a week away");
-});
-
-await test("a synced transaction is kept over a copy from a file", () => {
-  // Deleting the synced one would only bring it back on the next pull, and
-  // lose whatever the file copy had in the meantime.
-  const groups = D.findDuplicates([
-    tx({ id: "csv", createdAt: "2026-09-01T10:00:00Z", importKey: "abc123", reviewed: true }),
-    tx({ id: "sync", createdAt: "2026-09-09T10:00:00Z", importKey: "sf:tx-9" }),
-  ]);
-  assert.equal(groups[0].keep.id, "sync", "even though it is newer and has less on it");
-});
-
-await test("between two file copies, the one you have worked on is kept", () => {
-  const groups = D.findDuplicates([
-    tx({ id: "bare", createdAt: "2026-09-01T10:00:00Z" }),
-    tx({ id: "done", createdAt: "2026-09-09T10:00:00Z", reviewed: true, categoryId: "c_coffee", notes: "with Sam" }),
-  ]);
-  assert.equal(groups[0].keep.id, "done", "the older one carries none of your work");
-});
-
-await test("a split transaction is left alone entirely", () => {
-  // Deleting half a split leaves a budget that no longer adds up.
-  const rows = [
-    tx({ id: "a", splits: [{ categoryId: "c1", amount: -500 }, { categoryId: "c2", amount: -500 }] }),
-    tx({ id: "b" }),
-  ];
-  assert.deepEqual(D.findDuplicates(rows), []);
-});
-
-await test("three copies leave one and drop two", () => {
-  const groups = D.findDuplicates([
-    tx({ id: "a", createdAt: "2026-09-01T10:00:00Z" }),
-    tx({ id: "b", createdAt: "2026-09-02T10:00:00Z" }),
-    tx({ id: "c", createdAt: "2026-09-03T10:00:00Z" }),
-  ]);
-  assert.equal(groups[0].keep.id, "a");
-  assert.equal(groups[0].drop.length, 2);
-  const sum = D.summarise(groups);
-  assert.equal(sum.groups, 1);
-  assert.equal(sum.duplicates, 2);
-  assert.equal(sum.amount, -2000, "two copies of -$10 is -$20 coming back");
-});
-
-await test("every group keeps exactly one, whatever the settings", () => {
-  // The safety property: a caller that deletes every drop can never empty a
-  // group, however loosely it was asked to match.
-  const rows = [];
-  for (let i = 0; i < 40; i++) {
-    rows.push(tx({ id: `x${i}`, date: `2026-09-0${(i % 9) + 1}`, amount: -(100 * (i % 5)) - 100,
-      merchant: ["A", "B"][i % 2], accountId: ["a1", "a2"][i % 2] }));
-  }
-  for (const sameMerchant of [true, false]) {
-    for (const sameAccount of [true, false]) {
-      for (const dayTolerance of [0, 1, 3]) {
-        const groups = D.findDuplicates(rows, { sameMerchant, sameAccount, dayTolerance });
-        const dropped = new Set(D.idsToDrop(groups));
-        for (const g of groups) {
-          assert.ok(g.drop.length >= 1, "a group of one is not a group");
-          assert.equal(dropped.has(g.keep.id), false, "the kept one must never be in the drop list");
-        }
-        assert.equal(dropped.size, D.idsToDrop(groups).length, "no id may be dropped twice");
-      }
-    }
   }
 });
 

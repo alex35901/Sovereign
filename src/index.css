@@ -206,15 +206,30 @@ h3 { font-size: 14px; }
 .nav-foot { padding: 10px 8px; border-top: 1px solid var(--line-soft); }
 
 /* ── topbar ───────────────────────────────────────────────────────────── */
+/* Three tracks, and which side a thing is on is the whole rule: this screen's
+   own controls on the left, the same three fixtures on the right, the screen's
+   name between them. The two side tracks share the leftover width equally,
+   which is what puts the name in the middle of the bar rather than in the
+   middle of whatever is left over. */
 .topbar {
-  position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 12px;
+  position: sticky; top: 0; z-index: 40;
+  display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr;
+  align-items: center; gap: 12px;
   padding: 12px 28px; background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px); border-bottom: 1px solid var(--line-soft);
 }
+/* Neither side shrinks below what it holds: a control squeezed to nothing is
+   worse than a heading that is not quite in the middle. The heading is what
+   gives way, which is what the minmax on the middle track is for. */
+.topbar-own { justify-content: flex-start; }
+.topbar-actions { justify-content: flex-end; }
+/* The name shrinks before either side does: a long account name should be
+   truncated, not push this screen's own controls off the bar. */
+.topbar-title { font-size: 19px; justify-self: center; text-align: center; min-width: 0; }
 /* The way out of a drill-down. Pulled tight to the heading on both sides so
    the pair reads as one thing, and never shrinking: it is the control most
    worth keeping when a long title is competing for the same line. */
-.topbar-back { flex: none; margin-left: -8px; margin-right: -4px; text-decoration: none; }
+.topbar-back { flex: none; margin-left: -8px; text-decoration: none; }
 
 /* ── card ─────────────────────────────────────────────────────────────── */
 .card {
@@ -1583,15 +1598,19 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
      screen, and the title no longer shrinks to make room, flex had squeezed
      "Transactions" down to "Tra…". The primary button drops its label, which
      is the difference between two rows of chrome and three. */
-  .topbar { padding: 10px 14px; flex-wrap: wrap; row-gap: 8px; }
-  /* Shrinkable, so a long account name is truncated rather than pushing the
-     bar's own buttons onto a second row beneath it. */
-  /* Basis 0, not auto: with auto the heading claims its full text width
-     before anything shrinks, so a long account name pushes the bar's own
-     buttons onto a second row instead of being truncated. */
-  .topbar h1 { flex: 1 1 0; min-width: 0; max-width: 100%; }
-  .topbar-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-  .topbar-actions .btn-label { display: none; }
+  .topbar { padding: 10px 14px; gap: 8px; }
+  /* The name gives way first here too, and there is a lot less to give: what
+     is on either side of it are controls, and a heading that has run out of
+     room is still a heading. */
+  .topbar-title { font-size: 17px; }
+  /* Every button in the bar is down to its mark: the labels are what a phone
+     does not have room for, on either side of the name. */
+  .topbar-actions .btn-label, .topbar-own .btn-label { display: none; }
+  /* Neither wrapped nor clipped. A row that is allowed to wrap asks the grid
+     for only its widest control, so the rest went under it while there was
+     still room on the line; one that is allowed to clip asks for nothing at
+     all, and lost the end of the month. It asks for what it holds, and the
+     heading takes what is left. */
   /* The save pill goes the same way and for the same reason. A cloud with a
      line through it says "not saved" on its own, and it keeps the colour it
      is shouting in either way. */

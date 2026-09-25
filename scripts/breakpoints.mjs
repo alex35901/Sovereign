@@ -101,7 +101,7 @@ const tryStep = async (what, fn) => {
 /** Every page, so a rule meant for one screen can't quietly break another. */
 const PAGES = [
   "/dashboard", "/transactions", "/budget", "/accounts", "/reports",
-  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/tax", "/year", "/rules", "/categories", "/tags", "/settings",
+  "/recurring", "/goals", "/investments", "/payoff", "/forecast", "/estate", "/tax", "/rules", "/categories", "/tags", "/settings",
   // Added with the cards screen and missed at the time, so every per-page
   // check below had a hole in it until now.
   "/cards",
@@ -464,6 +464,63 @@ try {
         m === null ? "no arrow found" : `gap ${m.gap}px, inside cell ${m.inside}`);
       await page.close();
     }
+  }
+
+  if (want("toolbar")) {
+    // ── one bar, one rule about which side a thing is on ──
+    //
+    // What belongs to this screen is on the left, what belongs to every screen
+    // is on the right, and the screen's name sits between them. Swept across
+    // every page, because the value of the rule is that it holds on all of
+    // them: a reader who has learned where the add button is should not have
+    // to find it again on the next screen.
+    const tb = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    for (const path of PAGES) {
+      await tb.goto(BASE + path, { waitUntil: "networkidle" });
+      await tb.waitForTimeout(500);
+      const bar = await tb.evaluate(() => {
+        const el = document.querySelector(".topbar");
+        if (!el) return null;
+        const box = el.getBoundingClientRect();
+        const mid = (n) => { const b = n.getBoundingClientRect(); return b.left + b.width / 2; };
+        const title = el.querySelector(".topbar-title");
+        const right = el.querySelector(".topbar-actions");
+        const own = el.querySelector(".topbar-own");
+        const kids = right ? [...right.children].filter((c) => getComputedStyle(c).display !== "none") : [];
+        return {
+          title: title?.textContent.trim() ?? "",
+          // How far the name sits from the middle of the bar, as a share of
+          // the bar's width.
+          off: title ? Math.abs(mid(title) - (box.left + box.width / 2)) / box.width : 1,
+          rightOrder: kids.map((c) =>
+            c.classList.contains("save-pill") ? "saved"
+              : c.querySelector(".notif-bell") || c.classList.contains("notif-bell") ? "bell"
+                : "primary"),
+          ownLeft: own ? own.getBoundingClientRect().left : null,
+          rightStart: right ? right.getBoundingClientRect().left : null,
+          titleMid: title ? mid(title) : null,
+          theme: [...el.querySelectorAll("button")].some((b) => /theme/i.test(b.getAttribute("title") ?? "")),
+        };
+      });
+      if (bar === null) { check(`${path} has a top bar`, false, "none"); continue; }
+      check(`${path} — the name is in the middle of the bar`, bar.off < 0.06,
+        `${bar.title} is ${Math.round(bar.off * 100)}% off centre`);
+      check(`${path} — this screen's own controls are left of the name`,
+        bar.ownLeft !== null && bar.titleMid !== null && bar.ownLeft < bar.titleMid,
+        `own at ${Math.round(bar.ownLeft ?? -1)}, name at ${Math.round(bar.titleMid ?? -1)}`);
+      check(`${path} — and the fixtures are right of it`,
+        bar.rightStart !== null && bar.titleMid !== null && bar.rightStart > bar.titleMid,
+        `fixtures at ${Math.round(bar.rightStart ?? -1)}, name at ${Math.round(bar.titleMid ?? -1)}`);
+      // Saved / notifications / add, in that order, with whichever of them
+      // this screen has. The save pill is silent when there is nothing to say.
+      const wanted = ["saved", "bell", "primary"];
+      check(`${path} — saved, then notifications, then this screen's button`,
+        bar.rightOrder.every((k, i) => wanted.indexOf(k) >= (i ? wanted.indexOf(bar.rightOrder[i - 1]) : 0))
+        && bar.rightOrder.includes("bell"),
+        bar.rightOrder.join(" / "));
+      check(`${path} — and no theme toggle among them`, !bar.theme, String(bar.theme));
+    }
+    await tb.close();
   }
 
   if (want("overflow")) {
@@ -1954,10 +2011,11 @@ try {
     await page.waitForTimeout(1200);
 
     // One edit, which is one save, which fails.
-    // The theme toggle is an edit like any other: it goes through apply, so it
-    // marks the document unsent and starts the same save.
+    // The appearance setting is an edit like any other: it goes through apply,
+    // so it marks the document unsent and starts the same save.
     const edited = await tryStep("an edit is made while the server is refusing", async () => {
-      await page.locator(".topbar button[title='Toggle theme']").click({ timeout: 5000 });
+      await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+      await page.locator(".theme-pick button:not(.on)").click({ timeout: 8000 });
       // Longer than the ceiling on the debounce, so the save has certainly run.
       await page.waitForTimeout(11_000);
     });
@@ -2038,7 +2096,8 @@ try {
     await page.waitForTimeout(1200);
 
     const saved = await tryStep("an edit is saved", async () => {
-      await page.locator(".topbar button[title='Toggle theme']").click({ timeout: 5000 });
+      await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+      await page.locator(".theme-pick button:not(.on)").click({ timeout: 8000 });
       await page.waitForTimeout(11_000);
     });
     if (saved) {
@@ -2120,6 +2179,41 @@ try {
     };
 
     const doc = await budgetDoc();
+
+    // ── the month is in the bar, and nothing else is ──
+    //
+    // Every figure on this screen is about one month, and the way to another
+    // one used to sit inside the first card, where it scrolled away with the
+    // card on a long sheet. The two icons that sat in the bar instead have
+    // gone: a plan filled in from an average is not a plan anybody wrote, and
+    // a button that empties a month's work belongs nowhere near one that is
+    // pressed by accident.
+    const bmonth = await seeded(doc, 1180);
+    const barNow = await bmonth.evaluate(() => {
+      const own = document.querySelector(".topbar-own");
+      const label = own?.querySelector("span.bold")?.textContent.trim() ?? "";
+      return {
+        label,
+        arrows: own ? own.querySelectorAll("button[aria-label$='month']").length : 0,
+        titles: [...document.querySelectorAll(".topbar button")].map((b) => b.getAttribute("title") ?? ""),
+        inCard: !!document.querySelector(".page .card span.bold + button, .page .card button[aria-label='Next month']"),
+      };
+    });
+    check("the budget's month sits in the bar, where it cannot scroll away",
+      /^[A-Z][a-z]+ \d{4}$/.test(barNow.label) && barNow.arrows === 2,
+      `${barNow.label}, ${barNow.arrows} arrows`);
+    check("and not in the card below it as well", !barNow.inCard, String(barNow.inCard));
+    check("with no auto-fill and no clear beside it",
+      !barNow.titles.some((t) => /auto-fill|clear this month/i.test(t)), barNow.titles.join(" | "));
+    if (await tryStep("the arrow moves the sheet a month", async () => {
+      await bmonth.locator(".topbar-own button[aria-label='Previous month']").click({ timeout: 5000 });
+      await bmonth.waitForTimeout(500);
+    })) {
+      const then = await bmonth.evaluate(() =>
+        document.querySelector(".topbar-own span.bold")?.textContent.trim() ?? "");
+      check("and the bar says which month it landed on", then !== barNow.label, `${barNow.label} -> ${then}`);
+    }
+    await bmonth.close();
 
     // Every width, because the head's padding and gap track the row's at each
     // one and they are set in three separate places.
@@ -2569,6 +2663,16 @@ try {
     const fp = await browser.newPage({ viewport: { width: 390, height: 900 } });
     await fp.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
     await fp.waitForTimeout(800);
+
+    // What the bar holds now: importing and exporting, which are this screen's
+    // own, and nothing else. The duplicate finder that used to sit beside them
+    // went with the modal behind it.
+    const own = await fp.evaluate(() =>
+      [...document.querySelectorAll(".topbar-own button")].map((b) => b.getAttribute("title") ?? ""));
+    check("the transactions bar carries importing and exporting, on the left",
+      own.some((t) => /Import a CSV/.test(t)) && own.some((t) => /Export/.test(t)), own.join(" | "));
+    check("and no longer offers to go looking for duplicates",
+      !own.some((t) => /more than once|duplicat/i.test(t)), own.join(" | "));
 
     const bar = await fp.evaluate(() => {
       const row = document.querySelector(".filter-bar");
@@ -5461,83 +5565,6 @@ try {
   }
 
 
-  if (want("year")) {
-    // ── the year, told back to you ──
-    const yr = await browser.newPage({ viewport: { width: 1280, height: 1400 } });
-    await yr.goto(`${BASE}/year`, { waitUntil: "networkidle" });
-    await yr.waitForTimeout(1200);
-
-    const readYear = () => yr.evaluate(() => ({
-      heading: document.querySelector(".yr-print h2")?.innerText ?? "",
-      intro: document.querySelector(".est-print-head .small")?.innerText ?? "",
-      big: document.querySelector(".nw-total")?.innerText ?? "",
-      sub: document.querySelector(".fc-head .small.faint")?.innerText ?? "",
-      tiles: [...document.querySelectorAll(".yr-tiles .card")].map((t) => t.innerText.replace(/\n/g, " | ")),
-      bars: document.querySelectorAll(".chart-wrap svg g, .chart-wrap svg rect").length,
-      monthNote: [...document.querySelectorAll(".card-head")]
-        .map((h) => h.innerText).find((t) => /Month by month/.test(t)) ?? "",
-      cats: [...document.querySelectorAll(".bar")].length,
-      catRows: [...document.querySelectorAll(".card")]
-        .filter((c) => /Where it went/.test(c.innerText))
-        .flatMap((c) => [...c.querySelectorAll(".spread")].map((r) => r.innerText.replace(/\n/g, " "))),
-      merchants: [...document.querySelectorAll(".card")]
-        .filter((c) => /Who got it/.test(c.innerText))
-        .flatMap((c) => [...c.querySelectorAll(".est-line")].map((r) => r.innerText.replace(/\n/g, " | "))),
-    }));
-
-    const y = await readYear();
-    check("the year page says which year, and how much of it has run",
-      /^(Your )?\d{4}( so far)?$/.test(y.heading) && /transactions/.test(y.intro),
-      `${y.heading} — ${y.intro.slice(0, 90)}`);
-    check("the headline is what was kept, against what came in and went out",
-      lastMoney(y.big) !== 0 && /came in and .* went out/.test(y.sub), `${y.big} — ${y.sub.slice(0, 90)}`);
-    check("four tiles: in, out, net worth and debt",
-      y.tiles.length === 4 && /Money in/i.test(y.tiles[0]) && /Money out/i.test(y.tiles[1]),
-      y.tiles.map((t) => t.split(" | ")[0]).join(", "));
-    check("and each one is put beside the year before",
-      y.tiles.slice(0, 2).every((t) => /than last year|the same as last year|nothing to compare/.test(t)),
-      y.tiles[0].slice(0, 90));
-
-    // The month still running is short, not thrifty. Naming it the leanest
-    // month of the year is the mistake this page is most likely to make.
-    const now = await yr.evaluate(() => new Date().toISOString().slice(0, 7));
-    const running = new Date(`${now}-01T12:00:00Z`).toLocaleString("en-US", { month: "long", year: "numeric" });
-    check("the month that is still running is not called the leanest",
-      !new RegExp(`${running} kept the least`).test(y.monthNote), `${running} / ${y.monthNote.slice(0, 110)}`);
-    check("but the best and the leanest finished months are named",
-      /kept the most, \$/.test(y.monthNote) && /kept the least, -?\$/.test(y.monthNote),
-      y.monthNote.slice(0, 120));
-
-    check("the biggest categories are listed largest first, with their share",
-      y.catRows.length >= 3 && /%/.test(y.catRows[0]), y.catRows[0]?.slice(0, 90) ?? "");
-    const catMoney = y.catRows.map((r) => lastMoney(r));
-    check("and each one is smaller than the one above it",
-      catMoney.every((n, i) => i === 0 || catMoney[i - 1] >= n), catMoney.join(" "));
-
-    const merchMoney = y.merchants.map((r) => lastMoney(r));
-    check("who got the money, most first",
-      merchMoney.length >= 3 && merchMoney.every((n, i) => i === 0 || merchMoney[i - 1] >= n),
-      merchMoney.join(" "));
-    check("and how many times each one was paid",
-      y.merchants.every((r) => /\d+ times?/.test(r)), y.merchants[0]?.slice(0, 90) ?? "");
-
-    // A different year is a different set of figures, not the same page with a
-    // new number at the top.
-    const options = await yr.evaluate(() =>
-      [...document.querySelectorAll(".topbar select option")].map((o) => o.value));
-    if (options.length > 1 && await tryStep("an earlier year can be chosen", async () => {
-      await yr.locator(".topbar select").selectOption(options[1], { timeout: 8000 });
-      await yr.waitForTimeout(900);
-    })) {
-      const prior = await readYear();
-      check("choosing an earlier year redraws it",
-        prior.heading !== y.heading && prior.big !== y.big,
-        `${y.heading} ${y.big} -> ${prior.heading} ${prior.big}`);
-      check("and a year that is over is not labelled as still running",
-        !/so far/.test(prior.heading), prior.heading);
-    }
-    await yr.close();
-  }
 
 
   if (want("drill-pick")) {
@@ -5872,7 +5899,6 @@ try {
     for (const [path, what] of [
       ["/categories/c_groceries", "the drill-down's bars"],
       ["/reports", "the cash flow chart"],
-      ["/year", "the year in review"],
     ]) {
       await others.goto(BASE + path, { waitUntil: "domcontentloaded" });
       await others.waitForTimeout(240);
@@ -6921,10 +6947,10 @@ try {
     // ── settings holds settings, not switches nobody moves ──
     //
     // Every toggle on this page had one sensible position and was left in it.
-    // What replaced them is nothing: logos always resolve, prices and property
-    // values always refresh with the accounts, and the theme is switched from
-    // the bar at the top of every screen rather than from a page you have to
-    // go and find.
+    // What replaced them is nothing: logos always resolve, and prices and
+    // property values always refresh with the accounts. What came back the
+    // other way is the theme, which is a preference like the household's name
+    // rather than a button to keep beside the ones pressed every day.
     const st = await browser.newPage({ viewport: { width: 1280, height: 1200 } });
     await st.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
     await st.waitForTimeout(1200);
@@ -6945,15 +6971,18 @@ try {
       ["Back up JSON", "Export CSV", "Restore backup"].every((b) => page.buttons.some((t) => t.includes(b))),
       page.buttons.join(" | ").slice(0, 160));
 
-    // The theme is still switchable, from the bar rather than from here.
+    // The theme moved the other way: it used to be a sun in the bar at the top
+    // of every screen, pressed by accident more often than on purpose. It is a
+    // thing chosen once, so it is here with the rest of them now.
     const themed = await st.evaluate(() => {
       const was = document.documentElement.dataset.theme;
-      document.querySelector('.topbar button[title="Toggle theme"]')?.click();
-      return { was, button: !!document.querySelector('.topbar button[title="Toggle theme"]') };
+      document.querySelector(".theme-pick button:not(.on)")?.click();
+      return { was, here: !!document.querySelector(".theme-pick"), inBar: !!document.querySelector(".topbar .theme-pick") };
     });
     await st.waitForTimeout(400);
-    check("and the theme is still switched, from the bar on every screen",
-      themed.button && (await st.evaluate(() => document.documentElement.dataset.theme)) !== themed.was,
+    check("and the theme is chosen here rather than from the bar on every screen",
+      themed.here && !themed.inBar
+      && (await st.evaluate(() => document.documentElement.dataset.theme)) !== themed.was,
       JSON.stringify(themed));
 
     // Always-on means always on: the logos have to be there with nothing set.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRight, CheckCheck, CopyCheck, Download, EyeOff, Filter, ListChecks, Plus, Repeat, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
+import { ArrowRight, CheckCheck, Download, EyeOff, Filter, ListChecks, Plus, Repeat, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { DB, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { IconAction, TopBar } from "../shell/TopBar";
@@ -21,7 +21,6 @@ import { amountMatches, hasAmountRange, inAmountRange, typedAmount } from "../li
 import { ALL, FILTER_KINDS, PARAM_KEYS, bounds, fromParams, isNarrowed, toParams } from "../lib/date-filter";
 import { TransactionModal } from "./TransactionModal";
 import { ImportModal } from "./ImportModal";
-import { DuplicatesModal } from "./DuplicatesModal";
 
 /**
  * The mark next to a total that had something taken out of it.
@@ -134,7 +133,6 @@ export default function Transactions() {
   const [picking, setPicking] = useState(false);
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [importing, setImporting] = useState(false);
-  const [deduping, setDeduping] = useState(false);
   const [adding, setAdding] = useState(false);
   const [limit, setLimit] = useState(PAGE);
   const bottom = useRef<HTMLDivElement>(null);
@@ -271,9 +269,6 @@ export default function Transactions() {
         title="Transactions"
         actions={
           <>
-            <IconAction title="Find transactions imported more than once" onClick={() => setDeduping(true)}>
-              <CopyCheck size={16} />
-            </IconAction>
             <IconAction title="Import a CSV" onClick={() => setImporting(true)}>
               <Upload size={16} />
             </IconAction>
@@ -538,7 +533,6 @@ export default function Transactions() {
       {editing ? <TransactionModal txn={editing} onClose={() => setEditing(null)} /> : null}
       {adding ? <TransactionModal onClose={() => setAdding(false)} /> : null}
       {importing ? <ImportModal onClose={() => setImporting(false)} /> : null}
-      {deduping ? <DuplicatesModal onClose={() => setDeduping(false)} /> : null}
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { ArrowLeft, Bell, Moon, RefreshCw, Sun } from "lucide-react";
+import { ArrowLeft, Bell, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -10,10 +10,17 @@ import { isSeen, markRead, notices, unread } from "../lib/notifications";
 /**
  * The bar across the top of every screen.
  *
- * Two slots and two fixtures, in that order: the page's own controls, then the
- * bell and the theme toggle, then the page's one add button. The fixtures are
- * in the same place on every screen because they belong to every screen; the
- * add button is on the far right because it is the thing you came to press.
+ * Three slots, and which side a thing is on is the whole rule: what belongs to
+ * this screen is on the left, what belongs to every screen is on the right,
+ * and the screen's name sits between them.
+ *
+ * The right is always the same three, in the same order — whether the work is
+ * saved, what has happened, and the one thing this screen is for adding. They
+ * are in the same place on every screen because they belong to every screen,
+ * and a reader who has learned where the add button is should not have to find
+ * it again on the next one. The theme toggle used to sit among them and no
+ * longer does: it is a preference, set once, and it lives in Settings with the
+ * rest of them rather than beside the buttons pressed every day.
  *
  * It used to add its own "+ Transaction" regardless of the page, so Goals had
  * one, and Reports, and Categories — a button that answered a question nobody
@@ -28,34 +35,31 @@ export function TopBar({ title, back, actions, primary }: {
   title: string;
   /** Where a drill-down sits under, named so the arrow is not a guess. */
   back?: { to: string; label: string };
-  /** Filters and icon buttons, to the left of the toggles. */
+  /** This screen's own controls, on the far left with the way back. */
   actions?: ReactNode;
-  /** This screen's one add button, to the right of them. */
+  /** This screen's one add button, last of the three on the right. */
   primary?: ReactNode;
 }) {
-  const { db, actions: act } = useStore();
-
   return (
     <header className="topbar">
-      {/* A fixed destination rather than history: you can reach a category
-          from four different screens, and an arrow that lands somewhere
-          different each time is not somewhere you can aim. */}
-      {back ? (
-        <Link
-          to={back.to} className="btn btn-ghost btn-icon topbar-back"
-          title={back.label} aria-label={back.label}
-        >
-          <ArrowLeft size={17} />
-        </Link>
-      ) : null}
-      <h1 className="grow truncate" style={{ fontSize: 19 }}>{title}</h1>
-      <div className="row topbar-actions" style={{ gap: 6 }}>
+      <div className="row topbar-own" style={{ gap: 6 }}>
+        {/* A fixed destination rather than history: you can reach a category
+            from four different screens, and an arrow that lands somewhere
+            different each time is not somewhere you can aim. */}
+        {back ? (
+          <Link
+            to={back.to} className="btn btn-ghost btn-icon topbar-back"
+            title={back.label} aria-label={back.label}
+          >
+            <ArrowLeft size={17} />
+          </Link>
+        ) : null}
         {actions}
+      </div>
+      <h1 className="truncate topbar-title">{title}</h1>
+      <div className="row topbar-actions" style={{ gap: 6 }}>
         <SaveState />
         <Notifications />
-        <button className="btn btn-ghost btn-icon" title="Toggle theme" onClick={act.toggleTheme}>
-          {db.settings.theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-        </button>
         {primary}
       </div>
     </header>

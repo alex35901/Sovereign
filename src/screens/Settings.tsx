@@ -8,7 +8,7 @@ import { download, exportJSON, importJSON } from "../lib/storage";
 import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
 import type { SyncCadence } from "../lib/sync";
 import { pricesDue, refreshPrices } from "../lib/prices";
-import { Btn, Card, CardHead, ConfirmButton, Field, TextInput } from "../components/ui";
+import { Btn, Card, CardHead, ConfirmButton, Field, Segmented, TextInput } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
@@ -90,6 +90,18 @@ export default function Settings() {
                   value={db.settings.householdName}
                   onChange={(v) => actions.patchSettings({ householdName: v })}
                 />
+              </Field>
+              {/* It used to be a sun in the bar at the top of every screen,
+                  beside the buttons pressed every day. It is a thing chosen
+                  once, so it sits with the other things chosen once. */}
+              <Field label="Appearance">
+                <span className="theme-pick">
+                  <Segmented
+                    value={db.settings.theme}
+                    options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }]}
+                    onChange={(theme) => actions.patchSettings({ theme })}
+                  />
+                </span>
               </Field>
             </div>
           </Card>

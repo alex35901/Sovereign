@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, ChevronDown, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
-import { useDB, useStore } from "../store";
-import { IconAction, TopBar } from "../shell/TopBar";
+import { CalendarDays, ChevronDown, ChevronRight } from "lucide-react";
+import { useDB } from "../store";
+import { TopBar } from "../shell/TopBar";
 import { monthLabel, thisMonth } from "../lib/date";
 import { budgetSummary, remainingTone, spentShare } from "../lib/select";
 import { fmt0 } from "../lib/money";
@@ -19,7 +19,6 @@ const COLUMN_KEY = "sovereign.budget.column";
 
 export default function Budget() {
   const db = useDB();
-  const { actions } = useStore();
   const [month, setMonth] = useState(thisMonth());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const summary = useMemo(() => budgetSummary(db, month), [db, month]);
@@ -57,19 +56,21 @@ export default function Budget() {
 
   return (
     <>
+      {/* The month is the whole context for this screen: every figure on it
+          is about one month, and the way to another one used to sit inside
+          the first card, where it scrolled away with the card. */}
       <TopBar
         title="Budget"
         actions={
           <>
-            <IconAction
-              title="Auto-fill from the last three months' average"
-              onClick={() => actions.autofillBudget(month)}
+            <MonthNav month={month} onChange={setMonth} />
+            <Btn
+              onClick={() => setMonth(thisMonth())}
+              disabled={month === thisMonth()}
+              title={`Jump back to ${monthLabel(thisMonth())}`}
             >
-              <Sparkles size={16} />
-            </IconAction>
-            <IconAction title="Clear this month's plan" onClick={() => actions.clearBudget(month)}>
-              <RotateCcw size={16} />
-            </IconAction>
+              <CalendarDays size={14} /> <span className="btn-label">This month</span>
+            </Btn>
           </>
         }
       />
@@ -79,19 +80,6 @@ export default function Budget() {
       <div className="page stack" data-bcol={column}>
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
-            <div className="row wrap" style={{ gap: 8 }}>
-              {/* No forward limit: planning two or ten years out is the point
-                  of a standing amount, and a cap at six months made the sheet
-                  stop dead in the middle of next year. */}
-              <MonthNav month={month} onChange={setMonth} />
-              <Btn
-                onClick={() => setMonth(thisMonth())}
-                disabled={month === thisMonth()}
-                title={`Jump back to ${monthLabel(thisMonth())}`}
-              >
-                <CalendarDays size={14} /> This month
-              </Btn>
-            </div>
             {/* An even grid rather than a row of content-sized columns: four
                 figures of different lengths left-aligned under labels of
                 different lengths never looked like four of the same thing. */}

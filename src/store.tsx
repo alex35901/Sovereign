@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import type { Account, CandidateCard, CardRewards, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
 import { buildDemoDB, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
-import { plannedFromHistory } from "./lib/seed";
 import { addMonths, today } from "./lib/date";
 import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
@@ -290,7 +289,6 @@ export interface Actions {
   resetEmpty: () => void;
   loadDB: (db: DB) => void;
   patchSettings: (patch: Partial<DB["settings"]>) => void;
-  toggleTheme: () => void;
 
   addAccount: (a: Omit<Account, "id" | "order" | "history">) => void;
   updateAccount: (id: ID, patch: Partial<Account>) => void;
@@ -347,8 +345,6 @@ export interface Actions {
   applyPlannedForward: (month: MonthKey, categoryId: ID, amount: number) => void;
   moveBudget: (month: MonthKey, fromId: ID, toId: ID, amount: number) => void;
   copyPreviousMonth: (month: MonthKey) => void;
-  autofillBudget: (month: MonthKey) => void;
-  clearBudget: (month: MonthKey) => void;
   /** Drops balance points that repeat the one before them. Says what it saved. */
   compressHistory: () => void;
 
@@ -472,8 +468,6 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     resetEmpty: () => apply(() => emptyDB(), "clear all data"),
     loadDB: (next) => apply(() => next, "restore backup"),
     patchSettings: (patch) => apply((db) => ({ ...db, settings: { ...db.settings, ...patch } })),
-    toggleTheme: () =>
-      apply((db) => ({ ...db, settings: { ...db.settings, theme: db.settings.theme === "dark" ? "light" : "dark" } })),
 
     addAccount: (a) =>
       apply((db) => ({
@@ -696,10 +690,6 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
       apply((db) => moveBudget(db, month, fromId, toId, amount).db, "move money between categories"),
     copyPreviousMonth: (month) =>
       apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: { ...(db.budgets[addMonths(month, -1)] ?? {}) } } }), "copy last month's budget"),
-    autofillBudget: (month) =>
-      apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: plannedFromHistory(db, month) } }), "auto-fill budget"),
-    clearBudget: (month) =>
-      apply((db) => ({ ...db, budgets: { ...db.budgets, [month]: {} } }), "clear budget"),
     compressHistory: () =>
       apply((db) => {
         const out = squashHistory(db);
