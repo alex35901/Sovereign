@@ -25,6 +25,28 @@ export function CloudSync() {
   const act = useRef({ apply, notify, replaceFromCloud });
   act.current = { apply, notify, replaceFromCloud };
 
+  /**
+   * The stored version this tab's document descends from.
+   *
+   * In this tab's own memory, deliberately, and never taken back out of the
+   * saved state once the tab is running. That state lives in localStorage
+   * because it has to outlive a tab, which means every tab on the device
+   * shares it - and the document in hand is not shared, it is whatever this
+   * tab happens to be holding.
+   *
+   * Two tabs open on a phone is all it takes. One of them polls, pulls version
+   * 60 and writes 60 where both can see it. The other has been in the
+   * background since version 47 and still holds it. When that one saves, it
+   * reads 60 out of the shared state and tells the server "this is version
+   * 60" about a document from version 47. The server believes it, because that
+   * number is the only defence it has, and a fortnight's work goes.
+   *
+   * So the number that goes with a save is the number of the document being
+   * saved, from the moment this tab last agreed with the server, and from
+   * nowhere else.
+   */
+  const base = useRef(cloudState().version);
+
   const busy = useRef(false);
   const ready = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,6 +103,7 @@ export function CloudSync() {
     if (!remote) return false;
     if (cloudState().dirty) stashConflict(latest.current);
     install(remote.doc);
+    base.current = remote.version;
     setCloudState({ version: remote.version, dirty: false });
     const said = say(remote.updatedBy);
     if (said) act.current.notify(said);
@@ -112,10 +135,12 @@ export function CloudSync() {
     busy.current = true;
     let landed = false;
     try {
-      const res = await push(latest.current, at.version);
+      // This tab's own number, not the shared one. See `base`.
+      const res = await push(latest.current, base.current);
       // The failure is kept through the success that follows it. An
       // intermittent fault is the one worth being able to see, and clearing
       // the record every time a save works is what hides it.
+      base.current = res.version;
       setCloudState({
         version: res.version, dirty: false,
         lastError: at.lastError, saidAt: at.saidAt, okAt: Date.now(),
@@ -160,14 +185,14 @@ export function CloudSync() {
   };
 
   const drainNow = async (): Promise<boolean> => {
-    const at = cloudState();
-    const out = await drainQueue(latest.current, at.version).catch(() => null);
+    const out = await drainQueue(latest.current, base.current).catch(() => null);
     // Nothing opened: an empty queue, or a browser holding no key yet. Either
     // way the poll must not treat it as movement, or a locked tab with rows
     // waiting would reset its own backoff for ever.
     if (!out) return false;
     // The drain pushed what it merged, so this is the stored document too.
     install(out.db);
+    base.current = out.version;
     setCloudState({ version: out.version, dirty: false });
     if (out.said) act.current.notify(out.said);
     return true;
@@ -192,12 +217,13 @@ export function CloudSync() {
       if (!meta.found) {
         // nothing stored yet — this browser seeds it
         const res = await push(latest.current, 0);
+        base.current = res.version;
         setCloudState({ version: res.version, dirty: false });
         act.current.notify("Budget saved to the cloud. It'll open on any device now.");
         return;
       }
 
-      const local = cloudState();
+      const local = { ...cloudState(), version: base.current };
       /**
        * Anything but exact agreement means the stored document is the one to
        * take.
@@ -233,7 +259,7 @@ export function CloudSync() {
          * until the moment it is not, and that moment is a race with whatever
          * else is saving.
          */
-        const res = await push(latest.current, local.version).catch(async (err: unknown) => {
+        const res = await push(latest.current, base.current).catch(async (err: unknown) => {
           if (err instanceof CloudError && err.status === 409) {
             await takeRemote((by) =>
               `${by} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
@@ -241,10 +267,14 @@ export function CloudSync() {
           }
           throw err;
         });
-        if (res) setCloudState({ version: res.version, dirty: false });
+        if (res) {
+          base.current = res.version;
+          setCloudState({ version: res.version, dirty: false });
+        }
       } else {
         // Already in step. Nothing crosses the wire, which is the common case
         // every single time the app is opened.
+        base.current = meta.version;
         setCloudState({ version: meta.version, dirty: false });
       }
 
@@ -348,15 +378,15 @@ export function CloudSync() {
       // megabyte a minute, per open tab, which is how a month's database
       // allowance went in two days.
       const meta = await head();
-      // Different, rather than newer. A stored document that has gone
-      // backwards is one that was restored from a backup or rolled back after
-      // an accident, and a poll that only looks forwards sails straight past
-      // it: this browser keeps the copy that was rolled back and saves it
-      // again at the next edit.
-      if (meta.found && meta.version !== at.version) {
+      // Different from what THIS tab holds, rather than newer, and rather than
+      // different from the shared number. A stored document that has gone
+      // backwards was restored from a backup or rolled back after an accident,
+      // and a poll that only looks forwards sails straight past it.
+      if (meta.found && meta.version !== base.current) {
         const remote = await pull();
-        if (remote && remote.version !== at.version) {
+        if (remote && remote.version !== base.current) {
           install(remote.doc);
+          base.current = remote.version;
           setCloudState({ version: remote.version, dirty: false });
           if (remote.updatedBy !== deviceName()) notifyUpdate(act.current.notify, remote.updatedBy);
           moved = true;

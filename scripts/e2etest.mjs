@@ -403,6 +403,106 @@ try {
     await n.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length) === held,
     "the recovered budget is a different size");
 
+  // ── two tabs on one phone, and the number that goes with a save ────────
+  //
+  // Twice now this has cost a household a fortnight of work, and both times
+  // the shape was the same: a save carrying a version number that is not the
+  // version of the document being saved. The server's only defence is that
+  // number, and it believes it.
+  //
+  // The saved sync state lives in localStorage because it has to outlive a
+  // tab, which means every tab on the device shares it. The document in hand
+  // does not: a tab in the background holds whatever it had. One tab pulls
+  // version 60 and writes 60 where both can see it; the other is still on 47
+  // and saves, reading 60 out of the shared state. Two contexts cannot catch
+  // this, because two contexts do not share storage. Two pages in one can.
+  const phone = await browser.newContext({ viewport: { width: 390, height: 1500 } });
+  const tabA = await settings(phone);
+  await card(tabA, "Sync across devices").locator('input[name="sovereign-sync"]').fill(SYNC);
+  await card(tabA, "Sync across devices").locator('button:text-is("Connect")').click();
+  await tabA.waitForTimeout(2500);
+  await tryStep("the phone's first tab unlocks", async () => {
+    await card(tabA, "Encryption").locator('input[name="sovereign-encryption-unlock"]').fill(RESEAL, { timeout: 5000 });
+    await card(tabA, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click({ timeout: 5000 });
+  });
+  await tabA.waitForTimeout(2500);
+
+  // A second tab on the same phone, holding the same document.
+  const tabB = await settings(phone);
+  await tabB.waitForTimeout(2500);
+
+  // A count is the unambiguous marker: whichever copy the server ends up
+  // holding, the number of transactions in it says which tab wrote it.
+  const countOf = (page) => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions.length);
+
+  // From here the background tab learns nothing: its reads are refused, the
+  // way a tab frozen on a phone learns nothing. Its saves still go out.
+  await tabB.route("**/api/db*", (route) =>
+    (route.request().method() === "GET" ? route.abort() : route.continue()));
+
+  const before2 = await countOf(tabA);
+  const versionOf = (page) => page.evaluate(() => {
+    const raw = localStorage.getItem("sovereign.cloud.state.v1");
+    return raw ? JSON.parse(raw).version : 0;
+  });
+  const wasAt = await versionOf(tabA);
+
+  // The foreground tab deletes some transactions. Waited on by version rather
+  // than by the unsent flag, because that flag is shared too: the background
+  // tab is being refused over and over and marking it unsent again each time,
+  // which is the fix working and would look like the save never landing. A
+  // version only moves when a save is accepted.
+  await tryStep("the foreground tab deletes a few transactions", async () => {
+    await tabA.goto(`${APP}/transactions`, { waitUntil: "networkidle" });
+    await tabA.waitForTimeout(1500);
+    // The checkboxes only exist once the list is in picking mode.
+    await tabA.locator("button.tx-pick").first().click({ timeout: 5000 });
+    await tabA.waitForTimeout(400);
+    for (const i of [0, 1, 2]) {
+      await tabA.locator('.list-row:not(.head) input[type="checkbox"]').nth(i).check({ timeout: 5000 });
+    }
+    await tabA.locator('button:has-text("Delete")').first().click({ timeout: 5000 });
+    await tabA.waitForFunction((was) => {
+      const raw = localStorage.getItem("sovereign.cloud.state.v1");
+      return raw ? JSON.parse(raw).version > was : false;
+    }, wasAt, { timeout: 40000 });
+  });
+  // Judged by the version, not by what is in storage. Both tabs write the
+  // document to the same key, so the background tab's copy lands on top of the
+  // foreground tab's the moment it saves its own cache. A version only moves
+  // when the server accepts a save, and the background tab's are refused.
+  check("the foreground tab's deletion reached the server",
+    await versionOf(tabA) > wasAt, `version ${wasAt} did not move`);
+
+  // And the background tab, which never saw any of it, saves something of its
+  // own. What it holds has to be judged from the server, not from storage:
+  // the saved state is shared, which is the whole reason this bug exists.
+  await tryStep("the background tab makes an edit of its own", () =>
+    tabB.locator("button[title='Toggle theme']").first().click({ timeout: 5000 }));
+  await tabB.waitForTimeout(12000);
+
+  // The question this whole section exists to ask, asked of the server rather
+  // than of either tab: a fresh device that has seen none of this.
+  const judge = await browser.newContext({ viewport: { width: 900, height: 1200 } });
+  const j = await settings(judge);
+  await card(j, "Sync across devices").locator('input[name="sovereign-sync"]').fill(SYNC);
+  await card(j, "Sync across devices").locator('button:text-is("Connect")').click();
+  await j.waitForTimeout(2500);
+  await tryStep("the judging device unlocks", async () => {
+    await card(j, "Encryption").locator('input[name="sovereign-encryption-unlock"]').fill(RESEAL, { timeout: 5000 });
+    await card(j, "Encryption").locator("button").filter({ hasText: /Unlock/i }).first().click({ timeout: 5000 });
+  });
+  await j.waitForTimeout(3000);
+
+  const settled = await countOf(j);
+  check("a stale tab cannot save its copy over a newer one, sharing storage or not",
+    settled === before2 - 3,
+    `the server holds ${settled}; the deletion should have left ${before2 - 3}, and the stale tab was holding ${before2}`);
+
+  await phone.close();
+  await judge.close();
+
   // ── what two tabs left open actually cost ──────────────────────────────
   //
   // This is a bill, not a bug report, which is why it went unnoticed for
