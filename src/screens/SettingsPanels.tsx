@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2 } from "lucide-react";
+import { Minus, Plus, Trash2 } from "lucide-react";
 import type { Category, CategoryGroup, ID, Rule } from "../types";
 import { useDB, useStore } from "../store";
-import { countMatches } from "../lib/rules";
+import { MATCH_WORD, countMatches, merchantTests } from "../lib/rules";
+import type { MerchantTest } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { AccountPicker, CategoryPicker } from "../components/pickers";
 import { groupColor, GROUP_TONES, TONE_NAMES } from "../lib/category-colors";
@@ -351,10 +352,22 @@ export function NewGroupButton() {
   );
 }
 
-/** How a rule's merchant test reads in its one-line summary. */
-const MATCH_WORD: Record<string, string> = {
-  contains: "contains", exact: "is exactly", starts: "starts with", ends: "ends with",
-};
+/** The comparisons a merchant condition can use, for the editor's picker. */
+const MATCH_OPTIONS = [
+  { value: "contains", label: "contains" },
+  { value: "exact", label: "is exactly" },
+  { value: "starts", label: "starts with" },
+  { value: "ends", label: "ends with" },
+];
+
+/** A rule's merchant conditions, as one line. */
+function describeMerchant(c: Rule["criteria"]): string {
+  const tests = merchantTests(c);
+  if (!tests.length) return "any merchant";
+  return tests
+    .map((t, i) => `${i ? `${t.join === "or" ? "or " : "and "}` : ""}merchant ${MATCH_WORD[t.match]} "${t.text}"`)
+    .join(" ");
+}
 
 /**
  * The rules, as a list.
@@ -381,7 +394,7 @@ export function RulesPanel({ adding, onAddingDone }: { adding: boolean; onAdding
           <div className="grow col" style={{ gap: 1 }}>
             <span style={{ fontWeight: 500 }}>{r.name}</span>
             <span className="tiny faint truncate">
-              {r.criteria.merchantContains ? `merchant ${MATCH_WORD[r.criteria.merchantMatch ?? "contains"]} "${r.criteria.merchantContains}"` : "any merchant"}
+              {describeMerchant(r.criteria)}
               {r.criteria.accountId ? ` · in ${db.accounts.find((a) => a.id === r.criteria.accountId)?.name ?? "an account"}` : ""}
               {r.criteria.direction ? ` · ${r.criteria.direction === "in" ? "money in" : "money out"}` : ""}
               {" → "}
@@ -417,7 +430,20 @@ export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: Rul
   const db = useDB();
   const { actions, notify } = useStore();
   const [name, setName] = useState(rule?.name ?? preset?.name ?? "");
-  const [merchantContains, setMerchant] = useState(rule?.criteria.merchantContains ?? preset?.merchantContains ?? "");
+  /**
+   * The merchant conditions, as one list however they are stored.
+   *
+   * Always at least one row, even when it is blank: a rule with no merchant
+   * condition is a real thing to write, and an empty first box says so more
+   * plainly than an empty list with a plus under it.
+   */
+  const [tests, setTests] = useState<MerchantTest[]>(() => {
+    const held = merchantTests(rule?.criteria ?? {});
+    if (held.length) return held;
+    return [{ text: preset?.merchantContains ?? "", match: "contains" }];
+  });
+  const setTest = (i: number, patch: Partial<MerchantTest>) =>
+    setTests((prev) => prev.map((t, n) => (n === i ? { ...t, ...patch } : t)));
   const [direction, setDirection] = useState<"" | "in" | "out">(rule?.criteria.direction ?? "");
   const [amountMin, setMin] = useState(rule?.criteria.amountMin ?? 0);
   const [amountMax, setMax] = useState(rule?.criteria.amountMax ?? 0);
@@ -431,11 +457,24 @@ export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: Rul
   const [hideFromReports, setHide] = useState(rule?.actions.hideFromReports ?? false);
   const [applyToExisting, setApplyToExisting] = useState(!rule);
 
+  // Blank boxes are conditions nobody has written yet, not conditions that
+  // match everything.
+  const written = useMemo(
+    () => tests.map((t) => ({ ...t, text: t.text.trim() })).filter((t) => t.text),
+    [tests],
+  );
+
   const payload = useMemo(() => ({
-    name: name.trim() || merchantContains || "Untitled rule",
+    name: name.trim() || written[0]?.text || "Untitled rule",
     enabled: rule?.enabled ?? true,
     criteria: {
-      merchantContains: merchantContains.trim() || undefined,
+      // The first condition stays where every rule ever written keeps it, and
+      // the rest sit beside it, so nothing has to be migrated to be read.
+      merchantContains: written[0]?.text || undefined,
+      merchantMatch: written[0] ? written[0].match : undefined,
+      merchantAlso: written.length > 1
+        ? written.slice(1).map((t) => ({ join: t.join ?? "and", match: t.match, text: t.text }))
+        : undefined,
       // was dropped on save before, so editing a rule scoped to an account
       // silently widened it to every account
       accountId: accountId || undefined,
@@ -450,7 +489,7 @@ export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: Rul
       markReviewed: markReviewed || undefined,
       hideFromReports: hideFromReports || undefined,
     },
-  }), [name, merchantContains, accountId, direction, amountMin, amountMax,
+  }), [name, written, accountId, direction, amountMin, amountMax,
        categoryId, renameMerchant, addTags, markReviewed, hideFromReports, rule]);
 
   // What this rule would touch as it currently stands, counted live so the
@@ -498,8 +537,65 @@ export function RuleModal({ rule, preset, onClose }: { rule?: Rule; preset?: Rul
       <section className="rule-block">
         <header><span className="rule-when">When</span> a transaction matches all of these</header>
         <div className="col" style={{ gap: 12 }}>
-          <Field label="Merchant or statement contains">
-            <TextInput value={merchantContains} onChange={setMerchant} placeholder="blue bottle" />
+          <Field label="Merchant">
+            <div className="col" style={{ gap: 8 }}>
+              {tests.map((t, i) => (
+                // eslint-disable-next-line react/no-array-index-key
+                <div key={i} className="row rule-cond">
+                  {i === 0 ? (
+                    <span className="small muted rule-join">Merchant</span>
+                  ) : (
+                    <SelectInput
+                      style={{ width: 74, flex: "none" }}
+                      value={t.join ?? "and"}
+                      onChange={(v) => setTest(i, { join: v as "and" | "or" })}
+                      options={[{ value: "and", label: "and" }, { value: "or", label: "or" }]}
+                    />
+                  )}
+                  <SelectInput
+                    style={{ width: 128, flex: "none" }}
+                    value={t.match}
+                    onChange={(v) => setTest(i, { match: v as MerchantTest["match"] })}
+                    options={MATCH_OPTIONS}
+                  />
+                  <TextInput
+                    value={t.text}
+                    onChange={(v) => setTest(i, { text: v })}
+                    placeholder={i === 0 ? "blue bottle" : "hawk"}
+                  />
+                  {/* Only past the first: there is always one condition, and a
+                      way to remove the last one would leave nothing to type
+                      into. Emptying it is how a rule stops naming a merchant. */}
+                  {i > 0 ? (
+                    <button
+                      type="button" className="btn btn-icon"
+                      title="Remove this condition" aria-label="Remove this condition"
+                      onClick={() => setTests((prev) => prev.filter((_, n) => n !== i))}
+                    >
+                      <Minus size={14} />
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+              <div className="row" style={{ gap: 10 }}>
+                <button
+                  type="button" className="btn btn-icon"
+                  title="Add a condition" aria-label="Add a condition"
+                  onClick={() => setTests((prev) => [...prev, { text: "", match: "contains", join: "and" }])}
+                >
+                  <Plus size={14} />
+                </button>
+                {/* Said only once there is an order to be wrong about. */}
+                {tests.length > 1 ? (
+                  <span className="tiny faint">
+                    Read top to bottom, in order. "Contains" looks at the bank's own wording too; the
+                    others compare the merchant name alone.
+                  </span>
+                ) : (
+                  <span className="tiny faint">"Contains" looks at the bank's own wording too.</span>
+                )}
+              </div>
+            </div>
           </Field>
           <Field label="Account">
             <AccountPicker value={accountId} onChange={setAccount} allowAll />

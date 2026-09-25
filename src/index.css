@@ -240,6 +240,15 @@ h3 { font-size: 14px; }
   padding: 2px 8px; border-radius: 999px;
 }
 .rule-when { background: var(--accent-soft); color: var(--accent); }
+/* One merchant condition: its join, its comparison, the text, and the way to
+   take it away. The text is the part worth the width, so it takes what is
+   left; the rest are sized to their own content. */
+.rule-cond { gap: 8px; align-items: center; }
+.rule-cond > .input { flex: 1 1 120px; min-width: 0; }
+.rule-cond > .btn-icon { flex: none; }
+/* The word standing where the join picker sits on every row below it, so the
+   text boxes line up down the list rather than stepping in by a word. */
+.rule-cond > .rule-join { flex: none; width: 74px; }
 .rule-then { background: var(--pos-soft); color: var(--pos); }
 .rule-backfill { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 /* Rules pasted in as text, one per line, so the tab between the two halves

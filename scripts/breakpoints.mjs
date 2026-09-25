@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
- * phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, settings-trim, not-saved.
+* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, settings-trim, not-saved.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -6850,6 +6850,60 @@ try {
     await ns.close();
   }
 
+
+  if (want("rule-conditions")) {
+    // ── a rule can ask for more than one thing about the merchant ──
+    //
+    // One shop bills as Coopershawk and as Coopers Hawk Wine, and telling
+    // those apart from a tyre shop called Cooper takes two conditions. The
+    // matching is unit-tested; what cannot be seen from there is whether the
+    // editor can actually be used to write one, at the width it is used at.
+    for (const w of [1280, 390]) {
+      const rp = await browser.newPage({ viewport: { width: w, height: 1000 } });
+      await rp.goto(`${BASE}/rules`, { waitUntil: "networkidle" });
+      await rp.waitForTimeout(900);
+      await rp.locator("button.btn-primary").first().click({ timeout: 8000 });
+      await rp.waitForTimeout(500);
+
+      const row = () => rp.locator(".rule-cond");
+      check(`${w}px — a new rule opens with one merchant condition`,
+        await row().count() === 1, `${await row().count()} rows`);
+
+      // The comparison is the thing that was in the engine and not on screen.
+      const modes = await rp.locator(".rule-cond select").first()
+        .locator("option").allTextContents();
+      check(`${w}px — and it can be changed from "contains" to an exact match`,
+        modes.join("/") === "contains/is exactly/starts with/ends with", modes.join("/"));
+
+      await rp.locator(".rule-cond .input").first().fill("cooper");
+      await rp.locator('button[aria-label="Add a condition"]').click({ timeout: 5000 });
+      await rp.waitForTimeout(300);
+      check(`${w}px — the plus adds a second one`, await row().count() === 2, `${await row().count()} rows`);
+
+      // The second carries the join the first cannot have.
+      const joins = await rp.locator(".rule-cond").nth(1).locator("select").first()
+        .locator("option").allTextContents();
+      check(`${w}px — which can be joined with and or with or`, joins.join("/") === "and/or", joins.join("/"));
+
+      await rp.locator(".rule-cond").nth(1).locator(".input").fill("hawk");
+      await rp.waitForTimeout(400);
+
+      // Nothing may spill sideways, which is the whole reason this runs at 390.
+      const overflow = await rp.evaluate(() => {
+        const m = document.querySelector(".modal");
+        return m ? m.scrollWidth - m.clientWidth : -1;
+      });
+      check(`${w}px — two conditions fit the dialog`, overflow <= 0, `${overflow}px over`);
+
+      // And the minus takes one away again, leaving the first without one.
+      check(`${w}px — the first condition has no way to be removed`,
+        await rp.locator(".rule-cond").first().locator('button[aria-label="Remove this condition"]').count() === 0);
+      await rp.locator(".rule-cond").nth(1).locator('button[aria-label="Remove this condition"]').click({ timeout: 5000 });
+      await rp.waitForTimeout(300);
+      check(`${w}px — and the minus takes it away again`, await row().count() === 1, `${await row().count()} rows`);
+      await rp.close();
+    }
+  }
 
 } finally {
   await browser.close();

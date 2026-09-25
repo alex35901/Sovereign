@@ -383,6 +383,15 @@ export interface Recurring {
   dismissed?: boolean;
 }
 
+export type MerchantMatch = "contains" | "exact" | "starts" | "ends";
+
+/** One more merchant test, and how it joins to the one before it. */
+export interface MerchantAlso {
+  join: "and" | "or";
+  match: MerchantMatch;
+  text: string;
+}
+
 export interface RuleCriteria {
   merchantContains?: string;
   /**
@@ -390,7 +399,16 @@ export interface RuleCriteria {
    * every rule written before this existed meant, so old rules keep working.
    * Monarch's rules distinguish the two and its exports say which.
    */
-  merchantMatch?: "contains" | "exact" | "starts" | "ends";
+  merchantMatch?: MerchantMatch;
+  /**
+   * Further merchant tests after the first.
+   *
+   * One shop bills as "Coopershawk" and as "Coopers Hawk Wine", and telling
+   * them apart from a tyre shop called Cooper takes two tests rather than a
+   * cleverer single one. Kept separate from the first rather than as a list of
+   * three, so every rule ever written still reads correctly with no migration.
+   */
+  merchantAlso?: MerchantAlso[];
   accountId?: ID;
   amountMin?: number;
   amountMax?: number;

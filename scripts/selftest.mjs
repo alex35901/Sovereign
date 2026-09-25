@@ -59,7 +59,7 @@ await build({
       export * as TX from "./src/lib/tax.ts";
       export * as PW from "./src/lib/price-watch.ts";
       export * as YR from "./src/lib/year-review.ts";
-      export { applyRules, ruleMatches, countMatches } from "./src/lib/rules.ts";
+      export { applyRules, ruleMatches, countMatches, merchantTests, merchantMatches, MATCH_WORD } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
       export { parseMoney, fmt } from "./src/lib/money.ts";
       export * as AF from "./src/lib/amount-filter.ts";
@@ -4690,6 +4690,86 @@ await test("a connection Plaid has no transactions for still brings its balances
   // And a connection that is simply ready says nothing at all.
   const fine = M.toPlaidPayload({ accounts: [], transactions: [], holdings: [], securities: [] }, { institution: "X" });
   assert.deepEqual(fine.errors, []);
+});
+
+await test("a rule can ask for more than one thing about the merchant", () => {
+  // One shop bills as Coopershawk and as Coopers Hawk Wine, and telling those
+  // apart from a tyre shop called Cooper takes two conditions rather than a
+  // cleverer single one.
+  const txn = (merchant, statement) => ({
+    id: "t1", accountId: "a1", date: "2026-09-25", merchant, statement,
+    amount: -5000, categoryId: "c1", tags: [], reviewed: false, hideFromReports: false, createdAt: "2026-09-25",
+  });
+  const rule = (criteria) => ({ id: "r", name: "r", enabled: true, order: 0, criteria, actions: {} });
+  const hits = (criteria, t) => M.ruleMatches(rule(criteria), t);
+
+  // Two conditions, both of which have to hold.
+  const both = {
+    merchantContains: "cooper", merchantMatch: "contains",
+    merchantAlso: [{ join: "and", match: "contains", text: "hawk" }],
+  };
+  assert.equal(hits(both, txn("Coopers Hawk Wine")), true);
+  assert.equal(hits(both, txn("Coopershawk")), true);
+  assert.equal(hits(both, txn("Cooper Tire")), false, "the tyre shop is not the restaurant");
+  assert.equal(hits(both, txn("Hawk Ridge Golf")), false);
+
+  // Or, for two spellings that share nothing useful.
+  const either = {
+    merchantContains: "coopershawk", merchantMatch: "contains",
+    merchantAlso: [{ join: "or", match: "contains", text: "winery" }],
+  };
+  assert.equal(hits(either, txn("Coopershawk")), true);
+  assert.equal(hits(either, txn("Some Winery")), true);
+  assert.equal(hits(either, txn("Cooper Tire")), false);
+
+  // Folded left to right, with no precedence: the rule is read the way the
+  // editor draws it, one line after another. A is false, B is true, C is
+  // false; "A or B and C" is false read in order, and true if "and" were
+  // allowed to bind tighter.
+  const chain = {
+    merchantContains: "zzz", merchantMatch: "contains",
+    merchantAlso: [
+      { join: "or", match: "contains", text: "hawk" },
+      { join: "and", match: "contains", text: "qqq" },
+    ],
+  };
+  assert.equal(hits(chain, txn("Coopers Hawk")), false, "read in order, top to bottom");
+
+  // Each condition carries its own comparison, and the first one's is the
+  // field that already existed.
+  const exact = { merchantContains: "Cooper", merchantMatch: "exact" };
+  assert.equal(hits(exact, txn("Cooper")), true);
+  assert.equal(hits(exact, txn("Coopers Hawk")), false, "exactly means exactly");
+  assert.equal(hits({ merchantContains: "cooper" }, txn("Coopers Hawk")), true,
+    "and a rule written before any of this still means contains");
+
+  // "Contains" reads the bank's own wording too, which is where a merchant
+  // nobody has cleaned up is hiding. The exact forms do not: an exact rule
+  // that quietly matched part of a statement would not be exact at all.
+  const viaStatement = {
+    merchantContains: "sq", merchantMatch: "contains",
+    merchantAlso: [{ join: "and", match: "contains", text: "coopers hawk" }],
+  };
+  assert.equal(hits(viaStatement, txn("SQ *MERCHANT", "SQ *COOPERS HAWK 4412")), true);
+  assert.equal(hits({ merchantContains: "coopers hawk", merchantMatch: "exact" },
+    txn("SQ *MERCHANT", "SQ *COOPERS HAWK 4412")), false);
+
+  // starts and ends, each on their own condition.
+  assert.equal(hits({ merchantContains: "coop", merchantMatch: "starts" }, txn("Coopers Hawk")), true);
+  assert.equal(hits({ merchantContains: "coop", merchantMatch: "starts" }, txn("The Coopers Hawk")), false);
+  assert.equal(hits({ merchantContains: "hawk", merchantMatch: "ends" }, txn("Coopers Hawk")), true);
+
+  // A blank box is a condition nobody has written yet, not one that matches
+  // everything: it is dropped, and a rule with none left names no merchant.
+  assert.deepEqual(M.merchantTests({ merchantContains: "  ", merchantAlso: [{ join: "and", match: "contains", text: "" }] }), []);
+  assert.equal(hits({ merchantContains: "", merchantAlso: [] }, txn("Anything At All")), true);
+  assert.deepEqual(
+    M.merchantTests({ merchantContains: "cooper", merchantAlso: [{ join: "or", match: "exact", text: " hawk " }] }),
+    [{ text: "cooper", match: "contains" }, { text: "hawk", match: "exact", join: "or" }],
+    "trimmed, and the first one's comparison defaults to contains");
+
+  // A disabled rule matches nothing, however it is written.
+  assert.equal(M.ruleMatches({ ...rule(both), enabled: false }, txn("Coopers Hawk")), false);
 });
 
 await test("an account moved to a new connection is not handed back by the old one", () => {
