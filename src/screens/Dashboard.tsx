@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useDB } from "../store";
@@ -7,7 +7,9 @@ import { dateLabel, relativeDay, thisMonth, today } from "../lib/date";
 import {
   accountSlices, aggregateSeries, budgetSummary, earliestHistoryDate, portfolioSummary, trendTone,
 } from "../lib/select";
-import { dueSoon, goalMoves, monthProgress, overPace, spendPace } from "../lib/dashboard";
+import { dueSoon, goalMoves, monthProgress, overPace } from "../lib/dashboard";
+import { COMPARE_MODES, DEFAULT_MODE, compareSpending, readMode } from "../lib/spend-compare";
+import type { CompareMode } from "../lib/spend-compare";
 import { CompareChart } from "../components/charts";
 import { BalanceChart, ScopeBar } from "../components/BalanceChart";
 import { Btn, Card, CardHead, Empty, Money, Progress, cx, color } from "../components/ui";
@@ -117,47 +119,78 @@ function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeK
   );
 }
 
-/* ── spending, against last month ─────────────────────────────────────── */
+/* ── spending, against an earlier stretch ─────────────────────────────── */
+
+const COMPARE_KEY = "sovereign.dashboard.compare";
 
 function SpendingCard() {
   const db = useDB();
-  const pace = useMemo(() => spendPace(db), [db]);
-  // Like for like: what had been spent by this day last month, not by the end
-  // of it. Comparing a fifth of one month against the whole of another is how
-  // a dashboard tells you every month that you are doing well.
-  const soFarLast = pace.lastMonth.find((p) => p.day === pace.thisMonth.length)?.total
-    ?? pace.spentLast;
-  const diff = pace.spent - soFarLast;
+  /**
+   * Which comparison the chart is drawing.
+   *
+   * In localStorage rather than in the document: it is one viewer's way of
+   * reading their own spending on one device, not anything about the
+   * household's money. Read lazily and written in an effect, both guarded,
+   * because storage throws in a private window and comes back empty when site
+   * data is cleared, and neither is a reason for the dashboard not to render.
+   */
+  const [mode, setMode] = useState<CompareMode>(() => {
+    try {
+      return readMode(localStorage.getItem(COMPARE_KEY));
+    } catch {
+      return DEFAULT_MODE;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(COMPARE_KEY, mode);
+    } catch { /* a preference not remembered is not worth failing over */ }
+  }, [mode]);
+
+  const cmp = useMemo(() => compareSpending(db, mode), [db, mode]);
+  // Like for like: what had been spent by this day of the earlier period, not
+  // by the end of it. Worked out for every mode in one place, so the headline
+  // and the chart can never disagree about what is being compared.
+  const diff = cmp.spent - cmp.priorSoFar;
   // Against nothing is not a comparison: a first month has no last month to be
   // a percentage of, and dividing by it would print Infinity.
-  const pct = soFarLast > 0 ? Math.round((Math.abs(diff) / soFarLast) * 100) : null;
+  const pct = cmp.priorSoFar > 0 ? Math.round((Math.abs(diff) / cmp.priorSoFar) * 100) : null;
 
   return (
-    <DashCard to="/reports" label="Reports">
+    <DashCard to="/reports" label="Reports" className="spend-card">
       {/* The same shape as every other sub-heading here: which way it moved,
-          by how much, and how much of last month that is. What it is against
-          is the chart directly below, which is labelled. */}
+          by how much, and how much of the earlier period that is. What it is
+          against is the chart directly below, which is labelled. */}
       <CardHead
         title="Spending"
-        sub={pace.thisMonth.length ? (
+        sub={cmp.current.length ? (
           <span className={diff > 0 ? "neg" : "pos"}>
             {diff > 0 ? "↗" : "↘"} <Money value={Math.abs(diff)} cents={false} />
             {pct === null ? "" : ` (${pct}% ${diff > 0 ? "higher" : "lower"})`}
           </span>
         ) : undefined}
+        right={
+          <select
+            className="select cmp-mode" aria-label="Compare spending against"
+            value={mode} onChange={(e) => setMode(readMode(e.target.value))}
+          >
+            {COMPARE_MODES.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+        }
       />
-      {pace.thisMonth.length ? (
-        <>
-          <CompareChart
-            span={pace.days}
-            current={pace.thisMonth.map((p) => [p.day, p.total] as [number, number])}
-            previous={pace.lastMonth.map((p) => [p.day, p.total] as [number, number])}
-            tone="--c9"
-            label="This month"
-            priorLabel="Last month"
-          />
-        </>
-      ) : <Empty title="Nothing spent yet this month" />}
+      {cmp.current.length ? (
+        <CompareChart
+          span={cmp.span}
+          current={cmp.current}
+          previous={cmp.previous}
+          tone="--c9"
+          label={cmp.label}
+          priorLabel={cmp.priorLabel}
+          tickLabel={cmp.tickLabel}
+        />
+      ) : <Empty title="Nothing spent yet" />}
     </DashCard>
   );
 }

@@ -2656,11 +2656,19 @@ try {
     const heads = await browser.newPage({ viewport: { width: 1280, height: 1500 } });
     await heads.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await heads.waitForTimeout(1800);
+    // The heading's own column, not the whole head: a card with a control
+    // beside its title would otherwise read that control's labels as its
+    // sub-heading.
     const subs = await heads.evaluate(() => Object.fromEntries(
-      [...document.querySelectorAll(".card-head, .dash-card-head")].map((h) => [
-        h.querySelector("h2")?.innerText.trim() ?? "",
-        (h.innerText.split("\n").slice(1).join(" ") ?? "").trim(),
-      ])));
+      [...document.querySelectorAll(".card-head, .dash-card-head")].map((h) => {
+        const col = h.querySelector(".col");
+        return [
+          h.querySelector("h2")?.innerText.trim() ?? "",
+          col
+            ? [...col.children].slice(1).map((e) => e.innerText.trim()).join(" ")
+            : (h.innerText.split("\n").slice(1).join(" ") ?? "").trim(),
+        ];
+      })));
 
     check("spending says which way it moved and by how much of last month",
       /^[\u2197\u2198] \$[\d,]+ \(\d+% (higher|lower)\)$/.test(subs.Spending ?? ""),
@@ -2773,6 +2781,93 @@ try {
       spend.nowEnd < spend.priorEnd, `this ${spend.nowEnd} vs last ${spend.priorEnd}`);
     check("and says which line is which",
       spend.keys.join(" / ") === "This month / Last month", spend.keys.join(" / "));
+
+    // The legend used to be laid inside the box the chart is drawn in, which
+    // left it hanging over the bottom edge of the card.
+    const key = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Spending/.test(c.querySelector("h2")?.innerText ?? ""));
+      const k = card.querySelector(".cmp-key");
+      if (!k) return null;
+      return { bottom: k.getBoundingClientRect().bottom, card: card.getBoundingClientRect().bottom };
+    });
+    check("and the legend sits inside the card rather than over its bottom edge",
+      key !== null && key.bottom <= key.card - 2, key === null ? "no legend" : `legend ends at ${Math.round(key.bottom)}, card at ${Math.round(key.card)}`);
+
+    // Days along the bottom, not just the two ends: "Day 1" at one edge and
+    // "Day 30" at the other says how long the month is, not where in it a
+    // point on the line falls.
+    const xAxis = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Spending/.test(c.querySelector("h2")?.innerText ?? ""));
+      return [...card.querySelectorAll(".axis-text")].map((e) => e.textContent.trim()).filter((t) => /^Day \d+$/.test(t));
+    });
+    check("the spending axis names the days along the bottom",
+      xAxis.length >= 3 && xAxis[0] === "Day 1" && /^Day (28|29|30|31)$/.test(xAxis[xAxis.length - 1]),
+      xAxis.join(" / "));
+
+    // Scrubbing: one readout, both runs, wherever the pointer is. Neither
+    // line has to be landed on to be read.
+    const svg = await dash.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")].find((c) => /^Spending/.test(c.querySelector("h2")?.innerText ?? ""));
+      const el = card.querySelector(".chart-wrap svg");
+      const b = el.getBoundingClientRect();
+      // Half way along the line that is still being drawn, so the day under
+      // the pointer is one both runs have reached.
+      const paths = [...card.querySelectorAll("path[stroke]")];
+      const xs = [...paths[paths.length - 1].getAttribute("d").matchAll(/[ML](-?[\d.]+),/g)].map((m) => parseFloat(m[1]));
+      return { x: b.left + (Math.min(...xs) + Math.max(...xs)) / 2, y: b.top + b.height / 2 };
+    });
+    await dash.mouse.move(svg.x, svg.y);
+    await dash.waitForTimeout(160);
+    const tip = await dash.evaluate(() => {
+      const t = document.querySelector(".chart-tip");
+      if (!t) return null;
+      return {
+        head: t.firstElementChild?.textContent.trim() ?? "",
+        values: [...t.querySelectorAll(".tip-cmp > .num")].map((e) => e.textContent.trim()),
+        names: [...t.querySelectorAll(".tip-cmp > .row")].map((e) => e.textContent.trim()),
+        keys: t.querySelectorAll(".tip-cmp .cmp-swatch").length,
+        crosshairs: document.querySelectorAll(".spend-card line[stroke-width='1.5']").length,
+      };
+    });
+    check("scrubbing the spending chart reads both months at the day under the pointer",
+      tip !== null && /^Day \d+$/.test(tip.head) && tip.values.length === 2
+      && tip.values.every((v) => /^\$[\d,]+/.test(v))
+      && tip.names.join(" / ") === "This month / Last month",
+      tip === null ? "no readout" : `${tip.head}: ${tip.values.join(" / ")} for ${tip.names.join(" / ")}`);
+    check("with a hairline on the day and a stroke keying each row",
+      tip !== null && tip.crosshairs === 1 && tip.keys === 2,
+      tip === null ? "no readout" : `${tip.crosshairs} hairlines, ${tip.keys} keys`);
+    await dash.mouse.move(5, 5);
+
+    // Five comparisons, the way Monarch offers them, and the choice is
+    // remembered: it is how this reader reads their own spending.
+    const modes = await dash.evaluate(() =>
+      [...document.querySelectorAll(".spend-card .cmp-mode option")].map((o) => o.textContent.trim()));
+    check("the spending chart offers the five comparisons",
+      modes.join(" | ") === [
+        "This week vs. last week", "This month vs. last month", "This month vs. last year",
+        "This month vs. average month", "This year vs. last year",
+      ].join(" | "), modes.join(" | "));
+    await dash.selectOption(".spend-card .cmp-mode", "week");
+    await dash.waitForTimeout(250);
+    const weekly = await dash.evaluate(() => {
+      const card = document.querySelector(".spend-card");
+      return {
+        keys: [...card.querySelectorAll(".cmp-key span")].map((e) => e.textContent.trim()).join(" / "),
+        axis: [...card.querySelectorAll(".axis-text")].map((e) => e.textContent.trim()).filter((t) => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/.test(t)),
+      };
+    });
+    check("picking a week redraws the chart against last week",
+      weekly.keys === "This week / Last week" && weekly.axis[0] === "Mon",
+      `${weekly.keys}, axis ${weekly.axis.join(" ")}`);
+    await dash.reload({ waitUntil: "networkidle" });
+    await dash.waitForTimeout(900);
+    const remembered = await dash.evaluate(() => document.querySelector(".spend-card .cmp-mode")?.value ?? "");
+    check("and the choice survives a reload", remembered === "week", remembered);
+    // Put it back, so what the rest of the suite sees on this card is the
+    // comparison it opens on.
+    await dash.selectOption(".spend-card .cmp-mode", "month");
+    await dash.waitForTimeout(200);
 
     // Budget: the marker is where today falls in the month, not where the
     // spending got to — that is what the bar itself already says.
@@ -2903,8 +2998,12 @@ try {
     // layer: a chart, a progress bar. Those sit above ordinary text by the
     // rules of painting, so a sheet that only clears the text is not a sheet
     // over the card.
+    // The spending chart is scrubbed rather than clicked, so like the net
+    // worth one it answers for itself and stays where it is. Everything else
+    // on the card still opens reports, which the run above checks.
     const onChart = await opens(1, ".chart-wrap");
-    check("even the spending chart itself opens reports", onChart === "/reports", onChart);
+    check("dragging across the spending chart reads it out rather than opening reports",
+      onChart === "/dashboard", onChart);
     const onBar = await opens(2, ".bar");
     check("and the budget's own bar opens the budget", onBar === "/budget", onBar);
 

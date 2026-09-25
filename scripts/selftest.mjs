@@ -114,7 +114,8 @@ await build({
       export { rangeTicks, axisFormat } from "./src/components/charts.tsx";
       export { connectionOf, MISSES } from "./src/lib/connection.ts";
       export * as R from "./src/lib/reports.ts";
-      export { spendPace, monthProgress, dueSoon, overPace, goalMoves } from "./src/lib/dashboard.ts";
+      export { monthProgress, dueSoon, overPace, goalMoves, spendByDay } from "./src/lib/dashboard.ts";
+      export { compareSpending, readMode, COMPARE_MODES, DEFAULT_MODE, AVERAGE_OVER } from "./src/lib/spend-compare.ts";
       export { noteFor, unclaimed } from "./src/lib/sync/notes.ts";
       export { aggregateSeries, trendTone, FLAT_TONE, balanceAt, netWorthSplitAt, netWorthNow, portfolioSummary, accountSlices, moveBetween } from "./src/lib/select.ts";
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
@@ -2901,6 +2902,23 @@ await test("a merchant last seen on a muted account is still in the directory", 
   assert.equal(rows[0].count, 1);
 });
 
+/**
+ * The month-against-last-month comparison, flattened.
+ *
+ * The rules being pinned below are about what counts as spending, not about
+ * the shape the chart wants it in, so the tests read plain arrays.
+ */
+const pace = (db, now) => {
+  const c = M.compareSpending(db, "month", now);
+  const last = c.previous[c.previous.length - 1];
+  return {
+    thisMonth: c.current.map(([, total]) => total),
+    lastMonth: c.previous.map(([, total]) => total),
+    spent: c.spent,
+    spentLast: last ? last[1] : 0,
+  };
+};
+
 await test("spending is counted from the first of the month, day by day", () => {
   const db = dashDb([
     { date: "2026-09-02", amount: -10_00 },
@@ -2908,8 +2926,8 @@ await test("spending is counted from the first of the month, day by day", () => 
     { date: "2026-09-04", amount: -20_00 },
     { date: "2026-08-10", amount: -99_00 },
   ]);
-  const p = M.spendPace(db, "2026-09-05");
-  assert.deepEqual(p.thisMonth.map((x) => x.total), [0, 15_00, 15_00, 35_00, 35_00],
+  const p = pace(db, "2026-09-05");
+  assert.deepEqual(p.thisMonth, [0, 15_00, 15_00, 35_00, 35_00],
     "it runs to today, carrying the running total across days with nothing on them");
   assert.equal(p.spent, 35_00);
   assert.equal(p.spentLast, 99_00, "and last month is counted whole");
@@ -3040,21 +3058,21 @@ await test("paying off a card is not spending, and neither is moving money to sa
     { date: "2026-08-11", amount: -9_000_00, categoryId: "c_card" },
   ], { groups, categories });
 
-  const p = M.spendPace(db, "2026-09-05");
+  const p = pace(db, "2026-09-05");
   assert.equal(p.spent, 120_00, "this month is the groceries, not the card payment");
   assert.equal(p.spentLast, 80_00, "and last month the same, or the comparison is against a fiction");
 
   // A category the document has never heard of still counts. Money quietly
   // leaving a total that claims to say what was spent is the worse mistake.
   const orphan = dashDb([{ date: "2026-09-02", amount: -50_00, categoryId: "c_gone" }], { groups, categories });
-  assert.equal(M.spendPace(orphan, "2026-09-05").spent, 50_00);
+  assert.equal(pace(orphan, "2026-09-05").spent, 50_00);
 
   // And a split contributes the half that was spending.
   const split = dashDb([{
     date: "2026-09-02", amount: -1_100_00, categoryId: "c_food",
     splits: [{ categoryId: "c_food", amount: -100_00 }, { categoryId: "c_card", amount: -1_000_00 }],
   }], { groups, categories });
-  assert.equal(M.spendPace(split, "2026-09-05").spent, 100_00);
+  assert.equal(pace(split, "2026-09-05").spent, 100_00);
 });
 
 await test("what counts as money moving is the transfer groups and the excluded", () => {
@@ -3081,7 +3099,7 @@ await test("this month stops at today; last month does not", () => {
     { date: "2026-09-02", amount: -10_00 },
     { date: "2026-09-20", amount: -50_00 },
   ]);
-  const p = M.spendPace(db, "2026-09-05");
+  const p = pace(db, "2026-09-05");
   assert.equal(p.thisMonth.length, 5, "five days in, five points");
   assert.equal(p.spent, 10_00, "a charge dated later this month is not spent yet");
 });
@@ -3093,7 +3111,7 @@ await test("money coming in does not walk the spending line backwards", () => {
     { date: "2026-09-02", amount: -30_00 },
     { date: "2026-09-03", amount: 2_000_00 },
   ]);
-  assert.equal(M.spendPace(db, "2026-09-04").spent, 30_00);
+  assert.equal(pace(db, "2026-09-04").spent, 30_00);
 });
 
 await test("a muted account is left out of the comparison, on both sides", () => {
@@ -3107,9 +3125,183 @@ await test("a muted account is left out of the comparison, on both sides", () =>
       { id: "hidden", name: "H", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, hideTransactions: true, history: [], order: 1 },
     ],
   });
-  const p = M.spendPace(db, "2026-09-05");
+  const p = pace(db, "2026-09-05");
   assert.equal(p.spent, 10_00);
   assert.equal(p.spentLast, 0, "or the two months would be counting different things");
+});
+
+await test("the week comparison runs Monday to Sunday, against the week before", () => {
+  // 2026-09-05 is a Saturday, so the week in hand started on Monday the 31st
+  // of August: a week that started on Sunday would put six of its days in one
+  // month and one in the other, and nobody thinks of their week that way.
+  const db = dashDb([
+    { date: "2026-08-31", amount: -10_00 },
+    { date: "2026-09-05", amount: -5_00 },
+    { date: "2026-09-06", amount: -900_00 },
+    { date: "2026-08-24", amount: -7_00 },
+    { date: "2026-08-25", amount: -40_00 },
+    { date: "2026-08-30", amount: -300_00 },
+    { date: "2026-08-23", amount: -700_00 },
+  ]);
+  const c = M.compareSpending(db, "week", "2026-09-05");
+  assert.equal(c.span, 7);
+  assert.deepEqual(c.current.map(([, v]) => v), [10_00, 10_00, 10_00, 10_00, 10_00, 15_00],
+    "six days in, six points, and Sunday's charge has not happened yet");
+  assert.deepEqual(c.current.map(([step]) => step), [1, 2, 3, 4, 5, 6],
+    "and the first day of the week is step one, which is where the axis starts");
+  assert.equal(c.spent, 15_00);
+  assert.equal(c.priorSoFar, 47_00, "what last week had reached by its sixth day");
+  assert.equal(c.previous[6][1], 347_00, "rather than what it finished on");
+  assert.equal(c.previous.length, 7, "last week is drawn whole");
+  assert.equal(c.previous[0][1], 7_00, "and it is the week before, starting on its own Monday");
+  assert.equal(c.tickLabel(1), "Mon");
+  assert.equal(c.tickLabel(7), "Sun");
+});
+
+await test("the earlier period is read at the same point, never at its end", () => {
+  // The one rule every mode here shares. Comparing five days of this month
+  // against the whole of last is how a dashboard tells you every month that
+  // you are doing well, right up to the last day, when it stops.
+  const db = dashDb([
+    { date: "2026-09-02", amount: -10_00 },
+    { date: "2026-08-02", amount: -20_00 },
+    { date: "2026-08-25", amount: -500_00 },
+  ]);
+  const c = M.compareSpending(db, "month", "2026-09-05");
+  assert.equal(c.spent, 10_00);
+  assert.equal(c.priorSoFar, 20_00, "last month by the fifth, not last month in full");
+  assert.equal(c.previous[c.previous.length - 1][1], 520_00, "which is still drawn");
+});
+
+await test("a month is compared against the same month a year ago", () => {
+  const db = dashDb([
+    { date: "2026-09-02", amount: -10_00 },
+    { date: "2025-09-02", amount: -30_00 },
+    { date: "2026-08-02", amount: -999_00 },
+  ]);
+  const c = M.compareSpending(db, "year-ago", "2026-09-05");
+  assert.equal(c.spent, 10_00);
+  assert.equal(c.priorSoFar, 30_00, "September last year, not August this year");
+  assert.equal(c.priorLabel, "September 2025");
+});
+
+await test("the average month averages only the months the ledger was keeping", () => {
+  // Three months of records averaged over twelve is nine months of nothing
+  // pulling the line down, and a line that says spending is a quarter of what
+  // it is reads as reassurance rather than as a gap in the data.
+  const db = dashDb([
+    { date: "2026-06-01", amount: -30_00 },
+    { date: "2026-07-01", amount: -60_00 },
+    { date: "2026-08-01", amount: -90_00 },
+    { date: "2026-09-01", amount: -1_00 },
+  ]);
+  const c = M.compareSpending(db, "average", "2026-09-05");
+  assert.equal(c.priorLabel, "Average of 3 months");
+  assert.equal(c.previous[0][1], 60_00, "(30 + 60 + 90) / 3, all of it on the first");
+  assert.equal(c.priorSoFar, 60_00);
+  assert.equal(c.previous.length, c.span, "and it is drawn across the whole width");
+});
+
+await test("the average month looks a year back, not a season", () => {
+  // A year, so that a Christmas or a summer holiday is in the line being
+  // compared against. Half a year of the quiet months would make every
+  // expensive month look like a blowout.
+  const db = dashDb([
+    ...["2025-09", "2025-10", "2025-11", "2025-12", "2026-01", "2026-02"]
+      .map((m) => ({ date: `${m}-01`, amount: -60_00 })),
+    ...["2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08"]
+      .map((m) => ({ date: `${m}-01`, amount: -20_00 })),
+    { date: "2026-09-01", amount: -1_00 },
+  ]);
+  const c = M.compareSpending(db, "average", "2026-09-05");
+  assert.equal(c.priorLabel, "Average of 12 months");
+  assert.equal(c.previous[0][1], 40_00, "(six at sixty plus six at twenty) over twelve");
+});
+
+await test("a short month keeps its total to the end of the average, rather than dropping out", () => {
+  // February stops on the 28th. It does not stop spending, and letting it
+  // fall out of the mean on the 29th would step the average line up.
+  const db = dashDb([
+    { date: "2026-02-10", amount: -100_00 },
+    { date: "2026-01-10", amount: -100_00 },
+    { date: "2026-03-01", amount: -1_00 },
+  ]);
+  const c = M.compareSpending(db, "average", "2026-03-05");
+  assert.equal(c.span, 31, "March is the longest of them");
+  const tail = c.previous.slice(-4).map(([, v]) => v);
+  assert.deepEqual(tail, [100_00, 100_00, 100_00, 100_00],
+    "flat to the end: both months had reached a hundred and stayed there");
+});
+
+await test("the year comparison steps by month and stops at the month in hand", () => {
+  const db = dashDb([
+    { date: "2026-01-15", amount: -10_00 },
+    { date: "2026-01-20", amount: -7_00 },
+    { date: "2026-09-15", amount: -5_00 },
+    { date: "2026-11-15", amount: -800_00 },
+    { date: "2025-01-15", amount: -20_00 },
+    { date: "2025-01-16", amount: -3_00 },
+    { date: "2025-12-15", amount: -400_00 },
+  ]);
+  const c = M.compareSpending(db, "year", "2026-09-05");
+  assert.equal(c.span, 12);
+  assert.equal(c.current.length, 9, "January to September, not a flat line out to December");
+  assert.equal(c.current[0][0], 1, "January is step one");
+  assert.equal(c.spent, 17_00, "both of January's charges, and the fifteenth has not happened yet");
+  assert.equal(c.priorSoFar, 23_00, "last year by its ninth month");
+  assert.equal(c.previous.length, 12, "last year is drawn whole");
+  assert.equal(c.previous[11][1], 423_00);
+  assert.equal(c.tickLabel(1), "Jan");
+  assert.equal(c.tickLabel(12), "Dec");
+});
+
+await test("every comparison counts the same transactions the same way", () => {
+  // One set of rules about what spending is, read five ways. Two of these
+  // disagreeing would make the chooser change the answer rather than the
+  // question.
+  const groups = [
+    { id: "g_shop", name: "Shopping", kind: "expense", order: 0 },
+    { id: "g_xfer", name: "Transfers", kind: "transfer", order: 1 },
+  ];
+  const categories = [
+    { id: "c_food", name: "Groceries", groupId: "g_shop", order: 0, icon: "🍏", color: "--c1" },
+    { id: "c_card", name: "Card payment", groupId: "g_xfer", order: 1, icon: "💳", color: "--c2" },
+  ];
+  const db = dashDb([
+    { date: "2026-09-02", amount: -40_00, categoryId: "c_food" },
+    { date: "2026-09-02", amount: -5_000_00, categoryId: "c_card" },
+    { date: "2026-09-03", amount: 9_000_00, categoryId: "c_food" },
+    { date: "2026-09-02", amount: -70_00, categoryId: "c_food", accountId: "hidden" },
+  ], {
+    groups, categories,
+    accounts: [
+      { id: "a", name: "A", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "hidden", name: "H", institution: "I", type: "checking", balance: 0, includeInNetWorth: true, hidden: false, hideTransactions: true, history: [], order: 1 },
+    ],
+  });
+  for (const { value } of M.COMPARE_MODES) {
+    assert.equal(M.compareSpending(db, value, "2026-09-05").spent, 40_00, value);
+  }
+});
+
+await test("a stored comparison nobody recognises is the default rather than a crash", () => {
+  assert.equal(M.readMode("year"), "year");
+  assert.equal(M.readMode("sideways"), M.DEFAULT_MODE);
+  assert.equal(M.readMode(null), M.DEFAULT_MODE);
+  assert.equal(M.readMode(undefined), M.DEFAULT_MODE);
+  assert.equal(M.COMPARE_MODES.length, 5);
+  assert.equal(M.COMPARE_MODES.some((m) => m.value === M.DEFAULT_MODE), true);
+});
+
+await test("both runs are drawn to one width, so the same day is the same place", () => {
+  // February against March: drawing each to its own width would put the 28th
+  // of one over the 31st of the other, and the gap between the lines would be
+  // the calendar rather than the money.
+  const db = dashDb([{ date: "2026-03-01", amount: -1_00 }, { date: "2026-02-01", amount: -1_00 }]);
+  assert.equal(M.compareSpending(db, "month", "2026-03-05").span, 31);
+  assert.equal(M.compareSpending(db, "month", "2026-03-05").current[0][0], 1,
+    "and the first of the month is step one, which is where the axis starts");
+  assert.equal(M.compareSpending(db, "month", "2026-02-05").span, 31, "January is the longer one");
 });
 
 await test("how far through the month it is", () => {

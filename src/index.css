@@ -681,6 +681,11 @@ body:has(.scrim) .rule-prompt { display: none; }
   border-top: 1px solid var(--line-soft);
 }
 .tip-band > .num { text-align: right; }
+/* Both runs at the day under the pointer, value first: the reader already
+   knows which series is which from the key beside the name, and what they
+   came for is the number. */
+.tip-cmp { display: grid; grid-template-columns: auto auto; gap: 2px 10px; align-items: center; margin-top: 3px; }
+.tip-cmp > .num { text-align: right; }
 svg .grid-line { stroke: var(--line-soft); stroke-width: 1; }
 svg .axis-text { fill: var(--faint); font-size: 10.5px; }
 
@@ -867,6 +872,13 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .dash-through { position: relative; z-index: 2; }
 /* The chart is dragged rather than clicked, so it is a control too. */
 .nw-card .scope-bar, .nw-card .span-bar, .nw-card .chart-wrap { position: relative; z-index: 2; }
+/* Same for spending: the line is scrubbed and the period is chosen, so both
+   are controls rather than parts of the link behind them. */
+.spend-card .chart-wrap, .spend-card .cmp-mode { position: relative; z-index: 2; }
+.cmp-mode { width: auto; min-width: 0; max-width: 190px; flex: 0 0 auto; }
+/* On a narrow card the five labels are longer than the room beside a heading,
+   so the chooser takes a line of its own rather than crushing the heading. */
+.spend-card .card-head { flex-wrap: wrap; row-gap: 8px; }
 
 .dash-card-head { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
 .dash-card-head h2 { font-size: 16px; }
@@ -1086,7 +1098,9 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .sankey-label { font-size: 10.5px; }
 
 /* Two runs over one stretch: which line is which, under the chart. */
-.cmp-key { justify-content: center; gap: 18px; color: var(--muted); padding-top: 4px; }
+/* Below the box the chart is drawn in rather than inside it, with room of its
+   own: sat on the chart's own height it hung over the bottom of the card. */
+.cmp-key { justify-content: center; gap: 18px; color: var(--muted); padding: 10px 0 2px; }
 .cmp-swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
 
 /* ── connection status ── */

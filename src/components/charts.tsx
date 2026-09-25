@@ -21,9 +21,19 @@ export function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, n
 }
 
 function Tip({ x, y, width, children }: { x: number; y: number; width: number; children: ReactNode }) {
-  const flip = x > width * 0.6;
+  const el = useRef<HTMLDivElement>(null);
+  const [tipW, setTipW] = useState(0);
+  // Measured rather than guessed at. Flipping at a fixed fraction of the width
+  // assumes every readout is the same size, and the long ones — a series
+  // called "Average of 12 months" — ran off the right edge of a phone with
+  // their figures cut in half.
+  useLayoutEffect(() => { setTipW(el.current?.offsetWidth ?? 0); });
+  const beside = x + 12 + tipW <= width ? x + 12 : x - 12 - tipW;
   return (
-    <div className="chart-tip" style={{ left: flip ? undefined : x + 12, right: flip ? width - x + 12 : undefined, top: Math.max(0, y - 12) }}>
+    <div
+      ref={el} className="chart-tip"
+      style={{ left: Math.max(0, Math.min(beside, width - tipW)), top: Math.max(0, y - 12) }}
+    >
       {children}
     </div>
   );
@@ -492,8 +502,10 @@ export function AreaChart({
  * being looked for. The finished run is drawn behind and in grey so the live
  * one reads as the subject rather than as one of a pair.
  */
-export function CompareChart({ current, previous, height = 210, span, tone = "--accent", label, priorLabel }: {
-  /** [x, y] pairs. x is shared between the two — a day of the month. */
+export function CompareChart({
+  current, previous, height = 210, span, tone = "--accent", label, priorLabel, tickLabel,
+}: {
+  /** [x, y] pairs. x is a step shared between the two — a day, or a month. */
   current: [number, number][];
   previous: [number, number][];
   height?: number;
@@ -502,8 +514,12 @@ export function CompareChart({ current, previous, height = 210, span, tone = "--
   tone?: string;
   label: string;
   priorLabel: string;
+  /** What to write under a tick, given its step. */
+  tickLabel?: (step: number) => string;
 }) {
   const [ref, w] = useWidth<HTMLDivElement>();
+  const [hover, setHover] = useState<number | null>(null);
+  const dragging = useRef(false);
   const raw = useId();
   const uid = raw.replace(/[^a-zA-Z0-9]/g, "");
   const padL = 46;
@@ -520,10 +536,77 @@ export function CompareChart({ current, previous, height = 210, span, tone = "--
   const ticks = rangeTicks(0, hi);
   const fmtTick = axisFormat(0, hi);
   const tip = current[current.length - 1];
+  const name = tickLabel ?? ((step: number) => `Day ${step}`);
+
+  // Looked up by step rather than by position: the two runs are not the same
+  // length, and the whole question being asked is what the other one had
+  // reached on the day this one is sitting on.
+  const curAt = new Map(current);
+  const priorAt = new Map(previous);
+
+  /** Every few steps, always including the first and the last. */
+  const every = Math.max(1, Math.ceil(span / Math.max(2, Math.floor(innerW / 78))));
+  const steps: number[] = [];
+  for (let d = 1; d <= span; d += every) steps.push(d);
+  // A tick a hair from the end would print over the last one.
+  if (steps[steps.length - 1]! > span - every / 2) steps.pop();
+  steps.push(span);
+
+  /** Which step a screen position is nearest, clamped to the two ends. */
+  const stepAt = (clientX: number, el: Element) => {
+    const rel = clientX - el.getBoundingClientRect().left - padL;
+    const step = Math.round((rel / innerW) * (span - 1)) + 1;
+    return Math.max(1, Math.min(span, step));
+  };
+  const move = (by: number) =>
+    setHover((h) => Math.max(1, Math.min(span, (h ?? current.length ?? 1) + by)));
+
+  // Clamped rather than trusted: changing the comparison changes how many
+  // steps there are, and a pointer left on day 14 of a month would otherwise
+  // ask a twelve-month chart for its fourteenth month.
+  const at = hover === null ? null : Math.max(1, Math.min(span, hover));
+  const hoverCur = at === null ? undefined : curAt.get(at);
+  const hoverPrior = at === null ? undefined : priorAt.get(at);
+  const readout = at !== null && (hoverCur !== undefined || hoverPrior !== undefined);
 
   return (
-    <div ref={ref} className="chart-wrap" style={{ height }}>
-      <svg width="100%" height={height} style={{ display: "block", overflow: "visible" }}>
+    <div ref={ref}>
+      <div className="chart-wrap" style={{ height }}>
+      <svg
+        width="100%" height={height}
+        tabIndex={0}
+        role="img"
+        aria-label={`${label} against ${priorLabel}. Use the left and right arrow keys to read it out.`}
+        style={{
+          display: "block",
+          overflow: "visible",
+          // Vertical drags still scroll the page; horizontal ones come here.
+          touchAction: "pan-y",
+        }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          dragging.current = true;
+          setHover(stepAt(e.clientX, e.currentTarget));
+        }}
+        onPointerMove={(e) => {
+          if (e.pointerType === "mouse" || dragging.current) setHover(stepAt(e.clientX, e.currentTarget));
+        }}
+        onPointerUp={(e) => { dragging.current = false; if (e.pointerType !== "mouse") setHover(null); }}
+        onPointerCancel={() => { dragging.current = false; setHover(null); }}
+        onPointerLeave={() => { if (!dragging.current) setHover(null); }}
+        // The same readings by keyboard as by pointer: the numbers on this
+        // chart are only ever drawn at the two ends, so a reader who cannot
+        // hover has no other way to reach the middle of the month.
+        onFocus={() => setHover((h) => h ?? current.length ?? 1)}
+        onBlur={() => setHover(null)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowLeft") { move(-1); e.preventDefault(); }
+          else if (e.key === "ArrowRight") { move(1); e.preventDefault(); }
+          else if (e.key === "Home") { setHover(1); e.preventDefault(); }
+          else if (e.key === "End") { setHover(span); e.preventDefault(); }
+          else if (e.key === "Escape") setHover(null);
+        }}
+      >
         <defs>
           <linearGradient id={`cmp-${uid}`} gradientUnits="userSpaceOnUse" x1="0" y1={padT} x2="0" y2={padT + innerH}>
             <stop offset="0%" stopColor={color(tone)} stopOpacity="0.26" />
@@ -551,14 +634,73 @@ export function CompareChart({ current, previous, height = 210, span, tone = "--
         {tip ? (
           <>
             <circle cx={x(tip[0])} cy={y(tip[1])} r={3.5} fill={color(tone)} />
-            <text className="axis-text" x={Math.min(x(tip[0]) + 8, padL + innerW)} y={y(tip[1]) - 8} textAnchor={x(tip[0]) > padL + innerW * 0.7 ? "end" : "start"} fill={color(tone)}>
-              {fmt0(tip[1])}
-            </text>
+            {/* Stood down while a finger is on the chart: the readout under
+                the pointer is saying the same thing, in the same place. */}
+            {/* Outlined in the card's own colour so it stays readable where it
+                crosses the other line. */}
+            {!readout ? (
+              <text
+                className="axis-text" x={Math.min(x(tip[0]) + 8, padL + innerW)} y={y(tip[1]) - 8}
+                textAnchor={x(tip[0]) > padL + innerW * 0.7 ? "end" : "start"}
+                fill={color(tone)} stroke={color("--surface")} strokeWidth={3} paintOrder="stroke"
+              >
+                {fmt0(tip[1])}
+              </text>
+            ) : null}
           </>
         ) : null}
-        <text className="axis-text" x={padL} y={height - 6}>Day 1</text>
-        <text className="axis-text" x={padL + innerW} y={height - 6} textAnchor="end">{`Day ${span}`}</text>
+        {readout ? (
+          <g>
+            <line
+              className="grid-line" x1={x(at!)} x2={x(at!)} y1={padT} y2={padT + innerH}
+              stroke={color(tone)} strokeWidth={1.5} opacity={0.65}
+            />
+            {hoverPrior !== undefined ? (
+              <circle cx={x(at!)} cy={y(hoverPrior)} r={4.5} fill={color("--muted")} stroke={color("--surface")} strokeWidth={2} />
+            ) : null}
+            {hoverCur !== undefined ? (
+              <circle cx={x(at!)} cy={y(hoverCur)} r={5} fill={color(tone)} stroke={color("--surface")} strokeWidth={2.5} />
+            ) : null}
+          </g>
+        ) : null}
+        {steps.map((d) => (
+          <text
+            key={d} className="axis-text" y={height - 6}
+            x={d === 1 ? padL : d === span ? padL + innerW : x(d)}
+            textAnchor={d === 1 ? "start" : d === span ? "end" : "middle"}
+          >
+            {name(d)}
+          </text>
+        ))}
       </svg>
+      {/* One readout, both runs, wherever the pointer is: neither line has to
+          be landed on to be read. */}
+      {readout ? (
+        <Tip x={x(at!)} y={y(hoverCur ?? hoverPrior ?? hi)} width={w}>
+          <div className="tiny muted">{name(at!)}</div>
+          <div className="tip-cmp">
+            {hoverCur !== undefined ? (
+              <>
+                <span className="num bold">{fmt0(hoverCur)}</span>
+                <span className="row tiny muted" style={{ gap: 6 }}>
+                  <i className="cmp-swatch" style={{ background: color(tone) }} />{label}
+                </span>
+              </>
+            ) : null}
+            {hoverPrior !== undefined ? (
+              <>
+                <span className="num">{fmt0(hoverPrior)}</span>
+                <span className="row tiny muted" style={{ gap: 6 }}>
+                  <i className="cmp-swatch" style={{ background: color("--muted") }} />{priorLabel}
+                </span>
+              </>
+            ) : null}
+          </div>
+        </Tip>
+      ) : null}
+      </div>
+      {/* Outside the fixed-height box the chart is drawn in, or it hangs over
+          the bottom of the card it sits in. */}
       <div className="row cmp-key tiny">
         <span className="row" style={{ gap: 6 }}><i className="cmp-swatch" style={{ background: color(tone) }} />{label}</span>
         <span className="row" style={{ gap: 6 }}><i className="cmp-swatch" style={{ background: color("--muted") }} />{priorLabel}</span>

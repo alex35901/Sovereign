@@ -1,6 +1,6 @@
 import type { DB, Goal, ISODate, MonthKey, Recurring } from "../types.js";
-import { addMonths, daysInMonth, monthEnd, monthOf, monthStart, today } from "./date.js";
-import { movingCategoryIds, mutedAccountIds, counts, lines, recurringList } from "./select.js";
+import { daysInMonth, monthEnd, monthOf, monthStart, today } from "./date.js";
+import { counts, lines, recurringList } from "./select.js";
 import { goalOutlook, goalSaved, goalSavedAt } from "./goal-funding.js";
 import type { GoalStatus } from "./goal-funding.js";
 
@@ -14,43 +14,28 @@ import type { GoalStatus } from "./goal-funding.js";
  * difference is an artefact of the code rather than of the money.
  */
 
-/* ── spending, this month against last ────────────────────────────────── */
+/* ── spending ─────────────────────────────────────────────────────────── */
 
-export interface SpendPoint {
-  /** Day of the month, 1-based, so the two months line up on the x axis. */
-  day: number;
-  /** Spent from the first of the month to the end of this day. */
-  total: number;
-}
-
-export interface SpendPace {
-  thisMonth: SpendPoint[];
-  lastMonth: SpendPoint[];
-  /** Spent so far this month, and over the whole of last. */
-  spent: number;
-  spentLast: number;
-  /** How far through the month today is, 0 to 1. */
-  progress: number;
-  /** The longer of the two months, which is how wide the chart has to be. */
-  days: number;
-}
-
-/** Cumulative spending through one month, a point per day. */
-function cumulative(
+/**
+ * What was spent on each day between two dates.
+ *
+ * The one place that decides what spending is, so that every comparison on the
+ * dashboard counts the same transactions the same way. The rules in here are
+ * the whole reason: which accounts are muted, which categories are money
+ * moving rather than money going, and that a split counts per line. A second
+ * implementation of any of that is a second answer to "what did we spend".
+ */
+export function spendByDay(
   db: DB,
-  month: MonthKey,
-  upTo: ISODate | null,
+  from: ISODate,
+  to: ISODate,
   muted: Set<string>,
   moving: Set<string>,
-): SpendPoint[] {
-  const from = monthStart(month);
-  const to = monthEnd(month);
-  const daily = new Map<number, number>();
+): Map<ISODate, number> {
+  const daily = new Map<ISODate, number>();
   for (const t of db.transactions) {
     if (t.date < from || t.date > to) continue;
-    if (upTo && t.date > upTo) continue;
     if (!counts(t, muted)) continue;
-    const day = Number(t.date.slice(8, 10));
     // Per line, so a shop split between groceries and a transfer contributes
     // the groceries and not the transfer.
     for (const l of lines(t)) {
@@ -61,42 +46,12 @@ function cumulative(
       // And only the kind of leaving that is spending. A credit card paid off
       // is the same money twice: it left as the groceries bought on the card,
       // and it leaves again as the payment. So is a transfer into savings,
-      // which has not been spent at all. Counting both turned a month into a
-      // number nobody recognised, and the bigger the mortgage and the more
-      // diligently the card was cleared, the further out it went.
+      // which has not been spent at all.
       if (moving.has(l.categoryId)) continue;
-      daily.set(day, (daily.get(day) ?? 0) + -l.amount);
+      daily.set(t.date, (daily.get(t.date) ?? 0) + -l.amount);
     }
   }
-
-  const last = upTo && monthOf(upTo) === month ? Number(upTo.slice(8, 10)) : daysInMonth(month);
-  const out: SpendPoint[] = [];
-  let running = 0;
-  for (let day = 1; day <= last; day += 1) {
-    running += daily.get(day) ?? 0;
-    out.push({ day, total: running });
-  }
-  return out;
-}
-
-export function spendPace(db: DB, now: ISODate = today()): SpendPace {
-  const month = monthOf(now);
-  const previous = addMonths(month, -1);
-  const muted = mutedAccountIds(db);
-  // Worked out once and handed to both months: the two sides of a comparison
-  // have to count the same transactions the same way.
-  const moving = movingCategoryIds(db);
-  const thisMonth = cumulative(db, month, now, muted, moving);
-  const lastMonth = cumulative(db, previous, null, muted, moving);
-  const days = daysInMonth(month);
-  return {
-    thisMonth,
-    lastMonth,
-    spent: thisMonth[thisMonth.length - 1]?.total ?? 0,
-    spentLast: lastMonth[lastMonth.length - 1]?.total ?? 0,
-    progress: monthProgress(month, now),
-    days: Math.max(days, daysInMonth(previous)),
-  };
+  return daily;
 }
 
 /**
