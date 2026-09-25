@@ -483,8 +483,8 @@ export default function Transactions() {
               </button>
             )}
             <span className="tiny faint">Merchant</span>
-            <span className="tiny faint tx-account">Account</span>
             <span className="tiny faint tx-category">Category</span>
+            <span className="tiny faint tx-account">Account</span>
             <span className="tiny faint tx-amount">Amount</span>
           </div>
 
@@ -700,16 +700,6 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           })}
         </span>
       </div>
-      {account ? (
-        <Link
-          to={`/accounts/${account.id}`} className="tx-account tx-account-link"
-          title={account.name} aria-label={account.name}
-        >
-          <InstitutionLogo account={account} size={26} round />
-        </Link>
-      ) : (
-        <span className="tiny truncate tx-account">-</span>
-      )}
       <div className="row tx-category" style={{ gap: 4, minWidth: 0 }}>
         {split ? (
           <span className="chip" onClick={onEdit} style={{ cursor: "pointer" }}>Split</span>
@@ -744,6 +734,16 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           </Link>
         </>)}
       </div>
+      {account ? (
+        <Link
+          to={`/accounts/${account.id}`} className="tx-account tx-account-link"
+          title={account.name} aria-label={account.name}
+        >
+          <InstitutionLogo account={account} size={26} round />
+        </Link>
+      ) : (
+        <span className="tiny truncate tx-account">-</span>
+      )}
       <div className="num bold tx-amount" style={{ cursor: "pointer" }} onClick={onEdit}>
         <Money value={amount ?? txn.amount} colored={(amount ?? txn.amount) > 0} />
       </div>

@@ -124,8 +124,8 @@ const PAGES = [
  * the first thing the selector found.
  */
 const TX_COLUMNS = [
-  { w: 1440, cols: ["cb", "avatar", "merchant", "account", "category", "amount"] },
-  { w: 1000, cols: ["cb", "avatar", "merchant", "account", "category", "amount"] },
+  { w: 1440, cols: ["cb", "avatar", "merchant", "category", "account", "amount"] },
+  { w: 1000, cols: ["cb", "avatar", "merchant", "category", "account", "amount"] },
   { w: 880, cols: ["cb", "avatar", "merchant", "category", "amount"] },
   { w: 700, cols: ["cb", "avatar", "merchant", "amount"] },
   { w: 390, cols: ["cb", "avatar", "merchant", "amount"] },
@@ -211,6 +211,19 @@ try {
         seen !== null && seen.join(",") === cols.join(","),
         `saw ${seen === null ? "no row at all" : seen.join(", ")}`,
       );
+
+      // And the words over them, in the same order. Counting the cells says
+      // the header has the right number of columns; only reading them says it
+      // is naming the right one, which is what a swap gets wrong.
+      const labels = await page.evaluate(() =>
+        [...document.querySelectorAll(".tx-grid.head > *")]
+          .filter((el) => getComputedStyle(el).display !== "none")
+          .map((el) => el.textContent.trim())
+          .filter(Boolean));
+      const want = cols.filter((c) => c !== "cb" && c !== "avatar")
+        .map((c) => c.charAt(0).toUpperCase() + c.slice(1));
+      check(`${w}px — and names them in that order`, labels.join(" / ") === want.join(" / "),
+        `${labels.join(" / ")}, wanted ${want.join(" / ")}`);
 
       // the header has to line up with the body, or the labels describe the
       // wrong columns — which is invisible until you read one
@@ -2756,7 +2769,8 @@ try {
     // Net worth: the same scrubbable chart as everywhere else.
     const nw = await dash.evaluate(() => ({
       label: document.querySelector(".nw-head .tile-label")?.innerText.trim() ?? "",
-      spans: document.querySelectorAll(".span-pill").length,
+      // Scoped to the card: the investments card carries the same six.
+      spans: document.querySelectorAll(".nw-card .span-pill").length,
       axis: document.querySelectorAll(".nw-card .axis-text").length,
     }));
     check("net worth leads with the shared chart, periods and all",
@@ -2868,6 +2882,90 @@ try {
     // comparison it opens on.
     await dash.selectOption(".spend-card .cmp-mode", "month");
     await dash.waitForTimeout(200);
+
+    // ── the investments card's top movers ──
+    //
+    // Closing prices are public data this app caches in the browser rather
+    // than carrying in the document, and no demo document has a Tiingo key to
+    // fetch them with. Seeded here so there is something to rank: the ranking
+    // is what is being checked, not the fetch.
+    const inv = await browser.newPage({ viewport: { width: 1180, height: 1300 } });
+    await inv.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await inv.waitForTimeout(800);
+    const seeded = await inv.evaluate(() => {
+      const raw = localStorage.getItem("sovereign.db.v1");
+      if (!raw) return 0;
+      const held = [...new Set((JSON.parse(raw).holdings ?? []).map((h) => h.ticker).filter(Boolean))];
+      const series = {};
+      // Six years of weekdays, each symbol with its own drift, so the five at
+      // the top of the list are a real answer rather than the first five.
+      held.forEach((ticker, n) => {
+        const dates = [];
+        const closes = [];
+        let price = 40 + n * 11;
+        for (let i = 0, d = new Date("2020-01-01T00:00:00Z"); i < 2600; i++, d = new Date(d.getTime() + 86400000)) {
+          if (d.getUTCDay() === 0 || d.getUTCDay() === 6) continue;
+          price = Math.max(5, price * (1 + Math.sin((i + n * 13) / 11) * 0.006 + ((n % 7) - 3) * 0.0004));
+          dates.push(d.toISOString().slice(0, 10));
+          closes.push(Math.round(price * 100));
+        }
+        series[ticker] = { ticker, dates, closes, fetchedAt: new Date().toISOString() };
+      });
+      localStorage.setItem("sovereign.benchmarks.v1", JSON.stringify({ v: 1, series }));
+      return held.length;
+    });
+    check("the demo portfolio holds something to rank", seeded >= 5, `${seeded} symbols`);
+    await inv.reload({ waitUntil: "networkidle" });
+    await inv.waitForTimeout(1000);
+
+    const movers = await inv.evaluate(() => {
+      const rows = [...document.querySelectorAll(".inv-card .mover-row")];
+      return rows.map((r) => ({
+        ticker: r.querySelector(".mover-ticker")?.textContent.trim() ?? "",
+        pct: r.querySelector(".mover-pct")?.textContent.trim() ?? "",
+        down: !!r.querySelector(".mover-pct.neg"),
+      }));
+    });
+    const size = (m) => Number((m.pct.match(/[\d.]+/) ?? [0])[0]);
+    check("the investments card lists five top movers", movers.length === 5,
+      `${movers.length} rows`);
+    check("biggest move first, whichever way it went",
+      movers.length > 1 && movers.every((m, i) => i === 0 || size(movers[i - 1]) >= size(m)),
+      movers.map((m) => `${m.ticker} ${m.pct}`).join(" / "));
+    check("and a fall is ranked on its size rather than sent to the bottom",
+      movers.some((m) => m.down) && movers.some((m) => !m.down),
+      movers.map((m) => `${m.ticker} ${m.down ? "down" : "up"}`).join(" / "));
+    check("each of them names one symbol, once",
+      new Set(movers.map((m) => m.ticker)).size === movers.length,
+      movers.map((m) => m.ticker).join(" / "));
+
+    // The same six periods as every other chart on the dashboard, and they
+    // change the card rather than opening the investments screen.
+    const spans = await inv.evaluate(() =>
+      [...document.querySelectorAll(".inv-card .span-pill")].map((b) => b.textContent.trim()));
+    check("the investments card offers the same periods as the rest",
+      spans.join(" ") === "1M 3M 6M YTD 1Y ALL", spans.join(" "));
+    const before = await inv.evaluate(() =>
+      [...document.querySelectorAll(".inv-card .mover-row .mover-pct")].map((e) => e.textContent.trim()).join("|"));
+    await inv.locator(".inv-card .span-pill", { hasText: "1Y" }).click({ timeout: 5000 });
+    await inv.waitForTimeout(500);
+    const after = await inv.evaluate(() => ({
+      path: location.pathname,
+      period: document.querySelector(".inv-card .inv-period")?.textContent.trim() ?? "",
+      pcts: [...document.querySelectorAll(".inv-card .mover-row .mover-pct")].map((e) => e.textContent.trim()).join("|"),
+      on: document.querySelector(".inv-card .span-pill.on")?.textContent.trim() ?? "",
+    }));
+    check("picking a period re-ranks the movers and stays on the dashboard",
+      after.path === "/dashboard" && after.on === "1Y" && after.pcts !== before && after.pcts !== "",
+      `${after.path}, ${after.on}, ${after.pcts}`);
+    check("and the headline says which period it is reporting",
+      after.period === "1 year", after.period);
+    await inv.reload({ waitUntil: "networkidle" });
+    await inv.waitForTimeout(900);
+    const keptSpan = await inv.evaluate(() =>
+      document.querySelector(".inv-card .span-pill.on")?.textContent.trim() ?? "");
+    check("and the period survives a reload", keptSpan === "1Y", keptSpan);
+    await inv.close();
 
     // Budget: the marker is where today falls in the month, not where the
     // spending got to — that is what the bar itself already says.
@@ -6940,6 +7038,51 @@ try {
     const stuck = await pill();
     check("a sync that waiting cannot fix is louder, and does not wait for an edit",
       stuck !== null && stuck.stuck === true, JSON.stringify(stuck));
+
+    // ── on a phone it is the cloud alone ──
+    //
+    // The bar there is a title and three marks wide, and two words of "Not
+    // saved" were a fifth of it. What it must not lose is the thing that makes
+    // it work: the colour it is shouting in, and a name for anyone who cannot
+    // see the mark.
+    await say({ version: 12, dirty: true, blocked: "Wrong passphrase." });
+    await ns.waitForTimeout(400);
+    const skin = () => ns.evaluate(() => {
+      const el = document.querySelector(".save-pill");
+      if (!el) return null;
+      const s = getComputedStyle(el);
+      const txt = el.querySelector(".save-pill-text");
+      const box = el.getBoundingClientRect();
+      return {
+        background: s.backgroundColor,
+        color: s.color,
+        words: txt ? getComputedStyle(txt).display !== "none" : false,
+        icon: !!el.querySelector("svg"),
+        name: el.getAttribute("aria-label") ?? "",
+        width: Math.round(box.width),
+        height: Math.round(box.height),
+      };
+    });
+    const wide = await skin();
+    await ns.setViewportSize({ width: 390, height: 844 });
+    await ns.waitForTimeout(400);
+    const narrow = await skin();
+    check("on a phone the pill is the cloud on its own",
+      narrow !== null && narrow.icon && !narrow.words && wide !== null && wide.words,
+      JSON.stringify(narrow));
+    check("in the same colours it was shouting in",
+      narrow !== null && wide !== null
+      && narrow.background === wide.background && narrow.color === wide.color,
+      `${narrow?.background} on ${narrow?.color}, was ${wide?.background} on ${wide?.color}`);
+    check("round rather than a pill with nothing in it",
+      narrow !== null && Math.abs(narrow.width - narrow.height) <= 2 && narrow.width >= 24,
+      `${narrow?.width}x${narrow?.height}`);
+    // display:none takes the words out of the accessibility tree too, so the
+    // button would otherwise be a mark with no name at all.
+    check("and it still says what it is to anyone who cannot see it",
+      narrow !== null && /not saved/i.test(narrow.name), JSON.stringify(narrow?.name));
+    await ns.setViewportSize({ width: 1280, height: 900 });
+    await ns.waitForTimeout(300);
 
     // And it goes when the work lands, rather than needing to be dismissed.
     await say({ version: 13, dirty: false, okAt: Date.now() });

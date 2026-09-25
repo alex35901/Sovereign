@@ -11,11 +11,14 @@ import { dueSoon, goalMoves, monthProgress, overPace } from "../lib/dashboard";
 import { COMPARE_MODES, DEFAULT_MODE, compareSpending, readMode } from "../lib/spend-compare";
 import type { CompareMode } from "../lib/spend-compare";
 import { CompareChart } from "../components/charts";
-import { BalanceChart, ScopeBar } from "../components/BalanceChart";
+import { BalanceChart, SPANS, ScopeBar, pctLabel, periodOf } from "../components/BalanceChart";
+import { holdingTickers, topMovers } from "../lib/holdings";
+import { MAX_TICKERS } from "../lib/prices";
+import { useHistories } from "../lib/use-histories";
 import { Btn, Card, CardHead, Empty, Money, Progress, cx, color } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
 import type { RangeKey } from "../lib/range";
-import { rangeStart, sampleDates, sampleLabel, spanDays } from "../lib/range";
+import { rangeStart, readRange, sampleDates, sampleLabel, spanDays } from "../lib/range";
 
 export default function Dashboard() {
   const db = useDB();
@@ -360,23 +363,63 @@ function GoalsCard() {
 
 /* ── investments ──────────────────────────────────────────────────────── */
 
+const INV_RANGE_KEY = "sovereign.dashboard.investments.range";
+
+/** Five, the way every other "top" list on a dashboard is five. */
+const MOVERS = 5;
+
 function InvestmentCard() {
   const db = useDB();
   const p = useMemo(() => portfolioSummary(db), [db]);
-  // Month to date, from the accounts' own balance history — the holdings only
-  // carry today's price, so a per-holding mover needs a price history this
-  // app does not keep yet.
+
+  /**
+   * The stretch the card reports on.
+   *
+   * Its own, rather than the one the net worth card is set to: they are read
+   * one after the other and answer different questions, and a reader who wants
+   * a year of the portfolio has not asked for a year of everything. In
+   * localStorage for the same reason the spending chart's comparison is.
+   */
+  const [range, setRange] = useState<RangeKey>(() => {
+    try {
+      return readRange(localStorage.getItem(INV_RANGE_KEY), "1m");
+    } catch {
+      return "1m";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(INV_RANGE_KEY, range);
+    } catch { /* a preference not remembered is not worth failing over */ }
+  }, [range]);
+
+  const span = useMemo(() => {
+    const earliest = earliestHistoryDate(p.invAccounts);
+    const from = rangeStart(range, earliest);
+    return { start: earliest && earliest > from ? earliest : from, end: today() };
+  }, [p.invAccounts, range]);
+
+  // From the accounts' own balance history, which is the only thing that knows
+  // what was paid in as well as what the market did.
   const change = useMemo(() => {
-    const first = `${thisMonth()}-01`;
-    const [start, end] = aggregateSeries(p.invAccounts, [first, today()]);
+    const [start, end] = aggregateSeries(p.invAccounts, [span.start, span.end]);
     return { start, delta: end - start };
-  }, [p.invAccounts]);
+  }, [p.invAccounts, span]);
+
+  // The same symbols, the same cache and the same fetch policy as the
+  // investments screen: whichever is opened first pays for both.
+  const tickers = useMemo(() => holdingTickers(db, MAX_TICKERS), [db]);
+  const market = useHistories(tickers, db.settings.tiingoApiKey ?? "");
+  const movers = useMemo(
+    () => topMovers(p.holdings, market.data, span.start, span.end, MOVERS),
+    [p.holdings, market.data, span],
+  );
 
   if (!p.invAccounts.length) return null;
   const up = change.delta >= 0;
 
   return (
-    <DashCard to="/investments" label="Investments">
+    <DashCard to="/investments" label="Investments" className="inv-card">
       <CardHead title="Investments" />
       <div className="row wrap" style={{ gap: 12, alignItems: "baseline" }}>
         <span className="num bold" style={{ fontSize: 26 }}><Money value={p.accountsValue} cents={false} /></span>
@@ -384,7 +427,25 @@ function InvestmentCard() {
           {up ? "↗" : "↘"} <Money value={change.delta} cents={false} />
           {change.start ? ` (${Math.round((change.delta / Math.abs(change.start)) * 1000) / 10}%)` : ""}
         </span>
+        <span className="tiny faint inv-period">{periodOf(range)}</span>
       </div>
+      {movers.length ? (
+        <div className="col mover-list">
+          {/* What moved, either way. A week when everything fell would
+              otherwise be reported as the five things that fell least. */}
+          <div className="tiny faint">Top movers</div>
+          {movers.map((m) => (
+            <div key={m.ticker} className="row mover-row">
+              <span className="mono bold mover-ticker">{m.ticker}</span>
+              <span className="small muted truncate">{m.name}</span>
+              <span className="num small mover-price"><Money value={m.price} /></span>
+              <span className={cx("mover-pct", "num", "tiny", m.change < 0 ? "neg" : "pos")}>
+                {m.change < 0 ? "↓" : "↑"} {pctLabel(m.change)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {p.byClass.length ? (
         <div className="col" style={{ gap: 8, marginTop: 14 }}>
           {p.byClass.slice(0, 4).map((c) => (
@@ -398,6 +459,19 @@ function InvestmentCard() {
           ))}
         </div>
       ) : null}
+      {/* The same pills as every other period on the dashboard, and last
+          because the card is read top down: the figure, then what moved, then
+          the dial that changes both. */}
+      <div className="span-bar inv-spans">
+        {SPANS.map((r) => (
+          <button
+            key={r.value} className={cx("span-pill", r.value === range && "on")}
+            onClick={() => setRange(r.value)}
+          >
+            {r.label}
+          </button>
+        ))}
+      </div>
     </DashCard>
   );
 }

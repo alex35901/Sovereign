@@ -69,6 +69,10 @@ export function SaveState() {
           className={cx("save-pill", stuck ? "stuck" : "waiting")}
           onClick={open}
           title="This browser has work the cloud has not taken"
+          // Named here as well as in the text beside the icon, which a phone
+          // hides: a display:none label is gone from the accessibility tree
+          // too, and the button would be a mark with no name at all.
+          aria-label="Not saved"
         >
           <CloudOff size={14} />
           <span className="save-pill-text">Not saved</span>

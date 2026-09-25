@@ -71,3 +71,12 @@ export function sampleLabel(date: ISODate, spanDays: number): string {
 export const spanDays = (from: ISODate, to: ISODate): number =>
   Math.max(1, Math.round((parseISO(to).getTime() - parseISO(from).getTime()) / 86400000));
 
+/**
+ * What a stored range means.
+ *
+ * Anything that is not one of them is the fallback rather than a crash: this
+ * comes out of localStorage, which survives across versions and can hold
+ * whatever an older one of those versions wrote.
+ */
+export const readRange = (raw: string | null | undefined, fallback: RangeKey): RangeKey =>
+  (RANGES.some((r) => r.value === raw) ? (raw as RangeKey) : fallback);

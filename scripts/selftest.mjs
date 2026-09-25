@@ -121,6 +121,7 @@ await build({
       export { ACCOUNT_GROUPS, ACCOUNT_TYPE_LABEL, accountOptions, plannedFor, categoryHistory, categoryAverage, budgetTable, applyToFuture, setPlannedOn, FUTURE_MONTHS, remainingTone, spentShare } from "./src/lib/select.ts";
       export { moveCandidates, suggestCounterpart, suggestedAmount, moveBudget, surplusOf, moveCeiling } from "./src/lib/budget-move.ts";
 
+      export * as RANGE from "./src/lib/range.ts";
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { thisMonth, addMonths, addDays, relativeDay, relativeDayMid } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
@@ -8261,6 +8262,84 @@ await test("a group's return is weighted by money, and ignores what it cannot pr
   const same = groupReturn(withGhost, histories, "2026-01-01", "2026-06-01");
   assert.ok(Math.abs(same - 0.19) < 1e-9, `${same}`);
   assert.equal(groupReturn([invHold("a1", "GHOST", 1, 100_00)], histories, "2026-01-01", "2026-06-01"), null);
+});
+
+await test("top movers rank by how far a holding went, not which way", () => {
+  const { topMovers } = M.HG;
+  const hist = (t, from, to) => ({ ticker: t, dates: ["2026-01-01", "2026-06-01"], closes: [from, to], fetchedAt: "" });
+  const histories = {
+    UP: hist("UP", 100, 104),      // +4%
+    DOWN: hist("DOWN", 100, 88),   // -12%, the biggest move of the three
+    FLAT: hist("FLAT", 100, 101),  // +1%
+  };
+  const rows = [
+    invHold("a1", "UP", 10, 100_00),
+    invHold("a1", "DOWN", 10, 100_00),
+    invHold("a1", "FLAT", 10, 100_00),
+  ];
+  const movers = topMovers(rows, histories, "2026-01-01", "2026-06-01", 5);
+  assert.deepEqual(movers.map((m) => m.ticker), ["DOWN", "UP", "FLAT"],
+    "the fall leads: a bad month is not a list of the things that fell least");
+  assert.ok(Math.abs(movers[0].change + 0.12) < 1e-9, `${movers[0].change}`);
+  assert.equal(movers[0].price, 100_00, "and each row carries what a share costs now");
+});
+
+await test("top movers cut the list at the limit asked for", () => {
+  const { topMovers } = M.HG;
+  const histories = {};
+  const rows = [];
+  for (let i = 1; i <= 8; i++) {
+    const t = `T${i}`;
+    histories[t] = { ticker: t, dates: ["2026-01-01", "2026-06-01"], closes: [100, 100 + i], fetchedAt: "" };
+    rows.push(invHold("a1", t, 1, 100_00));
+  }
+  const movers = topMovers(rows, histories, "2026-01-01", "2026-06-01", 5);
+  assert.equal(movers.length, 5);
+  assert.deepEqual(movers.map((m) => m.ticker), ["T8", "T7", "T6", "T5", "T4"],
+    "the five that moved most, biggest first");
+});
+
+await test("one symbol is one mover, however many accounts hold it", () => {
+  // The same fund in a 401(k) and an IRA did one thing, not two, and listing
+  // it twice would spend two of the five rows saying it once.
+  const { topMovers } = M.HG;
+  const histories = {
+    VTI: { ticker: "VTI", dates: ["2026-01-01", "2026-06-01"], closes: [100, 110], fetchedAt: "" },
+  };
+  const rows = [invHold("a1", "VTI", 10, 300_00), invHold("a2", "VTI", 5, 300_00)];
+  const movers = topMovers(rows, histories, "2026-01-01", "2026-06-01", 5);
+  assert.equal(movers.length, 1);
+  assert.equal(movers[0].value, 15 * 300_00, "with the whole position behind it");
+});
+
+await test("a holding nobody could price is not a mover that went nowhere", () => {
+  const { topMovers } = M.HG;
+  const histories = {
+    REAL: { ticker: "REAL", dates: ["2026-01-01", "2026-06-01"], closes: [100, 103], fetchedAt: "" },
+    // A reading at one end only, which is what a symbol the provider has
+    // never heard of looks like.
+    STUCK: { ticker: "STUCK", dates: ["2026-06-01"], closes: [100], fetchedAt: "" },
+    // And one that genuinely did not move to the cent: a stable-value fund,
+    // or a reading that stopped coming. Neither is a top mover.
+    STILL: { ticker: "STILL", dates: ["2026-01-01", "2026-06-01"], closes: [100, 100], fetchedAt: "" },
+  };
+  const rows = [
+    invHold("a1", "REAL", 1, 100_00),
+    invHold("a1", "STUCK", 1, 100_00),
+    invHold("a1", "STILL", 1, 100_00),
+    invHold("a1", "", 1, 100_00),
+  ];
+  const movers = topMovers(rows, histories, "2026-01-01", "2026-06-01", 5);
+  assert.deepEqual(movers.map((m) => m.ticker), ["REAL"]);
+});
+
+await test("a stored range nobody recognises is the fallback rather than a crash", () => {
+  const { readRange, RANGES } = M.RANGE;
+  assert.equal(readRange("3m", "1m"), "3m");
+  assert.equal(readRange("sideways", "1m"), "1m");
+  assert.equal(readRange(null, "1y"), "1y");
+  assert.equal(readRange(undefined, "1y"), "1y");
+  assert.ok(RANGES.some((r) => r.value === "1m"));
 });
 
 await test("a line added to the chart never borrows a colour already on it", () => {

@@ -420,7 +420,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
      chip is centred, so the "view category" arrow pinned at the right edge
      needs its 22px free on the left of the chip as well, or it sits on top of
      the chip at exactly the widths where the column stops growing. */
-  grid-template-columns: 16px 32px minmax(0, 34rem) 64px minmax(200px, 1fr) 118px;
+  grid-template-columns: 16px 32px minmax(0, 34rem) minmax(200px, 1fr) 64px 118px;
   gap: 12px;
   align-items: center;
 }
@@ -428,7 +428,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
    everything shifts left into the room it was holding. Every row of the list
    carries this together, header, date heads and transactions, or the columns
    stop describing each other. */
-.tx-grid.tx-nopick { grid-template-columns: 32px minmax(0, 34rem) 64px minmax(200px, 1fr) 118px; }
+.tx-grid.tx-nopick { grid-template-columns: 32px minmax(0, 34rem) minmax(200px, 1fr) 64px 118px; }
 .tx-grid.head { padding: 9px 16px; background: var(--surface-2); }
 /* The day's total sits in the amount column, over the figures it totals. The
    date takes every column before it. */
@@ -875,6 +875,26 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* Same for spending: the line is scrubbed and the period is chosen, so both
    are controls rather than parts of the link behind them. */
 .spend-card .chart-wrap, .spend-card .cmp-mode { position: relative; z-index: 2; }
+/* And for investments: the period pills are a control, not part of the link. */
+.inv-card .span-bar { position: relative; z-index: 2; }
+.inv-spans { margin-top: 14px; }
+
+/* What moved, in the shape a quote is read in: the symbol, what it is, what
+   it costs, and how far it went. The move is the reason the row is on the
+   card, so it is the one thing wearing a colour. */
+.mover-list { gap: 2px; margin-top: 16px; }
+.mover-list > .tiny { margin-bottom: 4px; }
+.mover-row { gap: 8px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--line-soft); }
+.mover-row:first-of-type { border-top: 0; }
+.mover-ticker { font-size: 12.5px; flex: 0 0 auto; }
+.mover-row > .truncate { flex: 1 1 auto; min-width: 0; }
+.mover-price { flex: 0 0 auto; }
+.mover-pct {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 7px; border-radius: 5px; font-weight: 600; min-width: 62px; justify-content: flex-end;
+}
+.mover-pct.pos { background: var(--pos-soft); }
+.mover-pct.neg { background: var(--neg-soft); }
 .cmp-mode { width: auto; min-width: 0; max-width: 190px; flex: 0 0 auto; }
 /* On a narrow card the five labels are longer than the room beside a heading,
    so the chooser takes a line of its own rather than crushing the heading. */
@@ -1572,6 +1592,11 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
   .topbar h1 { flex: 1 1 0; min-width: 0; max-width: 100%; }
   .topbar-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
   .topbar-actions .btn-label { display: none; }
+  /* The save pill goes the same way and for the same reason. A cloud with a
+     line through it says "not saved" on its own, and it keeps the colour it
+     is shouting in either way. */
+  .save-pill-text { display: none; }
+  .save-pill { padding: 6px; }
   /* A card's title and its own buttons overflow on a couple of cards too. */
   .card-head { flex-wrap: wrap; row-gap: 8px; }
 

@@ -187,3 +187,64 @@ export function holdingTickers(db: DB, cap: number): string[] {
   }
   return [...out];
 }
+
+/**
+ * A position that moved, over some stretch.
+ *
+ * Price, not value, for the reason `periodReturn` gives: the share count is
+ * only known as of today. What is reported is what the security did, which is
+ * the question "top movers" asks in every other place it is asked.
+ */
+export interface Mover {
+  ticker: string;
+  name: string;
+  /** Latest price, in cents per share. */
+  price: number;
+  /** What the position is worth now, so a tie breaks toward the real money. */
+  value: number;
+  /** Signed, as a fraction. */
+  change: number;
+}
+
+/**
+ * The biggest movers over a window, by how far they moved either way.
+ *
+ * Ranked on the size of the move rather than its direction, or a bad week
+ * would be reported as a list of the five things that fell least. A reader
+ * asking what moved wants the fall at the top of the list, not buried under
+ * everything that happened to be green.
+ *
+ * One row per symbol, however many accounts hold it: the same fund in a 401(k)
+ * and an IRA did one thing, not two.
+ */
+export function topMovers(
+  holdings: readonly Holding[],
+  histories: Record<string, PriceHistory>,
+  from: ISODate,
+  to: ISODate,
+  limit: number,
+): Mover[] {
+  const by = new Map<string, Mover>();
+  for (const h of holdings) {
+    const ticker = h.ticker.trim().toUpperCase();
+    if (!ticker) continue;
+    const seen = by.get(ticker);
+    if (seen) {
+      seen.value += holdingValue(h);
+      continue;
+    }
+    const change = periodReturn(histories[ticker], from, to);
+    // A symbol with no reading at one end is left out rather than ranked at
+    // nought: "did not move" and "nobody could price it" are different, and
+    // only one of them belongs in a list of what moved.
+    //
+    // Nor does one that did not move at all. To the cent over a whole period
+    // that is a stable-value fund or a reading that stopped coming, and
+    // either way a list of five noughts is not an answer to "what moved".
+    if (change === null || change === 0) continue;
+    by.set(ticker, { ticker, name: h.name || ticker, price: h.price, value: holdingValue(h), change });
+  }
+  return [...by.values()]
+    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change) || Math.abs(b.value) - Math.abs(a.value))
+    .slice(0, limit);
+}
