@@ -887,6 +887,46 @@ await test("GET ?peek=1 hands a locked browser the key material and none of the 
   await wipe();
 });
 
+await test("a document with no bridge credential is never pulled from a bridge", async () => {
+  // The fear this answers, and it is a reasonable one: a household that moved
+  // to Plaid woke up to its old accounts back. Removing the last account a
+  // bridge fed is not the same as removing the bridge, so this pins the thing
+  // that actually decides it — the credential in the document. With none
+  // there, the job must not reach for a bridge at all, whatever the accounts
+  // still say about where they came from.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  // Set in the environment on purpose: on an unsealed document that copy is
+  // not consulted, and a household that never cleared it must still be safe.
+  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  await wipe(); await clearAttempts();
+
+  const seed = M.buildDemoDB();
+  seed.settings = { ...seed.settings, simplefinAccessUrl: undefined, plaidItems: [] };
+  // Accounts still carrying the mark of where they used to come from, which is
+  // what a migrated household has.
+  seed.accounts = seed.accounts.map((a, i) => (i < 2 ? { ...a, syncSource: "simplefin", syncId: `moved-${i}` } : a));
+  const before = seed.accounts.length;
+  await asServer({ doc: seed, baseVersion: 0 }, "PUT");
+
+  const asked = [];
+  const r = await withFetch(async (url) => {
+    asked.push(String(url));
+    return new Response(BRIDGE, { status: 200 });
+  }, () => invokeWith(M.cronHandler, {
+    headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.11" },
+  }));
+
+  assert.equal(r.status, 200);
+  assert.equal(asked.some((u) => /bridge\.example/.test(u)), false,
+    `the job reached for a bridge anyway: ${asked.join(", ")}`);
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(after.doc.accounts.length, before, "nothing came back");
+  assert.equal(after.doc.accounts.some((a) => a.syncId === "sfin-1"), false,
+    "and the bridge's own account is not among them");
+});
+
 await test("the scheduled job stands down if a browser saved while it ran", async () => {
   // The job used to force its write, on the reasoning that a browser saving
   // mid-run "will simply win with its own newer copy". It was the wrong way

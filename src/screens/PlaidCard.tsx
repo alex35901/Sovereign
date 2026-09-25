@@ -8,12 +8,14 @@ import type { SyncCadence } from "../lib/sync";
 import { recordRun } from "../lib/usage";
 import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, releaseItem, reportHistory } from "../lib/sync/plaid";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
-import { itemFor } from "../lib/sync/adopt";
+import { accountsOf, itemFor } from "../lib/sync/adopt";
 import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
 import type { ReachState } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { openPlaidLink } from "../lib/sync/plaid-link";
-import { Btn, Card, CardHead, ConfirmButton } from "../components/ui";
+import { Link } from "react-router-dom";
+import { ACCOUNT_TYPE_LABEL } from "../lib/select";
+import { Btn, Card, CardHead, ConfirmButton, cx } from "../components/ui";
 
 /** What the function sees, in words rather than raw values. */
 function Diagnosis({ check }: { check: PlaidDiagnosis }) {
@@ -483,8 +485,11 @@ export function PlaidCard() {
         <>
           <div className="divider" />
           <div className="col" style={{ gap: 8 }}>
-            {items.map((item) => (
-              <div key={item.itemId} className="spread plaid-row">
+            {items.map((item) => {
+              const held = accountsOf(db, item);
+              return (
+              <div key={item.itemId} className="col plaid-item" style={{ gap: 6 }}>
+              <div className="spread plaid-row">
                 <span className="row plaid-who" style={{ gap: 8, minWidth: 0 }}>
                   {item.kind === "investment" ? <LineChart size={14} className="muted" /> : <Building2 size={14} className="muted" />}
                   <span className="truncate" style={{ fontWeight: 500 }}>{item.institution}</span>
@@ -533,7 +538,36 @@ export function PlaidCard() {
                   />
                 </span>
               </div>
-            ))}
+              {/* What this login actually brought in. A connection is one
+                  sign-in and every account behind it, and which account is
+                  behind which login is the thing you need to know before
+                  changing how one of them is read. */}
+              {held.accounts.length ? (
+                <ul className="plaid-accounts">
+                  {held.accounts.map((a) => (
+                    <li key={a.id} className={cx(held.misread.includes(a) && "misread")}>
+                      <Link to={`/accounts/${a.id}`} className="truncate">{a.name}</Link>
+                      <span className="tiny faint nowrap">{ACCOUNT_TYPE_LABEL[a.type]}</span>
+                      {a.closedAt ? <span className="tiny faint nowrap">closed</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="tiny faint">
+                  Nothing has come in from this connection yet. Press Sync all, or Reconnect if it is
+                  asking for a login.
+                </div>
+              )}
+              {held.misread.length ? (
+                <div className="tiny warn">
+                  {item.kind === "bank"
+                    ? `${held.misread.map((a) => a.name).join(", ")} ${held.misread.length === 1 ? "holds" : "hold"} positions, and this connection is read as a bank, so its holdings are never asked for. Press the "bank" label above to read it as investments instead.`
+                    : `Nothing under this connection holds positions, and an investment connection is never asked for transactions. Press the "investment" label above to read it as a bank instead.`}
+                </div>
+              ) : null}
+              </div>
+              );
+            })}
             {note ? <div className="small muted">{note}</div> : null}
             {reach ? (
               <div className="small muted">
@@ -574,6 +608,34 @@ export function PlaidCard() {
       ) : null}
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+
+      {/* A credential the app can no longer be given, and can still be using.
+          Removing the last account a bridge fed does not remove the bridge:
+          the URL stays in the document, the pull below still runs against it
+          on the schedule, and so does the 9am job. There is no way to connect
+          one from here any more, so this shows only where one is still held,
+          and says plainly what it is still doing. */}
+      {db.settings.simplefinAccessUrl ? (
+        <>
+          <div className="divider" />
+          <div className="spread wrap" style={{ gap: 10 }}>
+            <span className="small warn" style={{ maxWidth: 560 }}>
+              <b>A SimpleFIN access URL is still stored.</b> Accounts it used to feed can come back
+              on any pull while it is here: the schedule below uses it, and so does the scheduled
+              job. Removing it is what stops that for good. If your document is encrypted, take
+              <b> SIMPLEFIN_ACCESS_URL</b> out of Vercel as well, since the job reads that copy.
+            </span>
+            <ConfirmButton
+              label="Remove it"
+              confirmLabel="Click again to remove"
+              onConfirm={() => {
+                actions.patchSettings({ simplefinAccessUrl: undefined });
+                notify("SimpleFIN removed. Nothing will pull from it again.");
+              }}
+            />
+          </div>
+        </>
+      ) : null}
 
       <div className="divider" />
       <SyncSchedule />

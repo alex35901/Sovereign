@@ -88,7 +88,7 @@ await build({
       export * as MM from "./src/lib/merchant-merge.ts";
       export { checkEol, majorOf, NODE_EOL, WARN_DAYS } from "./scripts/eol.mjs";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
-      export { adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
+      export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -5528,6 +5528,75 @@ await test("two accounts claiming one account at the bank is said out loud", () 
     { ...db, accounts: [acct("a1", "Everyday"), { ...acct("a2", "Old"), closedAt: "2026-01-01" }] },
     pull, "plaid");
   assert.deepEqual(closed.sharedIds, []);
+});
+
+await test("a connection says which accounts came in through it", () => {
+  const base = M.emptyDB();
+  let n = 0;
+  const acct = (name, institution, type, over = {}) => ({
+    id: `a${(n += 1)}`, name, institution, type, balance: 100, includeInNetWorth: true,
+    hidden: false, history: [], order: n, syncSource: "plaid", ...over,
+  });
+  const db = {
+    ...base,
+    accounts: [
+      acct("401(k)", "Fidelity", "retirement"),
+      acct("Cash Management", "Fidelity", "checking"),
+      acct("Brokerage", "Vanguard", "investment"),
+      // Not this connection's, and not Plaid's at all.
+      acct("Old Checking", "Fidelity", "checking", { syncSource: "simplefin" }),
+      acct("Wallet", "Cash", "checking", { syncSource: "manual" }),
+    ],
+  };
+  const held = M.accountsOf(db, { institution: "Fidelity", kind: "bank" });
+  assert.deepEqual(held.accounts.map((a) => a.name), ["401(k)", "Cash Management"],
+    "this login's accounts, and only the ones it brought in");
+  assert.deepEqual(M.accountsOf(db, { institution: "  fidelity ", kind: "bank" }).accounts.map((a) => a.name),
+    ["401(k)", "Cash Management"], "case and spacing are not a difference");
+  assert.deepEqual(M.accountsOf(db, { institution: "Schwab", kind: "bank" }).accounts, [],
+    "a connection nothing has come in through yet");
+});
+
+await test("a 401(k) under a connection read as a bank is named as the problem", () => {
+  // The state this exists for: nothing is broken, nothing says anything, and
+  // the positions are simply not there, because a bank connection is never
+  // asked for holdings.
+  const base = M.emptyDB();
+  let n = 0;
+  const acct = (name, type, over = {}) => ({
+    id: `a${(n += 1)}`, name, institution: "Fidelity", type, balance: 100, includeInNetWorth: true,
+    hidden: false, history: [], order: n, syncSource: "plaid", ...over,
+  });
+  const db = { ...base, accounts: [acct("401(k)", "retirement"), acct("Cash Management", "checking")] };
+
+  const asBank = M.accountsOf(db, { institution: "Fidelity", kind: "bank" });
+  assert.deepEqual(asBank.misread.map((a) => a.name), ["401(k)"],
+    "the one holding positions, not the cash account beside it");
+
+  // Read the other way it is fine, and the cash account is not a complaint:
+  // a brokerage holding cash beside its positions is an ordinary brokerage.
+  const asInvestment = M.accountsOf(db, { institution: "Fidelity", kind: "investment" });
+  assert.deepEqual(asInvestment.misread, []);
+
+  // A closed account is not a live problem.
+  const closed = { ...db, accounts: [{ ...db.accounts[0], closedAt: "2026-01-01" }, db.accounts[1]] };
+  assert.deepEqual(M.accountsOf(closed, { institution: "Fidelity", kind: "bank" }).misread, []);
+});
+
+await test("an investment connection holding no positions at all is named too", () => {
+  // The other way round, and only this far: an investment connection is never
+  // asked for transactions, so one holding nothing but a chequing account is
+  // a connection doing nothing for anybody.
+  const base = M.emptyDB();
+  const acct = (id, name, type) => ({
+    id, name, institution: "Ally", type, balance: 100, includeInNetWorth: true,
+    hidden: false, history: [], order: 0, syncSource: "plaid",
+  });
+  const db = { ...base, accounts: [acct("a1", "Savings", "savings"), acct("a2", "Checking", "checking")] };
+  const held = M.accountsOf(db, { institution: "Ally", kind: "investment" });
+  assert.deepEqual(held.misread.map((a) => a.name), ["Savings", "Checking"]);
+  // And read as a bank, which is what it is, nothing is wrong.
+  assert.deepEqual(M.accountsOf(db, { institution: "Ally", kind: "bank" }).misread, []);
 });
 
 await test("one login is one connection, however many accounts sit behind it", () => {

@@ -124,3 +124,57 @@ export function itemFor<T extends { institution: string; kind: "bank" | "investm
     return within(want, held) || within(held, want);
   });
 }
+
+/**
+ * Account kinds that carry positions rather than a running balance.
+ *
+ * The distinction that matters to a connection: these are the ones Plaid
+ * answers about through /investments/holdings/get, which a connection read as
+ * a bank never calls.
+ */
+const HOLDS_POSITIONS = new Set(["investment", "retirement", "crypto"]);
+
+export interface ItemAccounts {
+  /** Every account this connection brought in, open ones first. */
+  accounts: Account[];
+  /**
+   * The ones this connection is being read the wrong way for.
+   *
+   * A 401(k) under a connection read as a bank arrives as a balance and
+   * nothing else, because holdings are never asked for. It is the most
+   * confusing state this app can be in: nothing is broken, nothing says
+   * anything, and the positions simply are not there. So the connection names
+   * the account rather than leaving it to be worked out.
+   *
+   * Not symmetric, because the two mistakes are not. A brokerage holding a
+   * cash account beside its positions is an ordinary brokerage, so a
+   * depository account under an investment connection is only worth saying
+   * anything about when there are no positions under it at all.
+   */
+  misread: Account[];
+}
+
+/**
+ * The accounts behind one connection.
+ *
+ * Matched on the institution the item stamped onto them, because that is what
+ * an account carries: Plaid's account ids are unique within an item but the
+ * item's own id is not written onto the accounts it brings in. Two connections
+ * to one institution would therefore show each other's accounts, which is
+ * already called out where they are made as usually a mistake.
+ */
+export function accountsOf(
+  db: DB,
+  item: { institution: string; kind: "bank" | "investment" },
+): ItemAccounts {
+  const want = item.institution.trim().toLowerCase();
+  const accounts = db.accounts
+    .filter((a) => a.syncSource === "plaid" && a.institution.trim().toLowerCase() === want)
+    .sort((a, b) => Number(Boolean(a.closedAt)) - Number(Boolean(b.closedAt)) || a.order - b.order);
+  const open = accounts.filter((a) => !a.closedAt);
+  const positions = open.filter((a) => HOLDS_POSITIONS.has(a.type));
+  return {
+    accounts,
+    misread: item.kind === "bank" ? positions : (positions.length ? [] : open),
+  };
+}

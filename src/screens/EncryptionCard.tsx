@@ -193,11 +193,18 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
               nobody can act on, and it sits among the ones that matter. */}
           {db.settings.simplefinAccessUrl || e.simplefinUrlSet ? (
             <Row
-              ok={e.simplefinUrlSet}
+              // Set with nothing in the document to match is not a tick. The
+              // scheduled job reads this copy and not the document's, so on a
+              // sealed document it is the one thing that can still bring a
+              // bridge's accounts back after everything here says they are
+              // gone. It is the state this row exists to catch.
+              ok={db.settings.simplefinAccessUrl ? e.simplefinUrlSet : false}
               label="SIMPLEFIN_ACCESS_URL in Vercel"
-              detail={e.simplefinUrlSet
-                ? "is set: the 9am pull can reach SimpleFIN."
-                : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
+              detail={!db.settings.simplefinAccessUrl
+                ? "is set, and this document holds no SimpleFIN connection. The scheduled job reads this copy rather than the document, so that bridge's accounts can still come back. Remove the variable from Vercel and redeploy."
+                : e.simplefinUrlSet
+                  ? "is set: the 9am pull can reach SimpleFIN."
+                  : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
             />
           ) : null}
           <Row

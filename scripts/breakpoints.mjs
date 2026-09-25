@@ -478,6 +478,20 @@ try {
     for (const path of PAGES) {
       await tb.goto(BASE + path, { waitUntil: "networkidle" });
       await tb.waitForTimeout(500);
+      // Measured once the layout has stopped moving. A web font arriving after
+      // first paint changes the rail's width and everything in the bar with
+      // it, and a reading taken in that frame has the bar in a place it is
+      // never actually drawn — which is a failure about this check's timing
+      // rather than about the bar.
+      await tb.evaluate(async () => {
+        await document.fonts?.ready;
+        const at = () => document.querySelector(".topbar-actions")?.getBoundingClientRect().left ?? -1;
+        for (let i = 0; i < 20; i++) {
+          const was = at();
+          await new Promise((done) => setTimeout(done, 60));
+          if (at() === was) return;
+        }
+      });
       const bar = await tb.evaluate(() => {
         const el = document.querySelector(".topbar");
         if (!el) return null;
@@ -7054,6 +7068,21 @@ try {
           { accessToken: "a", itemId: "it_1", institution: "Fidelity", kind: "bank", addedAt: "2026-09-01T00:00:00Z", lastSyncAt: "2026-09-24T09:00:00Z" },
           { accessToken: "b", itemId: "it_2", institution: "Vanguard", kind: "investment", addedAt: "2026-08-01T00:00:00Z", lastSyncAt: "2026-09-25T09:00:00Z" },
         ];
+        // A bridge credential still in the document, which is the state that
+        // can bring a provider's accounts back and has no button anywhere
+        // else any more.
+        db.settings.simplefinAccessUrl = "https://user:pass@bridge.example/simplefin";
+        let n = 900;
+        const acct = (name, institution, type) => ({
+          id: `pa_${n += 1}`, name, institution, type, balance: 100000, includeInNetWorth: true,
+          hidden: false, history: [], order: n, syncSource: "plaid", syncId: `s${n}`,
+        });
+        db.accounts = [
+          ...db.accounts,
+          acct("Fidelity 401(k)", "Fidelity", "retirement"),
+          acct("Fidelity Cash Management", "Fidelity", "checking"),
+          acct("Vanguard Brokerage", "Vanguard", "investment"),
+        ];
         localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
       } catch { /* nothing to patch */ }
     });
@@ -7066,8 +7095,9 @@ try {
       cards: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
       providers: [...document.querySelectorAll(".page table tbody tr td:nth-child(2)")].map((c) => c.innerText.trim()),
     }));
-    check("settings says nothing about the bridge any more",
-      !/simplefin/i.test(page.text), (page.text.match(/.{0,40}simplefin.{0,40}/i) ?? [""])[0]);
+    check("settings offers no way to connect the bridge any more",
+      !/setup token|bridge\.simplefin\.org/i.test(page.text),
+      (page.text.match(/.{0,40}(setup token|bridge\.simplefin\.org).{0,40}/i) ?? [""])[0]);
     check("and the table of connections does not meter it",
       !page.providers.some((p) => /simplefin/i.test(p)), page.providers.join(" | "));
     check("the one connections card is named for what it holds",
@@ -7092,6 +7122,76 @@ try {
     check("each connection says what it is read as, and the label is the switch",
       card !== null && card.kinds.join(" / ") === "bank / investment" && card.pressable,
       `${card?.kinds.join(" / ")} (buttons: ${card?.pressable})`);
+
+    // ── which account came in through which login ──
+    //
+    // A connection is one sign-in and every account behind it, and which
+    // account is behind which login is the thing you need to know before
+    // changing how one of them is read.
+    const behind = await st2.evaluate(() => {
+      const found = [...document.querySelectorAll(".card")]
+        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+      return [...(found?.querySelectorAll(".plaid-item") ?? [])].map((it) => ({
+        who: it.querySelector(".plaid-who .truncate")?.textContent.trim() ?? "",
+        accounts: [...it.querySelectorAll(".plaid-accounts li a")].map((a) => a.textContent.trim()),
+        links: [...it.querySelectorAll(".plaid-accounts li a")].map((a) => a.getAttribute("href")),
+        flagged: [...it.querySelectorAll(".plaid-accounts li.misread a")].map((a) => a.textContent.trim()),
+        says: it.querySelector(".warn")?.textContent.trim() ?? "",
+      }));
+    });
+    check("each connection lists the accounts that came in through it",
+      behind.length === 2
+      && behind[0].accounts.join(" / ") === "Fidelity 401(k) / Fidelity Cash Management"
+      && behind[1].accounts.join(" / ") === "Vanguard Brokerage",
+      behind.map((b) => `${b.who}: ${b.accounts.join(", ")}`).join(" | "));
+    check("and each of them opens its own page",
+      behind.every((b) => b.links.every((h) => /^\/accounts\/.+/.test(h ?? ""))),
+      behind.flatMap((b) => b.links).join(" "));
+    // The whole point of the list: which one is why the holdings are missing.
+    check("the account holding positions under a bank connection is the one marked",
+      behind[0].flagged.join(" / ") === "Fidelity 401(k)" && /holdings are never asked for/i.test(behind[0].says),
+      `${behind[0].flagged.join(" / ")} — ${behind[0].says.slice(0, 80)}`);
+    check("and a brokerage read as investments is not complained about",
+      behind[1].flagged.length === 0 && behind[1].says === "",
+      `${behind[1].flagged.join(" / ")} — ${behind[1].says.slice(0, 60)}`);
+
+    // ── a credential that can still pull, with nowhere else to remove it ──
+    //
+    // Removing the last account a bridge fed does not remove the bridge. The
+    // card that used to hold its Disconnect button has gone, so this is the
+    // only place left that can say so.
+    const bridge = await st2.evaluate(() => {
+      const found = [...document.querySelectorAll(".card")]
+        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+      const said = [...(found?.querySelectorAll(".warn") ?? [])]
+        .map((w) => w.textContent.trim()).find((t) => /SimpleFIN access URL/i.test(t)) ?? "";
+      return {
+        said,
+        button: [...(found?.querySelectorAll("button") ?? [])].some((b) => /Remove it/.test(b.textContent)),
+      };
+    });
+    check("a stored bridge credential is said out loud, with a way to remove it",
+      /still stored/i.test(bridge.said) && /scheduled job/i.test(bridge.said) && bridge.button,
+      `${bridge.said.slice(0, 100)} (button: ${bridge.button})`);
+    // Two presses, because it is the kind of thing that should not happen on
+    // one — and the second press is on a button whose label has changed.
+    if (await tryStep("removing it takes two presses", async () => {
+      const card = st2.locator(".card", { hasText: "Connections" });
+      await card.locator("button", { hasText: "Remove it" }).first().click({ timeout: 5000 });
+      await st2.waitForTimeout(250);
+      await card.locator("button", { hasText: "Click again to remove" }).first().click({ timeout: 5000 });
+      await st2.waitForTimeout(900);
+    })) {
+      const gone = await st2.evaluate(() => ({
+        stored: Boolean(JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.simplefinAccessUrl),
+        // The toast says it was removed, which is the one place the word is
+        // supposed to appear afterwards, so the page is read without it.
+        said: [...document.querySelectorAll(".page .card")].map((c) => c.innerText).join(" "),
+      }));
+      check("and then nothing can pull from it again",
+        !gone.stored && !/simplefin/i.test(gone.said),
+        `stored: ${gone.stored}${/simplefin/i.test(gone.said) ? ", still mentioned" : ""}`);
+    }
 
     // A connection row at phone width. The demo carries no Plaid items, so
     // this row went unmeasured until now and ran off the card: four controls
