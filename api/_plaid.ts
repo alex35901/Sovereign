@@ -501,7 +501,7 @@ export async function fetchItemRaw(creds: PlaidCreds, opts: {
   };
 }
 
-export interface ItemIdentity { institution: string; logo?: string; domain?: string }
+export interface ItemIdentity { institution: string; logo?: string; domain?: string; itemId?: string }
 
 /**
  * Who an access token belongs to, and their mark. Neither endpoint is billed
@@ -511,7 +511,11 @@ export interface ItemIdentity { institution: string; logo?: string; domain?: str
  */
 export async function identifyItem(creds: PlaidCreds, accessToken: string): Promise<ItemIdentity> {
   const item = await plaidCall(creds, "/item/get", { access_token: accessToken }).catch(() => null);
-  const institutionId = (item?.item as { institution_id?: string } | undefined)?.institution_id;
+  const held = item?.item as { institution_id?: string; item_id?: string } | undefined;
+  const institutionId = held?.institution_id;
+  // The same id the exchange recorded when this connection was made, so a pull
+  // that starts from a bare token still says which connection it was.
+  const itemId = typeof held?.item_id === "string" ? held.item_id : undefined;
   let institution = "Connected account";
   let logo: string | undefined;
   let domain: string | undefined;
@@ -529,7 +533,7 @@ export async function identifyItem(creds: PlaidCreds, accessToken: string): Prom
     if (found?.logo) logo = `data:image/png;base64,${found.logo}`;
     if (found?.url) domain = hostOf(found.url);
   }
-  return { institution, logo, domain };
+  return { institution, logo, domain, itemId };
 }
 
 /** "https://www.chase.com/" → "chase.com" */

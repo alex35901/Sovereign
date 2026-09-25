@@ -487,6 +487,11 @@ export function PlaidCard() {
           <div className="col" style={{ gap: 8 }}>
             {items.map((item) => {
               const held = accountsOf(db, item);
+              // Two logins at one institution, neither of them stamped onto an
+              // account yet: both are showing the same list, and saying so is
+              // the difference between a note and a bug.
+              const guessing = held.matched === "name" && held.accounts.length > 0
+                && items.some((i) => i.itemId !== item.itemId && i.institution === item.institution);
               return (
               <div key={item.itemId} className="col plaid-item" style={{ gap: 6 }}>
               <div className="spread plaid-row">
@@ -558,6 +563,12 @@ export function PlaidCard() {
                   asking for a login.
                 </div>
               )}
+              {guessing ? (
+                <div className="tiny faint">
+                  There are two connections to {item.institution}, and neither has said yet which
+                  accounts are its own, so both are showing the same list. The next sync settles it.
+                </div>
+              ) : null}
               {held.misread.length ? (
                 <div className="tiny warn">
                   {item.kind === "bank"

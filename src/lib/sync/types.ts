@@ -14,6 +14,16 @@ export interface RemoteAccount {
   logo?: string;
   /** Institution website, which a logo can be looked up from when there is none. */
   domain?: string;
+  /**
+   * The Plaid connection this account came in through.
+   *
+   * Written onto the account so that "which accounts are behind this login" is
+   * an answer rather than a guess. It cannot be worked out from the name: an
+   * account moved to Plaid from somewhere else keeps the name and institution
+   * the household already gave it, deliberately, so the two spellings rarely
+   * match. Absent for SimpleFIN, which has no such thing.
+   */
+  itemId?: string;
 }
 
 export interface RemoteTransaction {

@@ -25,18 +25,14 @@ export default function Budget() {
   const phone = useMediaQuery(PHONE);
 
   /**
-   * Which way the last swipe went, until the slide it starts has finished.
+   * The sheet follows the finger, and settles when it lets go.
    *
-   * The gesture needs an answer: a sheet that changes silently under a finger
-   * reads as a misfire, and the direction is the part worth confirming. Set on
-   * the swipe and cleared when the animation ends, so a reader who prefers no
-   * motion gets the new month and nothing else.
+   * A gesture that only pays out at the end is one you have to be told about.
+   * The sheet moves while the finger is on it, so the screen says what it can
+   * do before anything has been asked of it, and the month it lands on is
+   * already the new one by the time it eases back to centre.
    */
-  const [swiped, setSwiped] = useState<"next" | "previous" | null>(null);
-  const turn = (by: number) => {
-    setMonth((m) => addMonths(m, by));
-    setSwiped(by > 0 ? "next" : "previous");
-  };
+  const turn = (by: number) => setMonth((m) => addMonths(m, by));
   const swipe = useSwipe(() => turn(1), () => turn(-1));
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const summary = useMemo(() => budgetSummary(db, month), [db, month]);
@@ -81,7 +77,7 @@ export default function Budget() {
       <CalendarDays size={14} /> <span className="btn-label">This month</span>
     </Btn>
   );
-  const nav = <MonthNav month={month} onChange={setMonth} heading={phone} />;
+  const nav = <MonthNav month={month} onChange={setMonth} heading={phone} offset={swipe.dx} />;
 
   return (
     <>
@@ -99,13 +95,18 @@ export default function Budget() {
           that hides the other one belongs with the widths it is trading
           against, and a row should not have to know how wide the screen is. */}
       <div
-        className={cx("page stack", swiped && "month-turned", swiped === "next" && "from-right")}
+        className="page stack page-turn"
         data-bcol={column}
         // A flick left is next, the way every calendar on the device works.
-        {...swipe}
-        // This element's own slide, not a chart's wipe inside it: animation
-        // events bubble, and a bar finishing first would cut the slide short.
-        onAnimationEnd={(e) => { if (e.target === e.currentTarget) setSwiped(null); }}
+        {...swipe.handlers}
+        style={swipe.dx
+          // No easing while a finger is on it: easing towards a finger that
+          // has already moved on is lag, not smoothness.
+          ? { transform: `translateX(${swipe.dx}px)`, transition: "none" }
+          // Undefined rather than none, deliberately: any transform at all
+          // makes this the containing block for the popovers inside it, which
+          // are positioned against the window.
+          : undefined}
       >
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>

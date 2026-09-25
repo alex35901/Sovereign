@@ -393,7 +393,7 @@ export async function refreshPlaid(db: DB, deadline: number): Promise<{
 /** One item's raw response, mapped the same way the browser maps it. */
 async function pullItem(
   creds: PlaidCreds,
-  item: Pick<PlaidItemRef, "accessToken" | "kind" | "institution" | "logo" | "domain">,
+  item: Pick<PlaidItemRef, "accessToken" | "kind" | "institution" | "logo" | "domain"> & { itemId?: string },
   since: string,
 ) {
   const raw = await fetchItemRaw(creds, {

@@ -152,29 +152,55 @@ export interface ItemAccounts {
    * anything about when there are no positions under it at all.
    */
   misread: Account[];
+  /**
+   * How they were found: by the connection's own id, or by its name.
+   *
+   * Worth saying out loud in one case. Two logins at one institution cannot be
+   * told apart by name, so until a pull has stamped them both connections show
+   * the same accounts, which reads exactly like the app being confused. It
+   * stops as soon as either one syncs.
+   */
+  matched: "id" | "name";
 }
 
 /**
  * The accounts behind one connection.
  *
- * Matched on the institution the item stamped onto them, because that is what
- * an account carries: Plaid's account ids are unique within an item but the
- * item's own id is not written onto the accounts it brings in. Two connections
- * to one institution would therefore show each other's accounts, which is
- * already called out where they are made as usually a mistake.
+ * By the connection's own id where the account carries one, which is exact and
+ * tells two logins at the same institution apart. Every pull writes it, but a
+ * document that has not synced since it was added holds none, so the fallback
+ * is the name — and the name has to be matched the loose way `itemFor` does.
+ *
+ * That is not politeness, it is the ordinary case: an account moved onto Plaid
+ * from another provider keeps the name and institution it already had, on
+ * purpose, and the two providers rarely spell a bank the same way. Matching
+ * strictly showed every connection as empty for exactly the households that
+ * had migrated.
  */
 export function accountsOf(
   db: DB,
-  item: { institution: string; kind: "bank" | "investment" },
+  item: { institution: string; kind: "bank" | "investment"; itemId?: string },
 ): ItemAccounts {
-  const want = item.institution.trim().toLowerCase();
-  const accounts = db.accounts
-    .filter((a) => a.syncSource === "plaid" && a.institution.trim().toLowerCase() === want)
+  const mine = db.accounts.filter((a) => a.syncSource === "plaid");
+  // Once any account names this connection, the named set is the answer: a
+  // second connection at the same institution must not claim them by name.
+  const named = item.itemId ? mine.filter((a) => a.plaidItemId === item.itemId) : [];
+  const want = core(item.institution);
+  const byName = () => mine.filter((a) => {
+    // An account that named a different connection is that one's.
+    if (a.plaidItemId && a.plaidItemId !== item.itemId) return false;
+    const held = core(a.institution);
+    if (!want.length || !held.length) return false;
+    return within(want, held) || within(held, want);
+  });
+  const accounts = (named.length ? named : byName())
     .sort((a, b) => Number(Boolean(a.closedAt)) - Number(Boolean(b.closedAt)) || a.order - b.order);
+  const matched: "id" | "name" = named.length ? "id" : "name";
   const open = accounts.filter((a) => !a.closedAt);
   const positions = open.filter((a) => HOLDS_POSITIONS.has(a.type));
   return {
     accounts,
+    matched,
     misread: item.kind === "bank" ? positions : (positions.length ? [] : open),
   };
 }

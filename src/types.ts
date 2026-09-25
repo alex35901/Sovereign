@@ -102,6 +102,17 @@ export interface Account {
   };
   syncSource?: "manual" | "csv" | "simplefin" | "plaid";
   syncId?: string;
+  /**
+   * The Plaid connection this account comes in through.
+   *
+   * The only exact answer to "which accounts are behind this login". It cannot
+   * be had from the institution's name: an account moved onto Plaid from
+   * another provider keeps the name and institution it already had, on
+   * purpose, and two providers rarely spell a bank the same way. Filled in by
+   * any pull; absent until one has run since this was added, which is why the
+   * card that asks the question falls back to matching on the name.
+   */
+  plaidItemId?: string;
   lastSyncedAt?: string;
   /**
    * What the provider last said about this account in particular.

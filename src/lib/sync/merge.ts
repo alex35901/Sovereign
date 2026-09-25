@@ -128,6 +128,9 @@ export function mergeSync(
       accounts[idx] = {
         ...existing, balance: r.balance, history: kept,
         syncId: r.syncId, syncSource: source, lastSyncedAt: payload.fetchedAt,
+        // Never blanked: a pull that does not name its connection should not
+        // lose the one already recorded.
+        plaidItemId: r.itemId ?? existing.plaidItemId,
         // Whatever the provider said about this one last time, said again or
         // dropped. An account that came back clean is clean.
         syncNote: noteFor(existing, payload.errors)
@@ -145,7 +148,7 @@ export function mergeSync(
       accounts.push({
         id, name: r.name, institution: r.institution, type: r.type,
         balance: r.balance, includeInNetWorth: true, hidden: false,
-        logo: r.logo, domain: r.domain,
+        logo: r.logo, domain: r.domain, plaidItemId: r.itemId,
         history: [{ date: r.balanceDate, balance: r.balance }],
         syncSource: source, syncId: r.syncId, lastSyncedAt: payload.fetchedAt,
         order: accounts.length,

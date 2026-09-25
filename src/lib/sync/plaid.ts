@@ -262,8 +262,8 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
   return toPlaidPayload(raw, item);
 }
 
-/** What an item contributes to every account it owns: its name and its mark. */
-export interface ItemMark { institution: string; logo?: string; domain?: string }
+/** What an item contributes to every account it owns: its name, mark and id. */
+export interface ItemMark { institution: string; logo?: string; domain?: string; itemId?: string }
 
 /**
  * Plaid's shapes, turned into this app's.
@@ -292,6 +292,9 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
       // Carried from the item, which fetched it once when it was connected.
       logo: item.logo,
       domain: item.domain,
+      // And which connection it came through, which is the only thing that
+      // answers that question exactly.
+      itemId: item.itemId,
     };
   });
 

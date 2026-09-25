@@ -2245,7 +2245,7 @@ try {
       return {
         title: title?.textContent.replace(/\s+/g, " ").trim() ?? "",
         arrows: title ? title.querySelectorAll("button[aria-label$='month']").length : 0,
-        heading: title?.querySelector("h1")?.textContent.trim() ?? "",
+        heading: (title?.querySelector("h1 .month-now") ?? title?.querySelector("h1"))?.textContent.trim() ?? "",
         ownTitles: own ? [...own.querySelectorAll("button")].map((b) => b.getAttribute("title") ?? "") : [],
         ownLeft: own ? own.getBoundingClientRect().left : -1,
         titleMid: title ? mid(title) : -1,
@@ -2282,7 +2282,54 @@ try {
       }, ms));
     }, { dx, dy, ms });
     const monthNow = () => ph.evaluate(() =>
-      document.querySelector(".topbar-title h1")?.textContent.trim() ?? "");
+      document.querySelector(".topbar-title h1 .month-now")?.textContent.trim() ?? "");
+
+    // ── the sheet follows the finger ──
+    //
+    // A gesture that only pays out at the end is one you have to be told
+    // about. Held part way through, the sheet has to have moved and the dial
+    // in the bar with it, or there is nothing saying the screen can be turned.
+    const holding = await ph.evaluate(() => {
+      const x = window.innerWidth / 2;
+      const y = 420;
+      const el = document.elementFromPoint(x, y);
+      const fire = (type, cx) => {
+        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: y });
+        el.dispatchEvent(new TouchEvent(type, {
+          bubbles: true, cancelable: true, touches: [t], targetTouches: [t], changedTouches: [t],
+        }));
+      };
+      fire("touchstart", x);
+      fire("touchmove", x - 20);
+      fire("touchmove", x - 90);
+      const read = (sel) => {
+        const m = new DOMMatrixReadOnly(getComputedStyle(document.querySelector(sel)).transform);
+        return Math.round(m.m41);
+      };
+      // After the render the move asked for: the finger's position becomes a
+      // transform through React, not in the handler.
+      return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
+        done({ page: read(".page-turn"), dial: read(".month-dial") });
+      })));
+    });
+    check("the sheet moves with the finger rather than waiting for it to lift",
+      holding.page < -20 && holding.page > -110, `${holding.page}px`);
+    check("and the dial in the bar turns with it, bringing the next month in",
+      holding.dial < -10 && holding.dial > -110, `${holding.dial}px`);
+    // Let go without having gone far enough, and it settles back on the month
+    // it started on.
+    await ph.evaluate(() => {
+      const el = document.elementFromPoint(window.innerWidth / 2, 420);
+      const t = new Touch({ identifier: 1, target: el, clientX: window.innerWidth / 2 - 30, clientY: 420 });
+      el.dispatchEvent(new TouchEvent("touchend", {
+        bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [t],
+      }));
+    });
+    await ph.waitForTimeout(500);
+    const settled = await ph.evaluate(() =>
+      getComputedStyle(document.querySelector(".page-turn")).transform);
+    check("and lands back where it was when the finger lifts",
+      settled === "none" || /matrix\(1, 0, 0, 1, 0, 0\)/.test(settled), settled);
 
     const opened = await monthNow();
     await drag(-140, 4);
@@ -7077,11 +7124,14 @@ try {
           id: `pa_${n += 1}`, name, institution, type, balance: 100000, includeInNetWorth: true,
           hidden: false, history: [], order: n, syncSource: "plaid", syncId: `s${n}`,
         });
+        // Spelled the way the provider they moved from spelled them, and with
+        // no connection named on any of them. That is what a migrated document
+        // holds, and matching it strictly showed every connection as empty.
         db.accounts = [
           ...db.accounts,
-          acct("Fidelity 401(k)", "Fidelity", "retirement"),
-          acct("Fidelity Cash Management", "Fidelity", "checking"),
-          acct("Vanguard Brokerage", "Vanguard", "investment"),
+          acct("Fidelity 401(k)", "Fidelity Investments", "retirement"),
+          acct("Fidelity Cash Management", "Fidelity Investments", "checking"),
+          acct("Vanguard Brokerage", "Vanguard Group, Inc.", "investment"),
         ];
         localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
       } catch { /* nothing to patch */ }
@@ -7139,7 +7189,7 @@ try {
         says: it.querySelector(".warn")?.textContent.trim() ?? "",
       }));
     });
-    check("each connection lists the accounts that came in through it",
+    check("each connection lists the accounts that came in through it, however they are spelled",
       behind.length === 2
       && behind[0].accounts.join(" / ") === "Fidelity 401(k) / Fidelity Cash Management"
       && behind[1].accounts.join(" / ") === "Vanguard Brokerage",

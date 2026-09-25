@@ -5417,6 +5417,39 @@ await test("Plaid Link saying nothing is not the same as nothing going wrong", (
   assert.equal(M.LE.linkReference({}), "");
 });
 
+await test("a pull writes down which connection it came through", () => {
+  // Because nothing else can answer it. An account moved onto Plaid keeps the
+  // institution it already had, and two logins at one bank share a name, so
+  // the connection's own id is the only exact link between the two.
+  const base = M.emptyDB();
+  const remote = {
+    syncId: "p1", name: "Everyday", institution: "Fidelity", balance: 500, currency: "USD",
+    type: "checking", balanceDate: "2026-09-21", itemId: "it_1",
+  };
+  const pull = { fetchedAt: "2026-09-21T00:00:00.000Z", errors: [], accounts: [remote], transactions: [] };
+
+  const made = M.mergeSync(base, pull, "plaid");
+  assert.equal(made.db.accounts.at(-1).plaidItemId, "it_1", "a new account records it");
+
+  // And an account that already exists records it on the next pull, which is
+  // how a document that migrated before this existed fills itself in.
+  const older = {
+    ...base,
+    accounts: [{
+      ...base.accounts[0], id: "a1", name: "Everyday", institution: "Fidelity Investments",
+      syncSource: "plaid", syncId: "p1", history: [],
+    }],
+  };
+  const filled = M.mergeSync(older, pull, "plaid");
+  assert.equal(filled.db.accounts[0].plaidItemId, "it_1", "an existing one is filled in");
+
+  // Never blanked: a pull that does not name a connection must not lose the
+  // one already recorded. The scheduled job works from bare tokens.
+  const anonymous = { ...pull, accounts: [{ ...remote, itemId: undefined }] };
+  const kept = M.mergeSync(filled.db, anonymous, "plaid");
+  assert.equal(kept.db.accounts[0].plaidItemId, "it_1", "and kept when a pull says nothing");
+});
+
 await test("a tombstone does not outlive the account it was for", () => {
   // Connecting a bank to see what it offers, deleting what it made and then
   // moving the real accounts onto that same connection is an ordinary
@@ -5555,6 +5588,57 @@ await test("a connection says which accounts came in through it", () => {
     ["401(k)", "Cash Management"], "case and spacing are not a difference");
   assert.deepEqual(M.accountsOf(db, { institution: "Schwab", kind: "bank" }).accounts, [],
     "a connection nothing has come in through yet");
+});
+
+await test("an account that moved onto Plaid is still found under its connection", () => {
+  // The bug this exists for: every connection read as empty, for exactly the
+  // households that had migrated. An account moved onto Plaid keeps the name
+  // and institution it already had, on purpose, and the provider it moved
+  // from spelled the bank differently.
+  const base = M.emptyDB();
+  const acct = (id, institution, over = {}) => ({
+    id, name: "Checking", institution, type: "checking", balance: 100, includeInNetWorth: true,
+    hidden: false, history: [], order: 0, syncSource: "plaid", ...over,
+  });
+  const db = {
+    ...base,
+    accounts: [
+      acct("a1", "Fidelity Investments"),
+      acct("a2", "NewRez LLC"),
+      acct("a3", "Elements Financial Credit Union"),
+      acct("a4", "Ally Bank"),
+    ],
+  };
+  const found = (institution) =>
+    M.accountsOf(db, { institution, kind: "bank" }).accounts.map((a) => a.id);
+  assert.deepEqual(found("Fidelity"), ["a1"], "the shorter spelling");
+  assert.deepEqual(found("NewRez (formerly New Penn Financing)"), ["a2"], "and the longer one");
+  assert.deepEqual(found("Elements Financial"), ["a3"]);
+  assert.deepEqual(found("Ally"), ["a4"]);
+  assert.deepEqual(found("Chase"), [], "a bank that is not there is still not there");
+});
+
+await test("once an account names its connection, that is the answer", () => {
+  // Two logins at one institution cannot be told apart by name, which is why
+  // every pull writes the connection's own id onto the accounts it brings in.
+  const base = M.emptyDB();
+  const acct = (id, plaidItemId) => ({
+    id, name: id, institution: "Fidelity", type: "checking", balance: 100, includeInNetWorth: true,
+    hidden: false, history: [], order: 0, syncSource: "plaid", plaidItemId,
+  });
+  const db = { ...base, accounts: [acct("a1", "it_1"), acct("a2", "it_2"), acct("a3", undefined)] };
+
+  assert.deepEqual(
+    M.accountsOf(db, { institution: "Fidelity", kind: "bank", itemId: "it_1" }).accounts.map((a) => a.id),
+    ["a1"], "its own, not the other login's");
+  assert.deepEqual(
+    M.accountsOf(db, { institution: "Fidelity", kind: "bank", itemId: "it_2" }).accounts.map((a) => a.id),
+    ["a2"]);
+  // A connection nothing has named yet falls back to the name, and takes only
+  // what no other connection has claimed.
+  assert.deepEqual(
+    M.accountsOf(db, { institution: "Fidelity", kind: "bank", itemId: "it_3" }).accounts.map((a) => a.id),
+    ["a3"]);
 });
 
 await test("a 401(k) under a connection read as a bank is named as the problem", () => {
