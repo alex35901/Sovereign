@@ -229,11 +229,32 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // and is still a run that did nothing worth reporting as success.
     const ran = Boolean(banks) || plaid.ran || priced.ran;
 
-    // Read-then-write with no version guard: this job is the only writer on its
-    // schedule, and a browser that saves mid-run will simply win with its own
-    // newer copy, which already contains everything this pull would have added.
-    // Always a write now, because the proof-of-life stamp above is one.
-    const write = await writeDoc(next, null, "scheduled sync");
+    /**
+     * Guarded by the version this run started from.
+     *
+     * It used to force the write, on the reasoning that this job is the only
+     * writer on its schedule and a browser saving mid-run "will simply win
+     * with its own newer copy". It was the wrong way round. The browser saves
+     * during the run; the job writes afterwards, with the copy it read before
+     * the browser's save existed, and forcing it puts that copy back. Whatever
+     * the household did in that window is gone, and the window is as long as a
+     * bank takes to answer.
+     *
+     * So a run that finds the document has moved leaves it alone. Nothing is
+     * lost by that: every window this job pulls overlaps the next one, so the
+     * transactions it had in hand arrive tomorrow, or sooner at the next
+     * hands-on sync. The household's own edits cannot be re-fetched from
+     * anywhere.
+     */
+    const write = await writeDoc(next, stored.version, "scheduled sync");
+    if (!write.ok) {
+      return send(200, {
+        ran: false,
+        reason: "A browser saved while this run was working, so its copy was left alone. "
+          + "The pull will land on the next run.",
+        version: write.conflict?.version,
+      });
+    }
 
     return send(bankError ? 502 : 200, {
       ran,

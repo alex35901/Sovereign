@@ -127,6 +127,16 @@ export interface Account {
    * a wrong guess silently welds two real transactions into one.
    */
   syncFrom?: ISODate;
+  /**
+   * Provider ids this account used to answer to, kept when it moves.
+   *
+   * The old connection does not stop existing when an account is moved to a
+   * new one: it keeps offering the same account every night under the id it
+   * always used. Without a memory of that id the merge sees something it has
+   * never met and makes a second account, so a household that migrated to
+   * Plaid woke up to its SimpleFIN accounts back again.
+   */
+  movedFrom?: string[];
   /** Street address, for property accounts that can be valued automatically. */
   address?: string;
   /** The most recent automated valuation, kept for provenance. */

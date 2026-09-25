@@ -50,6 +50,10 @@ export function adopt(account: Account, to: Adoption, from: ISODate): Account {
     ...account,
     syncSource: "plaid",
     syncId: to.syncId,
+    // What it used to answer to. The old connection keeps offering this
+    // account every night under that id, and without this the merge meets
+    // something it has never seen and makes a second copy of it.
+    movedFrom: [...new Set([...(account.movedFrom ?? []), account.syncId].filter(Boolean) as string[])],
     syncFrom: from,
     // The institution's own mark, if the new provider has one and the account
     // has none. The name is left alone: it is the household's label for this

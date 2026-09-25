@@ -204,11 +204,37 @@ await test("a stale write is refused and hands back what is actually stored", as
   assert.equal((await M.readDoc()).doc.n, 3, "the refused write must not have landed");
 });
 
-await test("the scheduled job's forced write always lands", async () => {
-  const forced = await M.writeDoc({ n: 4, by: "cron" }, null, "scheduled sync");
+await test("a forced write still lands, for the callers that have to", async () => {
+  const forced = await M.writeDoc({ n: 4, by: "cron" }, null, "a forced write");
   assert.equal(forced.ok, true);
   assert.equal(forced.stored.version, 4);
-  assert.equal((await M.readDoc()).updatedBy, "scheduled sync");
+  assert.equal((await M.readDoc()).updatedBy, "a forced write");
+});
+
+await test("the scheduled job cannot write over a save made while it ran", async () => {
+  // The job used to force its write, reasoning that a browser saving mid-run
+  // "will simply win with its own newer copy". It was the wrong way round.
+  // The browser saves during the run; the job writes afterwards, with the copy
+  // it read before that save existed, and forcing it put that copy back. A
+  // household's evening of work went, and the window is as long as a bank
+  // takes to answer.
+  await M.writeDoc({ accounts: ["plaid"] }, null, "reset");
+  const readAt = (await M.readDoc()).version;
+
+  // The household saves while the job is off talking to banks.
+  const browser = await M.writeDoc({ accounts: ["plaid", "and the evening's work"] }, readAt, "a browser");
+  assert.equal(browser.ok, true);
+
+  // The job comes back with the copy it started from.
+  const job = await M.writeDoc({ accounts: ["plaid"], pulled: true }, readAt, "scheduled sync");
+  assert.equal(job.ok, false, "the job must not win with a copy from before the save");
+  assert.deepEqual((await M.readDoc()).doc.accounts, ["plaid", "and the evening's work"]);
+  assert.equal((await M.readDoc()).updatedBy, "a browser");
+
+  // And with nothing saved underneath it, the job writes normally.
+  const quiet = await M.writeDoc({ accounts: ["plaid"], pulled: true }, (await M.readDoc()).version, "scheduled sync");
+  assert.equal(quiet.ok, true);
+  assert.equal((await M.readDoc()).doc.pulled, true);
 });
 
 await test("two devices saving at once — only one wins", async () => {
@@ -859,6 +885,44 @@ await test("GET ?peek=1 hands a locked browser the key material and none of the 
   });
   assert.equal(wrong.status, 401, "?peek=1 is behind the same passphrase as everything else");
   await wipe();
+});
+
+await test("the scheduled job stands down if a browser saved while it ran", async () => {
+  // The job used to force its write, on the reasoning that a browser saving
+  // mid-run "will simply win with its own newer copy". It was the wrong way
+  // round. The browser saves during the run; the job writes afterwards, with
+  // the copy it read before that save existed. An evening of work went, and
+  // the window is as long as a bank takes to answer.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  await wipe(); await clearAttempts();
+
+  const seed = M.buildDemoDB();
+  seed.settings = { ...seed.settings, simplefinAccessUrl: "https://u:p@bridge.example/accounts" };
+  await asServer({ doc: seed, baseVersion: 0 }, "PUT");
+
+  // The household's save lands while the job is off talking to the bank. The
+  // bridge being slow is exactly the window this is about, so the save happens
+  // inside the fetch the job is waiting on.
+  const evening = { ...seed, accounts: [...seed.accounts, { ...seed.accounts[0], id: "a_evening", name: "The evening's work" }] };
+  const r = await withFetch(async () => {
+    const at = JSON.parse((await asServer(undefined, "GET")).text).version;
+    const saved = await asServer({ doc: evening, baseVersion: at }, "PUT");
+    assert.equal(saved.status, 200, "the browser's own save has to land first");
+    return new Response(BRIDGE, { status: 200 });
+  }, () => invokeWith(M.cronHandler, {
+    headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.7" },
+  }));
+
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.equal(body.ran, false, "the job has to say it did not write");
+  assert.match(body.reason, /saved while this run was working/);
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(after.updatedBy, "a browser", `the last writer was "${after.updatedBy}"`);
+  assert.ok(after.doc.accounts.some((a) => a.id === "a_evening"), "the evening's work must still be there");
 });
 
 await test("the scheduled job never writes over an encrypted document", async () => {

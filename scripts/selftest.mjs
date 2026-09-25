@@ -4692,6 +4692,62 @@ await test("a connection Plaid has no transactions for still brings its balances
   assert.deepEqual(fine.errors, []);
 });
 
+await test("an account moved to a new connection is not handed back by the old one", () => {
+  // The old connection does not stop existing when an account is migrated. It
+  // keeps offering the same account every night under the id it always used,
+  // and taking it made a second copy: a household that moved to Plaid woke up
+  // to its SimpleFIN accounts back again, with the night's transactions filed
+  // against them.
+  const base = M.emptyDB();
+  const remote = {
+    syncId: "sf-1", name: "Everyday", institution: "Elements", balance: 1000,
+    currency: "USD", type: "checking", balanceDate: "2026-09-25",
+  };
+  const pull = {
+    fetchedAt: "2026-09-25T09:00:00.000Z", errors: [], accounts: [remote],
+    transactions: [{ syncId: "x1", accountSyncId: "sf-1", date: "2026-09-24", amount: -2500, description: "SHOP", pending: false }],
+  };
+
+  // Before the move, the old connection feeds it, which is the whole point.
+  const before = M.mergeSync(base, pull, "simplefin");
+  assert.equal(before.accountsAdded, 1);
+  assert.equal(before.transactionsAdded, 1);
+  assert.deepEqual(before.migrated, []);
+
+  // Moved: same account, new provider, and it remembers what it answered to.
+  const moved = M.adopt(before.db.accounts.find((a) => a.syncId === "sf-1"), {
+    syncId: "pl-9", institution: "Elements",
+  }, "2026-09-25");
+  assert.deepEqual(moved.movedFrom, ["sf-1"]);
+  assert.equal(moved.syncSource, "plaid");
+  const after = { ...before.db, accounts: before.db.accounts.map((a) => (a.syncId === "sf-1" ? moved : a)) };
+
+  // The old connection offers it again, and is ignored: no second account, no
+  // second copy of the night's transactions, and no quiet re-pointing.
+  const again = M.mergeSync(after, pull, "simplefin");
+  assert.equal(again.accountsAdded, 0, "no second copy of an account already migrated");
+  assert.equal(again.transactionsAdded, 0, "nor of the transactions on it");
+  assert.deepEqual(again.migrated, ["Everyday"]);
+  assert.equal(again.db.accounts.length, 1);
+  assert.equal(again.db.accounts[0].syncSource, "plaid", "and it is still fed by the one it moved to");
+  assert.equal(again.db.accounts[0].syncId, "pl-9");
+
+  // Said out loud, with what to do about it.
+  const said = M.skipNotes(again);
+  assert.match(said[0], /Everyday still comes from the old connection/);
+  assert.match(said[0], /Disconnect the old connection/);
+
+  // And the connection it moved TO still feeds it normally.
+  const plaidPull = {
+    ...pull,
+    accounts: [{ ...remote, syncId: "pl-9" }],
+    transactions: [{ syncId: "p1", accountSyncId: "pl-9", date: "2026-09-25", amount: -3000, description: "SHOP", pending: false }],
+  };
+  const fed = M.mergeSync(after, plaidPull, "plaid");
+  assert.equal(fed.transactionsAdded, 1, "the new connection is not caught by its own memory");
+  assert.deepEqual(fed.migrated, []);
+});
+
 await test("a drill-down chart can be un-picked to show the whole range", () => {
   // Click a bar to narrow to it, click it again to stop narrowing. The state
   // that needed inventing is "none of them", because an absent period already

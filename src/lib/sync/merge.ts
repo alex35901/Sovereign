@@ -52,6 +52,15 @@ export interface MergeResult {
    * beyond a sync reporting nothing new.
    */
   suppressed: string[];
+  /**
+   * Accounts this provider still offers that have since moved to another one.
+   *
+   * The old connection does not stop existing when an account is migrated. It
+   * keeps handing the same account back every night, and taking it made a
+   * second copy: a household that moved to Plaid woke up to its SimpleFIN
+   * accounts back again, with the night's transactions filed against them.
+   */
+  migrated: string[];
 }
 
 /**
@@ -72,8 +81,19 @@ export function mergeSync(
   const tombstones = new Set(db.settings.deletedAccountKeys ?? []);
 
   const suppressed: string[] = [];
+  const migrated: string[] = [];
 
   for (const r of payload.accounts) {
+    // Moved to another provider on purpose, and this one has not been told.
+    // Left entirely alone: taking it back would file a second copy of an
+    // account the household has already migrated, and the transactions with
+    // it. The connection it moved to is the one feeding it now.
+    const moved = accounts.find((a) => a.syncSource !== source && a.movedFrom?.includes(r.syncId));
+    if (moved) {
+      migrated.push(moved.name);
+      continue;
+    }
+
     const existing = accounts.find((a) => a.syncId === r.syncId)
       ?? accounts.find((a) => a.syncSource === source && a.name === r.name && a.institution === r.institution);
 
@@ -396,6 +416,7 @@ export function mergeSync(
     rekeyed,
     sharedIds,
     suppressed,
+    migrated,
   };
 }
 
@@ -508,6 +529,13 @@ export function skipNotes(res: MergeResult): string[] {
     out.push(
       `${rows(res.skipped.noAccount)} arrived for an account this document does not track. `
       + "That is an account deleted on purpose, or one not yet pointed at this connection.",
+    );
+  }
+  if (res.migrated.length) {
+    out.push(
+      `${res.migrated.join(" and ")} still ${res.migrated.length === 1 ? "comes" : "come"} from the old connection as `
+      + "well, and moved to a new one here, so the old copy was ignored. Disconnect the old connection for "
+      + `${res.migrated.length === 1 ? "it" : "them"}, or the two will go on offering the same account.`,
     );
   }
   for (const pair of res.sharedIds) {

@@ -511,7 +511,13 @@ try {
     await phone.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
     await phone.waitForTimeout(500);
     await tryStep("a transaction opens on a phone", () =>
-      phone.locator(".list-row.tx-grid:not(.head) .col").first().click({ timeout: 5000 }));
+      // The amount, not the name. The name's cell carries a small arrow to the
+      // merchant's own page, and a click lands in the centre of whatever it is
+      // given: the demo data is generated from today's date, so the first row
+      // is a different merchant every day and on the days the name is short
+      // enough the centre falls on that arrow. The test then navigated instead
+      // of opening anything, which reads as the row being broken.
+      phone.locator(".list-row.tx-grid:not(.head) .tx-amount").first().click({ timeout: 5000 }));
     await phone.waitForTimeout(600);
     const catRow = phone.locator(".drow", { hasText: "Category" }).first();
     await tryStep("and its category can be opened", () =>
@@ -585,7 +591,8 @@ try {
     // The other half of that: with a mouse the search box should still take
     // focus, or a fix for phones has quietly cost everyone else the ability to
     // open a menu and start typing.
-    await mouse.locator(".list-row.tx-grid:not(.head) .col").first().click();
+    // The amount cell, for the same reason as above: no links inside it.
+    await mouse.locator(".list-row.tx-grid:not(.head) .tx-amount").first().click();
     await mouse.waitForTimeout(600);
     await mouse.locator(".drow", { hasText: "Category" }).first()
       .locator("button, select, .drow-btn").first().click();
