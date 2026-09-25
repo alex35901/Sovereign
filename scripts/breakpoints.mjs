@@ -7031,6 +7031,96 @@ try {
   }
 
 
+  if (want("connections")) {
+    // ── one provider, one card ──
+    //
+    // The bridge that did the bank half is gone, so the card that set it up
+    // and the row that metered it are gone with it. What was on that card and
+    // was never the bridge's — the schedule, the way back from a delete
+    // nobody meant, the privacy address — came here.
+    const cn = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
+    const seedPage = await cn.newPage();
+    await seedPage.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await seedPage.waitForTimeout(1400);
+    await seedPage.close();
+    // Patched before the app boots on the next page, so nothing it saves on
+    // the way up can land on top of this.
+    await cn.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        db.settings.plaidItems = [
+          { accessToken: "a", itemId: "it_1", institution: "Fidelity", kind: "bank", addedAt: "2026-09-01T00:00:00Z", lastSyncAt: "2026-09-24T09:00:00Z" },
+          { accessToken: "b", itemId: "it_2", institution: "Vanguard", kind: "investment", addedAt: "2026-08-01T00:00:00Z", lastSyncAt: "2026-09-25T09:00:00Z" },
+        ];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* nothing to patch */ }
+    });
+    const st2 = await cn.newPage();
+    await st2.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await st2.waitForTimeout(1500);
+
+    const page = await st2.evaluate(() => ({
+      text: document.body.innerText,
+      cards: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
+      providers: [...document.querySelectorAll(".page table tbody tr td:nth-child(2)")].map((c) => c.innerText.trim()),
+    }));
+    check("settings says nothing about the bridge any more",
+      !/simplefin/i.test(page.text), (page.text.match(/.{0,40}simplefin.{0,40}/i) ?? [""])[0]);
+    check("and the table of connections does not meter it",
+      !page.providers.some((p) => /simplefin/i.test(p)), page.providers.join(" | "));
+    check("the one connections card is named for what it holds",
+      page.cards.includes("Connections") && !page.cards.includes("Bank sync"), page.cards.join(" | "));
+
+    const card = await st2.evaluate(() => {
+      const found = [...document.querySelectorAll(".card")]
+        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!found) return null;
+      return {
+        schedule: found.querySelectorAll("select").length,
+        privacy: !!found.querySelector('a[href="/privacy"]'),
+        kinds: [...found.querySelectorAll(".kind-switch")].map((b) => b.textContent.trim()),
+        pressable: [...found.querySelectorAll(".kind-switch")].every((b) => b.tagName === "BUTTON"),
+      };
+    });
+    check("it carries the schedule that drives the pulls", card !== null && card.schedule === 1,
+      `${card?.schedule} schedules`);
+    check("and the address a provider asks for", card !== null && card.privacy, String(card?.privacy));
+    // The label is the switch: what a connection is read as, and the way to
+    // read it the other way, are one control.
+    check("each connection says what it is read as, and the label is the switch",
+      card !== null && card.kinds.join(" / ") === "bank / investment" && card.pressable,
+      `${card?.kinds.join(" / ")} (buttons: ${card?.pressable})`);
+
+    // A connection row at phone width. The demo carries no Plaid items, so
+    // this row went unmeasured until now and ran off the card: four controls
+    // and an institution's name do not fit 390px on one line.
+    await st2.setViewportSize({ width: 390, height: 1400 });
+    await st2.waitForTimeout(600);
+    const fit = await st2.evaluate(() => {
+      const found = [...document.querySelectorAll(".card")]
+        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+      const rows = [...(found?.querySelectorAll(".plaid-row") ?? [])];
+      const edge = found.getBoundingClientRect().right;
+      let worst = 0;
+      let name = 0;
+      for (const r of rows) {
+        for (const el of r.querySelectorAll("button, .kind-switch, .truncate")) {
+          worst = Math.max(worst, Math.round(el.getBoundingClientRect().right - edge));
+        }
+        const who = r.querySelector(".truncate");
+        if (who) name = Math.max(name, Math.round(who.getBoundingClientRect().width));
+      }
+      return { rows: rows.length, worst, name };
+    });
+    check("390px — nothing in a connection row runs off the card",
+      fit.rows === 2 && fit.worst <= 0, `${fit.rows} rows, worst ${fit.worst}px past the edge`);
+    check("390px — and the institution keeps enough width to be read",
+      fit.name >= 50, `${fit.name}px for the name`);
+    await cn.close();
+  }
+
   if (want("settings-trim")) {
     // ── settings holds settings, not switches nobody moves ──
     //

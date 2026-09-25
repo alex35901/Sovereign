@@ -35,13 +35,11 @@ function AccessUrl() {
   const db = useDB();
   const url = db.settings.simplefinAccessUrl;
 
-  if (!url) {
-    return (
-      <div className="tiny faint">
-        SimpleFIN isn’t connected, so the scheduled job has nothing to pull from it. Connect it above first.
-      </div>
-    );
-  }
+  // Nothing at all when there is none. The bridge cannot be connected from
+  // this app any more, so a line explaining how to fix its absence would be
+  // instructions for a button that is not there. It still shows for a document
+  // that carries one, because the scheduled job still reads it.
+  if (!url) return null;
   return (
     <SecretBox
       name="SIMPLEFIN_ACCESS_URL" value={url} said="Access URL copied."
@@ -153,6 +151,7 @@ function Row({ ok, label, detail }: { ok: boolean; label: string; detail: string
  * whether the variables are set — presence only, never a value.
  */
 function Readiness({ unlocked }: { unlocked: boolean }) {
+  const db = useDB();
   const [seen, setSeen] = useState<CloudDiagnosis | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -189,13 +188,18 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
             label="The key on this browser"
             detail={unlocked ? "is held: it can read and save." : "is missing. Enter the encryption passphrase."}
           />
-          <Row
-            ok={e.simplefinUrlSet}
-            label="SIMPLEFIN_ACCESS_URL in Vercel"
-            detail={e.simplefinUrlSet
-              ? "is set: the 9am pull can reach SimpleFIN."
-              : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
-          />
+          {/* Only where there is still a bridge to reach. A red row about a
+              variable for a provider this document no longer uses is an alarm
+              nobody can act on, and it sits among the ones that matter. */}
+          {db.settings.simplefinAccessUrl || e.simplefinUrlSet ? (
+            <Row
+              ok={e.simplefinUrlSet}
+              label="SIMPLEFIN_ACCESS_URL in Vercel"
+              detail={e.simplefinUrlSet
+                ? "is set: the 9am pull can reach SimpleFIN."
+                : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
+            />
+          ) : null}
           <Row
             ok={e.plaidTokensSet}
             label="PLAID_ACCESS_TOKENS in Vercel"
@@ -441,8 +445,8 @@ export function EncryptionCard(){
               <b>The overnight sync still runs.</b> It cannot read the document, so it encrypts each pull to
               this installation&rsquo;s public key and leaves it in a queue. Whichever browser opens the app
               next merges it in. That is the only place it can be read. For that to work, the credentials
-              have to live in Vercel as <b>SIMPLEFIN_ACCESS_URL</b> and <b>PLAID_ACCESS_TOKENS</b>, since the
-              job can no longer find them inside the document.
+              have to live in Vercel as <b>PLAID_ACCESS_TOKENS</b>, since the job can no longer find them
+              inside the document.
             </span>
           </div>
           <AccessUrl />
@@ -716,9 +720,8 @@ function SetupFlow({ busy, onBackup, onSeal }: {
       <div className="setting-row">
         <span className="small">
           <b>One thing to do afterwards.</b> Once the document is sealed the scheduled 9am sync can no
-          longer read the bank credentials out of it. Put the values below into Vercel as
-          <b> SIMPLEFIN_ACCESS_URL</b> and <b>PLAID_ACCESS_TOKENS</b> and redeploy, or the overnight pull
-          stops until you do.
+          longer read the bank credentials out of it. Put the values below into Vercel and redeploy, or
+          the overnight pull stops until you do.
         </span>
       </div>
       <AccessUrl />

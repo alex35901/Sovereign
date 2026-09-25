@@ -3,7 +3,8 @@ import { Building2, History, KeyRound, LineChart, RefreshCw, RotateCcw, Stethosc
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
-import { syncPlaid, syncPlaidItem } from "../lib/sync";
+import { CADENCES, DEFAULT_CADENCE, nextSyncAt, syncPlaid, syncPlaidItem, untilLabel } from "../lib/sync";
+import type { SyncCadence } from "../lib/sync";
 import { recordRun } from "../lib/usage";
 import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, releaseItem, reportHistory } from "../lib/sync/plaid";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
@@ -164,6 +165,60 @@ export function PlaidCard() {
       notify(out.summary);
       if (out.errors.length) setError(out.errors.join(" · "));
       if (out.notes.length) setNote(out.notes.join(" "));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Reading a connection the other way: as a brokerage, or as a bank.
+   *
+   * What a Plaid item is for is decided when it is linked, and getting it
+   * wrong is easy — a 401(k) at a bank you also bank with is offered under
+   * both. It matters because the two are pulled with different calls: a bank
+   * item is asked for transactions and never for holdings, so a retirement
+   * account connected as a bank arrives as a balance and nothing else, which
+   * is exactly what it looks like when something is broken.
+   *
+   * It cannot be done here alone. The item consented to one product and Plaid
+   * refuses the other with ADDITIONAL_CONSENT_REQUIRED however this app labels
+   * it, so the switch is a trip through the dialog to ask for the missing
+   * consent. The access token survives it, which is what makes it worth doing:
+   * no new token to paste into Vercel, and everything already pulled stays.
+   */
+  const switchKind = async (item: PlaidItemRef) => {
+    const to: PlaidItemRef["kind"] = item.kind === "bank" ? "investment" : "bank";
+    const product = to === "investment" ? "investments" : "transactions";
+    setBusy(item.itemId);
+    setError(null);
+    setNote(null);
+    try {
+      const { linkToken } = await reconnectLinkToken(item.accessToken, {
+        consentTo: [product],
+        // A bank item's reach is worth raising while the dialog is open
+        // anyway, the same as a reconnect does.
+        ...(to === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+      });
+      // Only a sign-in that finished granted anything. Relabelling the item
+      // after a dialog somebody closed would leave it asking Plaid for a
+      // product it still has no permission for, on every pull, for ever.
+      if ((await openPlaidLink(linkToken)) === null) {
+        setNote(`${item.institution} is still a ${item.kind} connection: the dialog closed before Plaid was asked for ${product}.`);
+        return;
+      }
+      const next: PlaidItemRef = {
+        ...item,
+        kind: to,
+        lastError: undefined,
+        ...(to === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+      };
+      actions.patchSettings({
+        plaidItems: items.map((i) => (i.itemId === item.itemId ? next : i)),
+      });
+      notify(`${item.institution} is now an ${to} connection. Syncing…`);
+      await syncItem(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not switch this connection.");
     } finally {
       setBusy(null);
     }
@@ -397,8 +452,8 @@ export function PlaidCard() {
   return (
     <Card>
       <CardHead
-        title="Plaid"
-        sub="The only route here that returns holdings"
+        title="Connections"
+        sub="Banks, cards and brokerages, through Plaid"
         right={items.length ? (
           <Btn variant="primary" onClick={() => void syncAll()} disabled={busy !== null}>
             <RefreshCw size={14} style={busy === "sync" ? { animation: "spin 1s linear infinite" } : undefined} />
@@ -418,8 +473,10 @@ export function PlaidCard() {
 
       <div className="small muted" style={{ marginBottom: 12 }}>
         <b>Investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages: positions, cost basis and prices.
-        <b> Bank</b> for chequing, savings and cards: transactions. An institution offering both can be
-        connected twice. The item count against the plan's ceiling is in the integrations table above.
+        <b> Bank</b> for chequing, savings and cards: transactions. The two are pulled with different
+        calls, so a 401(k) connected as a bank arrives as a balance and nothing else. Press the label
+        beside a connection below to read it the other way. An institution offering both can be
+        connected twice. The item count against the plan&rsquo;s ceiling is in the integrations table above.
       </div>
 
       {items.length ? (
@@ -427,13 +484,25 @@ export function PlaidCard() {
           <div className="divider" />
           <div className="col" style={{ gap: 8 }}>
             {items.map((item) => (
-              <div key={item.itemId} className="spread">
-                <span className="row" style={{ gap: 8, minWidth: 0 }}>
+              <div key={item.itemId} className="spread plaid-row">
+                <span className="row plaid-who" style={{ gap: 8, minWidth: 0 }}>
                   {item.kind === "investment" ? <LineChart size={14} className="muted" /> : <Building2 size={14} className="muted" />}
                   <span className="truncate" style={{ fontWeight: 500 }}>{item.institution}</span>
-                  <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>{item.kind}</span>
+                  {/* The label is the switch. A fourth button on the row does
+                      not fit a phone, and what this says is exactly what the
+                      thing to change is. */}
+                  <button
+                    className="tag kind-switch"
+                    onClick={() => void switchKind(item)}
+                    disabled={busy !== null}
+                    title={item.kind === "bank"
+                      ? "Read as a bank: transactions, no holdings. Press to read it as investments instead, which pulls positions. Plaid will ask you to sign in again."
+                      : "Read as investments: positions and prices, no transactions. Press to read it as a bank instead. Plaid will ask you to sign in again."}
+                  >
+                    {item.kind}
+                  </button>
                 </span>
-                <span className="row" style={{ gap: 10 }}>
+                <span className="row plaid-doings" style={{ gap: 10 }}>
                   <span className="tiny faint nowrap">
                     {item.lastSyncAt ? `synced ${dateLabel(item.lastSyncAt.slice(0, 10))}` : "never synced"}
                   </span>
@@ -507,6 +576,28 @@ export function PlaidCard() {
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
 
       <div className="divider" />
+      <SyncSchedule />
+
+      {/* The way back from a delete nobody meant. Provider-agnostic, and it
+          was on the bank-sync card until that card went. */}
+      {(db.settings.deletedAccountKeys?.length ?? 0) > 0 ? (
+        <>
+          <div className="divider" />
+          <div className="spread wrap" style={{ gap: 10 }}>
+            <span className="small muted" style={{ maxWidth: 520 }}>
+              <b>{db.settings.deletedAccountKeys!.length} deleted account
+              {db.settings.deletedAccountKeys!.length === 1 ? " is" : "s are"} ignored on sync.</b>{" "}
+              Forgetting them lets the provider offer them again on the next pull, the way back
+              from a delete you didn&rsquo;t mean.
+            </span>
+            <Btn onClick={() => { actions.forgetDeletedAccounts(); notify("Deleted accounts forgotten. They can return on the next sync."); }}>
+              Forget them
+            </Btn>
+          </div>
+        </>
+      ) : null}
+
+      <div className="divider" />
       <div className="row wrap" style={{ gap: 10 }}>
         <Btn onClick={() => void runCheck()} disabled={busy !== null}>
           <Stethoscope size={14} /> {busy === "check" ? "Checking…" : "Check configuration"}
@@ -532,6 +623,59 @@ export function PlaidCard() {
           server and never reach this page. Only the per-connection access token is held here.
         </div>
       </details>
+
+      <div className="divider" />
+      <div className="small muted">
+        {/* Published rather than described: a provider asking for a privacy
+            policy is asking for an address, and this is the one to give them.
+            Static, so it answers even when the application does not. */}
+        What this holds, where it goes, how long it is kept and how to delete it:{" "}
+        <a href="/privacy" target="_blank" rel="noreferrer">privacy, retention and deletion</a>.
+      </div>
     </Card>
+  );
+}
+
+/**
+ * How often to pull, and when the next one is due.
+ *
+ * It lived on the bank-sync card, which was the bridge's, and came here when
+ * that went: it was never the bridge's schedule, it is the app's, and Plaid is
+ * the only thing it drives now.
+ *
+ * The app is the browser tab, so it says plainly that nothing runs while the
+ * tab is shut — a schedule that quietly does nothing overnight would be worse
+ * than no schedule at all.
+ */
+function SyncSchedule() {
+  const db = useDB();
+  const { actions } = useStore();
+  const cadence = db.settings.syncCadence ?? DEFAULT_CADENCE;
+  const due = nextSyncAt(cadence, db.settings.lastSyncAt);
+
+  return (
+    <div className="col" style={{ gap: 7 }}>
+      <div className="row wrap" style={{ gap: 10 }}>
+        <span className="small" style={{ fontWeight: 500 }}>Sync automatically</span>
+        <select
+          className="select" style={{ width: "auto", minWidth: 200 }}
+          value={cadence}
+          onChange={(e) => actions.patchSettings({ syncCadence: e.target.value as SyncCadence })}
+        >
+          {CADENCES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+      </div>
+
+      <span className="tiny faint" style={{ maxWidth: 520 }}>
+        {cadence === "off"
+          ? "Nothing will pull on its own while the app is open. The 9am job still runs."
+          : due
+            ? `Next pull ${untilLabel(due, Date.now())}, the next time the app is open.`
+            : "The next pull runs as soon as the app is open."}
+        {" "}This is the in-app schedule; a scheduled job also pulls at 9am with every browser
+        shut. A bank posts to Plaid about once a day, so anything tighter rarely finds new
+        data.
+      </span>
+    </div>
   );
 }

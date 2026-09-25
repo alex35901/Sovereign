@@ -1,14 +1,10 @@
 import { useRef, useState } from "react";
-import { Download, Link2, RefreshCw, Upload } from "lucide-react";
+import { Download, Upload } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel } from "../lib/date";
 import { toCSV } from "../lib/csv";
 import { download, exportJSON, importJSON } from "../lib/storage";
-import { ADAPTERS, CADENCES, DEFAULT_CADENCE, nextSyncAt, syncSimplefin, syncWindowStart, untilLabel } from "../lib/sync";
-import type { SyncCadence } from "../lib/sync";
-import { pricesDue, refreshPrices } from "../lib/prices";
-import { Btn, Card, CardHead, ConfirmButton, Field, Segmented, TextInput } from "../components/ui";
+import { Btn, Card, CardHead, Field, Segmented, TextInput } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
 import { CloudCard } from "./CloudCard";
@@ -17,55 +13,9 @@ import { EncryptionCard } from "./EncryptionCard";
 
 export default function Settings() {
   const db = useDB();
-  const { actions, apply, notify } = useStore();
+  const { actions, notify } = useStore();
   const fileRef = useRef<HTMLInputElement>(null);
-  const [token, setToken] = useState("");
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** What a pull left out, which is never an error and never worth swallowing. */
-  const [note, setNote] = useState<string | null>(null);
-
-  const adapter = ADAPTERS[0];
-  const connected = adapter.isConnected(db.settings);
-
-  const connect = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const { accessUrl } = await adapter.connect(token);
-      actions.patchSettings({ simplefinAccessUrl: accessUrl });
-      setToken("");
-      notify("Connected to SimpleFIN. Run a sync to pull balances and transactions.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Connection failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const sync = async () => {
-    if (!db.settings.simplefinAccessUrl) return;
-    setBusy(true);
-    setError(null);
-    setNote(null);
-    try {
-      const { summary, errors, notes } = await syncSimplefin(db, apply);
-      notify(summary);
-      if (errors.length) setError(errors.join(" · "));
-      setNote(notes.length ? notes.join(" ") : null);
-      // Prices ride along, but only if one is owed: this button gets pressed
-      // repeatedly while someone waits for a transaction to show up, and a
-      // closing price does not change in between. The Refresh now button on
-      // the prices card is the one that always asks.
-      if (pricesDue(db.settings.lastPricesAt)) {
-        await refreshPrices(db, apply).catch(() => {});
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const restore = async (file: File) => {
     try {
@@ -136,98 +86,14 @@ export default function Settings() {
                   they fill forward from the last change.
                 </span>
               </div>
+              {/* A file that would not read said so in the sync card, which is
+                  no longer here. It says so beside the button that read it. */}
+              {error ? <div className="small neg">{error}</div> : null}
             </div>
           </Card>
         </div>
 
         <IntegrationsCard />
-
-        <Card>
-          <CardHead
-            title="Bank sync"
-            sub="Pull balances and transactions automatically instead of importing CSVs"
-            right={connected ? (
-              <Btn variant="primary" onClick={() => void sync()} disabled={busy}>
-                <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
-                {busy ? "Syncing…" : "Sync now"}
-              </Btn>
-            ) : null}
-          />
-
-          <div className="row wrap" style={{ gap: 10, marginBottom: 14 }}>
-            <span className="chip on">{adapter.label}</span>
-            <span className="small muted">{adapter.cost}</span>
-          </div>
-
-          {connected ? (
-            <div className="col" style={{ gap: 10 }}>
-              <span className="small pos">✓ Connected</span>
-              <span className="small muted">
-                Last sync:{" "}
-                {db.settings.lastSyncAt ? `${dateLabel(db.settings.lastSyncAt.slice(0, 10))} at ${new Date(db.settings.lastSyncAt).toLocaleTimeString()}` : "never"}
-                {" · "}next pull starts from {syncWindowStart(db)}
-              </span>
-              <SyncSchedule />
-              <div>
-                <ConfirmButton
-                  label="Disconnect"
-                  confirmLabel="Click again to disconnect"
-                  onConfirm={() => { actions.patchSettings({ simplefinAccessUrl: undefined }); notify("SimpleFIN disconnected."); }}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="col" style={{ gap: 12 }}>
-              <ol className="small muted" style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
-                <li>Create an account at <b>bridge.simplefin.org</b> and connect your banks there ($15/yr, up to 25 institutions).</li>
-                <li>Generate a <b>setup token</b>, a long base64 string. It can only be claimed once.</li>
-                <li>Paste it below. The token is exchanged for a durable access URL that stays in this browser.</li>
-              </ol>
-              <div className="row wrap" style={{ gap: 8 }}>
-                <div className="grow" style={{ minWidth: 240 }}>
-                  <TextInput value={token} onChange={setToken} placeholder="Paste setup token" />
-                </div>
-                <Btn variant="primary" onClick={() => void connect()} disabled={busy || !token.trim()}>
-                  <Link2 size={14} /> {busy ? "Connecting…" : "Connect"}
-                </Btn>
-              </div>
-              <span className="tiny faint">
-                Requires the bundled <code>/api/simplefin</code> function to be running, it forwards the request server-side,
-                because the bridge sends no CORS headers. Works on Vercel, or locally with <code>vercel dev</code>.
-              </span>
-            </div>
-          )}
-
-          {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
-          {note ? <div className="small muted" style={{ marginTop: 10 }}>{note}</div> : null}
-
-          {(db.settings.deletedAccountKeys?.length ?? 0) > 0 ? (
-            <>
-              <div className="divider" />
-              <div className="spread wrap" style={{ gap: 10 }}>
-                <span className="small muted" style={{ maxWidth: 520 }}>
-                  <b>{db.settings.deletedAccountKeys!.length} deleted account
-                  {db.settings.deletedAccountKeys!.length === 1 ? " is" : "s are"} ignored on sync.</b>{" "}
-                  Forgetting them lets the provider offer them again on the next pull, the way back
-                  from a delete you didn&rsquo;t mean.
-                </span>
-                <Btn onClick={() => { actions.forgetDeletedAccounts(); notify("Deleted accounts forgotten. They can return on the next sync."); }}>
-                  Forget them
-                </Btn>
-              </div>
-            </>
-          ) : null}
-
-          <div className="divider" />
-          <div className="small muted">
-            {/* Published rather than described: a provider asking for a privacy
-                policy is asking for an address, and this is the one to give
-                them. Static, so it answers even when the application does not. */}
-            What this holds, where it goes, how long it is kept and how to delete it:{" "}
-            <a href="/privacy" target="_blank" rel="noreferrer">privacy, retention and deletion</a>.
-          </div>
-
-        </Card>
 
         <CloudCard />
         <HistoryCard />
@@ -240,42 +106,3 @@ export default function Settings() {
   );
 }
 
-/**
- * How often to pull, and when the next one is due.
- *
- * The app is the browser tab, so it says plainly that nothing runs while the
- * tab is shut — a schedule that quietly does nothing overnight would be worse
- * than no schedule at all.
- */
-function SyncSchedule() {
-  const db = useDB();
-  const { actions } = useStore();
-  const cadence = db.settings.syncCadence ?? DEFAULT_CADENCE;
-  const due = nextSyncAt(cadence, db.settings.lastSyncAt);
-
-  return (
-    <div className="col" style={{ gap: 7 }}>
-      <div className="row wrap" style={{ gap: 10 }}>
-        <span className="small" style={{ fontWeight: 500 }}>Sync automatically</span>
-        <select
-          className="select" style={{ width: "auto", minWidth: 200 }}
-          value={cadence}
-          onChange={(e) => actions.patchSettings({ syncCadence: e.target.value as SyncCadence })}
-        >
-          {CADENCES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-        </select>
-      </div>
-
-      <span className="tiny faint" style={{ maxWidth: 520 }}>
-        {cadence === "off"
-          ? "Nothing will pull on its own while the app is open. The 9am job still runs."
-          : due
-            ? `Next pull ${untilLabel(due, Date.now())}, the next time the app is open.`
-            : "The next pull runs as soon as the app is open."}
-        {" "}This is the in-app schedule; a scheduled job also pulls at 9am with every browser
-        shut. SimpleFIN itself refreshes about once a day, so anything tighter rarely finds
-        new data.
-      </span>
-    </div>
-  );
-}

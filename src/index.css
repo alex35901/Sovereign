@@ -533,6 +533,29 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .chip.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 600; }
 .tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; }
+/* A label that is also the way to change what it says. Dotted rather than
+   solid, the same as the budget's column heading: a solid underline in a row
+   of buttons reads as one more link to somewhere. */
+.kind-switch {
+  background: var(--surface-3); color: var(--muted); border: 0; cursor: pointer;
+  text-decoration: underline dotted; text-decoration-thickness: 1px; text-underline-offset: 3px;
+  font: inherit; font-size: 11px; font-weight: 600;
+}
+.kind-switch:hover:not(:disabled) { color: var(--accent); }
+.kind-switch:disabled { cursor: default; opacity: 0.6; }
+
+/* One connection: who it is on the left, what can be done with it on the
+   right. Four controls and a name do not fit a phone on one line: the name
+   was squeezed to a letter and Disconnect ran off the edge. So below the
+   width where they stop fitting, the two halves take a line each. */
+.plaid-row { gap: 10px; }
+.plaid-who { flex: 1 1 auto; }
+.plaid-doings { flex: 0 0 auto; }
+@media (max-width: 720px) {
+  .plaid-row { flex-wrap: wrap; }
+  .plaid-who, .plaid-doings { flex: 1 1 100%; }
+  .plaid-doings { flex-wrap: wrap; justify-content: flex-start; row-gap: 6px; }
+}
 .avatar { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; font-size: 14px; flex: none; background: var(--surface-3); }
 .avatar.sm { width: 24px; height: 24px; border-radius: 7px; font-size: 11px; }
 .avatar.lg { width: 40px; height: 40px; border-radius: 11px; font-size: 17px; }

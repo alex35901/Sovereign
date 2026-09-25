@@ -157,11 +157,6 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   const s = db.settings;
   const usage = s.usage;
 
-  const banks = new Set(
-    db.accounts.filter((a) => a.syncSource === "simplefin" && !a.closedAt).map((a) => a.institution.trim().toLowerCase()),
-  );
-  banks.delete("");
-
   const plaidItems = s.plaidItems ?? [];
   const plaidLast = plaidItems
     .map((i) => i.lastSyncAt ?? "")
@@ -181,34 +176,16 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   // What one save costs, which is what makes the allowance legible: an
   // allowance in gigabytes means nothing until you know the unit it is spent in.
   const perSave = documentMB(db);
-  const simplefin = meterOf(usage, "simplefin", "ever", now);
   const plaid = meterOf(usage, "plaid", "ever", now);
   const tiingo = meterOf(usage, "tiingo", "month", now);
   const rentcast = meterOf(usage, "rentcast", "month", now);
 
   return [
     {
-      id: "simplefin",
-      process: "Bank sync",
-      provider: "SimpleFIN Bridge",
-      credential: { kind: "claimed", held: "Access URL", where: "Bank sync" },
-      set: Boolean(s.simplefinAccessUrl?.trim()),
-      // The subscription caps how many banks may be linked at the bridge, not
-      // how often they are asked, so the meter is the banks and not the calls.
-      used: banks.size,
-      ceiling: 25,
-      unit: "institutions",
-      period: "ever",
-      lastAt: s.lastSyncAt,
-      // A nightly job and a browser that syncs on its own cadence: three days
-      // with no attempt at all is not a quiet week, it is nothing running.
-      staleAfterHours: 72,
-      quiet: quietSince(db, "simplefin", now),
-      error: simplefin.error,
-    },
-    {
       id: "plaid",
-      process: "Investment sync",
+      // Banks and brokerages both, since it is the only provider left: the
+      // bridge that used to do the bank half is gone.
+      process: "Bank & investment sync",
       provider: "Plaid",
       credential: { kind: "server", vars: "PLAID_CLIENT_ID / PLAID_SECRET" },
       set: plaidItems.length > 0,
@@ -217,6 +194,8 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       unit: "items",
       period: "ever",
       lastAt: plaidLast,
+      // A nightly job and a browser that syncs on its own cadence: three days
+      // with no attempt at all is not a quiet week, it is nothing running.
       staleAfterHours: 72,
       quiet: quietSince(db, "plaid", now),
       error: plaid.error,

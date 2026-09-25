@@ -710,7 +710,7 @@ const rowsOf = (db, hopper = null, now = SEP) =>
 await test("every provider is a row, and an unconfigured one reads as off", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   for (const r of Object.values(rows)) {
     assert.equal(r.set, false, `${r.id} should not look configured`);
     assert.equal(M.healthOf(r).state, "off", r.id);
@@ -718,29 +718,31 @@ await test("every provider is a row, and an unconfigured one reads as off", () =
   }
 });
 
-await test("the bank meter counts institutions, which is what the subscription caps", () => {
+await test("the bridge is not a row any more, and Plaid answers for both halves", () => {
+  // SimpleFIN did the bank half and Plaid the investment half. With the last
+  // bridge account gone there is one provider, and a table listing a second
+  // one that is switched off for ever is a row nobody can act on.
+  const rows = rowsOf(M.emptyDB());
+  assert.equal("simplefin" in rows, false);
+  assert.match(rows.plaid.process, /bank/i);
+  assert.match(rows.plaid.process, /investment/i);
+});
+
+await test("the connection meter counts items, which is what the plan caps", () => {
   const base = M.emptyDB();
-  let n = 0;
-  const account = (institution, over = {}) => ({
-    id: `a${(n += 1)}`, name: "Checking", institution, type: "checking",
-    balance: 100, includeInNetWorth: true, hidden: false, history: [], syncSource: "simplefin", ...over,
-  });
+  const item = (institution, itemId, kind = "bank") =>
+    ({ accessToken: "a", itemId, institution, kind, addedAt: "2026-01-01T00:00:00Z" });
   const db = {
     ...base,
-    settings: { ...base.settings, simplefinAccessUrl: "https://u:p@bridge/accounts" },
-    accounts: [
-      // two accounts behind one login, which is what the subscription counts
-      account("Chase"), account("Chase"), account("CHASE  "),
-      account("Ally"),
-      account("Closed Bank", { closedAt: "2026-01-01" }),
-      { ...account("Manual"), syncSource: "manual" },
-    ],
+    settings: {
+      ...base.settings,
+      plaidItems: [item("Chase", "i1"), item("Ally", "i2"), item("Vanguard", "i3", "investment")],
+    },
   };
-  const row = rowsOf(db).simplefin;
-  assert.equal(row.used, 2, "two logins, however many accounts hang off them");
-  assert.equal(row.ceiling, 25);
+  const row = rowsOf(db).plaid;
+  assert.equal(row.used, 3, "one login is one item, however many accounts hang off it");
+  assert.equal(row.ceiling, 10);
   assert.equal(row.set, true);
-  assert.equal(M.healthOf(row).state, "ok");
 });
 
 await test("health warns before the ceiling and refuses at it", () => {
@@ -860,7 +862,7 @@ await test("a response is measured from its header, and from a clone when there 
 await test("Neon and Vercel are rows too, and read as off before anything has run", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["simplefin", "plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   assert.equal(rows.neon.set, false, "no traffic yet means nothing to report");
   assert.equal(rows.vercel.set, false);
 });
@@ -6796,21 +6798,24 @@ await test("an account that is gone, or has barely any history, says nothing", (
 });
 
 await test("a connection that runs every day and brings nothing back is not healthy", () => {
-  // The failure that beat every other signal: the bridge answers, reports no
+  // The failure that beat every other signal: the provider answers, reports no
   // error, stamps its clock, and returns an empty list. Last transaction the
   // eighth, today the twentieth, and the row says Healthy.
   const base = M.emptyDB();
   const account = {
     id: "a1", name: "Checking", institution: "Chase", type: "checking",
     balance: 100, includeInNetWorth: true, hidden: false, history: [], order: 0,
-    syncSource: "simplefin",
+    syncSource: "plaid",
   };
   // Activity most days, which is what makes twelve days of silence loud.
   const days = [];
   for (let d = 1; d <= 8; d++) days.push(`2026-09-0${d}`);
   const db = {
     ...base,
-    settings: { ...base.settings, simplefinAccessUrl: "https://u:p@bridge/accounts", lastSyncAt: "2026-09-20T06:00:00.000Z" },
+    settings: {
+      ...base.settings,
+      plaidItems: [{ accessToken: "a", itemId: "i1", institution: "Chase", kind: "bank", addedAt: "2026-01-01T00:00:00Z", lastSyncAt: "2026-09-20T06:00:00.000Z" }],
+    },
     accounts: [account],
     transactions: days.map((date, i) => ({
       id: `t${i}`, date, merchant: "A shop", amount: -1200, categoryId: "c_uncategorized",
@@ -6819,13 +6824,13 @@ await test("a connection that runs every day and brings nothing back is not heal
   };
   const now = Date.parse("2026-09-20T12:00:00.000Z");
 
-  const quiet = M.quietSince(db, "simplefin", now);
+  const quiet = M.quietSince(db, "plaid", now);
   assert.ok(quiet, "twelve days against a usual gap of one is worth saying");
   assert.equal(quiet.since, "2026-09-08");
   assert.equal(quiet.days, 12);
   assert.equal(quiet.usual, 1);
 
-  const row = M.integrations(db, null, now).find((r) => r.id === "simplefin");
+  const row = M.integrations(db, null, now).find((r) => r.id === "plaid");
   assert.equal(row.error, undefined, "nothing has failed, which is the point");
   assert.equal(M.healthOf(row, now).state, "warn");
   assert.match(M.healthOf(row, now).text, /Nothing new since 2026-09-08/);
@@ -6843,11 +6848,14 @@ await test("a quiet connection is judged against its own rhythm, not a fixed wee
   const base = M.emptyDB();
   const acct = (id) => ({
     id, name: "An account", institution: "Chase", type: "checking", balance: 1,
-    includeInNetWorth: true, hidden: false, history: [], order: 0, syncSource: "simplefin",
+    includeInNetWorth: true, hidden: false, history: [], order: 0, syncSource: "plaid",
   });
   const withDates = (dates) => ({
     ...base,
-    settings: { ...base.settings, simplefinAccessUrl: "https://u:p@bridge/accounts" },
+    settings: {
+      ...base.settings,
+      plaidItems: [{ accessToken: "a", itemId: "i1", institution: "Chase", kind: "bank", addedAt: "2026-01-01T00:00:00Z" }],
+    },
     accounts: [acct("a1")],
     transactions: dates.map((date, i) => ({
       id: `t${i}`, date, merchant: "A shop", amount: -500, categoryId: "c_uncategorized",
@@ -6858,11 +6866,11 @@ await test("a quiet connection is judged against its own rhythm, not a fixed wee
 
   // Every 30 days, last seen 33 days ago: normal for this one.
   const slow = withDates(["2026-04-18", "2026-05-18", "2026-06-17", "2026-07-17", "2026-08-16", "2026-08-18"]);
-  assert.equal(M.quietSince(slow, "simplefin", now), undefined, "a slow account at its own pace is not broken");
+  assert.equal(M.quietSince(slow, "plaid", now), undefined, "a slow account at its own pace is not broken");
 
   // Daily, and silent for a week: loud.
   const fast = withDates(["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11", "2026-09-12"]);
-  const q = M.quietSince(fast, "simplefin", now);
+  const q = M.quietSince(fast, "plaid", now);
   assert.ok(q, "eight days of nothing from a daily connection");
   assert.equal(q.usual, 1);
 
@@ -6881,13 +6889,11 @@ await test("a provider that has quietly stopped becomes a notice, not just a col
   // reported, and nothing is happening. It used to show as an amber cell on a
   // screen nobody opens unless they already suspect something.
   const base = M.emptyDB();
+  const item = (lastSyncAt) =>
+    ({ accessToken: "a", itemId: "i1", institution: "Chase", kind: "bank", addedAt: "2026-01-01T00:00:00Z", lastSyncAt });
   const db = {
     ...base,
-    settings: {
-      ...base.settings,
-      simplefinAccessUrl: "https://u:p@bridge.example/accounts",
-      lastSyncAt: "2026-08-01T09:00:00.000Z",
-    },
+    settings: { ...base.settings, plaidItems: [item("2026-08-01T09:00:00.000Z")] },
   };
   const n = M.NT.notices(db, "2026-09-10").find((x) => x.kind === "integration");
   assert.ok(n, "there is one");
@@ -6902,9 +6908,9 @@ await test("a provider that has quietly stopped becomes a notice, not just a col
   // A pull yesterday is not. A bank gets three days rather than the generic
   // fortnight, because a nightly job and a browser that syncs on its own
   // cadence should both have managed something in that time.
-  const recent = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-09T09:00:00.000Z" } };
+  const recent = { ...db, settings: { ...db.settings, plaidItems: [item("2026-09-09T09:00:00.000Z")] } };
   assert.equal(M.NT.notices(recent, "2026-09-10").some((x) => x.kind === "integration"), false);
-  const fiveDays = { ...db, settings: { ...db.settings, lastSyncAt: "2026-09-05T09:00:00.000Z" } };
+  const fiveDays = { ...db, settings: { ...db.settings, plaidItems: [item("2026-09-05T09:00:00.000Z")] } };
   assert.equal(M.NT.notices(fiveDays, "2026-09-10").some((x) => x.kind === "integration"), true,
     "five days with no attempt is a bank sync that has stopped");
 });
