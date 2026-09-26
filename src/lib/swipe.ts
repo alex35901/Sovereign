@@ -62,14 +62,30 @@ export const DRAG_WAKE = 8;
  * around it is bookkeeping, and the ways of saying "that was not a swipe" are
  * what stop the screen paging out from under a scroll.
  */
-export function turned(dx: number, dy: number, ms: number, width: number): "left" | "right" | null {
+export function turned(
+  /** How far this finger moved. */
+  moved: number,
+  /** And where that leaves the thing it moved, which is not always the same. */
+  total: number,
+  dy: number,
+  ms: number,
+  width: number,
+): "left" | "right" | null {
   // Straightness first, because it is the one that rules a gesture out
   // entirely rather than deciding how far it got.
-  if (Math.abs(dx) < Math.abs(dy) * SWIPE_SLOPE) return null;
-  const far = width > 0 && Math.abs(dx) >= width * TURN_SHARE;
-  const flick = ms <= SWIPE_MS && Math.abs(dx) >= SWIPE_MIN;
-  if (!far && !flick) return null;
-  return dx < 0 ? "left" : "right";
+  if (Math.abs(moved) < Math.abs(dy) * SWIPE_SLOPE) return null;
+
+  // A flick goes the way the finger went, wherever the thing happened to be.
+  // Catching one still moving and flicking it on again is asking for the next
+  // one, and judging that on where it ended up would count the flick against
+  // the distance the turn had already covered and swallow it.
+  if (ms <= SWIPE_MS && Math.abs(moved) >= SWIPE_MIN) return moved < 0 ? "left" : "right";
+
+  // Otherwise it is wherever it has been left: a screen pushed a third of the
+  // way off and let go of is one somebody has decided about, however long they
+  // took over it.
+  if (!(width > 0 && Math.abs(total) >= width * TURN_SHARE)) return null;
+  return total < 0 ? "left" : "right";
 }
 
 export interface Swipe {
@@ -94,6 +110,14 @@ export function useSwipe(
   onDrag: (dx: number) => void,
   onEnd: (went: "left" | "right" | null) => void,
   width: () => number,
+  /**
+   * Where the thing being dragged already was when the finger landed on it.
+   *
+   * Nought nearly always. It is not when a finger catches something still
+   * moving, and then it is the whole difference between picking it up where it
+   * is and having it snap somewhere else first.
+   */
+  bias: () => number = () => 0,
 ): Swipe {
   const from = useRef<From | null>(null);
   return {
@@ -116,14 +140,18 @@ export function useSwipe(
         start.axis = Math.abs(moved) > Math.abs(fell) * SWIPE_SLOPE ? "x" : "y";
       }
       if (start.axis !== "x") return;
-      onDrag(moved);
+      onDrag(bias() + moved);
     },
     onTouchEnd: (e) => {
       const start = from.current;
       const t = e.changedTouches[0];
       from.current = null;
       if (!start || !t || start.axis !== "x") { onEnd(null); return; }
-      onEnd(turned(t.clientX - start.x, t.clientY - start.y, Date.now() - start.at, width()));
+      // Judged on where it ended up rather than on how far this finger moved
+      // it: something caught half way through a turn is already most of the
+      // way somewhere, and a nudge from there is a decision.
+      const moved = t.clientX - start.x;
+      onEnd(turned(moved, bias() + moved, t.clientY - start.y, Date.now() - start.at, width()));
     },
     onTouchCancel: () => { from.current = null; onEnd(null); },
   };

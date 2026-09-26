@@ -64,25 +64,56 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
   const timer = useRef<number | undefined>(undefined);
   /** A turn that has landed on screen but not yet been told to the caller. */
   const pending = useRef(0);
+  /**
+   * Where the strip already was when a finger landed on it.
+   *
+   * Nought except when a finger catches one still in flight. The strip keeps
+   * every pixel it had; what changes underneath it is which month is in which
+   * panel, and this is the offset that makes those two agree.
+   */
+  const held = useRef(0);
   // The month as of the last render, for the timer, which was written with
   // whatever the month was when the finger lifted.
   const latest = useRef(month);
   latest.current = month;
   const width = () => track.current?.clientWidth ?? 0;
 
+  /** Where the strip is right now, which mid-flight is neither end of it. */
+  const liveDx = () => {
+    const el = track.current;
+    if (!el) return 0;
+    const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+    // The strip sits one panel to the left of its own origin, so what is left
+    // over that is the drag.
+    return m.m41 + el.clientWidth;
+  };
+
   /**
-   * Finish a turn that is still in the air.
+   * Finish a turn that is still in the air, without moving anything.
    *
-   * A second drag starting while the first is still flying would otherwise
-   * follow the finger from a strip whose months have not been renumbered yet,
-   * and the month in between would be skipped.
+   * A second drag starting while the first is still flying has to pick the
+   * strip up where it is. Renumbering the months moves the content one panel;
+   * moving the strip the other way by exactly the same amount leaves every
+   * pixel on screen where it was, and the only thing that changed is which
+   * month is in which panel.
+   *
+   * It used to put the strip back to the middle here, which is the right
+   * bookkeeping and visible as a jump backwards of however far the turn had
+   * got. On a landing that formula gives nought, so the two cases are one.
    */
-  const flush = () => {
+  const flush = (landed = false) => {
     window.clearTimeout(timer.current);
     if (!pending.current) return;
     const by = pending.current;
     pending.current = 0;
-    put(0, width());
+    const w = width();
+    // A flight that finished is at its destination by definition, so the
+    // strip goes exactly to the middle. Working it out from the transform
+    // instead leaves whatever the last frame of the easing rounded to, and a
+    // strip parked a pixel off centre stays a pixel off centre for ever.
+    held.current = landed ? 0 : liveDx() + (by > 0 ? w : -w);
+    settling(false);
+    put(held.current, w);
     onChange(addMonths(latest.current, by));
   };
 
@@ -99,7 +130,6 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
 
   const handlers = useSwipe(
     (dx) => {
-      flush();
       // No easing while a finger is on it: easing towards where the finger was
       // a quarter of a second ago is the lag this exists to get rid of.
       settling(false);
@@ -107,6 +137,7 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
     },
     (went) => {
       const w = width();
+      held.current = 0;
       settling(true);
       // Carried the rest of the way off rather than snapped back: the month
       // being left is thrown out of frame and the next one lands in it.
@@ -118,11 +149,12 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
       // paints the new month already in place and nothing jumps.
       timer.current = window.setTimeout(() => {
         settling(false);
-        flush();
+        flush(true);
         setArmed(false);
       }, TURN_MS);
     },
     width,
+    () => held.current,
   );
 
   if (!enabled) return <>{children(month)}</>;
@@ -132,7 +164,10 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
       <div
         className="month-track" ref={track}
         {...handlers}
-        onTouchStart={(e) => { setArmed(true); handlers.onTouchStart(e); }}
+        // Caught mid-flight, the turn in the air is finished here rather than
+        // on the first move: by the time the finger travels the strip has to
+        // already know which month is in which panel.
+        onTouchStart={(e) => { setArmed(true); flush(); handlers.onTouchStart(e); }}
         onTouchEnd={(e) => { handlers.onTouchEnd(e); if (!pending.current) setArmed(false); }}
         onTouchCancel={() => { handlers.onTouchCancel(); setArmed(false); }}
       >

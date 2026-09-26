@@ -2359,6 +2359,65 @@ try {
     check("and lands back where it was when the finger lifts",
       settled.here === 0 && settled.month === (await monthNow()), JSON.stringify(settled));
 
+    // ── a second flick landing while the first is still flying ──
+    //
+    // What it used to do: put the strip back to the middle, which is the right
+    // bookkeeping and shows as a jump backwards of however far the turn had
+    // got, with one of the two flicks swallowed. Measured in month-space, not
+    // in the strip's own coordinates: renumbering moves the content a panel
+    // and the strip a panel the other way, so the transform alone cannot tell
+    // a renumber from a jump.
+    const rapid = await ph.evaluate(async () => {
+      const el = document.querySelector(".month-track");
+      const w = el.clientWidth;
+      const MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+        "August", "September", "October", "November", "December"];
+      const key = () => {
+        const t = (document.querySelector(".month-now")?.textContent ?? "").trim().split(" ");
+        return Number(t[1]) * 12 + MONTHS.indexOf(t[0]);
+      };
+      const from = key();
+      const at = () => Math.round(new DOMMatrixReadOnly(getComputedStyle(el).transform).m41)
+        - w * (key() - from);
+      const fire = (type, cx) => {
+        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: 430 });
+        const empty = type === "touchend";
+        el.dispatchEvent(new TouchEvent(type, {
+          bubbles: true, cancelable: true,
+          touches: empty ? [] : [t], targetTouches: empty ? [] : [t], changedTouches: [t],
+        }));
+      };
+      const wait = (ms) => new Promise((d) => setTimeout(d, ms));
+      const trace = [];
+      const watch = setInterval(() => trace.push(at()), 16);
+      // Moved in small steps, the way a thumb does: a synthetic finger that
+      // leaps a hundred pixels at a time would put leaps in the trace and
+      // leave nothing to measure against.
+      const flick = async () => {
+        fire("touchstart", 300);
+        for (let i = 1; i <= 6; i++) { await wait(8); fire("touchmove", 300 - i * 20); }
+        fire("touchend", 180);
+      };
+      await flick();
+      // Part way through the flight, which is the whole point.
+      await wait(90);
+      await flick();
+      await wait(800);
+      clearInterval(watch);
+      let back = 0;
+      let worst = 0;
+      for (let i = 1; i < trace.length; i++) {
+        back = Math.max(back, trace[i] - trace[i - 1]);
+        worst = Math.max(worst, Math.abs(trace[i] - trace[i - 1]));
+      }
+      return { months: key() - from, back, worst };
+    });
+    check("two flicks in a row turn two months, neither of them swallowed",
+      rapid.months === 2, `${rapid.months} months`);
+    check("and catching one still flying picks it up rather than snapping it back",
+      rapid.back <= 2 && rapid.worst <= 130,
+      `${rapid.back}px backwards, ${rapid.worst}px at once, in one frame`);
+
     // A scroll must not drag the strip sideways at all, not merely fail to
     // turn it at the end: a thumb travelling down a phone drifts, and a screen
     // that shivers under every scroll reads as something loose.
