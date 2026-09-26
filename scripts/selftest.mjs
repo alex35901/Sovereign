@@ -1302,6 +1302,22 @@ await test("a nudge is not a turn, and neither is a short slow drag", () => {
   assert.equal(flicked(-90, 0, SWIPE_MS + 1), null);
 });
 
+await test("the glide home is as long as the distance left to cover", () => {
+  // A fixed duration makes a screen let go of an inch from home take as long
+  // as one let go of half a width away, which reads as the screen deciding to
+  // move rather than as the screen carrying on from where it was put.
+  const { glide, GLIDE_MIN, GLIDE_MAX } = M.SW;
+  assert.equal(glide(SCREEN, SCREEN), GLIDE_MAX, "a whole screen takes the longest");
+  assert.equal(glide(0, SCREEN), GLIDE_MIN, "and nothing at all still takes the shortest");
+  // In between it is proportional, so twice the distance is twice the time.
+  assert.equal(glide(SCREEN / 2, SCREEN), Math.round(GLIDE_MAX / 2));
+  assert.ok(glide(SCREEN * 0.75, SCREEN) > glide(SCREEN * 0.5, SCREEN));
+  // Never longer than the longest, however far it is asked to go.
+  assert.equal(glide(SCREEN * 4, SCREEN), GLIDE_MAX);
+  // And a width of nothing does not divide by it.
+  assert.equal(glide(10, 0), GLIDE_MAX);
+});
+
 await test("a screen caught half way through a turn is picked up where it is", () => {
   // A second flick landing while the first is still flying. What the finger
   // moved and where that leaves the strip are two different numbers now, and

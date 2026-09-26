@@ -2359,6 +2359,49 @@ try {
     check("and lands back where it was when the finger lifts",
       settled.here === 0 && settled.month === (await monthNow()), JSON.stringify(settled));
 
+    // ── the months either side stay until the strip has landed ──
+    //
+    // They used to be let go of the moment the finger lifted, so a swipe that
+    // did not quite make it glided home past a blank where next month had
+    // been. Every swipe that fell short looked like the animation breaking.
+    const glide = await ph.evaluate(async () => {
+      const el = document.querySelector(".month-track");
+      const frame = document.querySelector(".month-frame");
+      const fire = (type, cx) => {
+        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: 430 });
+        const empty = type === "touchend";
+        el.dispatchEvent(new TouchEvent(type, {
+          bubbles: true, cancelable: true,
+          touches: empty ? [] : [t], targetTouches: empty ? [] : [t], changedTouches: [t],
+        }));
+      };
+      const wait = (ms) => new Promise((d) => setTimeout(d, ms));
+      const panels = () => [...document.querySelectorAll(".month-panel")]
+        .filter((n) => n.childElementCount).length;
+      const tall = () => Math.round(frame.getBoundingClientRect().height);
+      const atRest = { panels: panels(), tall: tall() };
+      // Short of the third of the screen it takes to turn, so it glides back.
+      fire("touchstart", 300);
+      for (let i = 1; i <= 4; i++) { await wait(8); fire("touchmove", 300 - i * 10); }
+      const armed = { panels: panels(), tall: tall() };
+      fire("touchend", 260);
+      await wait(90);
+      const gliding = { panels: panels(), tall: tall() };
+      await wait(700);
+      return { atRest, armed, gliding, after: { panels: panels(), tall: tall() } };
+    });
+    check("the months either side are there through the glide home, not just the drag",
+      glide.armed.panels === 3 && glide.gliding.panels === 3,
+      `${glide.armed.panels} while dragging, ${glide.gliding.panels} while gliding`);
+    check("and let go of once it has landed, so the page carries one month at rest",
+      glide.atRest.panels === 1 && glide.after.panels === 1,
+      `${glide.atRest.panels} at rest, ${glide.after.panels} after`);
+    // The two out of frame hang off the sides rather than standing in the row,
+    // so filling them and letting them go never changes how tall the page is.
+    check("and the page is the same height throughout, whatever they hold",
+      glide.armed.tall === glide.atRest.tall && glide.after.tall === glide.atRest.tall,
+      `${glide.atRest.tall} at rest, ${glide.armed.tall} armed, ${glide.after.tall} after`);
+
     // ── a second flick landing while the first is still flying ──
     //
     // What it used to do: put the strip back to the middle, which is the right

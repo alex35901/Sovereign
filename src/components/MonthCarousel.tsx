@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { MonthKey } from "../types";
 import { addMonths } from "../lib/date";
-import { useSwipe } from "../lib/swipe";
+import { glide, useSwipe } from "../lib/swipe";
 
 /**
  * A month at a time, out of a row of them.
@@ -25,8 +25,14 @@ import { useSwipe } from "../lib/swipe";
  * milliseconds before the first frame that needs them.
  */
 
-/** How long the strip takes to settle once the finger lets go. */
-export const TURN_MS = 260;
+/**
+ * How long the strip is given to settle, at the outside.
+ *
+ * What it actually takes is worked out from how far there is left to go, so
+ * a screen let go of an inch from home lands in a moment and one let go of
+ * half a width away takes its time. See `glide`.
+ */
+export const TURN_MS = 480;
 
 /** One step of the dial in the bar, in pixels. Matches --dial-cell. */
 const DIAL_CELL = 180;
@@ -48,9 +54,14 @@ const put = (dx: number, width: number) => {
   root.setProperty("--month-dial-dx", `${width > 0 ? (dx / width) * DIAL_CELL : 0}px`);
 };
 
-const settling = (on: boolean) => {
-  if (on) document.documentElement.dataset.monthTurn = "1";
-  else delete document.documentElement.dataset.monthTurn;
+const settling = (on: boolean, ms = 0) => {
+  const root = document.documentElement;
+  if (on) {
+    root.style.setProperty("--month-turn-ms", `${ms}ms`);
+    root.dataset.monthTurn = "1";
+  } else {
+    delete root.dataset.monthTurn;
+  }
 };
 
 export function MonthCarousel({ month, onChange, enabled, children }: {
@@ -82,10 +93,7 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
   const liveDx = () => {
     const el = track.current;
     if (!el) return 0;
-    const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
-    // The strip sits one panel to the left of its own origin, so what is left
-    // over that is the drag.
-    return m.m41 + el.clientWidth;
+    return new DOMMatrixReadOnly(getComputedStyle(el).transform).m41;
   };
 
   /**
@@ -137,24 +145,36 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
     },
     (went) => {
       const w = width();
-      held.current = 0;
-      settling(true);
+      const at = liveDx();
       // Carried the rest of the way off rather than snapped back: the month
       // being left is thrown out of frame and the next one lands in it.
-      put(went === "left" ? -w : went === "right" ? w : 0, w);
-      if (!went) return;
-      pending.current = went === "left" ? 1 : -1;
+      const to = went === "left" ? -w : went === "right" ? w : 0;
+      held.current = 0;
+      const ms = glide(Math.abs(to - at), w);
+      settling(true, ms);
+      put(to, w);
+      pending.current = went === "left" ? 1 : went === "right" ? -1 : 0;
       // Once it has landed, the strip goes back to the middle with the months
       // renumbered around the new one. Both in the same breath, so the browser
       // paints the new month already in place and nothing jumps.
+      //
+      // And the months either side are let go of here rather than the moment
+      // the finger lifts. Emptying them while the strip is still gliding
+      // leaves it gliding past a blank, which is what a swipe that did not
+      // quite make it used to look like.
       timer.current = window.setTimeout(() => {
         settling(false);
-        flush(true);
+        if (pending.current) flush(true);
         setArmed(false);
-      }, TURN_MS);
+      }, ms);
     },
     width,
     () => held.current,
+    // On the first pixel of a drag rather than on touch: a tap that goes
+    // nowhere, or a touch the browser takes away for its own scrolling, would
+    // otherwise park the strip half way through a turn with nothing left to
+    // finish it, and it would sit there until the next gesture.
+    flush,
   );
 
   if (!enabled) return <>{children(month)}</>;
@@ -164,12 +184,9 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
       <div
         className="month-track" ref={track}
         {...handlers}
-        // Caught mid-flight, the turn in the air is finished here rather than
-        // on the first move: by the time the finger travels the strip has to
-        // already know which month is in which panel.
-        onTouchStart={(e) => { setArmed(true); flush(); handlers.onTouchStart(e); }}
-        onTouchEnd={(e) => { handlers.onTouchEnd(e); if (!pending.current) setArmed(false); }}
-        onTouchCancel={() => { handlers.onTouchCancel(); setArmed(false); }}
+        onTouchStart={(e) => { setArmed(true); handlers.onTouchStart(e); }}
+        onTouchEnd={handlers.onTouchEnd}
+        onTouchCancel={handlers.onTouchCancel}
       >
         {[-1, 0, 1].map((step) => (
           <div

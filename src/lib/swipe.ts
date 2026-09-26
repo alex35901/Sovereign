@@ -88,6 +88,22 @@ export function turned(
   return total < 0 ? "left" : "right";
 }
 
+/**
+ * How long the glide home should take, given how far there is to go.
+ *
+ * A fixed duration makes a screen let go of an inch from home take as long as
+ * one let go of half a width away, which reads as the screen deciding to move
+ * rather than as the screen carrying on. Proportional, with a floor so the
+ * last few pixels are still a movement rather than a snap.
+ */
+export const GLIDE_MIN = 220;
+export const GLIDE_MAX = 480;
+
+export function glide(distance: number, width: number): number {
+  const share = distance / Math.max(width, 1);
+  return Math.round(Math.min(GLIDE_MAX, Math.max(GLIDE_MIN, share * GLIDE_MAX)));
+}
+
 export interface Swipe {
   onTouchStart: (e: TouchEvent) => void;
   onTouchMove: (e: TouchEvent) => void;
@@ -118,10 +134,24 @@ export function useSwipe(
    * is and having it snap somewhere else first.
    */
   bias: () => number = () => 0,
+  /**
+   * That this has become a drag, before it has moved anything.
+   *
+   * Separate from the first `onDrag` because what the caller does here decides
+   * what `bias` then means, and a tap or a scroll must not trigger it: the
+   * answer to "is anything already under way" has to be given only to a
+   * gesture that is actually going to move something.
+   */
+  onGrab: () => void = () => {},
 ): Swipe {
   const from = useRef<From | null>(null);
   return {
     onTouchStart: (e) => {
+      // A gesture still open means the last one never ended: a browser can
+      // take a touch away for its own scrolling and not always say so, and a
+      // half-finished drag left open is a drag whose end never settles
+      // anything. Closed here rather than left to strand whatever it moved.
+      if (from.current) { from.current = null; onEnd(null); }
       // One finger. Two is a pinch or a scroll, and neither is this.
       const t = e.touches.length === 1 ? e.touches[0] : null;
       from.current = t ? { x: t.clientX, y: t.clientY, at: Date.now(), axis: "?" } : null;
@@ -138,6 +168,9 @@ export function useSwipe(
       if (start.axis === "?") {
         if (Math.abs(moved) < DRAG_WAKE && Math.abs(fell) < DRAG_WAKE) return;
         start.axis = Math.abs(moved) > Math.abs(fell) * SWIPE_SLOPE ? "x" : "y";
+        // Told once, at the moment this becomes a drag, so the caller can
+        // settle whatever was already under way before the first pixel moves.
+        if (start.axis === "x") onGrab();
       }
       if (start.axis !== "x") return;
       onDrag(bias() + moved);

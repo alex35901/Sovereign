@@ -243,17 +243,33 @@ h3 { font-size: 14px; }
    Clip rather than hidden: hidden would make this the scroll container for
    anything sticky inside a sheet. */
 .month-frame { overflow-x: clip; }
-.month-track { display: flex; align-items: flex-start; will-change: transform; }
+.month-track { display: flex; align-items: flex-start; position: relative; will-change: transform; }
 .month-panel { flex: 0 0 100%; min-width: 0; }
+/* The two out of frame hang off either side rather than standing in the row.
+   In the row they would set the strip's height between them, so the page grew
+   and shrank as they were filled and let go of, and a sheet let go of mid
+   glide took the scroll with it. Each month is as tall as it is. */
+.month-panel:not([data-in-frame]) { position: absolute; top: 0; width: 100%; }
+/* Against the track, whose only child in the row is the month in frame, so
+   the strip sits where it is rather than a panel to the left of itself. */
+.month-panel:not([data-in-frame]):first-child { right: 100%; }
+.month-panel:not([data-in-frame]):last-child { left: 100%; }
 /* Where the finger has dragged it to, set on the document rather than through
    React: this changes on every frame of a drag, and the bar's dial has to move
    with it from the other side of the tree. */
-.month-track { transform: translateX(calc(-100% + var(--month-dx, 0px))); }
+.month-track { transform: translateX(var(--month-dx, 0px)); }
 .month-dial { transform: translateX(var(--month-dial-dx, 0px)); }
 /* Easing only on the way back, once the finger has let go. Easing towards a
-   place the finger has already left is lag rather than smoothness. */
+   place the finger has already left is lag rather than smoothness.
+   Out hard and slow to a stop: the strip is carrying on the way the finger
+   sent it, so most of the distance goes early and the last of it is the month
+   settling into place rather than arriving. How long it takes is worked out
+   from how far there is to go, so letting go an inch from home is not the
+   same movement as letting go half a width away. */
 :root[data-month-turn] .month-track,
-:root[data-month-turn] .month-dial { transition: transform 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+:root[data-month-turn] .month-dial {
+  transition: transform var(--month-turn-ms, 320ms) cubic-bezier(0.16, 1, 0.3, 1);
+}
 
 /* The month as a dial with the months either side of it just out of sight.
    Three cells of one width, the middle one showing, so a drag brings the next
