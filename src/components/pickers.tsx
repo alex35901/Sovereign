@@ -109,7 +109,7 @@ export function CategoryTag({ categoryId, onClick }: { categoryId: string; onCli
   );
 }
 
-export function MonthNav({ month, onChange, max, heading, offset = 0 }: {
+export function MonthNav({ month, onChange, max, heading }: {
   month: string; onChange: (m: string) => void; max?: string;
   /**
    * Draw the month itself as the page's heading.
@@ -119,28 +119,20 @@ export function MonthNav({ month, onChange, max, heading, offset = 0 }: {
    * month and the rail already says which screen this is.
    */
   heading?: boolean;
-  /**
-   * How far the finger dragging the screen has got, in pixels.
-   *
-   * Turns the label into what it has always been pretending to be: a dial with
-   * the months either side of this one just out of sight. Watching the next
-   * one arrive as you pull is what says the screen can be pulled at all.
-   */
-  offset?: number;
 }) {
   const canForward = !max || month < max;
   const label = monthLabel(month);
-  // A drag left is a move towards next month, so the dial turns the other way
-  // — the same as pushing a wheel away from you.
+  /**
+   * The label as what it has always been pretending to be: a dial, with the
+   * months either side just out of sight.
+   *
+   * It follows the finger dragging the sheet below, through a custom property
+   * the carousel sets on the document. Nothing here re-renders while that
+   * happens, which is the point: a dial redrawn sixty times a second by React
+   * is a dial that trails the finger turning it.
+   */
   const dial = (
-    <span
-      className="month-dial"
-      // No easing while a finger is on it, the same as the sheet below: a dial
-      // easing towards where the finger was two hundred milliseconds ago is
-      // the lag this gesture exists to get rid of. The easing is for the way
-      // back, when the finger has let go.
-      style={offset ? { transform: `translateX(${offset}px)`, transition: "none" } : undefined}
-    >
+    <span className="month-dial">
       {/* Either side, and out of the reading of it: the heading is this month,
           not three of them. */}
       <span className="month-cell" aria-hidden="true">{monthLabel(addMonths(month, -1))}</span>

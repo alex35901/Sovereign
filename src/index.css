@@ -237,11 +237,23 @@ h3 { font-size: 14px; }
 .month-nav-label { min-width: 132px; text-align: center; font-size: inherit; }
 .topbar-title .month-nav { margin: -4px 0; }
 
-/* The budget's sheet, following the finger dragging it and settling when it
-   lets go. The easing is only ever on the way back: while a finger is on it
-   the transform is set from the finger's own position, and easing towards a
+/* A row of months, one in frame. The strip holds three sheets side by side
+   and sits one sheet to the left, so the middle one is what you see and a drag
+   brings a real neighbour into view rather than an empty edge.
+   Clip rather than hidden: hidden would make this the scroll container for
+   anything sticky inside a sheet. */
+.month-frame { overflow-x: clip; }
+.month-track { display: flex; align-items: flex-start; will-change: transform; }
+.month-panel { flex: 0 0 100%; min-width: 0; }
+/* Where the finger has dragged it to, set on the document rather than through
+   React: this changes on every frame of a drag, and the bar's dial has to move
+   with it from the other side of the tree. */
+.month-track { transform: translateX(calc(-100% + var(--month-dx, 0px))); }
+.month-dial { transform: translateX(var(--month-dial-dx, 0px)); }
+/* Easing only on the way back, once the finger has let go. Easing towards a
    place the finger has already left is lag rather than smoothness. */
-.page-turn { transition: transform 190ms cubic-bezier(0.22, 0.61, 0.36, 1); }
+:root[data-month-turn] .month-track,
+:root[data-month-turn] .month-dial { transition: transform 260ms cubic-bezier(0.22, 0.61, 0.36, 1); }
 
 /* The month as a dial with the months either side of it just out of sight.
    Three cells of one width, the middle one showing, so a drag brings the next
@@ -253,25 +265,31 @@ h3 { font-size: 14px; }
   /* Wide enough for the longest month at this size, which is September, with
      room either side for the fade to land on nothing. Shrinkable, because at
      320px the bar has other things to carry. */
-  width: 150px;
+  --dial-window: 150px;
+  /* Wider than the window, so the month in hand sits clear of both edges and
+     the ones either side stay out of sight until the dial has been turned. */
+  --dial-cell: 180px;
+  width: var(--dial-window);
   min-width: 0;
   overflow: hidden;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 5%, #000 95%, transparent);
 }
-.month-dial { display: flex; transition: transform 190ms cubic-bezier(0.22, 0.61, 0.36, 1); }
-/* Wider than the window they turn behind, so the month in hand sits clear of
-   both edges and the ones either side stay out of sight until the dial has
-   actually been turned a little. */
-.month-cell { flex: 0 0 180px; text-align: center; }
-/* Centred on the middle cell, which is the month in hand. */
-.month-dial { margin-left: -180px; }
+.month-dial { display: flex; will-change: transform; }
+.month-cell { flex: 0 0 var(--dial-cell); text-align: center; }
+/* Centred on the middle cell, which is the month in hand. Half the difference
+   between the window and the whole strip, which is not the same as one cell
+   back: shifting by a cell leaves the middle one off centre by exactly the
+   amount the cell is wider than the window, which is how the heading came to
+   sit fifteen pixels right of the middle of the bar. */
+.month-dial { margin-left: calc((var(--dial-window) - var(--dial-cell) * 3) / 2); }
 /* The ones either side are there to be glimpsed, not read. */
 .month-cell:first-child, .month-cell:last-child { opacity: 0.32; }
 
 /* Asked for less of this: the month simply changes, and nothing slides. */
 @media (prefers-reduced-motion: reduce) {
-  .page-turn, .month-dial { transition: none; }
+  :root[data-month-turn] .month-track,
+  :root[data-month-turn] .month-dial { transition: none; }
 }
 
 /* ── card ─────────────────────────────────────────────────────────────── */

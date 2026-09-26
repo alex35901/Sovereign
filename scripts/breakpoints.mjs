@@ -2284,52 +2284,116 @@ try {
     const monthNow = () => ph.evaluate(() =>
       document.querySelector(".topbar-title h1 .month-now")?.textContent.trim() ?? "");
 
-    // ── the sheet follows the finger ──
+    // ── a row of months, one in frame ──
     //
-    // A gesture that only pays out at the end is one you have to be told
-    // about. Held part way through, the sheet has to have moved and the dial
-    // in the bar with it, or there is nothing saying the screen can be turned.
-    const holding = await ph.evaluate(() => {
+    // Not one sheet with an animation on it: three, side by side, and the
+    // strip is dragged. Pull it a little and a little of next month is there,
+    // because next month is genuinely sitting there.
+    const laid = await ph.evaluate(() => {
+      const panels = [...document.querySelectorAll(".month-panel")];
+      const frame = document.querySelector(".month-frame")?.getBoundingClientRect();
+      return {
+        count: panels.length,
+        lefts: panels.map((el) => Math.round(el.getBoundingClientRect().left)),
+        width: Math.round(frame?.width ?? 0),
+        // The two out of frame are scenery, and must not be read out or
+        // tabbed into as two more budgets.
+        inert: panels.filter((el) => el.hasAttribute("inert")).length,
+        scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      };
+    });
+    check("the budget is a row of three months with the one in hand in frame",
+      laid.count === 3 && laid.lefts[1] === 0
+      && laid.lefts[0] === -laid.width && laid.lefts[2] === laid.width,
+      `${laid.count} panels at ${laid.lefts.join(", ")} across ${laid.width}px`);
+    check("and the two out of frame are neither read out nor scrolled to",
+      laid.inert === 2 && laid.scroll === 0, `${laid.inert} inert, ${laid.scroll}px of sideways scroll`);
+
+    /** A finger put down and held part way through a drag. */
+    const hold = (dx) => ph.evaluate(({ dx }) => {
+      const el = document.querySelector(".month-track");
       const x = window.innerWidth / 2;
-      const y = 420;
-      const el = document.elementFromPoint(x, y);
       const fire = (type, cx) => {
-        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: y });
+        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: 420 });
         el.dispatchEvent(new TouchEvent(type, {
           bubbles: true, cancelable: true, touches: [t], targetTouches: [t], changedTouches: [t],
         }));
       };
       fire("touchstart", x);
-      fire("touchmove", x - 20);
-      fire("touchmove", x - 90);
-      const read = (sel) => {
-        const m = new DOMMatrixReadOnly(getComputedStyle(document.querySelector(sel)).transform);
-        return Math.round(m.m41);
-      };
-      // After the render the move asked for: the finger's position becomes a
-      // transform through React, not in the handler.
+      fire("touchmove", x + dx / 4);
+      fire("touchmove", x + dx);
       return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
-        done({ page: read(".page-turn"), dial: read(".month-dial") });
+        const at = (sel) => Math.round(document.querySelector(sel).getBoundingClientRect().left);
+        done({
+          here: at(".month-panel:nth-child(2)"),
+          next: at(".month-panel:nth-child(3)"),
+          dial: Math.round(new DOMMatrixReadOnly(
+            getComputedStyle(document.querySelector(".month-dial")).transform).m41),
+        });
       })));
-    });
-    check("the sheet moves with the finger rather than waiting for it to lift",
-      holding.page < -20 && holding.page > -110, `${holding.page}px`);
-    check("and the dial in the bar turns with it, bringing the next month in",
-      holding.dial < -10 && holding.dial > -110, `${holding.dial}px`);
-    // Let go without having gone far enough, and it settles back on the month
-    // it started on.
-    await ph.evaluate(() => {
-      const el = document.elementFromPoint(window.innerWidth / 2, 420);
-      const t = new Touch({ identifier: 1, target: el, clientX: window.innerWidth / 2 - 30, clientY: 420 });
+    }, { dx });
+    /** The finger coming off, wherever it ended up. */
+    const lift = (dx) => ph.evaluate(({ dx }) => {
+      const el = document.querySelector(".month-track");
+      const t = new Touch({ identifier: 1, target: el, clientX: window.innerWidth / 2 + dx, clientY: 420 });
       el.dispatchEvent(new TouchEvent("touchend", {
         bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [t],
       }));
-    });
-    await ph.waitForTimeout(500);
-    const settled = await ph.evaluate(() =>
-      getComputedStyle(document.querySelector(".page-turn")).transform);
+    }, { dx });
+
+    const pulled = await hold(-90);
+    check("dragging a little brings a little of the next month into frame",
+      pulled.here === -90 && pulled.next === laid.width - 90,
+      `this month at ${pulled.here}, next at ${pulled.next}`);
+    check("and the dial in the bar turns by the same share of a month",
+      pulled.dial < -30 && pulled.dial > -60, `${pulled.dial}px of a 180px step`);
+
+    // Let go without having gone far enough, and it settles back on the month
+    // it started on.
+    await lift(-90);
+    await ph.waitForTimeout(600);
+    const settled = await ph.evaluate(() => ({
+      here: Math.round(document.querySelector(".month-panel:nth-child(2)").getBoundingClientRect().left),
+      month: document.querySelector(".topbar-title h1 .month-now")?.textContent.trim() ?? "",
+    }));
     check("and lands back where it was when the finger lifts",
-      settled === "none" || /matrix\(1, 0, 0, 1, 0, 0\)/.test(settled), settled);
+      settled.here === 0 && settled.month === (await monthNow()), JSON.stringify(settled));
+
+    // A scroll must not drag the strip sideways at all, not merely fail to
+    // turn it at the end: a thumb travelling down a phone drifts, and a screen
+    // that shivers under every scroll reads as something loose.
+    const scrolled = await ph.evaluate(() => {
+      const el = document.querySelector(".month-track");
+      const x = window.innerWidth / 2;
+      const fire = (type, cx, cy) => {
+        const t = new Touch({ identifier: 1, target: el, clientX: cx, clientY: cy });
+        el.dispatchEvent(new TouchEvent(type, {
+          bubbles: true, cancelable: true, touches: [t], targetTouches: [t], changedTouches: [t],
+        }));
+      };
+      fire("touchstart", x, 600);
+      fire("touchmove", x - 14, 540);
+      fire("touchmove", x - 40, 380);
+      return new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
+        done(Math.round(document.querySelector(".month-panel:nth-child(2)").getBoundingClientRect().left));
+      })));
+    });
+    check("and a scroll down it does not drag it sideways at all",
+      scrolled === 0, `${scrolled}px across`);
+    await lift(0);
+    await ph.waitForTimeout(400);
+
+    // Dragged most of the way across, it goes, however long it took: a screen
+    // held a third of the way off is a screen somebody is deciding about.
+    const was = await monthNow();
+    await hold(-Math.round(laid.width * 0.45));
+    await ph.waitForTimeout(900);
+    await lift(-Math.round(laid.width * 0.45));
+    await ph.waitForTimeout(600);
+    check("a slow drag most of the way across turns it anyway",
+      (await monthNow()) !== was && (await monthNow()) !== "", `${was} -> ${await monthNow()}`);
+    await drag(150, -6);
+    await ph.waitForTimeout(600);
 
     const opened = await monthNow();
     await drag(-140, 4);
@@ -2357,10 +2421,11 @@ try {
     await ph.waitForTimeout(400);
     check("nor is a nudge too short to have been meant", (await monthNow()) === opened,
       `${opened} -> ${await monthNow()}`);
-    // And a slow drag is a drag.
-    await drag(-160, 0, 900);
-    await ph.waitForTimeout(400);
-    check("nor a drag too slow to have been a flick", (await monthNow()) === opened,
+    // And a short drag taken slowly is neither: not quick enough to be a
+    // flick, not far enough across to be a decision.
+    await drag(-80, 0, 900);
+    await ph.waitForTimeout(500);
+    check("nor a short one taken too slowly to have been a flick", (await monthNow()) === opened,
       `${opened} -> ${await monthNow()}`);
     await ph.close();
 

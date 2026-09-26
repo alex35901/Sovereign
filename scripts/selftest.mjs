@@ -1257,40 +1257,64 @@ await test("Hopper sits with Settings at the foot, not among the Plan screens", 
 
 /* ── a flick sideways ─────────────────────────────────────────────────── */
 
+/** A phone's width, which is what "how far across" is measured against. */
+const SCREEN = 390;
+
 await test("a flick left is the next month and a flick right the last one", () => {
-  const { direction, SWIPE_MIN } = M.SW;
-  assert.equal(direction(-SWIPE_MIN - 1, 0, 120), "left");
-  assert.equal(direction(SWIPE_MIN + 1, 0, 120), "right");
+  const { turned, SWIPE_MIN } = M.SW;
+  assert.equal(turned(-SWIPE_MIN - 1, 0, 120, SCREEN), "left");
+  assert.equal(turned(SWIPE_MIN + 1, 0, 120, SCREEN), "right");
 });
 
 await test("a scroll down a long sheet is not a flick sideways", () => {
   // The one thing a reader scrolling a budget will not forgive is the screen
   // paging out from under them, and a thumb travelling down a phone drifts
-  // sideways the whole way.
-  const { direction, SWIPE_SLOPE } = M.SW;
-  assert.equal(direction(-80, -300, 200), null, "mostly down");
-  assert.equal(direction(-80, 300, 200), null, "mostly up");
+  // sideways the whole way. Straightness rules a gesture out whatever else it
+  // did, which is why it is asked first.
+  const { turned, SWIPE_SLOPE } = M.SW;
+  assert.equal(turned(-80, -300, 200, SCREEN), null, "mostly down");
+  assert.equal(turned(-80, 300, 200, SCREEN), null, "mostly up");
+  // Even one dragged most of the way across, if it went down as far as along.
+  assert.equal(turned(-300, -300, 200, SCREEN), null);
   // Right at the line: it has to be this much straighter than 45 degrees.
-  assert.equal(direction(-100, 100 / SWIPE_SLOPE - 1, 120), "left");
-  assert.equal(direction(-100, 100 / SWIPE_SLOPE + 1, 120), null);
+  assert.equal(turned(-100, 100 / SWIPE_SLOPE - 1, 120, SCREEN), "left");
+  assert.equal(turned(-100, 100 / SWIPE_SLOPE + 1, 120, SCREEN), null);
   // And in real numbers, so the slope is pinned rather than read back from
   // itself: a hundred across and eighty down is a diagonal, not a flick.
-  assert.equal(direction(-100, 80, 120), null);
-  assert.equal(direction(-100, 40, 120), "left");
+  assert.equal(turned(-100, 80, 120, SCREEN), null);
+  assert.equal(turned(-100, 40, 120, SCREEN), "left");
 });
 
-await test("a nudge is not a flick, and neither is a slow drag", () => {
-  const { direction, SWIPE_MIN, SWIPE_MS } = M.SW;
+await test("a nudge is not a turn, and neither is a short slow drag", () => {
+  const { turned, SWIPE_MIN, SWIPE_MS } = M.SW;
   // A finger shifts while tapping. That is not a request for anything.
-  assert.equal(direction(-SWIPE_MIN + 1, 0, 120), null);
-  assert.equal(direction(0, 0, 10), null);
-  // In real numbers too: half an inch of travel is the line, and thirty
-  // pixels is a thumb settling on a row.
-  assert.equal(direction(-30, 0, 120), null);
-  assert.equal(direction(-90, 0, 120), "left");
-  // And a finger held down and moved is somebody dragging, not flicking.
-  assert.equal(direction(-200, 0, SWIPE_MS + 1), null);
-  assert.equal(direction(-200, 0, SWIPE_MS - 1), "left");
+  assert.equal(turned(-SWIPE_MIN + 1, 0, 120, SCREEN), null);
+  assert.equal(turned(0, 0, 10, SCREEN), null);
+  // In real numbers too: half an inch of travel is the line for a flick, and
+  // thirty pixels is a thumb settling on a row.
+  assert.equal(turned(-30, 0, 120, SCREEN), null);
+  assert.equal(turned(-90, 0, 120, SCREEN), "left");
+  // Taken slowly and not far, it stays where it was: neither quick enough to
+  // be a flick nor far enough to be a decision.
+  assert.equal(turned(-90, 0, SWIPE_MS + 1, SCREEN), null);
+});
+
+await test("a screen dragged most of the way across goes, however long it took", () => {
+  // The two rules are different questions. A flick is "I meant that", judged
+  // on speed. This one is "look how far it has gone": a screen held a third of
+  // the way off is one somebody is deciding about, and it should land where
+  // they put it whatever the clock says.
+  const { turned, TURN_SHARE, SWIPE_MS } = M.SW;
+  const far = Math.ceil(SCREEN * TURN_SHARE) + 1;
+  assert.equal(turned(-far, 0, SWIPE_MS * 5, SCREEN), "left");
+  assert.equal(turned(far, 0, SWIPE_MS * 5, SCREEN), "right");
+  // Just short of it, taken just as slowly, and it stays.
+  assert.equal(turned(-(Math.floor(SCREEN * TURN_SHARE) - 1), 0, SWIPE_MS * 5, SCREEN), null);
+  // In real numbers: a third of a phone goes, a fifth of one does not.
+  assert.equal(turned(-150, 0, 2000, SCREEN), "left");
+  assert.equal(turned(-80, 0, 2000, SCREEN), null);
+  // A wider screen asks for more travel, because the share is of the screen.
+  assert.equal(turned(-150, 0, 2000, 1200), null);
 });
 
 await test("the rail lists no screen the app does not have", () => {

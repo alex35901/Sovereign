@@ -3,9 +3,8 @@ import { Link } from "react-router-dom";
 import { CalendarDays, ChevronDown, ChevronRight } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { addMonths, monthLabel, thisMonth } from "../lib/date";
+import { monthLabel, thisMonth } from "../lib/date";
 import { PHONE, useMediaQuery } from "../lib/media";
-import { useSwipe } from "../lib/swipe";
 import { budgetSummary, remainingTone, spentShare } from "../lib/select";
 import { fmt0 } from "../lib/money";
 import type { BudgetGroupRow, BudgetRow } from "../lib/select";
@@ -13,6 +12,7 @@ import { Btn, Card, HoverCard, Money, Progress, cx } from "../components/ui";
 import { BudgetAmountPopover } from "./BudgetAmountPopover";
 import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
+import { MonthCarousel } from "../components/MonthCarousel";
 import { COLUMN_LABEL, DEFAULT_COLUMN, otherColumn, readColumn, toggleHint } from "../lib/budget-column";
 import type { BudgetColumn } from "../lib/budget-column";
 
@@ -20,22 +20,10 @@ import type { BudgetColumn } from "../lib/budget-column";
 const COLUMN_KEY = "sovereign.budget.column";
 
 export default function Budget() {
-  const db = useDB();
   const [month, setMonth] = useState(thisMonth());
   const phone = useMediaQuery(PHONE);
 
-  /**
-   * The sheet follows the finger, and settles when it lets go.
-   *
-   * A gesture that only pays out at the end is one you have to be told about.
-   * The sheet moves while the finger is on it, so the screen says what it can
-   * do before anything has been asked of it, and the month it lands on is
-   * already the new one by the time it eases back to centre.
-   */
-  const turn = (by: number) => setMonth((m) => addMonths(m, by));
-  const swipe = useSwipe(() => turn(1), () => turn(-1));
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const summary = useMemo(() => budgetSummary(db, month), [db, month]);
 
   /**
    * Which of Actual and Remaining a narrow screen shows. Wide screens show
@@ -77,7 +65,7 @@ export default function Budget() {
       <CalendarDays size={14} /> <span className="btn-label">This month</span>
     </Btn>
   );
-  const nav = <MonthNav month={month} onChange={setMonth} heading={phone} offset={swipe.dx} />;
+  const nav = <MonthNav month={month} onChange={setMonth} heading={phone} />;
 
   return (
     <>
@@ -94,20 +82,44 @@ export default function Budget() {
       {/* The chosen column is read in CSS rather than in each row: the rule
           that hides the other one belongs with the widths it is trading
           against, and a row should not have to know how wide the screen is. */}
-      <div
-        className="page stack page-turn"
-        data-bcol={column}
-        // A flick left is next, the way every calendar on the device works.
-        {...swipe.handlers}
-        style={swipe.dx
-          // No easing while a finger is on it: easing towards a finger that
-          // has already moved on is lag, not smoothness.
-          ? { transform: `translateX(${swipe.dx}px)`, transition: "none" }
-          // Undefined rather than none, deliberately: any transform at all
-          // makes this the containing block for the popovers inside it, which
-          // are positioned against the window.
-          : undefined}
-      >
+      {/* The chosen column is read in CSS rather than in each row: the rule
+          that hides the other one belongs with the widths it is trading
+          against, and a row should not have to know how wide the screen is. */}
+      <MonthCarousel month={month} onChange={setMonth} enabled={phone}>
+        {(m) => (
+          <div className="page stack" data-bcol={column}>
+            <Sheet
+              month={m} column={column} onColumn={setColumn}
+              collapsed={collapsed} onToggle={toggleGroup}
+            />
+          </div>
+        )}
+      </MonthCarousel>
+    </>
+  );
+}
+
+/**
+ * One month's budget: the summary at the top and a card per group.
+ *
+ * Its own component because three of them are drawn at once on a phone, with
+ * the month either side of this one sitting just out of frame. Everything
+ * that is not about the month — which groups are folded, which column is
+ * showing — is held above and shared, so turning the month does not unfold
+ * anything or swap a column back.
+ */
+function Sheet({ month, column, onColumn, collapsed, onToggle }: {
+  month: string;
+  column: BudgetColumn;
+  onColumn: (c: BudgetColumn) => void;
+  collapsed: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  const db = useDB();
+  const summary = useMemo(() => budgetSummary(db, month), [db, month]);
+
+  return (
+    <>
         <Card>
           <div className="spread wrap" style={{ gap: 12 }}>
             {/* An even grid rather than a row of content-sized columns: four
@@ -144,11 +156,10 @@ export default function Budget() {
         {summary.table.map((g) => (
           <GroupCard
             key={g.group.id} data={g} month={month}
-            collapsed={collapsed.has(g.group.id)} onToggle={() => toggleGroup(g.group.id)}
-            column={column} onColumn={setColumn}
+            collapsed={collapsed.has(g.group.id)} onToggle={() => onToggle(g.group.id)}
+            column={column} onColumn={onColumn}
           />
         ))}
-      </div>
     </>
   );
 }

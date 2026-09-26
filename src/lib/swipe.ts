@@ -1,13 +1,13 @@
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import type { TouchEvent } from "react";
 
 /**
- * A flick left or right, for a screen that is one of a series.
+ * Turning a screen that is one of a row of them.
  *
  * Touch only, and deliberately: a mouse drag across a page is a text
  * selection, and a trackpad's two-finger swipe is the browser's own way back
  * through history. On a phone there is no such thing to compete with, and
- * paging a month at a time by flicking is how every calendar on the device
+ * paging a month at a time by dragging is how every calendar on the device
  * already works.
  *
  * Nothing is prevented and nothing is captured. The page scrolls under the
@@ -15,13 +15,13 @@ import type { TouchEvent } from "react";
  * that turns out to be a scroll costs nothing and a tap that lands on a button
  * is still a tap on that button.
  *
- * It reports where the finger is as well as what it did with it. A gesture
- * that only pays out at the end is a gesture you have to learn from a manual:
- * the thing under the finger has to move while the finger is on it, or there
- * is nothing to tell you the screen is the kind that can be turned.
+ * The screen follows the finger one for one, because it is a row of screens
+ * rather than one screen with an animation on it: dragging half a width shows
+ * half of this month and half of the next, and where it ends up is wherever
+ * the finger left it.
  */
 
-/** Far enough that it was meant, in pixels. */
+/** A flick this far is meant, however briefly it lasted. */
 export const SWIPE_MIN = 60;
 
 /**
@@ -31,106 +31,100 @@ export const SWIPE_MIN = 60;
  */
 export const SWIPE_SLOPE = 1.7;
 
-/** Longer than this and it is a drag, not a flick. */
+/** Quicker than this and a short drag still counts as a flick. */
 export const SWIPE_MS = 700;
+
+/**
+ * How much of the screen has to be dragged away for it to go, when it was not
+ * a flick.
+ *
+ * The two rules are different questions. A flick is "I meant that", judged on
+ * speed over a short distance. This one is "look how far it has gone", and it
+ * has no clock at all: a screen dragged a third of the way off and held there
+ * is a screen somebody is deciding about, and it should land where they put it
+ * however long they took.
+ */
+export const TURN_SHARE = 0.3;
+
+/**
+ * Below this the finger has not committed to a direction at all.
+ *
+ * For the move handler, which has to choose an axis and hold it. The end of
+ * the gesture does not need it: nothing this short is far enough to be a
+ * flick either.
+ */
+export const DRAG_WAKE = 8;
 
 /**
  * What a finger's travel amounts to, if anything.
  *
  * Pulled out of the handler because this is the whole judgement: everything
- * around it is bookkeeping, and the three ways of saying "that was not a
- * swipe" are what stop the screen paging out from under a scroll.
+ * around it is bookkeeping, and the ways of saying "that was not a swipe" are
+ * what stop the screen paging out from under a scroll.
  */
-export function direction(dx: number, dy: number, ms: number): "left" | "right" | null {
-  if (ms > SWIPE_MS) return null;
-  if (Math.abs(dx) < SWIPE_MIN) return null;
+export function turned(dx: number, dy: number, ms: number, width: number): "left" | "right" | null {
+  // Straightness first, because it is the one that rules a gesture out
+  // entirely rather than deciding how far it got.
   if (Math.abs(dx) < Math.abs(dy) * SWIPE_SLOPE) return null;
+  const far = width > 0 && Math.abs(dx) >= width * TURN_SHARE;
+  const flick = ms <= SWIPE_MS && Math.abs(dx) >= SWIPE_MIN;
+  if (!far && !flick) return null;
   return dx < 0 ? "left" : "right";
 }
 
-/**
- * How far the finger has to travel before the screen follows it.
- *
- * Small, but not nothing. A thumb settling on a row moves a few pixels, and a
- * page that shivers under every tap reads as something loose rather than
- * something responsive.
- */
-export const DRAG_WAKE = 8;
-
-/** And the furthest it will go, however far the finger does. */
-export const DRAG_MAX = 110;
-
-/**
- * What the screen shows for a finger that has travelled this far.
- *
- * One for one while it is still a question, and stiffer past the point where
- * letting go would turn the month: more travel beyond that says nothing new,
- * and a screen that slides clean off its own edge has stopped being a page
- * being turned and become a thing that fell over.
- */
-export function drag(dx: number): number {
-  const m = Math.abs(dx);
-  const moved = m <= SWIPE_MIN ? m : SWIPE_MIN + (m - SWIPE_MIN) * 0.35;
-  return Math.sign(dx) * Math.min(moved, DRAG_MAX);
-}
-
 export interface Swipe {
-  handlers: {
-    onTouchStart: (e: TouchEvent) => void;
-    onTouchMove: (e: TouchEvent) => void;
-    onTouchEnd: (e: TouchEvent) => void;
-    onTouchCancel: () => void;
-  };
-  /** Where the screen should sit right now, in pixels. Nought when idle. */
-  dx: number;
-  /** Whether a finger is on it, so the caller can turn its easing off. */
-  dragging: boolean;
+  onTouchStart: (e: TouchEvent) => void;
+  onTouchMove: (e: TouchEvent) => void;
+  onTouchEnd: (e: TouchEvent) => void;
+  onTouchCancel: () => void;
 }
 
 interface From { x: number; y: number; at: number; axis: "?" | "x" | "y" }
 
-export function useSwipe(onLeft: () => void, onRight: () => void): Swipe {
+/**
+ * The handlers, given somewhere to put the answer.
+ *
+ * `onDrag` is called with where the finger has got to while it is down, and
+ * `onEnd` with which way it went, if anywhere. Neither goes through React
+ * state on purpose: a drag fires on every frame, and re-rendering a screen
+ * sixty times a second to move it sideways is how a gesture ends up behind
+ * the finger doing it.
+ */
+export function useSwipe(
+  onDrag: (dx: number) => void,
+  onEnd: (went: "left" | "right" | null) => void,
+  width: () => number,
+): Swipe {
   const from = useRef<From | null>(null);
-  const [dx, setDx] = useState(0);
-
-  const rest = () => { from.current = null; setDx(0); };
-
   return {
-    dx,
-    dragging: dx !== 0,
-    handlers: {
-      onTouchStart: (e) => {
-        // One finger. Two is a pinch or a scroll, and neither is this.
-        const t = e.touches.length === 1 ? e.touches[0] : null;
-        from.current = t ? { x: t.clientX, y: t.clientY, at: Date.now(), axis: "?" } : null;
-        setDx(0);
-      },
-      onTouchMove: (e) => {
-        const start = from.current;
-        const t = e.touches[0];
-        if (!start || !t) return;
-        const moved = t.clientX - start.x;
-        const fell = t.clientY - start.y;
-        // Which way this gesture is going is decided once, at the moment it
-        // becomes clear, and then held. Deciding it afresh on every move lets
-        // a scroll that wanders sideways drag the page along with it.
-        if (start.axis === "?") {
-          if (Math.abs(moved) < DRAG_WAKE && Math.abs(fell) < DRAG_WAKE) return;
-          start.axis = Math.abs(moved) > Math.abs(fell) * SWIPE_SLOPE ? "x" : "y";
-        }
-        if (start.axis !== "x") return;
-        setDx(drag(moved));
-      },
-      onTouchEnd: (e) => {
-        const start = from.current;
-        const t = e.changedTouches[0];
-        rest();
-        if (!start || !t) return;
-        const went = direction(t.clientX - start.x, t.clientY - start.y, Date.now() - start.at);
-        if (went === "left") onLeft();
-        else if (went === "right") onRight();
-      },
-      onTouchCancel: rest,
+    onTouchStart: (e) => {
+      // One finger. Two is a pinch or a scroll, and neither is this.
+      const t = e.touches.length === 1 ? e.touches[0] : null;
+      from.current = t ? { x: t.clientX, y: t.clientY, at: Date.now(), axis: "?" } : null;
     },
+    onTouchMove: (e) => {
+      const start = from.current;
+      const t = e.touches[0];
+      if (!start || !t) return;
+      const moved = t.clientX - start.x;
+      const fell = t.clientY - start.y;
+      // Which way this gesture is going is decided once, at the moment it
+      // becomes clear, and then held. Deciding it afresh on every move lets a
+      // scroll that wanders sideways drag the screen along with it.
+      if (start.axis === "?") {
+        if (Math.abs(moved) < DRAG_WAKE && Math.abs(fell) < DRAG_WAKE) return;
+        start.axis = Math.abs(moved) > Math.abs(fell) * SWIPE_SLOPE ? "x" : "y";
+      }
+      if (start.axis !== "x") return;
+      onDrag(moved);
+    },
+    onTouchEnd: (e) => {
+      const start = from.current;
+      const t = e.changedTouches[0];
+      from.current = null;
+      if (!start || !t || start.axis !== "x") { onEnd(null); return; }
+      onEnd(turned(t.clientX - start.x, t.clientY - start.y, Date.now() - start.at, width()));
+    },
+    onTouchCancel: () => { from.current = null; onEnd(null); },
   };
 }
