@@ -258,10 +258,21 @@ export function EncryptionCard(){
     setBusy(true);
     setError(null);
     try {
+      // Same reason as the reseal below, and the same check the sync loop
+      // makes: the version in the shared state is every tab's, not this one's,
+      // so a tab that has polled since this one last did would let this
+      // screen's older document go up wearing a number that fits.
+      const at = cloudState();
+      const stored = await head();
+      if (stored.found && stored.version !== at.version) {
+        setError(`The stored budget is at version ${stored.version} and this tab is on ${at.version}. `
+          + "Reload, then turn encryption on, or this copy would go over the newer one.");
+        return;
+      }
       await unlock(null, phrase);
       // The push encrypts, because a key now exists. Version guard kept so a
       // save from another device in the meantime is a conflict, not a clobber.
-      const res = await push(db, cloudState().version);
+      const res = await push(db, at.version);
       setCloudState({ version: res.version, dirty: false });
       setUnlocked(true);
       setEncrypted(true);
@@ -317,8 +328,17 @@ export function EncryptionCard(){
       // Anything the scheduled job queued has been waiting for exactly this
       // key. Taken now rather than on the next poll a minute from now, so the
       // figures are current the moment the budget appears.
-      const drained = await drainQueue(found?.doc ?? db, found?.version ?? cloudState().version)
-        .catch(() => null);
+      //
+      // Only against the document the pull just returned, and only at that
+      // document's own version. It used to fall back to this screen's `db` at
+      // whatever version the shared state happened to hold, which are two
+      // values from two places: a document from one moment stamped with a
+      // number from another is exactly what the version check cannot catch. A
+      // pull that came back with nothing leaves the queue for the next poll,
+      // which is a minute, rather than guessing the pair.
+      const drained = found
+        ? await drainQueue(found.doc, found.version).catch(() => null)
+        : null;
       if (drained) {
         replaceFromCloud(drained.db);
         setCloudState({ version: drained.version, dirty: false });

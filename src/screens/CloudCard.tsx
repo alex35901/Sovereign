@@ -245,7 +245,19 @@ export function CloudCard() {
     setBusy("push");
     setError(null);
     try {
+      // The stored version has to agree with the one this browser thinks it
+      // is on before the document goes up. That number lives in localStorage,
+      // which every tab on the device shares: one tab polling and writing a
+      // newer number there is enough to make this tab's older document look
+      // current to the server, and the number is the only check there is.
       const at = cloudState();
+      const stored = await head();
+      if (stored.found && stored.version !== at.version) {
+        setRemote(stored);
+        setError(`The stored budget is at version ${stored.version} and this tab is on ${at.version}. `
+          + "Reload before saving, or this copy would go over the newer one.");
+        return;
+      }
       const res = await push(db, at.version);
       setCloudState({ version: res.version, dirty: false });
       setRemote(await head());

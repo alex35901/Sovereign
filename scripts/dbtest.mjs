@@ -802,6 +802,54 @@ await test("a queued pull nobody can open is left alone rather than thrown away"
   assert.deepEqual(out.ids, [], "an unreadable row must not be acknowledged, or it would be deleted");
 });
 
+await test("the version check cannot catch a stale document wearing a current number", async () => {
+  /*
+   * Why the document and its version travel as one value in the sync loop
+   * rather than as two.
+   *
+   * The server's only defence against a browser holding an old copy is the
+   * number it is handed. It cannot tell that the document beside that number
+   * is older than the number claims, so a caller that takes the document from
+   * one place and the number from another can walk straight through the check.
+   * That is what happened: the poll installed the stored copy, set its version
+   * on the next line, and then drained the overnight queue into a ref React
+   * had not updated yet. The old document went back up under the new number,
+   * the check saw nothing wrong, and everything saved in between went with it,
+   * rules included.
+   *
+   * This test is the reason the fix is a type rather than a comment.
+   */
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await wipe(); await clearAttempts();
+
+  await asServer({ doc: { accounts: [], rules: ["categorise Philz"] }, baseVersion: 0 }, "PUT");
+  const stale = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(stale.version, 1);
+
+  // An evening's work on another device.
+  await asServer({
+    doc: { accounts: [], rules: ["categorise Philz", "split the mortgage", "tag work travel"] },
+    baseVersion: 1,
+  }, "PUT");
+  assert.equal(JSON.parse((await asServer(undefined, "GET")).text).version, 2);
+
+  // The old document, offered under the current number.
+  const put = await asServer({ doc: stale.doc, baseVersion: 2 }, "PUT");
+  assert.equal(put.status, 200, "the server takes it: the number is the only thing it can check");
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.deepEqual(after.doc.rules, ["categorise Philz"], "and the evening's rules are gone");
+
+  // Recoverable only because the version it went over was kept, which is the
+  // whole job of the history table.
+  const kept = await M.listHistory();
+  const replaced = kept.find((h) => h.version === 2);
+  assert.ok(replaced, "the version it replaced has to be in the history");
+  assert.deepEqual((await M.readHistory(2)).doc.rules,
+    ["categorise Philz", "split the mortgage", "tag work travel"],
+    "and it has to still hold what was lost");
+  await wipe();
+});
+
 await test("a version can be read without writing, so looking costs no history", async () => {
   // Restoring used to be the only way to find out what a version held, and a
   // restore is a write, and a write trims the oldest kept version off the end.

@@ -17,6 +17,21 @@ import type { DB } from "../types";
  * device sees. A local edit that would be lost to that rule is set aside first
  * rather than dropped.
  */
+/**
+ * A document and the version it is, carried together.
+ *
+ * Never two values. The stored document's version number is the only thing
+ * standing between a browser holding an old copy and everybody else's work,
+ * and a number fetched from one place while the document comes from another
+ * is a number that can be right about a document it does not describe. Taking
+ * them as a pair is what makes that unrepresentable rather than merely
+ * avoided.
+ */
+interface Held {
+  doc: DB;
+  version: number;
+}
+
 export function CloudSync() {
   const { db, apply, notify, replaceFromCloud } = useStore();
 
@@ -81,13 +96,30 @@ export function CloudSync() {
    */
   const atMount = useRef<DB | null>(db);
 
-  const install = (doc: DB) => {
+  const install = (doc: DB): DB => {
     const installed = act.current.replaceFromCloud(doc);
+    /**
+     * The ref, now, and not on the next render.
+     *
+     * This is a React state update, so the store's `db` changes on a later
+     * render and `latest.current` is assigned from it there. Every line the
+     * caller runs after this one still sees the document that was just
+     * replaced. That is how a household lost an evening: the poll installed
+     * the stored copy, set `base` to its version on the very next line, and
+     * then drained the overnight queue into the ref, which was still holding
+     * this browser's older document. What went back to the server was the old
+     * document under the new version number, so the check that exists to stop
+     * exactly that saw nothing wrong. Everything saved in between was gone,
+     * rules and all, and the queued pull arrived in the same write, which is
+     * why the accounts looked like they had reverted too.
+     */
+    latest.current = installed;
     // Only the same document the server holds when nothing had to be brought
     // up to date. One that needed migrating is genuinely different now, and
     // that difference is worth saving back — which happens once, because the
     // next device to pull it finds nothing left to migrate.
     fromCloud.current = installed === doc ? installed : null;
+    return installed;
   };
 
   /**
@@ -98,16 +130,16 @@ export function CloudSync() {
    * it differently. A local edit that would be lost to it is stashed, never
    * dropped.
    */
-  const takeRemote = async (say: (by: string) => string | null): Promise<boolean> => {
+  const takeRemote = async (say: (by: string) => string | null): Promise<Held | null> => {
     const remote = await pull().catch(() => null);
-    if (!remote) return false;
+    if (!remote) return null;
     if (cloudState().dirty) stashConflict(latest.current);
-    install(remote.doc);
+    const doc = install(remote.doc);
     base.current = remote.version;
     setCloudState({ version: remote.version, dirty: false });
     const said = say(remote.updatedBy);
     if (said) act.current.notify(said);
-    return true;
+    return { doc, version: remote.version };
   };
 
   /**
@@ -184,8 +216,8 @@ export function CloudSync() {
     return landed;
   };
 
-  const drainNow = async (): Promise<boolean> => {
-    const out = await drainQueue(latest.current, base.current).catch(() => null);
+  const drainNow = async (from: Held): Promise<boolean> => {
+    const out = await drainQueue(from.doc, from.version).catch(() => null);
     // Nothing opened: an empty queue, or a browser holding no key yet. Either
     // way the poll must not treat it as movement, or a locked tab with rows
     // waiting would reset its own backoff for ever.
@@ -225,6 +257,13 @@ export function CloudSync() {
 
       const local = { ...cloudState(), version: base.current };
       /**
+       * What this browser holds once the branch below has settled, and the
+       * version that document actually is. The drain at the bottom merges into
+       * it, so it has to come from whichever branch ran rather than from a ref
+       * that React has not caught up with yet.
+       */
+      let held: Held | null = null;
+      /**
        * Anything but exact agreement means the stored document is the one to
        * take.
        *
@@ -244,6 +283,7 @@ export function CloudSync() {
           ? `Loaded the copy saved by ${by}. This device's unsent changes were set aside, see Settings.`
           : null));
         if (isCancelled() || !took) return;
+        held = took;
       } else if (local.dirty) {
         // This browser has work the server has not got. Through the same door
         // as the debounce, so a failing save backs off here too rather than
@@ -270,18 +310,22 @@ export function CloudSync() {
         if (res) {
           base.current = res.version;
           setCloudState({ version: res.version, dirty: false });
+          // The server took what this browser was holding, so the two agree on
+          // both halves: this document, at that version.
+          held = { doc: latest.current, version: res.version };
         }
       } else {
         // Already in step. Nothing crosses the wire, which is the common case
         // every single time the app is opened.
         base.current = meta.version;
         setCloudState({ version: meta.version, dirty: false });
+        held = { doc: latest.current, version: meta.version };
       }
 
       // Whatever the scheduled job pulled overnight is waiting encrypted in
       // the queue; this is the first moment there is a key to open it with.
       // The version check already said whether there is anything in it.
-      if (!isCancelled() && meta.queued > 0) await drainNow();
+      if (!isCancelled() && held && meta.queued > 0) await drainNow(held);
     } catch (err) {
       if (!isCancelled()) {
         act.current.notify(err instanceof CloudError ? `Cloud sync: ${err.message}` : "Cloud sync failed.");
@@ -382,10 +426,14 @@ export function CloudSync() {
       // different from the shared number. A stored document that has gone
       // backwards was restored from a backup or rolled back after an accident,
       // and a poll that only looks forwards sails straight past it.
+      let held: Held = { doc: latest.current, version: base.current };
       if (meta.found && meta.version !== base.current) {
         const remote = await pull();
         if (remote && remote.version !== base.current) {
-          install(remote.doc);
+          // The pair, from the install rather than from the ref. See `install`
+          // and `Held`: the ref is a render behind, and the drain below runs
+          // before that render.
+          held = { doc: install(remote.doc), version: remote.version };
           base.current = remote.version;
           setCloudState({ version: remote.version, dirty: false });
           if (remote.updatedBy !== deviceName()) notifyUpdate(act.current.notify, remote.updatedBy);
@@ -395,7 +443,7 @@ export function CloudSync() {
       // Only when the version check said there is something to drain. It used
       // to be asked on every round, which doubled the requests a poll makes to
       // be told there was nothing there.
-      if (meta.queued > 0 && await drainNow()) moved = true;
+      if (meta.queued > 0 && await drainNow(held)) moved = true;
     } catch { /* offline, most likely; the next round tries again */ } finally {
       busy.current = false;
     }

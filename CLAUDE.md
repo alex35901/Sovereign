@@ -187,6 +187,22 @@ an encrypted document (it queues work for a browser instead), and why Hopper's
 agent loop runs in the browser. Nothing may be added that requires the server
 to read the document.
 
+**A document and its version number must travel together, never as two
+values.** The stored version is the only thing standing between a browser
+holding an old copy and everybody else's work, and the server cannot tell that
+the document beside a number is older than the number claims. `install()` in
+`CloudSync` is a React state update, so `latest.current` is a render behind it,
+while `base.current` is set on the very next line. The poll installed the
+stored copy, then drained the overnight queue into that stale ref and pushed
+the result at the new version: the check saw a number that fitted and took it,
+and an evening's work went, rules and all, with the queued pull landing in the
+same write so the accounts looked like they had reverted too. The pair is a
+`Held` value now, `install()` returns what it installed and updates the ref
+itself, and `dbtest` carries a characterisation test showing the server
+accepting a stale document under a current number so nobody mistakes the
+version check for protection against this. Anything that reads a document from
+one place and a version from another is this bug again.
+
 **A credential in the document must never be enough, on its own, to start an
 unattended write.** SimpleFIN pulled on the strength of `simplefinAccessUrl`
 being present and nothing else: no button, no person, no server-side check. A
