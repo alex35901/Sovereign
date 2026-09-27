@@ -222,11 +222,27 @@ export function CloudSync() {
     // way the poll must not treat it as movement, or a locked tab with rows
     // waiting would reset its own backoff for ever.
     if (!out) return false;
+    /**
+     * Anything typed while the drain was in the air.
+     *
+     * It is not instant: it fetches the rows, opens each one and saves the
+     * result, which is two round trips and a decrypt. An edit made in that
+     * window is in the document this browser is holding and not in what went
+     * up, so installing the drained copy over it drops it — and the line
+     * below then marks the document saved, which means nothing would ever
+     * push it and nothing would ever say so. Set aside instead, the way every
+     * other copy this rule would lose is set aside.
+     */
+    const moved = latest.current !== from.doc;
+    if (moved) stashConflict(latest.current);
     // The drain pushed what it merged, so this is the stored document too.
     install(out.db);
     base.current = out.version;
     setCloudState({ version: out.version, dirty: false });
     if (out.said) act.current.notify(out.said);
+    if (moved) {
+      act.current.notify("A change made while the overnight pull was saving was set aside, see Settings.");
+    }
     return true;
   };
 

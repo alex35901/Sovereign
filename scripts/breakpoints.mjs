@@ -2859,15 +2859,23 @@ try {
       ...baseDoc,
       settings: {
         ...baseDoc.settings, syncCadence: "daily",
-        // Names no bank, so it is about the whole connection and belongs on
-        // every account fed by it. The message that names one is seeded
-        // separately below, because those are two different rules.
-        usage: { ...(baseDoc.settings.usage ?? {}), plaid: { period: "", count: 3, error: "Plaid could not be reached." } },
+        // Addressed to one bank by name, because every account below is fed by
+        // the same provider. This used to name nobody, which made it a fact
+        // about the whole connection: that was readable while a second
+        // provider existed to supply the healthy accounts, and with one
+        // provider it would put every account on the page in the same state
+        // and leave nothing to tell apart. The rule that lands a named error
+        // on its own bank is what keeps the three states distinguishable, and
+        // it is the rule worth exercising anyway.
+        usage: { ...(baseDoc.settings.usage ?? {}), plaid: { period: "", count: 3, error: "Elements Financial: could not be reached." } },
       },
+      // Distinct banks, named outright rather than taken from the demo data,
+      // which has more than one account at the same bank and would let the
+      // matching pass by accident.
       accounts: baseDoc.accounts.map((a, i) =>
-        i === 0 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(2) }
-        : i === 1 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(2) }
-        : i === 2 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(24 * 9) }
+        i === 0 ? { ...a, institution: "Elements Financial", syncSource: "plaid", lastSyncedAt: iso(2) }
+        : i === 1 ? { ...a, institution: "Third National", syncSource: "plaid", lastSyncedAt: iso(2) }
+        : i === 2 ? { ...a, institution: "Valon Mortgage", syncSource: "plaid", lastSyncedAt: iso(24 * 9) }
         : { ...a, syncSource: undefined, lastSyncedAt: undefined }),
     };
 
