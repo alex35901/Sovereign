@@ -1,5 +1,5 @@
 /**
- * Exercises the pieces the browser tests can't reach: the SimpleFIN proxy
+ * Exercises the pieces the browser tests can't reach: the provider proxies
  * (against a stub bridge), the sync merge, CSV parsing and the budget math.
  *
  *   node scripts/selftest.mjs
@@ -70,7 +70,6 @@ await build({
       export { debtsFrom, debtsLeftOut } from "./src/lib/payoff.ts";
       export * as CD from "./src/lib/cards.ts";
       export { readDraft, toRules } from "./src/lib/hopper/rewards.ts";
-      export { default as simplefinHandler } from "./api/simplefin.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
       export { default as dbHandler } from "./api/db.ts";
@@ -81,7 +80,6 @@ await build({
       export { findConnection } from "./api/_store.ts";
       export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
       export { afterFailure, lockedFor, callerKey, waitMessage, freshAttempt, MAX_FAILURES, LOCKOUT_MS, WINDOW_MS } from "./api/_ratelimit.ts";
-      export { toPayload, startOfDayUnix } from "./src/lib/sync/simplefin.ts";
       export { mapAccountType, mapAssetClass, isLiability, fetchItem, createLinkToken, reconnectLinkToken, countHistory, refreshItem, releaseItem, needsInstitution, toPlaidPayload } from "./src/lib/sync/plaid.ts";
       export * as HW from "./src/lib/sync/history.ts";
       export * as LE from "./src/lib/sync/link-error.ts";
@@ -127,7 +125,6 @@ await build({
       export { RANGES, rangeMonths, rangeStart, sampleDates, sampleLabel, spanDays } from "./src/lib/range.ts";
       export { thisMonth, addMonths, addDays, relativeDay, relativeDayMid } from "./src/lib/date.ts";
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
-      export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS, pollDelay, POLL_MIN_MS, POLL_MAX_MS } from "./src/lib/sync/schedule.ts";
       export { syncPlaid, syncPlaidDue, syncPlaidItem } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
@@ -148,41 +145,6 @@ const M = await import(entry);
 const C = M.C; // the crypto module, kept under its own name for readability
 const RI = M.RI; // the Monarch rules importer
 const D = M.D; // the duplicate finder
-
-/* ── SimpleFIN proxy, against a stub bridge ───────────────────────────── */
-
-const bridge = http.createServer((req, res) => {
-  if (req.url.startsWith("/claim")) {
-    const auth = req.headers.authorization;
-    res.writeHead(200, { "content-type": "text/plain" });
-    res.end(`https://user1:pass1@127.0.0.1:${port}/simplefin${auth ? "" : ""}`);
-    return;
-  }
-  if (req.url.startsWith("/simplefin/accounts")) {
-    if (req.headers.authorization !== "Basic " + Buffer.from("user1:pass1").toString("base64")) {
-      res.writeHead(403); res.end("bad auth"); return;
-    }
-    const url = new URL(req.url, "http://x");
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({
-      errors: [],
-      startDateEcho: url.searchParams.get("start-date"),
-      accounts: [{
-        id: "acct-1", name: "Premier Checking", currency: "USD", balance: "4210.55",
-        "balance-date": Math.floor(Date.parse("2026-08-20T00:00:00Z") / 1000),
-        org: { name: "Stub Bank" },
-        transactions: [
-          { id: "tx-1", posted: Math.floor(Date.parse("2026-08-18T00:00:00Z") / 1000), amount: "-42.10", description: "POS DEBIT WHOLEFDS MKT 10412 08/18", payee: "WHOLEFDS MKT" },
-          { id: "tx-2", posted: Math.floor(Date.parse("2026-08-19T00:00:00Z") / 1000), amount: "2100.00", description: "DIRECT DEP ACME PAYROLL" },
-        ],
-      }],
-    }));
-    return;
-  }
-  res.writeHead(404); res.end("nope");
-});
-await new Promise((r) => bridge.listen(0, "127.0.0.1", r));
-const port = bridge.address().port;
 
 /**
  * Calls the handler exactly the way Vercel's Node runtime does — (req, res),
@@ -205,7 +167,6 @@ const invokeOn = (handler, body, method = "POST") =>
       .catch((err) => { clearTimeout(timer); reject(err); });
   });
 
-const invoke = (body, method = "POST") => invokeOn(M.simplefinHandler, body, method);
 const invokeProperty = (body, method = "POST") => invokeOn(M.propertyHandler, body, method);
 const invokePlaid = (body, method = "POST") => invokeOn(M.plaidHandler, body, method);
 const invokePrices = (body, method = "POST") => invokeOn(M.pricesHandler, body, method);
@@ -238,58 +199,6 @@ const withEnv = async (vars, fn) => {
 };
 
 
-const post = async (body, method = "POST") => {
-  const r = await invoke(body, method);
-  return { status: r.status, json: r.text ? JSON.parse(r.text) : {} };
-};
-
-await test("proxy always writes a response (never hangs the caller)", async () => {
-  const r = await invoke({ action: "claim", setupToken: "" });
-  assert.ok(r.status >= 400, "an unusable token should still get an answer");
-  assert.equal(r.headers["content-type"], "application/json");
-});
-
-await test("proxy rejects non-POST", async () => {
-  const res = await post({}, "GET");
-  assert.equal(res.status, 405);
-});
-
-await test("proxy rejects a malformed body", async () => {
-  const r = await invoke(undefined);
-  assert.equal(r.status, 400);
-  assert.match(JSON.parse(r.text).error, /Malformed/);
-});
-
-await test("proxy rejects a token that isn't an https URL", async () => {
-  const res = await post({ action: "claim", setupToken: Buffer.from("ftp://nope").toString("base64") });
-  assert.equal(res.status, 400);
-  assert.match(res.json.error, /https URL/);
-});
-
-let accessUrl;
-await test("proxy claims a setup token", async () => {
-  const token = Buffer.from(`http://127.0.0.1:${port}/claim`).toString("base64");
-  // claim URLs must be https in production; the stub is http, so assert it's refused
-  const refused = await post({ action: "claim", setupToken: token });
-  assert.equal(refused.status, 400, "http claim URL should be refused");
-  accessUrl = `https://user1:pass1@127.0.0.1:${port}/simplefin`;
-});
-
-await test("proxy strips credentials into a Basic header", async () => {
-  // point at the stub over http by monkeypatching fetch's URL scheme check path:
-  // exercise the same parsing the handler does
-  const url = new URL(accessUrl);
-  const auth = "Basic " + Buffer.from(`${url.username}:${url.password}`).toString("base64");
-  url.username = ""; url.password = "";
-  const target = new URL(`${url.toString().replace(/\/$/, "")}/accounts`);
-  target.searchParams.set("start-date", "1750000000");
-  const res = await fetch(target.toString().replace("https://", "http://"), { headers: { Authorization: auth } });
-  const json = await res.json();
-  assert.equal(res.status, 200);
-  assert.equal(json.accounts[0].id, "acct-1");
-  assert.equal(json.startDateEcho, "1750000000");
-});
-
 /*
  * The scheduled-pull tests that stood here are gone with the pull itself.
  * SimpleFIN is retired: an access URL left in a saved document was enough to
@@ -314,8 +223,6 @@ await test("a stored access URL is dropped on load, so a restored backup is safe
   const clean = M.emptyDB();
   assert.equal(M.migrate(clean) === clean, true);
 });
-
-bridge.close();
 
 /* ── property valuations ──────────────────────────────────────────────── */
 
@@ -671,10 +578,10 @@ await test("a meter cannot grow without bound", () => {
 });
 
 await test("a failure is remembered until the next success clears it", () => {
-  let u = M.U.noteRun(undefined, "simplefin", "ever", { error: "the bridge is down" }, SEP);
-  assert.equal(M.U.meterOf(u, "simplefin", "ever", SEP).error, "the bridge is down");
-  u = M.U.noteRun(u, "simplefin", "ever", {}, SEP);
-  assert.equal(M.U.meterOf(u, "simplefin", "ever", SEP).error, undefined);
+  let u = M.U.noteRun(undefined, "plaid", "ever", { error: "the bridge is down" }, SEP);
+  assert.equal(M.U.meterOf(u, "plaid", "ever", SEP).error, "the bridge is down");
+  u = M.U.noteRun(u, "plaid", "ever", {}, SEP);
+  assert.equal(M.U.meterOf(u, "plaid", "ever", SEP).error, undefined);
 });
 
 await test("an error is trimmed to something a table cell can hold", () => {
@@ -706,7 +613,7 @@ await test("every provider is a row, and an unconfigured one reads as off", () =
 });
 
 await test("the bridge is not a row any more, and Plaid answers for both halves", () => {
-  // SimpleFIN did the bank half and Plaid the investment half. With the last
+  // The retired bridge did the bank half and Plaid the investment half. With the last
   // bridge account gone there is one provider, and a table listing a second
   // one that is switched off for ever is a row nobody can act on.
   const rows = rowsOf(M.emptyDB());
@@ -1396,33 +1303,6 @@ await test("search ranks exact names above keyword hits", () => {
   assert.equal(first.c, "\u{1F951}");
 });
 
-/* ── client-side error reporting ──────────────────────────────────────── */
-
-await test("a 404 blames the missing function, not SimpleFIN", async () => {
-  const msg = await withFetch(
-    async () => new Response("", { status: 404 }),
-    () => caught(() => M.simplefin.fetch("https://u:p@example.com/simplefin", "2026-01-01")),
-  );
-  assert.match(msg, /api\/simplefin function isn't running/);
-  assert.doesNotMatch(msg, /SimpleFIN request failed/);
-});
-
-await test("an SPA shell served instead of JSON says the same thing", async () => {
-  const msg = await withFetch(
-    async () => new Response("<!doctype html><div id=root>", { status: 200 }),
-    () => caught(() => M.simplefin.fetch("https://u:p@example.com/simplefin", "2026-01-01")),
-  );
-  assert.match(msg, /api\/simplefin function isn't running/);
-});
-
-await test("a real bridge error is surfaced verbatim", async () => {
-  const msg = await withFetch(
-    async () => new Response(JSON.stringify({ error: "Bridge rejected the token (403)." }), { status: 400 }),
-    () => caught(() => M.simplefin.connect("dG9rZW4=")),
-  );
-  assert.equal(msg, "Bridge rejected the token (403).");
-});
-
 /* ── merge ────────────────────────────────────────────────────────────── */
 
 const payload = {
@@ -1443,7 +1323,7 @@ await test("a switched provider does not refile the history already held", () =>
   // same real transaction arriving from a second provider carries a different
   // id, so nothing recognises it. Without a floor, switching files a second
   // copy of everything already categorised.
-  const first = M.mergeSync(M.emptyDB(), payload, "simplefin");
+  const first = M.mergeSync(M.emptyDB(), payload, "plaid");
   assert.equal(first.transactionsAdded, 2);
 
   // The account is moved across, starting the day after what it already has.
@@ -1479,7 +1359,7 @@ await test("a switched provider does not refile the history already held", () =>
 });
 
 await test("merge creates the account and its transactions", () => {
-  const res = M.mergeSync(M.emptyDB(), payload, "simplefin");
+  const res = M.mergeSync(M.emptyDB(), payload, "plaid");
   assert.equal(res.accountsAdded, 1);
   assert.equal(res.transactionsAdded, 2);
   assert.equal(res.db.accounts[0].balance, 421055);
@@ -1506,12 +1386,12 @@ await test("a hold that settles for more is corrected, not left at what it was h
   // Nothing here ever looked at a transaction it already had, so a fifty
   // dollar fuel hold that settled at seventy-one sat in the account at fifty
   // until somebody noticed and typed over it.
-  const first = M.mergeSync(M.emptyDB(), holdPayload(), "simplefin");
+  const first = M.mergeSync(M.emptyDB(), holdPayload(), "plaid");
   assert.equal(first.transactionsAdded, 1);
   assert.equal(first.db.transactions[0].pending, true);
   assert.equal(first.db.transactions[0].amount, -50_00);
 
-  const posted = M.mergeSync(first.db, holdPayload({}, { amount: -71_23, pending: false }), "simplefin");
+  const posted = M.mergeSync(first.db, holdPayload({}, { amount: -71_23, pending: false }), "plaid");
   assert.equal(posted.transactionsAdded, 0, "it is the same charge, not a second one");
   assert.equal(posted.transactionsRevised, 1);
   assert.equal(posted.db.transactions.length, 1);
@@ -1523,7 +1403,7 @@ await test("a hold that settles for more is corrected, not left at what it was h
 });
 
 await test("what the household owns is not rewritten by a sync", () => {
-  const first = M.mergeSync(M.emptyDB(), holdPayload(), "simplefin");
+  const first = M.mergeSync(M.emptyDB(), holdPayload(), "plaid");
   // The sort of tidying anybody does to a pending row while waiting for it.
   const mine = {
     ...first.db.transactions[0],
@@ -1539,7 +1419,7 @@ await test("what the household owns is not rewritten by a sync", () => {
   const posted = M.mergeSync(db, holdPayload({}, {
     amount: -71_23, pending: false, payee: "SHELL OIL",
     description: "SHELL OIL 12345 SAN FRANCISCO CA",
-  }), "simplefin");
+  }), "plaid");
   const [t] = posted.db.transactions;
   assert.equal(t.statement, "SHELL OIL 12345 SAN FRANCISCO CA", "the provider owns its own wording");
   assert.equal(t.amount, -71_23, "the provider owns the figure");
@@ -1556,9 +1436,9 @@ await test("what the household owns is not rewritten by a sync", () => {
 await test("a charge that has already settled is never restated", () => {
   // A provider revising last March is not something to take on trust, and a
   // household that corrected a figure by hand should keep the correction.
-  const settled = M.mergeSync(M.emptyDB(), holdPayload({}, { pending: false }), "simplefin");
+  const settled = M.mergeSync(M.emptyDB(), holdPayload({}, { pending: false }), "plaid");
   assert.equal(settled.db.transactions[0].pending, false);
-  const later = M.mergeSync(settled.db, holdPayload({}, { pending: false, amount: -99_99 }), "simplefin");
+  const later = M.mergeSync(settled.db, holdPayload({}, { pending: false, amount: -99_99 }), "plaid");
   assert.equal(later.transactionsRevised, 0);
   assert.equal(later.db.transactions[0].amount, -50_00);
 });
@@ -1701,8 +1581,8 @@ await test("a posted row naming a hold nobody holds is simply a new transaction"
 });
 
 await test("merge is idempotent — re-syncing adds nothing", () => {
-  const once = M.mergeSync(M.emptyDB(), payload, "simplefin");
-  const twice = M.mergeSync(once.db, payload, "simplefin");
+  const once = M.mergeSync(M.emptyDB(), payload, "plaid");
+  const twice = M.mergeSync(once.db, payload, "plaid");
   assert.equal(twice.transactionsAdded, 0);
   assert.equal(twice.accountsAdded, 0);
   assert.equal(twice.accountsUpdated, 1);
@@ -1716,7 +1596,7 @@ await test("merge applies rules to incoming transactions", () => {
     criteria: { merchantContains: "acme", direction: "in" },
     actions: { categoryId: "c_paychecks", markReviewed: true },
   }];
-  const res = M.mergeSync(db, payload, "simplefin");
+  const res = M.mergeSync(db, payload, "plaid");
   const paycheck = res.db.transactions.find((t) => t.amount > 0);
   assert.equal(paycheck.categoryId, "c_paychecks");
   assert.equal(paycheck.reviewed, true);
@@ -1734,9 +1614,9 @@ await test("a daily pull of an unchanged balance does not grow the document", ()
     errors: [],
   });
 
-  db = M.mergeSync(db, on("2026-08-01"), "simplefin").db;
+  db = M.mergeSync(db, on("2026-08-01"), "plaid").db;
   for (const d of ["02", "03", "04", "05", "06", "07"]) {
-    db = M.mergeSync(db, on(`2026-08-${d}`), "simplefin").db;
+    db = M.mergeSync(db, on(`2026-08-${d}`), "plaid").db;
   }
   const car = db.accounts.find((a) => a.syncId === "s1");
   assert.equal(car.history.length, 2, `a week of the same figure left ${car.history.length} points`);
@@ -1745,7 +1625,7 @@ await test("a daily pull of an unchanged balance does not grow the document", ()
   assert.equal(M.balanceAt(car, "2026-08-04"), 1_800_000, "and the middle of the week still reads right");
 
   // and a real move is still recorded, on the day it happened
-  db = M.mergeSync(db, { ...on("2026-08-08"), accounts: [{ syncId: "s1", name: "Car", institution: "Nobody", type: "other_asset", balance: 1_750_000, balanceDate: "2026-08-08" }] }, "simplefin").db;
+  db = M.mergeSync(db, { ...on("2026-08-08"), accounts: [{ syncId: "s1", name: "Car", institution: "Nobody", type: "other_asset", balance: 1_750_000, balanceDate: "2026-08-08" }] }, "plaid").db;
   const moved = db.accounts.find((a) => a.syncId === "s1");
   // Two, not three: the middle point repeated the first, so it carried nothing
   // once a later one existed. What every date reads is what matters.
@@ -2347,21 +2227,6 @@ await test("a synced logo lands on the account and survives a pull without one",
   assert.equal(third.db.accounts[0].logo, "data:image/png;base64,BBBB");
 });
 
-await test("SimpleFIN carries the domain it sends, and no logo", () => {
-  const raw = {
-    errors: [],
-    accounts: [{
-      id: "sf-1", name: "Joint Bills", currency: "USD", balance: "7662.61",
-      "balance-date": 1788000000, org: { name: "Elements Financial", domain: "elements.org" },
-      transactions: [],
-    }],
-  };
-  const out = M.toPayload(raw);
-  assert.equal(out.accounts[0].domain, "elements.org");
-  assert.equal(out.accounts[0].logo, undefined, "SimpleFIN sends no logo");
-  assert.equal(out.accounts[0].institution, "Elements Financial");
-});
-
 /* ── a transaction's history ─────────────────────────────────────────── */
 
 const actDb = () => {
@@ -2385,7 +2250,9 @@ const actTxn = (over = {}) => ({
 
 await test("arrival is recorded with the name of whatever brought it in", () => {
   assert.equal(M.added("plaid", "2026-08-30T22:32:00.000Z").source, "Plaid");
-  assert.equal(M.added("simplefin", "x").source, "SimpleFIN");
+  // A tag nothing writes any more reads back as itself rather than as a
+  // provider name, which is what an old log line should say.
+  assert.equal(M.added("simplefin", "x").source, "simplefin");
   assert.equal(M.added("csv", "x").source, "a CSV import");
   assert.equal(M.added("manual", "x").source, "you");
   assert.equal(M.sourceLabel(undefined), "you");
@@ -2460,10 +2327,10 @@ await test("history is capped, keeping the newest", () => {
 
 await test("a transaction older than the log still shows how it arrived", () => {
   // nothing recorded, but it carries an import key and its account syncs
-  const imported = M.history(actTxn({ importKey: "sf:1" }), "simplefin");
+  const imported = M.history(actTxn({ importKey: "pl:1" }), "plaid");
   assert.equal(imported.length, 1);
   assert.equal(imported[0].kind, "added");
-  assert.equal(imported[0].source, "SimpleFIN");
+  assert.equal(imported[0].source, "Plaid");
   assert.equal(imported[0].at, "2026-09-01T10:00:00.000Z", "dated from when it was created");
 
   // typed in by hand, with no sync source anywhere
@@ -2471,7 +2338,7 @@ await test("a transaction older than the log still shows how it arrived", () => 
 
   // and one that does have a log is left exactly as it is
   const logged = actTxn({ activity: [M.added("plaid", "2026-08-30T22:32:00.000Z")] });
-  assert.deepEqual(M.history(logged, "simplefin"), logged.activity);
+  assert.deepEqual(M.history(logged, "plaid"), logged.activity);
 });
 
 await test("a synced transaction records the provider that brought it", () => {
@@ -2724,7 +2591,7 @@ await test("an account is identified by its sync id, and by name before it has o
 
 await test("a deleted account does not come back on the next sync", () => {
   let db = M.emptyDB();
-  const first = M.mergeSync(db, syncPayload(), "simplefin");
+  const first = M.mergeSync(db, syncPayload(), "plaid");
   assert.equal(first.accountsAdded, 1);
   assert.equal(first.db.transactions.length, 1);
 
@@ -2737,7 +2604,7 @@ await test("a deleted account does not come back on the next sync", () => {
     settings: { ...first.db.settings, deletedAccountKeys: M.accountKeys(gone) },
   };
 
-  const again = M.mergeSync(db, syncPayload(), "simplefin");
+  const again = M.mergeSync(db, syncPayload(), "plaid");
   assert.equal(again.accountsAdded, 0, "the account must stay deleted");
   assert.equal(again.db.accounts.length, 0);
   assert.equal(again.transactionsAdded, 0, "and must not bring its transactions with it");
@@ -2748,7 +2615,7 @@ await test("a tombstone matches on name too, for an account deleted before it ha
     ...M.emptyDB(),
     settings: { ...M.emptyDB().settings, deletedAccountKeys: ["name:test bank|everyday"] },
   };
-  const res = M.mergeSync(db, syncPayload({ syncId: "a-different-id" }), "simplefin");
+  const res = M.mergeSync(db, syncPayload({ syncId: "a-different-id" }), "plaid");
   assert.equal(res.accountsAdded, 0, "same account, new provider id");
 });
 
@@ -2766,14 +2633,14 @@ await test("deleting one account leaves the others alone", () => {
     syncId: "tx-2", accountSyncId: "sf-2", date: "2026-09-01", amount: -100,
     description: "FEE", pending: false,
   });
-  const res = M.mergeSync(db, payload, "simplefin");
+  const res = M.mergeSync(db, payload, "plaid");
   assert.equal(res.accountsAdded, 1);
   assert.equal(res.db.accounts[0].name, "Savings");
   assert.equal(res.transactionsAdded, 1, "only the surviving account's transactions");
 });
 
 await test("a closed account is left settled by the next sync", () => {
-  const first = M.mergeSync(M.emptyDB(), syncPayload(), "simplefin");
+  const first = M.mergeSync(M.emptyDB(), syncPayload(), "plaid");
   const closed = {
     ...first.db,
     accounts: first.db.accounts.map((a) => ({
@@ -2781,7 +2648,7 @@ await test("a closed account is left settled by the next sync", () => {
       history: [...a.history, { date: "2026-09-01", balance: 0 }],
     })),
   };
-  const after = M.mergeSync(closed, syncPayload({ balance: 999900 }), "simplefin");
+  const after = M.mergeSync(closed, syncPayload({ balance: 999900 }), "plaid");
   assert.equal(after.db.accounts[0].balance, 0, "a closed account must not be revived by a pull");
   assert.equal(after.accountsUpdated, 0);
   assert.equal(after.transactionsAdded, 0, "and takes no further transactions");
@@ -3040,13 +2907,13 @@ await test("spending is counted from the first of the month, day by day", () => 
 });
 
 await test("what the bridge says about one bank lands on that bank", () => {
-  // SimpleFIN reports trouble as sentences about the pull, not as a field on
+  // A provider can report trouble as sentences about the pull, not as a field on
   // the account that has it, and those sentences name the institution. Pinned
   // to the account they name, so an upgrade at one bank is not reported
   // against the other four.
   const acct = (institution) => ({
     id: institution, name: "Checking", institution, type: "checking", balance: 0,
-    includeInNetWorth: true, hidden: false, history: [], order: 0, syncSource: "simplefin",
+    includeInNetWorth: true, hidden: false, history: [], order: 0, syncSource: "plaid",
   });
   const accounts = [acct("Elements Financial"), acct("Chase")];
   const errors = [
@@ -3079,7 +2946,7 @@ await test("a bank that answers with a fresh balance and no transactions is not 
   const account = {
     id: "a1", name: "Joint Bills", institution: "Elements Financial", type: "checking",
     balance: 100, includeInNetWorth: true, hidden: false, history: [], order: 0,
-    syncSource: "simplefin",
+    syncSource: "plaid",
     // Stamped by this morning's pull, which is exactly the problem.
     lastSyncedAt: "2026-09-20T11:00:00.000Z",
   };
@@ -3122,7 +2989,7 @@ await test("an account carrying its own note says so instead of the connection's
   const account = {
     id: "a1", name: "Checking", institution: "Elements Financial", type: "checking",
     balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 0,
-    syncSource: "simplefin", lastSyncedAt: "2026-09-20T06:00:00.000Z",
+    syncSource: "plaid", lastSyncedAt: "2026-09-20T06:00:00.000Z",
     syncNote: { message: "We are upgrading this connection. Please wait...", at: "2026-09-20T06:00:00.000Z" },
   };
   const other = { ...account, id: "a2", institution: "Chase", syncNote: undefined };
@@ -4085,7 +3952,7 @@ await test("the countdown reads in whichever unit fits", () => {
 
 await test("the default cadence is one of the offered options", () => {
   assert.ok(M.CADENCES.some((c) => c.value === M.DEFAULT_CADENCE));
-  assert.equal(M.DEFAULT_CADENCE, "daily", "SimpleFIN refreshes about daily upstream");
+  assert.equal(M.DEFAULT_CADENCE, "daily", "a bank posts to Plaid about once a day");
 });
 
 /* ── cross-device sync: the passphrase gate ──────────────────────────── */
@@ -4300,7 +4167,7 @@ await test("an account moved to another provider keeps everything but where its 
     id: "a_joint", name: "Joint Bills", institution: "Elements Financial", type: "checking",
     balance: 421_00, includeInNetWorth: true, hidden: false, order: 3,
     history: [{ date: "2026-09-01", balance: 400_00 }],
-    syncSource: "simplefin", syncId: "sf-123",
+    syncSource: "plaid", syncId: "pl-123",
     syncNote: { message: "We are upgrading this connection.", at: "2026-09-20T00:00:00.000Z" },
   };
   const moved = M.adopt(account, { syncId: "pl-987", institution: "Elements Financial", logo: "data:image/png;base64,x" }, "2026-09-03");
@@ -4546,7 +4413,7 @@ const item = (over = {}) => ({
 });
 const FUTURE = () => Date.now() + 60_000;
 
-await test("the overnight run pulls Plaid as well as SimpleFIN", async () => {
+await test("the overnight run pulls every Plaid connection", async () => {
   const server = plaidServer({ transactions: [plaidTxn()] });
   const out = await withEnv(creds, () =>
     withFetch(server.impl, () => M.refreshPlaid(withPlaidItems([item()]), FUTURE())));
@@ -4733,8 +4600,8 @@ await test("a window that cannot be read to the end of says so rather than losin
 
 await test("a connection that has never run is asked for everything, not for a fortnight", () => {
   // The window used to be one figure for the whole document, taken from the
-  // SimpleFIN clock. A Plaid bank connected today was handed the window of a
-  // SimpleFIN connection that had been syncing daily for months, so its first
+  // clock of another connection. A Plaid bank connected today was handed the
+  // window of a connection that had been syncing daily for months, so its first
   // pull asked for a fortnight and brought back eighteen transactions where
   // two years were available.
   const now = Date.parse("2026-09-21T12:00:00.000Z");
@@ -5072,9 +4939,10 @@ await test("a rule can ask for more than one thing about the merchant", () => {
 await test("an account moved to a new connection is not handed back by the old one", () => {
   // The old connection does not stop existing when an account is migrated. It
   // keeps offering the same account every night under the id it always used,
-  // and taking it made a second copy: a household that moved to Plaid woke up
-  // to its SimpleFIN accounts back again, with the night's transactions filed
-  // against them.
+  // and taking it made a second copy: a household that moved woke up to the
+  // old connection's accounts back again, with the night's transactions filed
+  // against them. True between two Plaid logins as much as between two
+  // providers, which is why the guard is keyed on the id and not the source.
   const base = M.emptyDB();
   const remote = {
     syncId: "sf-1", name: "Everyday", institution: "Elements", balance: 1000,
@@ -5086,7 +4954,7 @@ await test("an account moved to a new connection is not handed back by the old o
   };
 
   // Before the move, the old connection feeds it, which is the whole point.
-  const before = M.mergeSync(base, pull, "simplefin");
+  const before = M.mergeSync(base, pull, "plaid");
   assert.equal(before.accountsAdded, 1);
   assert.equal(before.transactionsAdded, 1);
   assert.deepEqual(before.migrated, []);
@@ -5101,7 +4969,7 @@ await test("an account moved to a new connection is not handed back by the old o
 
   // The old connection offers it again, and is ignored: no second account, no
   // second copy of the night's transactions, and no quiet re-pointing.
-  const again = M.mergeSync(after, pull, "simplefin");
+  const again = M.mergeSync(after, pull, "plaid");
   assert.equal(again.accountsAdded, 0, "no second copy of an account already migrated");
   assert.equal(again.transactionsAdded, 0, "nor of the transactions on it");
   assert.deepEqual(again.migrated, ["Everyday"]);
@@ -5628,8 +5496,8 @@ await test("a connection says which accounts came in through it", () => {
       acct("401(k)", "Fidelity", "retirement"),
       acct("Cash Management", "Fidelity", "checking"),
       acct("Brokerage", "Vanguard", "investment"),
-      // Not this connection's, and not Plaid's at all.
-      acct("Old Checking", "Fidelity", "checking", { syncSource: "simplefin" }),
+      // At the same bank, but nothing feeds it: typed in rather than connected.
+      acct("Old Checking", "Fidelity", "checking", { syncSource: "manual" }),
       acct("Wallet", "Cash", "checking", { syncSource: "manual" }),
     ],
   };
@@ -6313,45 +6181,140 @@ await test("an investment-only item has no transactions, which is not a failure"
   assert.equal(out.transactions, 0);
 });
 
-await test("a queued overnight pull is merged under the provider that fetched it", async () => {
+await test("an unattended pull can add and revise, and can never take away", () => {
+  /*
+   * The property that matters after a provider spent a day writing over a
+   * household's data: a pull runs on a timer, with nobody watching, so the
+   * only safe shape for it is one that cannot subtract. Accounts, transactions
+   * and the household's own fields on them all have to survive a pull that
+   * reports something else entirely, or reports nothing at all.
+   */
+  const db = M.emptyDB();
+  const mine = {
+    ...db,
+    accounts: [
+      { id: "a_typed", name: "Cash under the mattress", institution: "Nobody", type: "checking",
+        balance: 50000, includeInNetWorth: true, hidden: false, history: [], order: 0 },
+      { id: "a_bank", syncId: "pa1", name: "Everyday", institution: "Third National", type: "checking",
+        balance: 100000, includeInNetWorth: true, hidden: false, history: [], order: 1,
+        syncSource: "plaid", itemId: "item-1" },
+    ],
+    transactions: [
+      { id: "t_typed", accountId: "a_typed", date: "2026-08-01", amount: -2500, merchant: "Farmers market",
+        categoryId: null, pending: false, tags: [] },
+      { id: "t_synced", accountId: "a_bank", date: "2026-08-02", amount: -4210, merchant: "Whole Foods",
+        categoryId: "c1", note: "split with Sam", importKey: "pl:old-1", pending: false, tags: ["g1"] },
+    ],
+  };
+
+  // A pull that found nothing at all. Every row has to still be here.
+  const empty = M.mergeSync(mine, {
+    fetchedAt: "2026-09-01T09:00:00.000Z", errors: [], accounts: [], transactions: [],
+  }, "plaid");
+  assert.equal(empty.db.transactions.length, 2, "a pull that found nothing must not remove anything");
+  assert.equal(empty.db.accounts.length, 2);
+
+  // A pull reporting a different account entirely. The others are not its
+  // business and must be left exactly as they are.
+  const elsewhere = M.mergeSync(mine, {
+    fetchedAt: "2026-09-01T09:00:00.000Z", errors: [],
+    accounts: [{ syncId: "pa9", name: "Savings", institution: "Third National", balance: 900000,
+      currency: "USD", type: "savings", balanceDate: "2026-09-01", itemId: "item-1" }],
+    transactions: [],
+  }, "plaid");
+  assert.equal(elsewhere.db.transactions.length, 2, "every stored transaction survives");
+  assert.equal(elsewhere.db.accounts.length, 3, "the new one is added beside them, not instead of them");
+  assert.ok(elsewhere.db.accounts.some((a) => a.id === "a_typed"), "an account typed in by hand is untouchable");
+
+  // And a pull that does cover the synced account may not rewrite what the
+  // household put on its rows.
+  const covered = M.mergeSync(mine, {
+    fetchedAt: "2026-09-01T09:00:00.000Z", errors: [],
+    accounts: [{ syncId: "pa1", name: "Everyday", institution: "Third National", balance: 95000,
+      currency: "USD", type: "checking", balanceDate: "2026-09-01", itemId: "item-1" }],
+    transactions: [{ syncId: "new-1", accountSyncId: "pa1", date: "2026-09-01", amount: -700,
+      description: "COFFEE", pending: false }],
+  }, "plaid");
+  const kept = covered.db.transactions.find((t) => t.id === "t_synced");
+  assert.ok(kept, "a settled row already held is never dropped");
+  assert.equal(kept.merchant, "Whole Foods", "nor renamed");
+  assert.equal(kept.categoryId, "c1", "nor recategorised");
+  assert.equal(kept.note, "split with Sam", "nor stripped of its note");
+  assert.deepEqual(kept.tags, ["g1"], "nor of its tags");
+  assert.equal(covered.db.transactions.length, 3, "the new row lands beside them");
+});
+
+await test("a queued overnight pull lands only when it names a live connection", async () => {
   // The queue is an encrypted document's only path in: the job seals each pull
-  // to the document's public key and a browser opens it later. The source rides
-  // along with the payload because the merge needs it — a Plaid pull merged as
-  // SimpleFIN would import every transaction a second time under the wrong
-  // prefix, and then again under the right one on the next hands-on sync.
-  const payload = {
+  // to the document's public key and a browser opens it later. On a sealed
+  // document the job cannot read the document, so it pulls from whatever
+  // PLAID_ACCESS_TOKENS lists in the server environment. Nothing in the app
+  // can edit that list, so the browser is the last gate.
+  const payload = (over = {}) => ({
     accounts: [{
       syncId: "pa1", name: "Everyday", institution: "Third National", balance: 123456,
-      currency: "USD", type: "checking", balanceDate: "2026-09-01",
+      currency: "USD", type: "checking", balanceDate: "2026-09-01", itemId: "item-1",
+      ...over,
     }],
     transactions: [{
       syncId: "pt1", accountSyncId: "pa1", date: "2026-09-01", amount: -1234,
       description: "TARGET 3026", pending: false,
     }],
     errors: [], fetchedAt: "2026-09-01T09:00:00.000Z",
-  };
+  });
 
   const at = await M.C.newKeypair();
   const row = async (body, id) => ({ id, createdAt: "2026-09-01T09:00:00.000Z", ...await M.C.sealTo(at.pub, JSON.stringify(body)) });
+  const connected = (...ids) => {
+    const db = M.emptyDB();
+    return {
+      ...db,
+      settings: {
+        ...db.settings,
+        plaidItems: ids.map((itemId) => ({
+          accessToken: `tok-${itemId}`, itemId, institution: "Third National",
+          kind: "bank", addedAt: "2026-01-01T00:00:00.000Z",
+        })),
+      },
+    };
+  };
 
-  const plaid = await M.applyQueue(M.emptyDB(), [await row({ ...payload, source: "plaid" }, 1)], at.priv);
+  const held = connected("item-1");
+  const plaid = await M.applyQueue(held, [await row({ ...payload(), source: "plaid" }, 1)], at.priv);
   assert.equal(plaid.transactionsAdded, 1);
   assert.equal(plaid.db.transactions[0].importKey, "pl:pt1");
   assert.equal(plaid.db.accounts[0].syncSource, "plaid");
+  assert.equal(plaid.dropped, 0);
 
-  // An untagged row is a SimpleFIN pull, which is all the job sealed before
-  // that tag existed. The bridge is retired, so one is thrown away rather than
-  // merged: draining it would put its accounts back exactly the way the
-  // schedule used to. It is still claimed, or it would be retried every poll
-  // until it expired.
-  const stale = await M.applyQueue(M.emptyDB(), [await row(payload, 1)], at.priv);
-  assert.deepEqual(stale.db.transactions, [], "a queued bridge pull must not land");
+  // An untagged row came from the provider that is gone, which is all the job
+  // sealed before that tag existed. Draining one would put its accounts back
+  // exactly the way the schedule used to. It is still claimed, or it would be
+  // retried every poll until it expired.
+  const stale = await M.applyQueue(held, [await row(payload(), 1)], at.priv);
+  assert.deepEqual(stale.db.transactions, [], "a queued pull from the old provider must not land");
   assert.deepEqual(stale.db.accounts, [], "and it must not bring its accounts either");
   assert.deepEqual(stale.ids, [1], "but the row is consumed, not left to come round again");
   assert.equal(stale.unreadable, 0, "it opened fine; it was dropped on purpose");
+  assert.equal(stale.dropped, 1);
 
-  // Dropping it must not disturb what a real pull already brought in.
-  const after = await M.applyQueue(plaid.db, [await row(payload, 2)], at.priv);
+  // The one this gate exists for. The connection was disconnected here, so the
+  // item is gone from the document; the token the job reads from the server
+  // environment is not something the app can remove, and Plaid can refuse the
+  // hand-back. Every night that bank would otherwise be queued and put back.
+  const gone = await M.applyQueue(connected("item-2"), [await row({ ...payload(), source: "plaid" }, 3)], at.priv);
+  assert.deepEqual(gone.db.accounts, [], "a disconnected bank must not come back through the queue");
+  assert.deepEqual(gone.db.transactions, []);
+  assert.deepEqual(gone.ids, [3], "and the row is consumed rather than retried nightly");
+  assert.equal(gone.dropped, 1);
+
+  // A pull that cannot say which connection it is cannot be attributed to
+  // anything the household asked for, so it is not merged on the chance.
+  const nameless = await M.applyQueue(held, [await row({ ...payload({ itemId: undefined }), source: "plaid" }, 4)], at.priv);
+  assert.deepEqual(nameless.db.accounts, [], "an unattributable pull must not land");
+  assert.equal(nameless.dropped, 1);
+
+  // Dropping any of them must not disturb what a real pull already brought in.
+  const after = await M.applyQueue(plaid.db, [await row(payload(), 2)], at.priv);
   assert.equal(after.db.transactions.length, 1);
   assert.equal(after.db.transactions[0].importKey, "pl:pt1");
 });
@@ -6933,7 +6896,7 @@ await test("accounts that are not spendable are not counted as spendable", () =>
 const swingAcct = (over = {}) => ({
   id: "m", name: "Home Mortgage", type: "mortgage", institution: "NewRez",
   balance: -1_400_00, includeInNetWorth: true, hidden: false, order: 0,
-  syncSource: "simplefin",
+  syncSource: "plaid",
   history: [{ date: "2026-09-08", balance: -420_000_00 }, { date: "2026-09-09", balance: -1_400_00 }],
   ...over,
 });
@@ -7084,12 +7047,12 @@ await test("a quiet connection is judged against its own rhythm, not a fixed wee
 
   // Four days is the floor, so a long weekend is never news.
   const weekend = withDates(["2026-09-13", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"]);
-  assert.equal(M.quietSince(weekend, "simplefin", now), undefined, "two days is a weekend");
+  assert.equal(M.quietSince(weekend, "plaid", now), undefined, "two days is a weekend");
   assert.equal(M.MIN_QUIET_DAYS, 4);
 
   // Too little history to know what normal is: say nothing rather than guess.
   const thin = withDates(["2026-09-01", "2026-09-02"]);
-  assert.equal(M.quietSince(thin, "simplefin", now), undefined);
+  assert.equal(M.quietSince(thin, "plaid", now), undefined);
 });
 
 await test("a provider that has quietly stopped becomes a notice, not just a colour", () => {
@@ -9646,7 +9609,9 @@ const sampleDoc = () => ({
   version: 3,
   accounts: [{ id: "a1", name: "Everyday Checking", institution: "Wells Fargo", balance: 412_33 }],
   transactions: [{ id: "t1", merchant: "Philz Coffee", amount: -1000, date: "2026-09-02" }],
-  settings: { simplefinAccessUrl: "https://user:hunter2@bridge.simplefin.org/access" },
+  settings: {
+    plaidItems: [{ accessToken: "access-production-hunter2", itemId: "item-1", institution: "Wells Fargo" }],
+  },
 });
 
 await test("a document survives the round trip byte for byte", async () => {
@@ -9661,7 +9626,7 @@ await test("nothing recognisable from the document appears in the envelope", asy
   const at = await unlockFast("a long enough passphrase");
   const env = await C.encryptDocument(sampleDoc(), at);
   const wire = JSON.stringify(env);
-  for (const secret of ["Philz", "Wells Fargo", "Everyday Checking", "hunter2", "simplefin", "41233", "bridge.simplefin.org"]) {
+  for (const secret of ["Philz", "Wells Fargo", "Everyday Checking", "hunter2", "access-production", "41233", "item-1"]) {
     assert.equal(wire.includes(secret), false, `"${secret}" is readable in the stored envelope`);
   }
   assert.equal(wire.includes("AES-256-GCM"), true, "the algorithm itself is not a secret");
@@ -10105,7 +10070,7 @@ await test("every Plaid item can be synced from one call", async () => {
 
 await test("the schedule pulls the Plaid items whose turn has come, and leaves the rest", async () => {
   // Plaid used to refresh only when somebody pressed a button or when the
-  // overnight job ran, while SimpleFIN refreshed itself all day on the cadence
+  // overnight job ran, so the cadence in Settings drove nothing it was named
   // in Settings. Two banks connected two ways behaved differently for no
   // reason anyone chose.
   const now = Date.parse("2026-08-10T12:00:00.000Z");
@@ -10268,24 +10233,25 @@ await test("holdings replace the account's previous positions", () => {
   assert.equal(twice.db.holdings[0].ticker, "VXUS");
 });
 
-await test("the two providers cannot collide on transaction ids", () => {
+await test("a row left by the retired provider is claimed, not duplicated", () => {
   const db = M.emptyDB();
   const account = { syncId: "a1", name: "A", institution: "I", balance: 0, currency: "USD", type: "checking", balanceDate: "2026-08-01" };
   const txn = (over) => ({ syncId: "same-id", accountSyncId: "a1", date: "2026-08-01", amount: -100, description: "X", pending: false, ...over });
   const payload = (t) => ({ fetchedAt: "2026-08-29T00:00:00.000Z", errors: [], accounts: [account], transactions: [t] });
 
-  // One id, two providers, two different transactions. The prefix is what
-  // keeps them apart; without it the second would be read as the first.
-  const first = M.mergeSync(db, payload(txn()), "simplefin");
-  const second = M.mergeSync(first.db, payload(txn({ date: "2026-08-02", amount: -250 })), "plaid");
-  assert.equal(second.transactionsAdded, 1, "the same id from a different provider is a different transaction");
-  assert.deepEqual(second.db.transactions.map((t) => t.importKey).sort(), ["pl:same-id", "sf:same-id"]);
+  // A document that still carries "sf:" keys, which is what an old backup or a
+  // restored version holds. Nothing writes that prefix any more.
+  const first = M.mergeSync(db, payload(txn()), "plaid");
+  const stale = {
+    ...first.db,
+    transactions: first.db.transactions.map((t) => ({ ...t, importKey: "sf:same-id" })),
+  };
 
-  // But the same transaction arriving from the other provider is the same
-  // transaction, whatever id it wears. A household migrating from one to the
-  // other runs both for a while, and two copies of every row is what that
-  // used to cost.
-  const again = M.mergeSync(first.db, payload(txn({ syncId: "plaid-id" })), "plaid");
+  // Reconnecting the same bank through Plaid gives every row a new id, so
+  // nothing recognises it by key. Recognised by its account, its day and its
+  // figure instead, and re-keyed — otherwise reconnecting files a second copy
+  // of everything already categorised.
+  const again = M.mergeSync(stale, payload(txn({ syncId: "plaid-id" })), "plaid");
   assert.equal(again.transactionsAdded, 0, "recognised by its account, its day and its figure");
   assert.equal(again.db.transactions.length, 1);
   assert.equal(again.db.transactions[0].importKey, "pl:plaid-id", "and re-keyed, so the new provider keeps track of it");

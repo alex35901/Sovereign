@@ -3,7 +3,7 @@ import { postJSON } from "./api";
 /**
  * Home valuations via RentCast. Its Developer tier is free for 50 lookups a
  * month, which is ample for a handful of properties refreshed monthly — MX
- * (and so SimpleFIN) carries no property values at all.
+ * carries no property values at all.
  */
 export interface ValueEstimate {
   /** cents */

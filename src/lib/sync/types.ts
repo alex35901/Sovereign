@@ -10,7 +10,7 @@ export interface RemoteAccount {
   currency: string;
   type: AccountType;
   balanceDate: string;
-  /** Institution logo, as a data URI. Plaid returns one; SimpleFIN does not. */
+  /** Institution logo, as a data URI. Plaid returns one; not every source does. */
   logo?: string;
   /** Institution website, which a logo can be looked up from when there is none. */
   domain?: string;
@@ -21,7 +21,7 @@ export interface RemoteAccount {
    * an answer rather than a guess. It cannot be worked out from the name: an
    * account moved to Plaid from somewhere else keeps the name and institution
    * the household already gave it, deliberately, so the two spellings rarely
-   * match. Absent for SimpleFIN, which has no such thing.
+   * match. Absent for a source that has no such thing.
    */
   itemId?: string;
 }
@@ -58,28 +58,26 @@ export interface SyncPayload {
  *
  * The scheduled job cannot merge into an envelope, so it seals each pull to the
  * document's public key and a browser applies it later. The source rides along
- * because the merge needs it: a Plaid transaction and a SimpleFIN one are
- * de-duplicated under different prefixes, and a Plaid pull merged as SimpleFIN
- * would import every transaction a second time. Rows written before this field
- * existed have no source, and are SimpleFIN — the only provider the job pulled
- * then.
+ * because a payload that does not say it is Plaid's is not merged at all: the
+ * queue can still be holding one sealed by an older job, and the only other
+ * thing that ever wrote to it was a bridge whose pulls must never land.
  */
-export type QueuedPayload = SyncPayload & { source?: "simplefin" | "plaid" };
+export type QueuedPayload = SyncPayload & { source?: "plaid" };
 
 export interface SyncAdapter {
-  id: "simplefin" | "plaid" | "teller";
+  id: "plaid" | "teller";
   label: string;
   /** One-line cost note shown in Settings. */
   cost: string;
   /** True when the user has finished connecting this provider. */
-  isConnected: (settings: { simplefinAccessUrl?: string }) => boolean;
+  isConnected: (settings: Record<string, unknown>) => boolean;
   /** Exchange a one-time setup token for durable credentials. */
   connect: (token: string) => Promise<{ accessUrl: string }>;
   /** Pull accounts + transactions since `since` (ISO date). */
   fetch: (accessUrl: string, since: string) => Promise<SyncPayload>;
 }
 
-/** SimpleFIN reports no account type, so infer one from the name. */
+/** A source that reports no account type leaves the name to infer one from. */
 export function guessAccountType(name: string, balance: number): AccountType {
   const n = name.toLowerCase();
   if (/(visa|mastercard|amex|credit|card)/.test(n)) return "credit";

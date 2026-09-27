@@ -6,7 +6,8 @@ import type { ItemReach } from "./history.js";
 import { today } from "../date.js";
 
 /**
- * Plaid. The Trial plan is free for up to 10 institutions and, unlike SimpleFIN,
+ * Plaid. The Trial plan is free for up to 10 institutions and, unlike a bare
+ * balance feed,
  * returns holdings for investment and retirement accounts.
  */
 const PROXY = "/api/plaid";
@@ -274,7 +275,7 @@ export interface ItemMark { institution: string; logo?: string; domain?: string;
  * waiting to disagree.
  */
 export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload {
-  // The day the balance belongs to is the day where the person is. SimpleFIN
+  // The day the balance belongs to is the day where the person is. A provider
   // already dates its readings this way; this used to use UTC, so a sync run
   // in the evening in California wrote a reading dated tomorrow, which the
   // charts would not show until tomorrow came.

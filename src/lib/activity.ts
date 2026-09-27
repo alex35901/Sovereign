@@ -11,7 +11,6 @@ import { dateLabel, toISO } from "./date.js";
  */
 
 const SOURCE_LABEL: Record<string, string> = {
-  simplefin: "SimpleFIN",
   plaid: "Plaid",
   csv: "a CSV import",
   manual: "you",

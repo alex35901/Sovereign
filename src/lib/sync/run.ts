@@ -47,9 +47,9 @@ async function withInstitution(item: PlaidItemRef): Promise<PlaidItemRef> {
 }
 
 /**
- * One Plaid item, merged in. Lives here beside the SimpleFIN pull rather than
- * in the card that used to own it, because two screens now offer to run it and
- * two copies of this would drift.
+ * One Plaid item, merged in. Lives here rather than in the card that used to
+ * own it, because two screens now offer to run it and two copies of this
+ * would drift.
  */
 export async function syncPlaidItem(
   apply: (fn: (cur: DB) => DB, label?: string) => void,
@@ -122,10 +122,9 @@ export async function syncPlaid(
  * The same thing on a schedule, for the items whose turn has come.
  *
  * Plaid used to refresh only when somebody pressed a button or when the
- * overnight job ran, while SimpleFIN refreshed itself all day on the cadence
- * in Settings. Two banks connected two ways behaved differently for no reason
- * anyone chose. Null when nothing is due, so the caller can tell "nothing to
- * do" from "did it and nothing came back".
+ * overnight job ran, so the cadence in Settings drove nothing it was named
+ * for. Null when nothing is due, so the caller can tell "nothing to do" from
+ * "did it and nothing came back".
  */
 export async function syncPlaidDue(
   db: DB,

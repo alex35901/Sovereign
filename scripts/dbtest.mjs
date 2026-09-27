@@ -106,7 +106,7 @@ await test("a save keeps the version it replaced, so an overwrite can be undone"
   await M.writeDoc({ accounts: ["plaid"] }, 0, "desktop");
   await M.writeDoc({ accounts: ["plaid", "more"] }, 1, "desktop");
   // The accident: a stale device, saving the world as it was two versions ago.
-  await M.writeDoc({ accounts: ["simplefin"] }, 2, "an old phone");
+  await M.writeDoc({ accounts: ["stale"] }, 2, "an old phone");
 
   const kept = await M.listHistory();
   assert.deepEqual(kept.map((h) => h.version), [2, 1], "newest first, and the one just replaced is there");
@@ -118,7 +118,7 @@ await test("a save keeps the version it replaced, so an overwrite can be undone"
   assert.equal(await M.readHistory(99), null, "a version never kept is null rather than a throw");
 
   // And the current document is untouched by any of that looking.
-  assert.deepEqual((await M.readDoc()).doc, { accounts: ["simplefin"] });
+  assert.deepEqual((await M.readDoc()).doc, { accounts: ["stale"] });
   await wipe();
 });
 
@@ -199,7 +199,7 @@ await test("the table is remembered, but a table that disappears is rebuilt rath
 
 await test("a document round-trips intact", async () => {
   const doc = {
-    settings: { theme: "dark", householdName: "Cameron", simplefinAccessUrl: "https://u:p@x/y" },
+    settings: { theme: "dark", householdName: "Cameron", plaidItems: [{ accessToken: "tok", itemId: "item-1" }] },
     accounts: [{ id: "a1", name: "Everyday", balance: -46512300, history: [{ date: "2026-09-01", balance: -46512300 }] }],
     transactions: [{ id: "t1", amount: -1234, merchant: "Caffè Nero — ☕", date: "2026-09-01" }],
     budgets: { "2026-09": { c_groceries: 60000 } },
@@ -694,7 +694,7 @@ await test("a real budget migrates from plaintext to encrypted without losing an
   const stored = JSON.parse((await asServer(undefined, "GET")).text);
   const wire = JSON.stringify(stored.doc);
   assert.equal(C.isEnvelope(stored.doc), true);
-  for (const secret of ["Philz Coffee", "Wells Fargo", "Everyday Checking", "simplefinAccessUrl"]) {
+  for (const secret of ["Philz Coffee", "Wells Fargo", "Everyday Checking", "accessToken"]) {
     assert.equal(wire.includes(secret), false, `"${secret}" survived into the stored ciphertext`);
   }
 
@@ -716,6 +716,13 @@ await test("the scheduled job queues a pull it cannot itself read, and a browser
     type: "checking", balance: 100000, currency: "USD", syncSource: "plaid",
     balanceDate: "2026-09-01", history: [{ date: "2026-09-01", balance: 100000 }],
   }];
+  base.settings = {
+    ...base.settings,
+    plaidItems: [{
+      accessToken: "access-sandbox-1", itemId: "item-1", institution: "Wells Fargo",
+      kind: "bank", addedAt: "2026-01-01T00:00:00.000Z",
+    }],
+  };
   const env = await C.encryptDocument(base, at);
   await asServer({ doc: env, baseVersion: 0 }, "PUT");
 
@@ -724,7 +731,7 @@ await test("the scheduled job queues a pull it cannot itself read, and a browser
     fetchedAt: new Date().toISOString(),
     source: "plaid",
     accounts: [{ syncId: "acct-1", name: "Everyday Checking", institution: "Wells Fargo",
-      type: "checking", balance: 95000, currency: "USD", balanceDate: "2026-09-02" }],
+      type: "checking", balance: 95000, currency: "USD", balanceDate: "2026-09-02", itemId: "item-1" }],
     transactions: [{ syncId: "tx-9", accountSyncId: "acct-1", date: "2026-09-02",
       amount: -5000, description: "COSTCO GAS #1234", pending: false }],
     errors: [],
@@ -762,10 +769,17 @@ await test("a queued pull applied twice does not double up", async () => {
     type: "checking", balance: 100000, currency: "USD", syncSource: "plaid",
     balanceDate: "2026-09-01", history: [{ date: "2026-09-01", balance: 100000 }],
   }];
+  base.settings = {
+    ...base.settings,
+    plaidItems: [{
+      accessToken: "access-sandbox-1", itemId: "item-1", institution: "Bank",
+      kind: "bank", addedAt: "2026-01-01T00:00:00.000Z",
+    }],
+  };
   const payload = {
     fetchedAt: new Date().toISOString(), errors: [], source: "plaid",
     accounts: [{ syncId: "acct-1", name: "Checking", institution: "Bank",
-      type: "checking", balance: 95000, currency: "USD", balanceDate: "2026-09-02" }],
+      type: "checking", balance: 95000, currency: "USD", balanceDate: "2026-09-02", itemId: "item-1" }],
     transactions: [{ syncId: "tx-9", accountSyncId: "acct-1", date: "2026-09-02", amount: -5000, description: "COSTCO GAS #1234", pending: false }],
   };
   const rows = [{ id: 1, createdAt: "", ...(await C.sealTo(at.pub, JSON.stringify(payload))) }];
@@ -960,7 +974,7 @@ await test("a document with no bridge credential is never pulled from a bridge",
   seed.settings = { ...seed.settings, simplefinAccessUrl: undefined, plaidItems: [] };
   // Accounts still carrying the mark of where they used to come from, which is
   // what a migrated household has.
-  seed.accounts = seed.accounts.map((a, i) => (i < 2 ? { ...a, syncSource: "simplefin", syncId: `moved-${i}` } : a));
+  seed.accounts = seed.accounts.map((a, i) => (i < 2 ? { ...a, syncSource: "plaid", syncId: `moved-${i}` } : a));
   const before = seed.accounts.length;
   await asServer({ doc: seed, baseVersion: 0 }, "PUT");
 
@@ -985,7 +999,7 @@ await test("a document with no bridge credential is never pulled from a bridge",
 /**
  * What stands in for "a bank the scheduled job can reach".
  *
- * These tests used to run against a SimpleFIN stub. That bridge is retired:
+ * These tests used to run against a stub for the provider that was retired:
  * nothing in the app or the job pulls from it, so there is no behaviour left
  * to assert about it beyond its absence, which is the last test in this group.
  * Plaid is what the job actually talks to now.
@@ -1308,8 +1322,7 @@ await test("the job stamps its own run, so a cron that stops is visible", async 
   assert.equal(r.status, 200);
   assert.equal(body.ran, false, "nothing was connected, so nothing was pulled");
   // Neither provider is connected, and the reason has to say so about both:
-  // "SimpleFIN isn't connected" stopped being the whole truth once Plaid
-  // started running on the same schedule.
+  // "no bank is connected" has to cover every route in, not one of them.
   assert.match(body.reason, /No bank is connected/);
   assert.equal(body.plaid, undefined, "no Plaid items means nothing to report about Plaid");
 
@@ -1485,7 +1498,7 @@ await test("an encrypted document gets its Plaid pull queued, not merged", async
   assert.deepEqual(after.doc, env);
 
   // And what was queued is tagged with the provider that fetched it, or the
-  // browser would merge a Plaid pull under SimpleFIN's prefix.
+  // browser would merge a Plaid pull under the wrong prefix.
   const rows = await M.readQueue();
   assert.equal(rows.length, 2);
   const opened = JSON.parse(await C.openFrom(at.priv, rows[0]));

@@ -10,7 +10,7 @@ export interface Named { institution?: string }
 /**
  * Matching a provider's complaints to the accounts they are about.
  *
- * SimpleFIN reports trouble as a list of sentences about the pull as a whole,
+ * A provider can report trouble as a list of sentences about the pull as a whole,
  * not as a field on the account that has it. The sentences do generally name
  * the institution: "Connection to Elements Financial needs attention",
  * "We are upgrading this connection at Elements Financial". So the name is

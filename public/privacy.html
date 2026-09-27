@@ -79,9 +79,9 @@
     <li><b>The encrypted document</b>, to the database, so the same household can open it on another device.</li>
     <li>
       <b>Requests to financial data providers</b>, through this application's own server so that
-      provider credentials never reach the browser. Plaid and SimpleFIN for accounts and
-      transactions, Tiingo for security prices, RentCast for property valuations. Each receives only
-      what its own request needs.
+      provider credentials never reach the browser. Plaid for accounts and transactions, Tiingo
+      for security prices, RentCast for property valuations. Each receives only what its own
+      request needs.
     </li>
     <li>
       <b>Questions asked of the assistant</b>, to Anthropic, only when the assistant is used. It is
@@ -99,7 +99,7 @@
   <p>
     Credentials that authorise every request, such as Plaid's client identifier and secret, are held
     in server environment variables and never sent to the browser. Credentials that belong to the
-    household, such as a SimpleFIN access URL or a Plaid access token, live inside the encrypted
+    household, such as a Plaid access token, live inside the encrypted
     document, which means they are unreadable to the server in the same way everything else is.
   </p>
 

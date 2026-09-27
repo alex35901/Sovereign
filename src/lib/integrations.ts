@@ -25,7 +25,7 @@ export interface Integration {
   provider: string;
   /**
    * Where the credential is. Three shapes, because they genuinely differ: two
-   * providers take a key you paste, SimpleFIN takes a one-use setup token that
+   * providers take a key you paste, some take a one-use setup token that
    * is exchanged for an access URL, and two hold their credentials on the
    * server where the browser must never see them.
    */
@@ -115,7 +115,7 @@ export function staleSince(i: Integration, now: number = Date.now()): string | u
  */
 export function quietSince(
   db: DB,
-  source: "simplefin" | "plaid",
+  source: "plaid",
   now: number = Date.now(),
 ): Quiet | undefined {
   const ids = new Set(

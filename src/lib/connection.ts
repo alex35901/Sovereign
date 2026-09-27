@@ -35,7 +35,6 @@ export interface Connection {
 
 const PROVIDER: Record<string, string> = {
   plaid: "Plaid",
-  simplefin: "SimpleFIN",
   csv: "CSV import",
   manual: "Entered by hand",
 };

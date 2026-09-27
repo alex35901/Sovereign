@@ -35,12 +35,37 @@ export interface Drained {
    * than throwing away something that might yet be readable.
    */
   unreadable: number;
+  /**
+   * Rows opened and thrown away: a provider that is gone, or a connection this
+   * document no longer holds. Counted rather than merged, so a pull that puts
+   * nothing back is still visible as something that happened.
+   */
+  dropped: number;
 }
 
 export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): Promise<Drained> {
   const out: Drained = {
-    db, ids: [], transactionsAdded: 0, accountsUpdated: 0, accountsAdded: 0, holdingsUpdated: 0, unreadable: 0,
+    db, ids: [], transactionsAdded: 0, accountsUpdated: 0, accountsAdded: 0, holdingsUpdated: 0,
+    unreadable: 0, dropped: 0,
   };
+
+  /**
+   * The connections this document actually holds.
+   *
+   * On a sealed document the job cannot read the document, so it pulls from
+   * whatever `PLAID_ACCESS_TOKENS` lists in the server environment. That list
+   * is not something the app can edit: disconnecting a bank here removes the
+   * item and hands the token back, but if Plaid refuses the hand-back the
+   * token stays live and the environment still names it, and the job goes on
+   * queueing that bank's accounts every night. Draining one would put them
+   * back, which is the exact shape of the failure that cost a household its
+   * data with the provider before this one.
+   *
+   * So the browser, which is the only thing that can read the document and the
+   * last gate before anything is written, checks. A pull is applied only when
+   * it names a connection that is still here.
+   */
+  const live = new Set((db.settings.plaidItems ?? []).map((i) => i.itemId));
 
   // A queued pull is the scheduled job's signature: on an encrypted document
   // the job cannot write settings, so this is the only place its run can be
@@ -56,11 +81,19 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
       continue;
     }
     // Anything that is not a Plaid pull is dropped, not merged. The queue can
-    // still be holding SimpleFIN payloads sealed by the job before that bridge
-    // was retired, and merging one would put its accounts back exactly the way
-    // the schedule used to. The row is claimed so it stops being retried.
-    if (payload.source !== "plaid") {
+    // still be holding payloads sealed by the job before the provider they
+    // came from was retired, and merging one would put its accounts back
+    // exactly the way the schedule used to. The row is claimed so it stops
+    // being retried.
+    //
+    // And a Plaid pull has to name a connection this document still holds. A
+    // payload that names none cannot be attributed to anything the household
+    // asked for, which includes one whose item could not be identified at all,
+    // so it is thrown away rather than merged on the chance that it is wanted.
+    const from = payload.accounts.map((a) => a.itemId).filter(Boolean) as string[];
+    if (payload.source !== "plaid" || !from.some((id) => live.has(id))) {
       out.ids.push(row.id);
+      out.dropped += 1;
       continue;
     }
     const merged = mergeSync(out.db, payload, "plaid");

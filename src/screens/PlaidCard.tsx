@@ -142,7 +142,7 @@ export function PlaidCard() {
     }
   };
 
-  /** Both of these now live in lib/sync/run beside the SimpleFIN pull, so the
+  /** Both of these now live in lib/sync/run, so the
    *  integrations table can offer the same thing without a second copy. */
   const syncItem = async (item: PlaidItemRef, opts: { fullHistory?: boolean } = {}) => {
     const out = await syncPlaidItem(apply, item, opts);

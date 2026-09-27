@@ -187,10 +187,20 @@ an encrypted document (it queues work for a browser instead), and why Hopper's
 agent loop runs in the browser. Nothing may be added that requires the server
 to read the document.
 
+**A credential in the document must never be enough, on its own, to start an
+unattended write.** SimpleFIN pulled on the strength of `simplefinAccessUrl`
+being present and nothing else: no button, no person, no server-side check. A
+cadence set to hourly then refilled the app with that bridge's dead accounts
+over the top of real data, once an hour, until the recovery window had been
+spent on the damage. The provider is deleted, not disabled, and the field is
+stripped from any document on load, because gating on a credential does not
+survive restoring a backup that still holds one. Anything that writes on a
+timer needs a person's action upstream of it.
+
 **Credentials that authorise every request stay on the server**
 (`ANTHROPIC_API_KEY`, `PLAID_CLIENT_ID` / `PLAID_SECRET`, `TIINGO_API_KEY`,
 `CRON_SECRET`, `SYNC_PASSPHRASE`). Per-user keys — RentCast, a user's own
-Tiingo token, the SimpleFIN access URL — live in the document and are passed
+Tiingo token, a Plaid access token — live in the document and are passed
 per call. No provider key ever reaches the browser or appears in a response.
 `SYNC_PASSPHRASE` guards `/api/hopper` exactly as it guards `/api/db`.
 
@@ -401,8 +411,8 @@ Patterns worth reusing:
 - Holdings on a Plaid-synced account are the provider's, not the app's:
   `mergeSync` replaces every holding on an account the payload reports for, so
   an edit there reverts at the next pull. The investments screen hides Add and
-  Edit for `syncSource === "plaid"` accounts and keeps them everywhere else —
-  SimpleFIN sends no holdings at all, so those accounts have no other way in.
+  Edit for `syncSource === "plaid"` accounts and keeps them everywhere else:
+  nothing else reports holdings, so those accounts have no other way in.
 - **The store flushes its own copy of the document over `localStorage` on
   `beforeunload`.** A browser test that writes to `localStorage` and then
   reloads gets its edit thrown away, silently, and the test passes against demo
@@ -493,8 +503,7 @@ Outbound egress is restricted in the Claude Code container. `plaid.com`,
 so live third-party responses cannot be seen from here — test against stubs.
 Web search works; `WebFetch` on those domains does not.
 
-Provider allowances worth staying inside: SimpleFIN $15/yr for 25 institutions;
-Plaid trial 10 free Items; Tiingo 500 distinct symbols/month, 50 requests/hour,
+Provider allowances worth staying inside: Plaid trial 10 free Items; Tiingo 500 distinct symbols/month, 50 requests/hour,
 1000/day; RentCast 50 lookups/month; Neon 5 GB transfer/month; Vercel Hobby
 10 GB Fast Origin Transfer and 2 cron jobs a day.
 

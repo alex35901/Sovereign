@@ -17,7 +17,7 @@ export const CADENCES: { value: SyncCadence; label: string; hours: number | null
   { value: "weekly", label: "Once a week", hours: 168 },
 ];
 
-/** SimpleFIN's own upstream refresh is roughly daily, so this is the sweet spot. */
+/** A bank posts to Plaid about once a day, so this is the sweet spot. */
 export const DEFAULT_CADENCE: SyncCadence = "daily";
 
 const HOUR = 3_600_000;

@@ -57,7 +57,7 @@ export default function Investments() {
    * Plaid sends holdings, and a sync replaces every holding on an account it
    * reports for — so a position edited on one of those accounts quietly
    * reverts the next morning, and an Edit button there is a promise the app
-   * cannot keep. SimpleFIN sends none at all, and an account entered by hand
+   * cannot keep. A balance-only feed sends none at all, and an account by hand
    * has nobody else to speak for it, so both keep theirs.
    */
   const ownHoldings = useMemo(

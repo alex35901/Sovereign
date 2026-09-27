@@ -70,11 +70,15 @@ export function ConnectionCard({ account }: { account: Account }) {
           has merely gone quiet is not the same news as one that is broken and
           should not be painted as though it were. */}
       {c.detail ? <div className={cx("conn-detail small", TONE[c.state])}>{c.detail}</div> : null}
-      {/* Offered where it is a real choice: an account fed by SimpleFIN. Not
-          gated on Plaid being configured, because the browser cannot know
-          that without asking the server, and the link endpoint already
-          answers "PLAID_CLIENT_ID and PLAID_SECRET are not set" in words. */}
-      {account.syncSource === "simplefin" ? <SwitchToPlaid account={account} /> : null}
+      {/* Offered wherever it is a real choice: any account nothing is feeding
+          yet. It used to be gated on the account carrying a bridge's tag, so
+          the one path that adopts an existing account onto a connection,
+          keeping its history instead of filing a second copy beside it, was
+          hidden from every account that had been typed in by hand. Not gated
+          on Plaid being configured either, because the browser cannot know
+          that without asking the server, and the link endpoint already answers
+          "PLAID_CLIENT_ID and PLAID_SECRET are not set" in words. */}
+      {account.syncSource !== "plaid" ? <SwitchToPlaid account={account} /> : null}
     </Card>
   );
 }

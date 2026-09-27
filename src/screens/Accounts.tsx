@@ -95,7 +95,7 @@ export default function Accounts() {
           <Card>
             <Empty
               title="No accounts yet"
-              body="Add them by hand, import a CSV, or connect SimpleFIN from Settings to pull balances automatically."
+              body="Add them by hand, import a CSV, or connect a bank through Plaid in Settings to pull balances automatically."
               action={<Btn variant="primary" onClick={() => setAdding(true)}><Plus size={14} /> Add account</Btn>}
             />
           </Card>

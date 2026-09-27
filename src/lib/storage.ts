@@ -79,23 +79,38 @@ export function migrate(db: DB): DB {
 }
 
 /**
- * Taking the retired bridge's access URL out of the document.
+ * Taking the last traces of the retired bridge out of a document.
  *
- * SimpleFIN is gone: nothing in the app pulls from it, by hand or on a
- * schedule. The credential is dropped anyway, and on every load rather than
- * once, because the pull was never the only way it caused harm and a document
- * is not a single thing that can be fixed in place. Restoring a backup from
- * before the bridge was disconnected hands back the copy that was in it. An
- * export does too. This is what makes those safe to open.
+ * Two things, and both on every load rather than once. The access URL, because
+ * the pull was never the only way that credential caused harm: restoring a
+ * backup from before the bridge was disconnected hands the copy in it straight
+ * back, and so does an import. And the tag on any account it used to feed,
+ * because nothing syncs those accounts now, which is what "manual" means. The
+ * tag was the only thing still claiming a provider that no longer exists.
  *
- * It returns the document it was given when there is nothing to drop, so a
- * document that has never seen SimpleFIN comes back as the very same object
+ * It returns the document it was given when there is nothing to take, so a
+ * document that has never seen the bridge comes back as the very same object
  * and the caller can still tell it matches what the server holds.
  */
+type Legacy = DB & { settings: DB["settings"] & { simplefinAccessUrl?: string } };
+
 function dropSimplefin(db: DB): DB {
-  if (db.settings.simplefinAccessUrl === undefined) return db;
-  const { simplefinAccessUrl: _gone, ...settings } = db.settings;
-  return { ...db, settings };
+  const settings = (db as Legacy).settings;
+  let out = db;
+
+  if (settings.simplefinAccessUrl !== undefined) {
+    const { simplefinAccessUrl: _gone, ...rest } = settings;
+    out = { ...out, settings: rest };
+  }
+
+  const accounts = out.accounts.map((a) => (
+    (a.syncSource as string) === "simplefin"
+      ? { ...a, syncSource: "manual" as const }
+      : a
+  ));
+  if (accounts.some((a, i) => a !== out.accounts[i])) out = { ...out, accounts };
+
+  return out;
 }
 
 /**

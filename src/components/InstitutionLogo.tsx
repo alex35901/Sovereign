@@ -7,7 +7,7 @@ import { cx } from "./ui";
  * The institution's mark, with initials as the floor.
  *
  * Three sources, best first. Plaid hands over a logo when an item is connected,
- * which is stored on the account and involves nobody else. SimpleFIN sends only
+ * which is stored on the account and involves nobody else. A provider that sends only
  * a domain, so a logo has to be looked up — that tells the icon service which
  * institutions these are, so it is a setting rather than an assumption. Failing
  * both, or if the image doesn't load, the initials stand.

@@ -12,13 +12,17 @@ import { accountKeys } from "../lib/sync/merge";
 import { Btn, Modal } from "../components/ui";
 
 /**
- * Moving one account from SimpleFIN to Plaid without losing what is on it.
+ * Putting an account already here onto a Plaid connection, without losing what
+ * is on it.
  *
  * Connecting the same bank through Plaid on its own would make a second
  * account and refile two years of transactions under ids nothing recognises,
  * leaving two of everything and a budget attached to the wrong half. This does
  * the same connection, then says which existing account the new one is, which
  * is the only part a person actually knows and the app cannot.
+ *
+ * Offered for any account Plaid is not already feeding, whether it was typed
+ * in, imported from a CSV, or left behind by a provider that is gone.
  */
 
 interface Candidate {
@@ -125,7 +129,7 @@ export function SwitchToPlaid({ account }: { account: Account }) {
     <>
       <div className="conn-detail">
         <Btn onClick={() => void start()} disabled={busy}>
-          <ArrowRightLeft size={14} /> {busy ? "Opening…" : "Move this account to Plaid"}
+          <ArrowRightLeft size={14} /> {busy ? "Opening…" : "Connect this account to Plaid"}
         </Btn>
         <div className="tiny faint" style={{ marginTop: 6 }}>
           {held

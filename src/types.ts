@@ -100,7 +100,7 @@ export interface Account {
     beneficiary?: string;
     note?: string;
   };
-  syncSource?: "manual" | "csv" | "simplefin" | "plaid";
+  syncSource?: "manual" | "csv" | "plaid";
   syncId?: string;
   /**
    * The Plaid connection this account comes in through.
@@ -117,7 +117,7 @@ export interface Account {
   /**
    * What the provider last said about this account in particular.
    *
-   * SimpleFIN reports trouble as a list of sentences about the whole pull, and
+   * A provider can report trouble as a list of sentences about the whole pull, and
    * those sentences usually name the bank they are about. Kept against the
    * account they name, so "We are upgrading this connection" appears on the
    * one connection being upgraded rather than on all of them, and cleared by
@@ -145,7 +145,7 @@ export interface Account {
    * new one: it keeps offering the same account every night under the id it
    * always used. Without a memory of that id the merge sees something it has
    * never met and makes a second account, so a household that migrated to
-   * Plaid woke up to its SimpleFIN accounts back again.
+   * Plaid woke up to the old provider's accounts back again.
    */
   movedFrom?: string[];
   /** Street address, for property accounts that can be valued automatically. */
@@ -317,7 +317,7 @@ export interface Transaction {
 export interface TxnEvent {
   at: string;
   kind: "added" | "changed";
-  /** For "added": where it came from — Plaid, SimpleFIN, a CSV, or by hand. */
+  /** For "added": where it came from — Plaid, a CSV, or by hand. */
   source?: string;
   /** For "changed": what moved, and from what to what, already in words. */
   field?: string;
@@ -468,8 +468,6 @@ export interface Settings {
   seenNotices?: Record<string, string>;
   startPage: string;
   householdName: string;
-  /** SimpleFIN access URL, stored locally. Empty until the user connects. */
-  simplefinAccessUrl?: string;
   /** RentCast API key for property valuations, stored locally. */
   rentcastApiKey?: string;
   /** Tiingo API token for holding prices, stored locally. */
@@ -492,7 +490,7 @@ export interface Settings {
   /** Connected Plaid items. Credentials for Plaid itself live server-side. */
   plaidItems?: PlaidItemRef[];
   lastSyncAt?: string;
-  /** How often to pull from SimpleFIN while the app is open. */
+  /** How often to pull from Plaid while the app is open. */
   syncCadence?: SyncCadence;
   /**
    * Accounts deleted on purpose. Without this a provider hands the same account

@@ -2866,8 +2866,8 @@ try {
       },
       accounts: baseDoc.accounts.map((a, i) =>
         i === 0 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(2) }
-        : i === 1 ? { ...a, syncSource: "simplefin", lastSyncedAt: iso(2) }
-        : i === 2 ? { ...a, syncSource: "simplefin", lastSyncedAt: iso(24 * 9) }
+        : i === 1 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(2) }
+        : i === 2 ? { ...a, syncSource: "plaid", lastSyncedAt: iso(24 * 9) }
         : { ...a, syncSource: undefined, lastSyncedAt: undefined }),
     };
 
@@ -2945,7 +2945,7 @@ try {
     check("an account whose provider is fine reads as connected",
       /institution connected/i.test(connected?.values.Status ?? ""), connected?.values.Status);
     check("and names the provider behind it",
-      connected?.values["Data provider"] === "SimpleFIN", connected?.values["Data provider"]);
+      connected?.values["Data provider"] === "Plaid", connected?.values["Data provider"]);
     // Seeded two hours ago, so the row has to report roughly that — a label
     // with nothing behind it would otherwise pass every check above.
     check("and how long ago the balance actually arrived",
@@ -4236,7 +4236,7 @@ try {
       // ── positions the sync owns are not the app's to edit ──
       //
       // Plaid sends holdings and a sync replaces every holding on an account
-      // it reports for, so an edit there reverts the next morning. SimpleFIN
+      // it reports for, so an edit there reverts the next morning. A feed
       // sends none and a hand-entered account has nobody else to speak for it,
       // so both keep theirs.
       //

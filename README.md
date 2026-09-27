@@ -122,7 +122,7 @@ Getting transactions in, cheapest first:
 | Route | Cost | Notes |
 | --- | --- | --- |
 | CSV / manual | $0 | Works today, no signup. Mint, Monarch, YNAB and raw bank exports all import. Two identical rows in one file are two transactions, not a duplicate — re-importing the same file still adds nothing. |
-| **SimpleFIN Bridge** | **$15/yr** | Implemented. MX-backed, ~16k institutions, 25 max, refreshes daily. |
+| ~~SimpleFIN Bridge~~ | — | **Removed.** An access URL left in a saved document was enough to make the app refill itself with that bridge's accounts, on a timer, over the top of what was there. There is no code left that can reach it. |
 | **RentCast** | **$0** | Implemented, for property values — see below. 50 lookups/month on the free tier. |
 | **Plaid** | **$0** | Implemented. Trial plan: 10 institutions, and the only route here returning holdings. |
 | **Tiingo** | **$0** | Implemented, for share prices — see below. Stocks, ETFs and mutual funds. |
@@ -131,9 +131,10 @@ Getting transactions in, cheapest first:
 ### Plaid
 
 For IRAs, Roth IRAs, 401(k)s and brokerages: Plaid returns positions, cost basis and prices,
-which SimpleFIN cannot. Its Trial plan is free for 10 institutions.
+which a balance-only feed cannot. Its Trial plan is free for 10 institutions. It is the only
+bank route wired up.
 
-Unlike the other two providers, Plaid's credentials authorise every request for every
+Unlike the other providers, Plaid's credentials authorise every request for every
 connected bank, so they stay on the server: set `PLAID_CLIENT_ID` and `PLAID_SECRET` as Vercel
 environment variables (add `PLAID_ENV=sandbox` to test against fake banks first) and redeploy.
 Only the per-connection access token is held in the browser.
@@ -168,8 +169,8 @@ point and it takes precedence over the model.
 
 ### Property values
 
-Bank aggregators carry no property valuations — MX, and therefore SimpleFIN, simply doesn't
-have them. Real-estate accounts get their value from RentCast instead: put the address on the
+Bank aggregators carry no property valuations. Real-estate accounts get their value from
+RentCast instead: put the address on the
 account, press **Refresh estimate**, and the returned figure is written as a balance snapshot,
 so net worth updates and the history chart keeps what came before.
 
@@ -224,26 +225,25 @@ businesses among them — off to be looked up. A merchant that isn't on the list
 lettered avatar it has always had. Card processors are stripped first, so `SQ *BLUE BOTTLE`
 resolves to the coffee shop rather than to Square.
 
-### Connecting SimpleFIN
+### The provider that was removed
 
-1. Sign up at [bridge.simplefin.org](https://bridge.simplefin.org). There's a 30-day free
-   trial, but you have to start it (or subscribe) **before your first bank can be added** —
-   the account exists without one, the connection doesn't.
-2. Link your banks there, then generate a **setup token** (a long base64 string, single use).
-3. Paste it into Settings → Bank sync → Connect.
+SimpleFIN used to be an option here. It is gone, and not merely disconnected.
 
-The token is exchanged once for a durable access URL, which is stored in this browser and
-sent only to your own `/api/simplefin` function. That function exists because the bridge
-sends no CORS headers and its access URL carries HTTP Basic credentials, which browsers
-refuse to send cross-origin — so the request has to be made server-side.
+The pull ran on the strength of one field in the saved document, `simplefinAccessUrl`. The
+in-app schedule read that field and nothing else, so taking the credential out of the server
+environment stopped only the sealed half of the overnight job and left the browser pulling on
+its own cadence. Set that cadence to hourly and the app refilled itself with the bridge's dead
+accounts, over the top of what was there, once an hour, unattended. It cost a household its
+data.
 
-**Sync needs that function running.** `npm run dev` mounts `api/` on the dev server itself
-(see the `apiFunctions` plugin in `vite.config.ts`), invoking each handler with the same
-`(req, res)` and parsed `body` Vercel gives it — so what works locally works deployed. Give
-it the same environment variables the deployment has.
+So the pull was deleted rather than gated: there is no adapter, no client, no proxy function,
+no button. The field is stripped out of any document on load, because gating on a credential
+does not survive restoring a backup that still contains one. `src/lib/sync/index.ts` and
+`src/components/AutoSync.tsx` carry the note explaining why nothing should grow it back.
 
-Syncing pulls a 90-day window (SimpleFIN's per-request maximum), de-duplicates on the
-bridge's own transaction ids, and runs every new transaction through your rules.
+**If a provider is added later**, the rule this cost us: a credential sitting in the document
+must never be sufficient on its own to start an unattended write. Something a person did has
+to be upstream of every pull that can replace data.
 
 ### Why api/ imports carry a .js extension
 
@@ -292,11 +292,11 @@ src/
     seed.ts         deterministic 24-month demo generator
     csv.ts          RFC-4180 parser, column-role guessing, dedupe, export
     rules.ts        criteria → actions, applied on import and sync
-    sync/           adapter interface, SimpleFIN client, merge logic
+    sync/           adapter interface, Plaid client, merge logic
   components/       ui primitives + hand-rolled SVG charts (no charting dependency)
   screens/          one file per route
-api/simplefin.ts    server-side proxy for the bridge
-scripts/selftest.mjs  bundles the TS modules with esbuild and asserts against a stub bridge
+api/plaid.ts        server-side proxy holding the Plaid credentials
+scripts/selftest.mjs  bundles the TS modules with esbuild and asserts against stub providers
 ```
 
 Notable behaviour worth knowing:

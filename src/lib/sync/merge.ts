@@ -57,8 +57,9 @@ export interface MergeResult {
    *
    * The old connection does not stop existing when an account is migrated. It
    * keeps handing the same account back every night, and taking it made a
-   * second copy: a household that moved to Plaid woke up to its SimpleFIN
-   * accounts back again, with the night's transactions filed against them.
+   * second copy: a household that moved to Plaid woke up to the old
+   * provider's accounts back again, with the night's transactions filed
+   * against them.
    */
   migrated: string[];
 }
@@ -71,7 +72,7 @@ export interface MergeResult {
 export function mergeSync(
   db: DB,
   payload: SyncPayload & { holdings?: RemoteHolding[] },
-  source: "simplefin" | "plaid",
+  source: "plaid",
 ): MergeResult {
   const accounts = [...db.accounts];
   let accountsAdded = 0;
@@ -84,11 +85,18 @@ export function mergeSync(
   const migrated: string[] = [];
 
   for (const r of payload.accounts) {
-    // Moved to another provider on purpose, and this one has not been told.
+    // Moved to another connection on purpose, and this one has not been told.
     // Left entirely alone: taking it back would file a second copy of an
     // account the household has already migrated, and the transactions with
     // it. The connection it moved to is the one feeding it now.
-    const moved = accounts.find((a) => a.syncSource !== source && a.movedFrom?.includes(r.syncId));
+    //
+    // Keyed on the id rather than on the provider. It used to ask whether the
+    // source had changed, which only caught a move between two providers, and
+    // there is one provider now: moving an account from one Plaid login to
+    // another left both connections feeding it, which is the same failure one
+    // connection along. An account whose id is no longer the one being offered
+    // has moved, whoever it moved to.
+    const moved = accounts.find((a) => a.syncId !== r.syncId && a.movedFrom?.includes(r.syncId));
     if (moved) {
       migrated.push(moved.name);
       continue;
@@ -186,8 +194,9 @@ export function mergeSync(
   let skippedNoAccount = 0;
   const floorCounts = new Map<string, { name: string; from: ISODate; count: number }>();
 
-  const prefix = source === "plaid" ? "pl" : "sf";
-  const keyFor = (syncId: string) => `${prefix}:${syncId}`;
+  // "pl:" marks a Plaid id. Older rows carry "sf:" from a provider that no
+  // longer exists; they are left alone, and nothing writes that prefix now.
+  const keyFor = (syncId: string) => `pl:${syncId}`;
   const known = new Set(db.transactions.map((t) => t.importKey).filter(Boolean) as string[]);
   // By key, so a row the provider has restated can be found and corrected
   // rather than merely recognised and skipped.
@@ -476,8 +485,8 @@ const daysAgo = (days: number, now: number): string =>
  * the gap it left is what the full history button is for.
  *
  * Per connection, because the alternative was one window for the whole
- * document, taken from the SimpleFIN clock. A Plaid bank connected today was
- * handed the window of a SimpleFIN connection that had been syncing daily for
+ * document, taken from a clock that belonged to another connection. A Plaid
+ * bank connected today was handed the window of a connection syncing daily for
  * months, and got a fortnight of history where two years were available.
  */
 export function windowFor(
