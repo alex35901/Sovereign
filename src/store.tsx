@@ -137,22 +137,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * say afterwards is that it does not know what version it has.
    */
   /**
-   * Said out loud the first time, because silence is what made this expensive.
+   * A cache that will not write costs the version claim, and nothing else.
    *
-   * Running out of room logged to the console and nowhere else, so the app
-   * went on looking completely normal while every copy it wrote was thrown
-   * away. Once per session: it will keep failing, and a toast per keystroke
-   * would be its own kind of unusable.
+   * It used to raise a toast as well, on the reasoning that silence is what
+   * let this run for months unseen. Two things were wrong with that. The toast
+   * went up through setToast rather than notify, so it never got the timer
+   * that takes one down again and simply sat there with no way to dismiss it.
+   * And the thing it was reporting is not an event: a phone that has run out
+   * of room has run out of room, every save, for as long as it stays that way.
+   * That is a state, and a state belongs somewhere it can be looked up rather
+   * than in front of somebody's budget. Settings carries it now.
+   *
+   * What matters here happens either way: a browser that cannot write its copy
+   * down stops claiming to know which version it holds.
    */
-  const toldOfCache = useRef(false);
   useEffect(() => {
     saveDB(db, cloudState().version);
-    if (cacheHealthy()) return;
-    forgetCloudVersion();
-    if (toldOfCache.current) return;
-    toldOfCache.current = true;
-    setToast("This browser is out of room to keep its own copy. Your budget still saves to the cloud, "
-      + "but close some other tabs or clear site data if this keeps happening.");
+    if (!cacheHealthy()) forgetCloudVersion();
   }, [db]);
 
   /**

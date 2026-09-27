@@ -8,6 +8,7 @@ import {
 import type { CloudDiagnosis, Meta, Probe } from "../lib/cloud";
 import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/ui";
 import { asMB } from "../lib/transfer";
+import { cacheHealthy } from "../lib/storage";
 
 /** What a free Neon project is allowed to store. */
 const FREE_PLAN_BYTES = 512 * 1024 * 1024;
@@ -80,6 +81,16 @@ function SaveHealth() {
           {since ? " Whatever that was, it passed." : ""}
         </span>
       )}
+      {/* A state rather than an event, so it is looked up rather than
+          announced. This browser has run out of room to keep its own copy,
+          which costs nothing that is stored in the cloud and is not a reason
+          to interrupt anybody, but it is worth being able to find out. */}
+      {!cacheHealthy() ? (
+        <span className="tiny faint">
+          This browser has no room left for its own offline copy, so it loads from the cloud each
+          time. Nothing is lost; it is slower to open and will not work offline.
+        </span>
+      ) : null}
     </div>
   );
 }
