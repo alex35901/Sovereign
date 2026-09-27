@@ -87,7 +87,6 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         // is sealed. Presence only — no value ever comes back.
         encryption: {
           documentSealed: meta ? meta.sealed : null,
-          simplefinUrlSet: (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim().length > 0,
           plaidTokensSet: (process.env.PLAID_ACCESS_TOKENS ?? "").trim().length > 0,
           cronSecretSet: (process.env.CRON_SECRET ?? "").trim().length > 0,
           queued: waiting.count,
@@ -155,6 +154,20 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
     if (req.method === "POST" && body0?.action === "history") {
       // The list, not the documents. A restore fetches the one it needs.
       return send(200, { versions: await listHistory() });
+    }
+
+    if (req.method === "POST" && body0?.action === "version") {
+      // One past version, handed back without writing anything. Restoring to
+      // find out what a version holds costs a write, and a write trims the
+      // oldest kept version off the end — so hunting for the right one used to
+      // eat the very history being hunted through. This is the way to look.
+      const want = Number((body0 as { version?: unknown }).version);
+      if (!Number.isInteger(want) || want < 1) return send(400, { error: "Which version?" });
+      const past = await readHistory(want);
+      if (!past) {
+        return send(404, { error: `Version ${want} is no longer kept. Only the most recent are.` });
+      }
+      return send(200, { version: want, doc: past.doc, updatedAt: past.updatedAt, updatedBy: past.updatedBy });
     }
 
     if (req.method === "POST" && body0?.action === "restore") {

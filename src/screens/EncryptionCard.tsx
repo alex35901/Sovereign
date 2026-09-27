@@ -23,33 +23,6 @@ import { Btn, Card, CardHead, ConfirmButton, SecretInput } from "../components/u
 
 
 /**
- * The SimpleFIN access URL, shown so it can be put into Vercel.
- *
- * Once the document is encrypted the scheduled job can no longer read the URL
- * out of it, so it needs its own copy in the environment. The app is the only
- * place that value exists in readable form, which makes this the only place it
- * can be got from — it is a live credential to the bank feed, so it stays
- * hidden until asked for.
- */
-function AccessUrl() {
-  const db = useDB();
-  const url = db.settings.simplefinAccessUrl;
-
-  // Nothing at all when there is none. The bridge cannot be connected from
-  // this app any more, so a line explaining how to fix its absence would be
-  // instructions for a button that is not there. It still shows for a document
-  // that carries one, because the scheduled job still reads it.
-  if (!url) return null;
-  return (
-    <SecretBox
-      name="SIMPLEFIN_ACCESS_URL" value={url} said="Access URL copied."
-      note="This is a live credential to your bank feed. Anyone holding it can read the same data SimpleFIN
-            sends here, so treat it like a password."
-    />
-  );
-}
-
-/**
  * The same, for Plaid.
  *
  * One variable holding every item's access token, space-separated, because the
@@ -146,12 +119,11 @@ function Row({ ok, label, detail }: { ok: boolean; label: string; detail: string
  * Whether the setup is actually finished.
  *
  * Half of it cannot be seen from the browser: the scheduled job reads its
- * SimpleFIN URL from the Vercel environment, and getting that wrong shows up
+ * Plaid tokens from the Vercel environment, and getting those wrong shows up
  * only as an overnight pull that quietly never happens. The server reports
  * whether the variables are set — presence only, never a value.
  */
 function Readiness({ unlocked }: { unlocked: boolean }) {
-  const db = useDB();
   const [seen, setSeen] = useState<CloudDiagnosis | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -188,25 +160,6 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
             label="The key on this browser"
             detail={unlocked ? "is held: it can read and save." : "is missing. Enter the encryption passphrase."}
           />
-          {/* Only where there is still a bridge to reach. A red row about a
-              variable for a provider this document no longer uses is an alarm
-              nobody can act on, and it sits among the ones that matter. */}
-          {db.settings.simplefinAccessUrl || e.simplefinUrlSet ? (
-            <Row
-              // Set with nothing in the document to match is not a tick. The
-              // scheduled job reads this copy and not the document's, so on a
-              // sealed document it is the one thing that can still bring a
-              // bridge's accounts back after everything here says they are
-              // gone. It is the state this row exists to catch.
-              ok={db.settings.simplefinAccessUrl ? e.simplefinUrlSet : false}
-              label="SIMPLEFIN_ACCESS_URL in Vercel"
-              detail={!db.settings.simplefinAccessUrl
-                ? "is set, and this document holds no SimpleFIN connection. The scheduled job reads this copy rather than the document, so that bridge's accounts can still come back. Remove the variable from Vercel and redeploy."
-                : e.simplefinUrlSet
-                  ? "is set: the 9am pull can reach SimpleFIN."
-                  : "is not set. The overnight pull will do nothing until it is: copy the value above into Vercel and redeploy."}
-            />
-          ) : null}
           <Row
             ok={e.plaidTokensSet}
             label="PLAID_ACCESS_TOKENS in Vercel"
@@ -456,7 +409,6 @@ export function EncryptionCard(){
               inside the document.
             </span>
           </div>
-          <AccessUrl />
           <PlaidTokens />
           <Readiness unlocked />
           <div className="row wrap" style={{ gap: 8 }}>
@@ -727,11 +679,10 @@ function SetupFlow({ busy, onBackup, onSeal }: {
       <div className="setting-row">
         <span className="small">
           <b>One thing to do afterwards.</b> Once the document is sealed the scheduled 9am sync can no
-          longer read the bank credentials out of it. Put the values below into Vercel and redeploy, or
+          longer read the bank credentials out of it. Put the value below into Vercel and redeploy, or
           the overnight pull stops until you do.
         </span>
       </div>
-      <AccessUrl />
       <PlaidTokens />
     </div>
   );

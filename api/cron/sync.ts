@@ -1,9 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DB } from "../../src/types.js";
-import { mergeSync, syncWindowStart, windowFor } from "../../src/lib/sync/merge.js";
-import { startOfDayUnix, toPayload } from "../../src/lib/sync/simplefin.js";
-import type { BridgeResponse } from "../../src/lib/sync/simplefin.js";
-import { fetchAccountsText } from "../_simplefin.js";
+import { mergeSync, windowFor } from "../../src/lib/sync/merge.js";
 import { fetchItemRaw, identifyItem, plaidCreds } from "../_plaid.js";
 import type { QueuedPayload } from "../../src/lib/sync/types.js";
 import { toPlaidPayload } from "../../src/lib/sync/plaid.js";
@@ -101,14 +98,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // queue for the next browser that opens the app. Nothing this job holds
     // can read it back afterwards.
     if (seal.sealed) {
-      const accessUrl = (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim();
       const tokens = plaidTokens();
-      if (!accessUrl && !tokens.length) {
+      if (!tokens.length) {
         return send(200, {
           ran: false,
           reason: "This document is encrypted, so the scheduled pull cannot read the credentials inside it and "
-            + "needs its own copy. Add SIMPLEFIN_ACCESS_URL, or PLAID_ACCESS_TOKENS for Plaid connections, to the "
-            + "Vercel environment variables. Settings shows the values.",
+            + "needs its own copy. Add PLAID_ACCESS_TOKENS to the Vercel environment variables. Settings shows "
+            + "the values.",
         });
       }
 
@@ -135,14 +131,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         errors.push(...payload.errors);
       };
 
-      if (accessUrl) {
-        const raw = await fetchAccountsText(accessUrl, startOfDayUnix(since));
-        await queue({ ...toPayload(JSON.parse(raw) as BridgeResponse), source: "simplefin" });
-      }
-
-      // Plaid the same way, one queued pull per item. The tokens have to come
-      // from the environment for the same reason SimpleFIN's URL does: they
-      // live in a document this job cannot read.
+      // Plaid, one queued pull per item. The tokens have to come from the
+      // environment because they live in a document this job cannot read.
       const creds = tokens.length ? plaidCreds() : null;
       if (tokens.length && !creds) {
         errors.push("PLAID_ACCESS_TOKENS is set but PLAID_CLIENT_ID and PLAID_SECRET are not.");
@@ -180,42 +170,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const stored = await readDoc();
     if (!stored) return send(200, { ran: false, reason: "Nothing saved yet. Open the app once to seed it." });
     const db = stored.doc as DB;
-    const accessUrl = db.settings?.simplefinAccessUrl;
 
     // Proof of life. A scheduled job that quietly stops running looks exactly
     // like a quiet week, and nothing else in the document would show the
     // difference — so the run stamps itself whether or not it finds anything.
     let next = meter(db, "vercel", "month", {});
-    let banks: { added: number; updated: number; transactions: number; errors: string[] } | null = null;
-    let bankError: string | null = null;
 
-    if (accessUrl) {
-      try {
-        // Straight to the bridge: the browser proxy exists only for CORS, and a
-        // relative URL would not resolve from here anyway.
-        const raw = await fetchAccountsText(accessUrl, startOfDayUnix(syncWindowStart(next)));
-        const payload = toPayload(JSON.parse(raw) as BridgeResponse);
-        const merged = mergeSync(next, payload, "simplefin");
-        next = merged.db;
-        banks = {
-          added: merged.accountsAdded,
-          updated: merged.accountsUpdated,
-          transactions: merged.transactionsAdded,
-          errors: payload.errors,
-        };
-      } catch (err) {
-        // Held rather than thrown: a bridge that is down should not also cost
-        // the day's prices. The run still answers 502 so the failure shows up
-        // in the deployment's log rather than passing for a quiet success.
-        bankError = err instanceof Error ? err.message : "The SimpleFIN pull failed.";
-      }
-      next = meter(next, "simplefin", "ever", { error: bankError ?? banks?.errors[0] });
-    }
+    // SimpleFIN is deliberately absent here too. This path used to read the
+    // access URL straight out of the document, so taking the credential out of
+    // the Vercel environment stopped the sealed branch above and left this one
+    // pulling every night. Nothing reaches that bridge from this job now.
 
-    // Plaid, item by item, on the same schedule and into the same merge. It
-    // runs after SimpleFIN rather than beside it because the two can hold the
-    // same account, and the later write should be the one with the later
-    // window — not whichever promise happened to settle second.
+    // Plaid, item by item, into the merge.
     const plaid = await refreshPlaid(next, deadline);
     next = plaid.db;
 
@@ -227,7 +193,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // What actually happened, and separately whether the document moved at all:
     // a run that only recorded a failed provider still has something to save,
     // and is still a run that did nothing worth reporting as success.
-    const ran = Boolean(banks) || plaid.ran || priced.ran;
+    const ran = plaid.ran || priced.ran;
 
     /**
      * Guarded by the version this run started from.
@@ -256,20 +222,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       });
     }
 
-    return send(bankError ? 502 : 200, {
+    return send(200, {
       ran,
       reason: ran
         ? undefined
-        : (priced.error ?? bankError ?? plaid.errors[0]
+        : (priced.error ?? plaid.errors[0]
           ?? "No bank is connected and there was nothing to price."),
       version: write?.stored?.version,
-      // Both providers land in the same document, so the totals are the run's
-      // rather than one provider's — with the split underneath for a morning
-      // when only one of them answered.
-      transactionsAdded: (banks?.transactions ?? 0) + plaid.transactions,
-      accountsUpdated: (banks?.updated ?? 0) + plaid.accountsUpdated,
-      accountsAdded: (banks?.added ?? 0) + plaid.accountsAdded,
-      simplefin: banks ? { ...banks, error: bankError ?? undefined } : undefined,
+      transactionsAdded: plaid.transactions,
+      accountsUpdated: plaid.accountsUpdated,
+      accountsAdded: plaid.accountsAdded,
       plaid: plaid.items || plaid.errors.length
         ? {
           items: plaid.items,
@@ -284,8 +246,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       pricesUpdated: priced.updated,
       pricesMissed: priced.misses,
       priceError: priced.error,
-      error: bankError ?? undefined,
-      errors: [...(banks?.errors ?? []), ...plaid.errors],
+      errors: [...plaid.errors],
     });
   } catch (err) {
     return send(502, { ran: false, error: err instanceof Error ? err.message : "The scheduled sync failed." });

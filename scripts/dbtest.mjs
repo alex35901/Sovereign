@@ -131,9 +131,38 @@ await test("the history is capped, so it cannot grow without bound", async () =>
   const n = M.KEEP_VERSIONS + 6;
   for (let i = 0; i < n; i++) await M.writeDoc({ i }, i, "device");
   const kept = await M.listHistory(500);
-  assert.equal(kept.length, M.KEEP_VERSIONS, `kept ${kept.length}, cap is ${M.KEEP_VERSIONS}`);
+  const versions = kept.map((h) => h.version);
+  // Every one of these landed today, so today's anchor is the single extra.
+  assert.equal(kept.length, M.KEEP_VERSIONS + 1, `kept ${kept.length}, cap is ${M.KEEP_VERSIONS} plus one anchor`);
   assert.equal(kept[0].version, n - 1, "the newest replaced version is the one that survives");
-  assert.equal(await M.readHistory(1), null, "and the oldest has been let go");
+  assert.equal(versions.at(-1), 1, "and the day's anchor is its earliest, held below the cap");
+  assert.equal(await M.readHistory(2), null, "while the run between the two has been let go");
+  await wipe();
+});
+
+await test("a day's anchor survives a burst of saves the count alone would lose", async () => {
+  // The failure this exists for. A process writing on a timer spends the whole
+  // count on its own copies, and the last good version goes out behind it
+  // while nobody is looking. Days are what it cannot outrun.
+  await wipe();
+  await M.writeDoc({ good: true }, 0, "the day it was right");
+  const dated = async (version, day) => {
+    const c = new Client({ connectionString: process.env.DATABASE_URL });
+    await c.connect();
+    try { await c.query("UPDATE budget_history SET updated_at = $2 WHERE version = $1", [version, day]); }
+    finally { await c.end(); }
+  };
+
+  // Push that version back a week, then bury it under more saves than the
+  // count holds. Under the old rule it would be the first thing gone.
+  let v = 1;
+  await M.writeDoc({ i: 0 }, v++, "timer");
+  await dated(1, "2026-09-19T08:00:00Z");
+  for (let i = 1; i < M.KEEP_VERSIONS + 20; i++) await M.writeDoc({ i }, v++, "timer");
+
+  const back = await M.readHistory(1);
+  assert.ok(back, "the good day must still be reachable");
+  assert.deepEqual(back.doc, { good: true }, "and be exactly what it was");
   await wipe();
 });
 
@@ -684,7 +713,7 @@ await test("the scheduled job queues a pull it cannot itself read, and a browser
   const base = M.emptyDB();
   base.accounts = [{
     id: "a1", syncId: "acct-1", name: "Everyday Checking", institution: "Wells Fargo",
-    type: "checking", balance: 100000, currency: "USD", syncSource: "simplefin",
+    type: "checking", balance: 100000, currency: "USD", syncSource: "plaid",
     balanceDate: "2026-09-01", history: [{ date: "2026-09-01", balance: 100000 }],
   }];
   const env = await C.encryptDocument(base, at);
@@ -693,6 +722,7 @@ await test("the scheduled job queues a pull it cannot itself read, and a browser
   // the job's side: it has the public key from the envelope and nothing else
   const payload = {
     fetchedAt: new Date().toISOString(),
+    source: "plaid",
     accounts: [{ syncId: "acct-1", name: "Everyday Checking", institution: "Wells Fargo",
       type: "checking", balance: 95000, currency: "USD", balanceDate: "2026-09-02" }],
     transactions: [{ syncId: "tx-9", accountSyncId: "acct-1", date: "2026-09-02",
@@ -729,11 +759,11 @@ await test("a queued pull applied twice does not double up", async () => {
   const base = M.emptyDB();
   base.accounts = [{
     id: "a1", syncId: "acct-1", name: "Checking", institution: "Bank",
-    type: "checking", balance: 100000, currency: "USD", syncSource: "simplefin",
+    type: "checking", balance: 100000, currency: "USD", syncSource: "plaid",
     balanceDate: "2026-09-01", history: [{ date: "2026-09-01", balance: 100000 }],
   }];
   const payload = {
-    fetchedAt: new Date().toISOString(), errors: [],
+    fetchedAt: new Date().toISOString(), errors: [], source: "plaid",
     accounts: [{ syncId: "acct-1", name: "Checking", institution: "Bank",
       type: "checking", balance: 95000, currency: "USD", balanceDate: "2026-09-02" }],
     transactions: [{ syncId: "tx-9", accountSyncId: "acct-1", date: "2026-09-02", amount: -5000, description: "COSTCO GAS #1234", pending: false }],
@@ -756,6 +786,31 @@ await test("a queued pull nobody can open is left alone rather than thrown away"
   const out = await M.applyQueue(M.emptyDB(), rows, mine.priv);
   assert.equal(out.unreadable, 1);
   assert.deepEqual(out.ids, [], "an unreadable row must not be acknowledged, or it would be deleted");
+});
+
+await test("a version can be read without writing, so looking costs no history", async () => {
+  // Restoring used to be the only way to find out what a version held, and a
+  // restore is a write, and a write trims the oldest kept version off the end.
+  // Hunting through the history consumed it.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await wipe(); await clearAttempts();
+  await asServer({ doc: { accounts: ["the good one"] }, baseVersion: 0 }, "PUT");
+  await asServer({ doc: { accounts: ["the bad one"] }, baseVersion: 1 }, "PUT");
+
+  const before = JSON.parse((await asServer(undefined, "GET")).text).version;
+  const r = await asServer({ action: "version", version: 1 });
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.deepEqual(body.doc, { accounts: ["the good one"] }, "exactly what was stored");
+  assert.ok(body.updatedAt, "and when it was stored");
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(after.version, before, "reading must not have written anything");
+  assert.deepEqual(after.doc, { accounts: ["the bad one"] }, "and the current document is untouched");
+
+  const gone = await asServer({ action: "version", version: 999 });
+  assert.equal(gone.status, 404, "a version never kept says so rather than throwing");
+  await wipe();
 });
 
 await test("the queue endpoints round-trip through the real handler", async () => {
@@ -927,6 +982,66 @@ await test("a document with no bridge credential is never pulled from a bridge",
     "and the bridge's own account is not among them");
 });
 
+/**
+ * What stands in for "a bank the scheduled job can reach".
+ *
+ * These tests used to run against a SimpleFIN stub. That bridge is retired:
+ * nothing in the app or the job pulls from it, so there is no behaviour left
+ * to assert about it beyond its absence, which is the last test in this group.
+ * Plaid is what the job actually talks to now.
+ */
+const PLAID_ENV_ON = () => {
+  process.env.PLAID_CLIENT_ID = "cid";
+  process.env.PLAID_SECRET = "sec";
+  process.env.PLAID_ENV = "sandbox";
+};
+const PLAID_ENV_OFF = () => {
+  delete process.env.PLAID_CLIENT_ID;
+  delete process.env.PLAID_SECRET;
+  delete process.env.PLAID_ACCESS_TOKENS;
+};
+
+const withPlaidItem = (db) => ({
+  ...db,
+  settings: {
+    ...db.settings,
+    plaidItems: [{
+      accessToken: "access-sandbox-1", itemId: "item-1",
+      institution: "Third National", kind: "bank", addedAt: "2026-01-01T00:00:00.000Z",
+    }],
+  },
+});
+
+/** Answers the Plaid calls one bank item makes, or null for anyone else's URL. */
+const plaidReply = (url, init) => {
+  if (!String(url).includes("plaid.com")) return null;
+  const path = new URL(String(url)).pathname;
+  const body = init?.body ? JSON.parse(init.body) : {};
+  if (path === "/item/get") return new Response(JSON.stringify({ item: { institution_id: "ins_1" } }));
+  if (path === "/institutions/get_by_id") return new Response(JSON.stringify({ institution: { name: "Third National" } }));
+  if (path === "/accounts/get") {
+    return new Response(JSON.stringify({
+      accounts: [{
+        account_id: "pa1", name: "Everyday", type: "depository", subtype: "checking",
+        balances: { current: 1234.56, iso_currency_code: "USD" },
+      }],
+    }));
+  }
+  if (path === "/transactions/get") {
+    return new Response(JSON.stringify({
+      transactions: body.options?.offset ? [] : [{
+        transaction_id: "pt1", account_id: "pa1", date: "2026-09-01",
+        amount: 12.34, name: "COSTCO GAS #1234", merchant_name: "Costco", pending: false,
+      }],
+      total_transactions: 1,
+    }));
+  }
+  if (path === "/investments/holdings/get") {
+    return new Response(JSON.stringify({ holdings: [], securities: [] }));
+  }
+  return new Response(JSON.stringify({ error_message: "unexpected" }), { status: 400 });
+};
+
 await test("the scheduled job stands down if a browser saved while it ran", async () => {
   // The job used to force its write, on the reasoning that a browser saving
   // mid-run "will simply win with its own newer copy". It was the wrong way
@@ -935,22 +1050,26 @@ await test("the scheduled job stands down if a browser saved while it ran", asyn
   // the window is as long as a bank takes to answer.
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
-  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  PLAID_ENV_ON();
+  delete process.env.TIINGO_API_KEY;
   await wipe(); await clearAttempts();
 
-  const seed = M.buildDemoDB();
-  seed.settings = { ...seed.settings, simplefinAccessUrl: "https://u:p@bridge.example/accounts" };
+  const seed = withPlaidItem(M.buildDemoDB());
   await asServer({ doc: seed, baseVersion: 0 }, "PUT");
 
   // The household's save lands while the job is off talking to the bank. The
-  // bridge being slow is exactly the window this is about, so the save happens
+  // bank being slow is exactly the window this is about, so the save happens
   // inside the fetch the job is waiting on.
   const evening = { ...seed, accounts: [...seed.accounts, { ...seed.accounts[0], id: "a_evening", name: "The evening's work" }] };
-  const r = await withFetch(async () => {
-    const at = JSON.parse((await asServer(undefined, "GET")).text).version;
-    const saved = await asServer({ doc: evening, baseVersion: at }, "PUT");
-    assert.equal(saved.status, 200, "the browser's own save has to land first");
-    return new Response(BRIDGE, { status: 200 });
+  let saved = false;
+  const r = await withFetch(async (url, init) => {
+    if (!saved) {
+      saved = true;
+      const at = JSON.parse((await asServer(undefined, "GET")).text).version;
+      const put = await asServer({ doc: evening, baseVersion: at }, "PUT");
+      assert.equal(put.status, 200, "the browser's own save has to land first");
+    }
+    return plaidReply(url, init);
   }, () => invokeWith(M.cronHandler, {
     headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.7" },
   }));
@@ -963,6 +1082,7 @@ await test("the scheduled job stands down if a browser saved while it ran", asyn
   const after = JSON.parse((await asServer(undefined, "GET")).text);
   assert.equal(after.updatedBy, "a browser", `the last writer was "${after.updatedBy}"`);
   assert.ok(after.doc.accounts.some((a) => a.id === "a_evening"), "the evening's work must still be there");
+  PLAID_ENV_OFF();
 });
 
 await test("the scheduled job never writes over an encrypted document", async () => {
@@ -970,7 +1090,9 @@ await test("the scheduled job never writes over an encrypted document", async ()
   // on top of the envelope and destroying it.
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
-  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  PLAID_ENV_ON();
+  process.env.PLAID_ACCESS_TOKENS = "access-sandbox-1";
+  delete process.env.TIINGO_API_KEY;
   await wipe(); await clearAttempts();
 
   const at = await unlockCheap(null);
@@ -979,7 +1101,7 @@ await test("the scheduled job never writes over an encrypted document", async ()
   const versionBefore = JSON.parse((await asServer(undefined, "GET")).text).version;
 
   const r = await withFetch(
-    async () => new Response(BRIDGE, { status: 200 }),
+    plaidReply,
     () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.1" } }));
 
   const body = JSON.parse(r.text);
@@ -999,12 +1121,13 @@ await test("the scheduled job never writes over an encrypted document", async ()
   const pulled = JSON.parse(await C.openFrom(at.priv, rows[0]));
   assert.equal(pulled.transactions.length, 1);
   assert.equal(pulled.transactions[0].description, "COSTCO GAS #1234");
+  PLAID_ENV_OFF();
 });
 
 await test("the job says what is missing rather than failing silently", async () => {
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
-  delete process.env.SIMPLEFIN_ACCESS_URL;
+  PLAID_ENV_OFF();
   await wipe(); await clearAttempts();
 
   const at = await unlockCheap(null);
@@ -1013,27 +1136,61 @@ await test("the job says what is missing rather than failing silently", async ()
   const r = await invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.2" } });
   const body = JSON.parse(r.text);
   assert.equal(body.ran, false);
-  assert.match(body.reason, /SIMPLEFIN_ACCESS_URL/, "it must name the variable to set");
+  assert.match(body.reason, /PLAID_ACCESS_TOKENS/, "it must name the variable to set");
 });
 
 await test("an installation that never encrypted still syncs the old way", async () => {
   // Nothing here may break for someone who has not turned encryption on.
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
+  PLAID_ENV_ON();
+  delete process.env.TIINGO_API_KEY;
   await wipe(); await clearAttempts();
 
-  const plain = M.emptyDB();
-  plain.settings = { ...plain.settings, simplefinAccessUrl: "https://u:p@bridge.example/accounts" };
-  await asServer({ doc: plain, baseVersion: 0 }, "PUT");
+  await asServer({ doc: withPlaidItem(M.emptyDB()), baseVersion: 0 }, "PUT");
 
   const r = await withFetch(
-    async () => new Response(BRIDGE, { status: 200 }),
+    plaidReply,
     () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.3" } }));
   const body = JSON.parse(r.text);
   assert.equal(body.ran, true);
   assert.equal(body.encrypted, undefined, "the plaintext path is unchanged");
   assert.equal(body.transactionsAdded, 1, "and it still merges straight into the document");
   assert.deepEqual(await M.readQueue(), [], "with nothing queued");
+  PLAID_ENV_OFF();
+});
+
+await test("a stored SimpleFIN access URL gets no pull from the job at all", async () => {
+  // The failure this whole group was rewritten for. An access URL left in a
+  // document used to be enough: the job read it straight out of the document,
+  // so taking the credential out of the environment stopped only half of it,
+  // and the accounts that bridge once fed came back every night. Nothing may
+  // reach out on the strength of that field now.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  PLAID_ENV_OFF();
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  const plain = M.emptyDB();
+  plain.settings = { ...plain.settings, simplefinAccessUrl: "https://u:p@bridge.example/accounts" };
+  await asServer({ doc: plain, baseVersion: 0 }, "PUT");
+
+  const reached = [];
+  const r = await withFetch(async (url) => {
+    reached.push(String(url));
+    return new Response(BRIDGE, { status: 200 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.31" } }));
+
+  assert.equal(r.status, 200);
+  assert.equal(JSON.parse(r.text).ran, false, "there is nothing connected to pull");
+  assert.deepEqual(reached.filter((u) => u.includes("bridge.example")), [], "the bridge must not be called");
+
+  const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
+  assert.deepEqual(after.accounts, [], "and no account may appear from it");
+  assert.deepEqual(after.transactions, []);
+  delete process.env.SIMPLEFIN_ACCESS_URL;
 });
 
 await test("the scheduled job prices the holdings as well as the balances", async () => {
@@ -1044,12 +1201,9 @@ await test("the scheduled job prices the holdings as well as the balances", asyn
   delete process.env.TIINGO_API_KEY;
   await wipe(); await clearAttempts();
 
-  const plain = M.emptyDB();
-  plain.settings = {
-    ...plain.settings,
-    simplefinAccessUrl: "https://u:p@bridge.example/accounts",
-    tiingoApiKey: "tok",
-  };
+  PLAID_ENV_ON();
+  const plain = withPlaidItem(M.emptyDB());
+  plain.settings = { ...plain.settings, tiingoApiKey: "tok" };
   plain.holdings = [
     { id: "h1", accountId: "a1", ticker: "VTI", name: "Total Market", quantity: 10, costBasis: 20000, price: 30000, assetClass: "us_equity" },
     { id: "h2", accountId: "a1", ticker: "ACME401K", name: "Company stock", quantity: 5, costBasis: 1000, price: 12345, assetClass: "us_equity" },
@@ -1057,9 +1211,10 @@ await test("the scheduled job prices the holdings as well as the balances", asyn
   await asServer({ doc: plain, baseVersion: 0 }, "PUT");
 
   const asked = [];
-  const r = await withFetch(async (url) => {
+  const r = await withFetch(async (url, init) => {
     const href = String(url);
-    if (href.includes("bridge.example")) return new Response(BRIDGE, { status: 200 });
+    const bank = plaidReply(href, init);
+    if (bank) return bank;
     asked.push(href);
     return href.includes("/vti/")
       ? new Response(JSON.stringify([{ date: "2026-09-03T00:00:00.000Z", close: 312.44, adjClose: 156.22 }]), { status: 200 })
@@ -1077,36 +1232,36 @@ await test("the scheduled job prices the holdings as well as the balances", asyn
   assert.equal(after.holdings.find((h) => h.id === "h1").price, 31244, "the quoted holding moved");
   assert.equal(after.holdings.find((h) => h.id === "h2").price, 12345, "the unquoted one kept what was typed in");
   assert.ok(after.settings.lastPricesAt, "and the clock was stamped");
+  PLAID_ENV_OFF();
 });
 
-await test("a bridge that is down still gets the day's prices written", async () => {
+await test("a bank that is down still gets the day's prices written", async () => {
   // The two halves fail independently: one provider being unreachable must not
-  // silently cost the other. The run still answers 502 so it shows in the log.
+  // silently cost the other, and the failure must still be reported rather
+  // than passing for a quiet success.
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
+  PLAID_ENV_ON();
   await wipe(); await clearAttempts();
 
-  const plain = M.emptyDB();
-  plain.settings = {
-    ...plain.settings,
-    simplefinAccessUrl: "https://u:p@bridge.example/accounts",
-    tiingoApiKey: "tok",
-  };
+  const plain = withPlaidItem(M.emptyDB());
+  plain.settings = { ...plain.settings, tiingoApiKey: "tok" };
   plain.holdings = [{ id: "h1", accountId: "a1", ticker: "VTI", name: "Total Market", quantity: 10, costBasis: 20000, price: 30000, assetClass: "us_equity" }];
   await asServer({ doc: plain, baseVersion: 0 }, "PUT");
 
   const r = await withFetch(async (url) => {
-    if (String(url).includes("bridge.example")) throw new Error("bridge unreachable");
+    if (String(url).includes("plaid.com")) throw new Error("the bank is unreachable");
     return new Response(JSON.stringify([{ date: "2026-09-03T00:00:00.000Z", close: 312.44 }]), { status: 200 });
   }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.8" } }));
 
   const body = JSON.parse(r.text);
-  assert.equal(r.status, 502, "the bridge failure must still be visible");
-  assert.match(body.error, /bridge unreachable/);
+  assert.equal(r.status, 200);
+  assert.ok(body.errors.some((e) => /unreachable/.test(e)), `the bank failure must still be visible: ${JSON.stringify(body.errors)}`);
   assert.equal(body.pricesUpdated, 1, "and the prices must have landed anyway");
 
   const after = JSON.parse((await asServer(undefined, "GET")).text).doc;
   assert.equal(after.holdings[0].price, 31244);
+  PLAID_ENV_OFF();
 });
 
 await test("a rejected price token does not stamp the clock", async () => {
@@ -1168,7 +1323,8 @@ await test("the job leaves an encrypted document's prices to the browser", async
   // inside the envelope, and this job cannot open it.
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
-  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  PLAID_ENV_ON();
+  process.env.PLAID_ACCESS_TOKENS = "access-sandbox-1";
   process.env.TIINGO_API_KEY = "tok";
   await wipe(); await clearAttempts();
 
@@ -1177,8 +1333,9 @@ await test("the job leaves an encrypted document's prices to the browser", async
   await asServer({ doc: env, baseVersion: 0 }, "PUT");
 
   let pricesAsked = 0;
-  const r = await withFetch(async (url) => {
-    if (String(url).includes("bridge.example")) return new Response(BRIDGE, { status: 200 });
+  const r = await withFetch(async (url, init) => {
+    const bank = plaidReply(url, init);
+    if (bank) return bank;
     pricesAsked += 1;
     return new Response("[]", { status: 200 });
   }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.10" } }));
@@ -1186,6 +1343,7 @@ await test("the job leaves an encrypted document's prices to the browser", async
   assert.equal(JSON.parse(r.text).encrypted, true);
   assert.equal(pricesAsked, 0, "it cannot know the tickers, so it must not guess");
   delete process.env.TIINGO_API_KEY;
+  PLAID_ENV_OFF();
 });
 
 await test("a browser without the key cannot overwrite the encrypted document", async () => {

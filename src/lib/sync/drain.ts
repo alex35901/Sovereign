@@ -55,7 +55,15 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
       out.unreadable += 1;
       continue;
     }
-    const merged = mergeSync(out.db, payload, payload.source === "plaid" ? "plaid" : "simplefin");
+    // Anything that is not a Plaid pull is dropped, not merged. The queue can
+    // still be holding SimpleFIN payloads sealed by the job before that bridge
+    // was retired, and merging one would put its accounts back exactly the way
+    // the schedule used to. The row is claimed so it stops being retried.
+    if (payload.source !== "plaid") {
+      out.ids.push(row.id);
+      continue;
+    }
+    const merged = mergeSync(out.db, payload, "plaid");
     out.db = merged.db;
     out.ids.push(row.id);
     out.transactionsAdded += merged.transactionsAdded;

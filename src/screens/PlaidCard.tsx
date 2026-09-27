@@ -620,34 +620,6 @@ export function PlaidCard() {
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
 
-      {/* A credential the app can no longer be given, and can still be using.
-          Removing the last account a bridge fed does not remove the bridge:
-          the URL stays in the document, the pull below still runs against it
-          on the schedule, and so does the 9am job. There is no way to connect
-          one from here any more, so this shows only where one is still held,
-          and says plainly what it is still doing. */}
-      {db.settings.simplefinAccessUrl ? (
-        <>
-          <div className="divider" />
-          <div className="spread wrap" style={{ gap: 10 }}>
-            <span className="small warn" style={{ maxWidth: 560 }}>
-              <b>A SimpleFIN access URL is still stored.</b> Accounts it used to feed can come back
-              on any pull while it is here: the schedule below uses it, and so does the scheduled
-              job. Removing it is what stops that for good. If your document is encrypted, take
-              <b> SIMPLEFIN_ACCESS_URL</b> out of Vercel as well, since the job reads that copy.
-            </span>
-            <ConfirmButton
-              label="Remove it"
-              confirmLabel="Click again to remove"
-              onConfirm={() => {
-                actions.patchSettings({ simplefinAccessUrl: undefined });
-                notify("SimpleFIN removed. Nothing will pull from it again.");
-              }}
-            />
-          </div>
-        </>
-      ) : null}
-
       <div className="divider" />
       <SyncSchedule />
 

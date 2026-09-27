@@ -1,10 +1,8 @@
 import type { DB, PlaidItemRef } from "../../types";
-import { simplefin } from "./simplefin";
-import { mergeSync, skipNotes, syncWindowStart, windowFor } from "./merge";
+import { mergeSync, skipNotes, windowFor } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
 import { reason, recordRun } from "../usage";
 import { syncDue } from "./schedule";
-import { unclaimed } from "./notes";
 import type { SyncCadence } from "./schedule";
 
 export interface SyncOutcome {
@@ -20,58 +18,15 @@ export interface SyncOutcome {
   changed: boolean;
 }
 
-/**
- * One SimpleFIN pull, merged in. Shared by the Sync now button and the
- * scheduler so the two can't drift apart.
+/*
+ * The SimpleFIN pull used to live here, shared by the Sync now button and the
+ * scheduler. It is gone. An access URL sitting in a saved document was enough
+ * to make it run, so a bridge nobody had used for months could refill the app
+ * with the accounts it once fed, on a timer, over the top of what was there.
+ * Gating it on the credential was not enough, because restoring a backup from
+ * before the credential was removed brings the credential back with it. See
+ * src/components/AutoSync.tsx and api/cron/sync.ts.
  */
-export async function syncSimplefin(
-  db: DB,
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
-): Promise<SyncOutcome> {
-  const accessUrl = db.settings.simplefinAccessUrl;
-  if (!accessUrl) throw new Error("SimpleFIN isn't connected.");
-
-  let payload;
-  try {
-    payload = await simplefin.fetch(accessUrl, syncWindowStart(db));
-  } catch (err) {
-    // The integrations table is the one place a failed background pull is
-    // visible; the schedule itself deliberately says nothing.
-    recordRun(apply, "simplefin", "ever", { error: reason(err, "The pull failed.") });
-    throw err;
-  }
-  let summary = "";
-  let changed = false;
-  let notes: string[] = [];
-  apply((cur) => {
-    const res = mergeSync(cur, payload, "simplefin");
-    notes = skipNotes(res);
-    const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-    summary =
-      `${plural(res.transactionsAdded, "new transaction")}, ` +
-      `${plural(res.accountsUpdated, "account")} updated` +
-      (res.accountsAdded ? `, ${res.accountsAdded} added` : "");
-    // accountsUpdated counts every account the pull touched, not the ones that
-    // moved, so a balance comparison is what tells us anything actually landed.
-    const before = new Map(cur.accounts.map((a) => [a.id, a.balance]));
-    changed =
-      res.transactionsAdded > 0 ||
-      res.accountsAdded > 0 ||
-      res.db.accounts.some((a) => before.has(a.id) && before.get(a.id) !== a.balance);
-    return res.db;
-  }, "sync from SimpleFIN");
-
-  // A pull that came back at all clears the last error. What the bridge said
-  // about a named bank is now kept on that bank's own account, so only the
-  // messages that named nobody are left to report against the connection as a
-  // whole. Otherwise every account's status box would repeat one bank's
-  // trouble as though it were everyone's.
-  recordRun(apply, "simplefin", "ever", {
-    error: unclaimed(db.accounts.filter((a) => a.syncSource === "simplefin"), payload.errors)[0],
-  });
-
-  return { summary, errors: payload.errors, changed, notes };
-}
 
 /* ── plaid ────────────────────────────────────────────────────────────── */
 

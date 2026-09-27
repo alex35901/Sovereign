@@ -50,6 +50,7 @@ await build({
       export * as GF from "./src/lib/goal-funding.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { migrate } from "./src/lib/storage.ts";
+      export { ADAPTERS } from "./src/lib/sync/index.ts";
       export * as HT from "./src/lib/hopper/tools.ts";
       export { digest, SYSTEM } from "./src/lib/hopper/digest.ts";
       export * as EX from "./src/lib/hopper/explain.ts";
@@ -128,7 +129,7 @@ await build({
       export { retentionAt, effectiveYears, estimateVehicleValue, refreshVehicleValues, vehicleNeedsRefresh, VEHICLE_CLASSES } from "./src/lib/vehicle.ts";
       export { simplefin } from "./src/lib/sync/simplefin.ts";
       export { CADENCES, DEFAULT_CADENCE, cadenceHours, syncDue, nextSyncAt, untilLabel, saveDelay, PUSH_QUIET_MS, PUSH_MAX_WAIT_MS, pollDelay, POLL_MIN_MS, POLL_MAX_MS } from "./src/lib/sync/schedule.ts";
-      export { syncSimplefin, syncPlaid, syncPlaidDue, syncPlaidItem } from "./src/lib/sync/run.ts";
+      export { syncPlaid, syncPlaidDue, syncPlaidItem } from "./src/lib/sync/run.ts";
       export { EMOJI_GROUPS, ALL_EMOJI, searchEmoji } from "./src/lib/emoji-data.ts";
       export { initialsOf, toneOf } from "./src/components/InstitutionLogo.tsx";
       export { cloudEnabled, setPassphrase, syncHalt, resumeSync, pull as cloudPull } from "./src/lib/cloud.ts";
@@ -289,43 +290,29 @@ await test("proxy strips credentials into a Basic header", async () => {
   assert.equal(json.startDateEcho, "1750000000");
 });
 
-/** The browser talks to /api/simplefin; in here that is the handler itself. */
-const throughProxy = (fn) => {
-  const real = globalThis.fetch;
-  return withFetch(async (url, init) => {
-    if (String(url) !== "/api/simplefin") {
-      // the handler's own call to the bridge — the stub speaks http, not https
-      return real(String(url).replace("https://127.0.0.1", "http://127.0.0.1"), init);
-    }
-    const r = await invoke(JSON.parse(init.body));
-    return new Response(r.text, { status: r.status, headers: { "content-type": "application/json" } });
-  }, fn);
-};
+/*
+ * The scheduled-pull tests that stood here are gone with the pull itself.
+ * SimpleFIN is retired: an access URL left in a saved document was enough to
+ * make the app refill itself with the accounts that bridge used to feed, over
+ * the top of what was there, unattended, on a timer. What replaces them is the
+ * pair below, which assert the absence rather than the behaviour.
+ */
 
-await test("a scheduled pull merges and reports whether anything landed", async () => {
-  let db = M.emptyDB();
-  db = { ...db, settings: { ...db.settings, simplefinAccessUrl: `https://user1:pass1@127.0.0.1:${port}/simplefin` } };
-  const apply = (fn) => { db = fn(db); };
-
-  const first = await throughProxy(() => M.syncSimplefin(db, apply));
-  assert.equal(first.changed, true, "the first pull brings accounts in");
-  assert.match(first.summary, /account/);
-  assert.ok(db.settings.lastSyncAt, "the timestamp the schedule reads must be written");
-
-  // the same data again changes nothing, so the scheduler stays quiet
-  const second = await throughProxy(() => M.syncSimplefin(db, apply));
-  assert.equal(second.changed, false, "a no-op pull must not announce itself");
-  assert.match(second.summary, /account/, "the manual button still gets a summary");
-
-  // but a balance that has actually moved is worth saying out loud
-  db = { ...db, accounts: db.accounts.map((a) => ({ ...a, balance: a.balance + 12345 })) };
-  const third = await throughProxy(() => M.syncSimplefin(db, apply));
-  assert.equal(third.changed, true, "a changed balance must be announced");
+await test("nothing in the app can pull from the retired bridge", () => {
+  assert.equal(M.ADAPTERS.length, 0, "no adapter may offer the bridge");
+  assert.equal("syncSimplefin" in M, false, "the pull itself must not exist");
 });
 
-await test("a scheduled pull refuses to run unconnected", async () => {
-  const msg = await caught(() => M.syncSimplefin(M.emptyDB(), () => {}));
-  assert.match(msg, /isn't connected/);
+await test("a stored access URL is dropped on load, so a restored backup is safe", () => {
+  const stale = M.migrate({
+    ...M.emptyDB(),
+    settings: { ...M.emptyDB().settings, simplefinAccessUrl: "https://u:p@example.com/simplefin" },
+  });
+  assert.equal(stale.settings.simplefinAccessUrl, undefined);
+  // Unchanged documents must come back identical, or every load would look
+  // like an edit and push a save the household did not make.
+  const clean = M.emptyDB();
+  assert.equal(M.migrate(clean) === clean, true);
 });
 
 bridge.close();
@@ -6352,18 +6339,21 @@ await test("a queued overnight pull is merged under the provider that fetched it
   assert.equal(plaid.db.transactions[0].importKey, "pl:pt1");
   assert.equal(plaid.db.accounts[0].syncSource, "plaid");
 
-  // A row written before the tag existed is SimpleFIN, which is all the job
-  // pulled then — so an old queue still drains the way it always did.
-  const old = await M.applyQueue(M.emptyDB(), [await row(payload, 1)], at.priv);
-  assert.equal(old.db.transactions[0].importKey, "sf:pt1");
+  // An untagged row is a SimpleFIN pull, which is all the job sealed before
+  // that tag existed. The bridge is retired, so one is thrown away rather than
+  // merged: draining it would put its accounts back exactly the way the
+  // schedule used to. It is still claimed, or it would be retried every poll
+  // until it expired.
+  const stale = await M.applyQueue(M.emptyDB(), [await row(payload, 1)], at.priv);
+  assert.deepEqual(stale.db.transactions, [], "a queued bridge pull must not land");
+  assert.deepEqual(stale.db.accounts, [], "and it must not bring its accounts either");
+  assert.deepEqual(stale.ids, [1], "but the row is consumed, not left to come round again");
+  assert.equal(stale.unreadable, 0, "it opened fine; it was dropped on purpose");
 
-  // And the same pull under both names is still one transaction: the tag puts
-  // it under the right prefix, and the merge recognises the row it already has
-  // by its account, its day and its figure rather than by an id that changed
-  // underneath it.
-  const both = await M.applyQueue(plaid.db, [await row(payload, 2)], at.priv);
-  assert.equal(both.db.transactions.length, 1);
-  assert.equal(both.db.transactions[0].importKey, "sf:pt1");
+  // Dropping it must not disturb what a real pull already brought in.
+  const after = await M.applyQueue(plaid.db, [await row(payload, 2)], at.priv);
+  assert.equal(after.db.transactions.length, 1);
+  assert.equal(after.db.transactions[0].importKey, "pl:pt1");
 });
 
 await test("what the overnight queue says it did counts holdings too", async () => {

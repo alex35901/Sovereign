@@ -71,10 +71,31 @@ export function migrate(db: DB): DB {
   if (accounts.some((a, i) => a !== out.accounts[i])) out = { ...out, accounts };
 
   out = migrateBudgetDefaults(out);
+  out = dropSimplefin(out);
 
   // Goals used to name whole accounts; they hold amounts now. Runs once — it
   // leaves a document that already has allocations alone.
   return migrateGoalAccounts(out);
+}
+
+/**
+ * Taking the retired bridge's access URL out of the document.
+ *
+ * SimpleFIN is gone: nothing in the app pulls from it, by hand or on a
+ * schedule. The credential is dropped anyway, and on every load rather than
+ * once, because the pull was never the only way it caused harm and a document
+ * is not a single thing that can be fixed in place. Restoring a backup from
+ * before the bridge was disconnected hands back the copy that was in it. An
+ * export does too. This is what makes those safe to open.
+ *
+ * It returns the document it was given when there is nothing to drop, so a
+ * document that has never seen SimpleFIN comes back as the very same object
+ * and the caller can still tell it matches what the server holds.
+ */
+function dropSimplefin(db: DB): DB {
+  if (db.settings.simplefinAccessUrl === undefined) return db;
+  const { simplefinAccessUrl: _gone, ...settings } = db.settings;
+  return { ...db, settings };
 }
 
 /**

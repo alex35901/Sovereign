@@ -394,8 +394,27 @@ const historyTable = onDemandTable(`
   )
 `);
 
-/** How many past versions to keep. Deep enough to cover a weekend of saves. */
-export const KEEP_VERSIONS = 40;
+/**
+ * How many of the most recent versions to keep, whatever else is true.
+ *
+ * This is the window for an ordinary mistake: a bad edit, a paste in the wrong
+ * place, an import that went in twice. It is counted in saves rather than in
+ * time, and saves are cheap, so on a busy evening it can be an hour deep.
+ */
+export const KEEP_VERSIONS = 80;
+
+/**
+ * How many days keep an anchor as well: the earliest version stored on each of
+ * them, held past the count above.
+ *
+ * The count on its own has a failure mode that has now happened for real. A
+ * process that writes on a timer spends the whole window on its own writes,
+ * and the last good copy is trimmed away behind it, one version per write,
+ * while nobody is watching. By the time the damage is noticed every version in
+ * the table is damaged. An anchor per day cannot be evicted that way: however
+ * many saves land today, the state each day opened in survives for a quarter.
+ */
+export const KEEP_DAYS = 90;
 
 export interface HistoryEntry {
   version: number;
@@ -408,7 +427,7 @@ export interface HistoryEntry {
 }
 
 /** The versions available to go back to, newest first. */
-export async function listHistory(limit = KEEP_VERSIONS): Promise<HistoryEntry[]> {
+export async function listHistory(limit = KEEP_VERSIONS + KEEP_DAYS): Promise<HistoryEntry[]> {
   const { rows } = await historyTable.guard(async () => (await db()).query(
     `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed,
             pg_column_size(doc) AS bytes
@@ -663,13 +682,22 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
         );
         // Trimmed here rather than on a schedule: this is the only moment a
         // new one arrives, and nothing else runs often enough to be trusted
-        // with it.
+        // with it. Two things are spared. The newest run of versions, which is
+        // what an ordinary undo reaches back through; and the earliest version
+        // of each recent day, which is what survives a writer that fills the
+        // window with its own copies faster than anyone can notice.
         await client.query(
           `DELETE FROM budget_history
-            WHERE version <= (
-              SELECT version FROM budget_history ORDER BY version DESC OFFSET $1 LIMIT 1
-            )`,
-          [KEEP_VERSIONS],
+            WHERE version NOT IN (
+                    SELECT version FROM budget_history ORDER BY version DESC LIMIT $1
+                  )
+              AND version NOT IN (
+                    SELECT DISTINCT ON (updated_at::date) version
+                      FROM budget_history
+                     ORDER BY updated_at::date DESC, version ASC
+                     LIMIT $2
+                  )`,
+          [KEEP_VERSIONS, KEEP_DAYS],
         );
       }
 

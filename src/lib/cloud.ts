@@ -423,6 +423,31 @@ export async function history(): Promise<HistoryEntry[]> {
 }
 
 /**
+ * One past version, fetched to be looked at rather than put back.
+ *
+ * Restoring to find out what a version holds is not free: the restore is a
+ * write, and every write trims the oldest kept version off the end, so a hunt
+ * through the history used to consume the history. This reads without writing.
+ * A sealed version is opened here with the key this browser already holds,
+ * the same way a pull is opened, so the caller gets a plain document either
+ * way and nothing readable ever passes through the server.
+ */
+export async function readVersion(version: number): Promise<DB> {
+  const res = await call({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "version", version }),
+  });
+  if (!res.ok) throw new CloudError(await messageOf(res, `Could not read version ${version} (${res.status})`), res.status);
+  const body = (await res.json()) as { doc?: DB | Envelope };
+  const doc = body.doc;
+  if (!isEnvelope(doc)) return doc as DB;
+  const at = vault() ?? await restore();
+  if (!at) throw new LockedError(doc);
+  return await decryptDocument(doc, at);
+}
+
+/**
  * Puts a past version back, as a new version on top of the current one.
  *
  * Not by rewinding the counter: every other device notices a version it does
@@ -529,7 +554,6 @@ export interface CloudDiagnosis {
   /** What the server can see of the encryption setup. Never any value itself. */
   encryption?: {
     documentSealed: boolean | null;
-    simplefinUrlSet: boolean;
     plaidTokensSet: boolean;
     cronSecretSet: boolean;
     queued: number;
