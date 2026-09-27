@@ -7282,9 +7282,10 @@ try {
           { accessToken: "a", itemId: "it_1", institution: "Fidelity", kind: "bank", addedAt: "2026-09-01T00:00:00Z", lastSyncAt: "2026-09-24T09:00:00Z" },
           { accessToken: "b", itemId: "it_2", institution: "Vanguard", kind: "investment", addedAt: "2026-08-01T00:00:00Z", lastSyncAt: "2026-09-25T09:00:00Z" },
         ];
-        // A bridge credential still in the document, which is the state that
-        // can bring a provider's accounts back and has no button anywhere
-        // else any more.
+        // A bridge credential still in the document, which used to be the
+        // state that could bring a provider's accounts back on a schedule.
+        // Loading the app is now what removes it, which is what the check
+        // below is for.
         db.settings.simplefinAccessUrl = "https://user:pass@bridge.example/simplefin";
         let n = 900;
         const acct = (name, institution, type) => ({
@@ -7372,43 +7373,30 @@ try {
       behind[1].flagged.length === 0 && behind[1].says === "",
       `${behind[1].flagged.join(" / ")} — ${behind[1].says.slice(0, 60)}`);
 
-    // ── a credential that can still pull, with nowhere else to remove it ──
+    // ── a credential that cannot pull, because loading threw it away ──
     //
-    // Removing the last account a bridge fed does not remove the bridge. The
-    // card that used to hold its Disconnect button has gone, so this is the
-    // only place left that can say so.
+    // Removing the last account a bridge fed never removed the bridge: the URL
+    // stayed in the document, and the app pulled on the strength of that field
+    // alone. Nothing pulls from it now, and the field is dropped on load, so
+    // even a restored backup carrying one comes back clean. The seed above put
+    // one in; by the time this runs the app has opened, and it must be gone.
     const bridge = await st2.evaluate(() => {
-      const found = [...document.querySelectorAll(".card")]
-        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
-      const said = [...(found?.querySelectorAll(".warn") ?? [])]
-        .map((w) => w.textContent.trim()).find((t) => /SimpleFIN access URL/i.test(t)) ?? "";
+      const stored = JSON.parse(localStorage.getItem("sovereign.db.v1"));
       return {
-        said,
-        button: [...(found?.querySelectorAll("button") ?? [])].some((b) => /Remove it/.test(b.textContent)),
+        held: Boolean(stored.settings.simplefinAccessUrl),
+        key: "simplefinAccessUrl" in stored.settings,
+        // The word must not survive anywhere on the page either: a card
+        // offering to sync a bridge, or warning about one, is a button for
+        // something that no longer exists.
+        said: [...document.querySelectorAll(".page .card")].map((c) => c.innerText).join(" "),
       };
     });
-    check("a stored bridge credential is said out loud, with a way to remove it",
-      /still stored/i.test(bridge.said) && /scheduled job/i.test(bridge.said) && bridge.button,
-      `${bridge.said.slice(0, 100)} (button: ${bridge.button})`);
-    // Two presses, because it is the kind of thing that should not happen on
-    // one — and the second press is on a button whose label has changed.
-    if (await tryStep("removing it takes two presses", async () => {
-      const card = st2.locator(".card", { hasText: "Connections" });
-      await card.locator("button", { hasText: "Remove it" }).first().click({ timeout: 5000 });
-      await st2.waitForTimeout(250);
-      await card.locator("button", { hasText: "Click again to remove" }).first().click({ timeout: 5000 });
-      await st2.waitForTimeout(900);
-    })) {
-      const gone = await st2.evaluate(() => ({
-        stored: Boolean(JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.simplefinAccessUrl),
-        // The toast says it was removed, which is the one place the word is
-        // supposed to appear afterwards, so the page is read without it.
-        said: [...document.querySelectorAll(".page .card")].map((c) => c.innerText).join(" "),
-      }));
-      check("and then nothing can pull from it again",
-        !gone.stored && !/simplefin/i.test(gone.said),
-        `stored: ${gone.stored}${/simplefin/i.test(gone.said) ? ", still mentioned" : ""}`);
-    }
+    check("a stored bridge credential is thrown away when the app loads",
+      !bridge.held && !bridge.key,
+      `held: ${bridge.held}, key present: ${bridge.key}`);
+    check("and nothing on the page offers to pull from it",
+      !/simplefin/i.test(bridge.said),
+      /simplefin/i.test(bridge.said) ? "still mentioned" : "not mentioned");
 
     // A connection row at phone width. The demo carries no Plaid items, so
     // this row went unmeasured until now and ran off the card: four controls
