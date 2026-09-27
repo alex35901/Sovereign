@@ -50,6 +50,7 @@ await build({
       export * as GF from "./src/lib/goal-funding.ts";
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { migrate } from "./src/lib/storage.ts";
+      export { loadDB, saveNow, cacheHealthy, clearDB } from "./src/lib/storage.ts";
       export { ADAPTERS } from "./src/lib/sync/index.ts";
       export * as HT from "./src/lib/hopper/tools.ts";
       export { digest, SYSTEM } from "./src/lib/hopper/digest.ts";
@@ -233,6 +234,67 @@ await test("a tab older than the last writer is refused, and an equal one is not
   const now = 1_000_000;
   assert.equal(M.buildAllowed(now + 25 * 60 * 60_000, 1000, now), true, "nonsense must not lock the door");
   assert.equal(M.buildAllowed(now + 60_000, 1000, now), false, "but ordinary skew is still a real build");
+});
+
+await test("a cache that will not write does not leave a version number behind", async () => {
+  /*
+   * The failure this exists for, and it ran for weeks before anybody could see
+   * it. The document lives under one key and the version it is a copy of used
+   * to live under another. A phone ran out of room for the document, the write
+   * threw, the failure went to console.error and nowhere else, and every write
+   * after it threw too. The version number is a hundred bytes and kept saving
+   * perfectly. So the cache froze at the last size that fitted while the
+   * number went on counting, and the next load read a document months old
+   * beside a number saying it was current. The sync loop could see nothing
+   * wrong with that, and the first edit pushed the frozen copy over everything
+   * since, at a version the server had no reason to refuse.
+   */
+  // The suite's own shim, made to run out of room part way through, and put
+  // back exactly as it was afterwards: every other test here shares it.
+  const real = globalThis.localStorage;
+  let full = false;
+  globalThis.localStorage = {
+    ...real,
+    getItem: (k) => real.getItem(k),
+    setItem: (k, v) => {
+      if (full) { const e = new Error("QuotaExceededError"); e.name = "QuotaExceededError"; throw e; }
+      real.setItem(k, v);
+    },
+    removeItem: (k) => real.removeItem(k),
+    clear: () => real.clear(),
+  };
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const db = M.emptyDB();
+
+    // While there is room, the copy and the version it is of are one write.
+    assert.equal(M.saveNow(db, 7), true);
+    assert.equal(M.cacheHealthy(), true);
+    assert.equal(M.loadDB().at, 7, "the cache says which version it is a copy of");
+
+    // Now the phone runs out of room.
+    full = true;
+    const moved = { ...db, settings: { ...db.settings, householdName: "the evening's work" } };
+    assert.equal(M.saveNow(moved, 8), false, "a write that cannot land must say so");
+    assert.equal(M.cacheHealthy(), false, "and must be answerable afterwards");
+
+    // The cache is still the old copy, still stamped with the old version,
+    // which is the whole point: it does not claim to be something it is not.
+    const back = M.loadDB();
+    assert.equal(back.at, 7, "the stamp did not advance with a write that failed");
+    assert.notEqual(back.db.settings.householdName, "the evening's work");
+
+    // A copy written before stamps existed cannot say what it is either, and
+    // must not be taken for current.
+    full = false;
+    real.setItem("sovereign.db.v1", JSON.stringify(db));
+    assert.equal(M.loadDB().at, null, "an unstamped cache says so rather than guessing");
+  } finally {
+    console.error = quiet;
+    globalThis.localStorage = real;
+    real.removeItem("sovereign.db.v1");
+  }
 });
 
 await test("nothing in the app can pull from the retired bridge", () => {

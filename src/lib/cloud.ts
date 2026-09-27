@@ -160,13 +160,21 @@ export const setCloudState = (s: CloudState): void => {
  * one. Nobody gets that back.
  *
  * Setting the version to nothing makes the stored copy newer by definition, so
- * the next reconcile fetches it. Not dirty, because an invented document is
- * not unsent work and must not be stashed as a conflict.
+ * the next reconcile fetches it.
+ *
+ * `invented` says whether what this browser is holding is real. A document it
+ * made up is not unsent work: clearing dirty is what stops a fresh demo budget
+ * being offered back as a conflict, or worse, pushed. A cache that is real but
+ * cannot prove which version it is, or one whose write has just failed, is the
+ * opposite case. That copy may be the only place somebody's last hour exists,
+ * so dirty stays exactly as it was: the push is its one remaining way out, and
+ * if the server turns it down `reconcile` stashes it where Settings can hand
+ * it back. Clearing dirty there would throw it away to no purpose.
  */
-export function forgetCloudVersion(): void {
+export function forgetCloudVersion(opts: { invented?: boolean } = {}): void {
   const at = cloudState();
   if (!at.version) return;
-  setCloudState({ ...at, version: 0, dirty: false });
+  setCloudState({ ...at, version: 0, ...(opts.invented ? { dirty: false } : {}) });
 }
 
 export const passphrase = (): string => {

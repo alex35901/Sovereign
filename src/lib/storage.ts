@@ -6,32 +6,98 @@ import { FUTURE_MONTHS } from "./select.js";
 
 const KEY = "sovereign.db.v1";
 
-export function loadDB(): DB | null {
+/**
+ * The cached document, and the stored version it is a copy of.
+ *
+ * One value under one key, on purpose. These used to be two: the document
+ * here, and the version number in the cloud state under its own key. A phone
+ * ran out of room for the document, the write threw, the failure went to
+ * console.error and nowhere else, and every write after it threw too. The
+ * version number is a hundred bytes and kept saving perfectly. So the cache
+ * froze at the last size that fitted while the number went on counting, and
+ * the next load read a document that was months old and a number saying it
+ * was current. Nothing was wrong as far as the sync loop could tell, and the
+ * first edit pushed that frozen copy over everything since, at a version the
+ * server had no reason to refuse.
+ *
+ * Written together, they cannot drift: a copy that did not save does not leave
+ * a number behind claiming it did.
+ */
+interface Cached {
+  /** The version of the stored document this copy was taken from. */
+  at: number;
+  db: DB;
+}
+
+export interface LoadedDB {
+  db: DB;
+  /**
+   * What this copy is a version of, or null when it cannot say.
+   *
+   * Null for a cache written before the two were kept together. A browser that
+   * cannot say which version it holds must not claim one: it reconciles from
+   * scratch and takes what the server has, which costs one fetch and is the
+   * only answer that cannot lose anything.
+   */
+  at: number | null;
+}
+
+export function loadDB(): LoadedDB | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    return migrate(JSON.parse(raw) as DB);
+    const parsed = JSON.parse(raw) as Cached | DB;
+    const wrapped = typeof (parsed as Cached).at === "number" && (parsed as Cached).db !== undefined;
+    return wrapped
+      ? { db: migrate((parsed as Cached).db), at: (parsed as Cached).at }
+      : { db: migrate(parsed as DB), at: null };
   } catch {
     return null;
   }
 }
 
-let writeTimer: number | undefined;
-/** Debounced — the reducer fires on every keystroke in an edit form. */
-export function saveDB(db: DB): void {
-  window.clearTimeout(writeTimer);
-  writeTimer = window.setTimeout(() => {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(db));
-    } catch (err) {
-      console.error("Could not persist, storage is probably full.", err);
-    }
-  }, 250);
+/**
+ * Bare timer functions rather than `window`'s, so this module works anywhere.
+ *
+ * It used to reach through `window`, which meant the cache could only be
+ * exercised in a browser — and the one thing that badly needed exercising was
+ * what happens when the write fails, which is a test and not a browser.
+ */
+let writeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Whether the last attempt to cache the document actually landed.
+ *
+ * Read by the store, which stops claiming to know which version it holds the
+ * moment this goes false. A browser that cannot write its copy down is a
+ * browser whose copy is about to be wrong.
+ */
+let lastWriteOk = true;
+export const cacheHealthy = (): boolean => lastWriteOk;
+
+function write(db: DB, at: number): boolean {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ at, db } satisfies Cached));
+    lastWriteOk = true;
+    return true;
+  } catch (err) {
+    // Not swallowed into the console this time. Running out of room here is
+    // how a household lost months of work, quietly, over and over.
+    console.error("Could not cache the budget in this browser.", err);
+    lastWriteOk = false;
+    return false;
+  }
 }
 
-export function saveNow(db: DB): void {
-  window.clearTimeout(writeTimer);
-  localStorage.setItem(KEY, JSON.stringify(db));
+/** Debounced — the reducer fires on every keystroke in an edit form. */
+export function saveDB(db: DB, at: number): void {
+  clearTimeout(writeTimer);
+  writeTimer = setTimeout(() => { write(db, at); }, 250);
+}
+
+export function saveNow(db: DB, at: number): boolean {
+  clearTimeout(writeTimer);
+  return write(db, at);
 }
 
 export function clearDB(): void {

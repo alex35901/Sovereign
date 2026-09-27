@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Account, CandidateCard, CardRewards, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
-import { buildDemoDB, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
+import { buildDemoDB, cacheHealthy, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
 import { addMonths, today } from "./lib/date";
 import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
@@ -14,7 +14,7 @@ import { squashHistory } from "./lib/history";
 import { moveBudget } from "./lib/budget-move";
 import { withGroupColors } from "./lib/category-colors";
 import { allocate } from "./lib/goal-funding";
-import { forgetCloudVersion } from "./lib/cloud";
+import { CLOUD_EVENT, cloudState, forgetCloudVersion } from "./lib/cloud";
 import type { Assumptions, ForecastEvent, ForecastPlan, Scenario } from "./lib/forecast";
 import { activeScenario, blankPlan } from "./lib/forecast";
 import type { Survivorship } from "./lib/estate";
@@ -96,11 +96,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // until the page was next reloaded. Free when there is nothing to do.
   const [db, setDb] = useState<DB>(() => {
     const stored = loadDB();
-    // Nothing readable in the cache, so what follows is invented rather than
-    // remembered. Say so before the cloud is asked anything: a browser holding
-    // a document it made up must not claim to be in step with a stored one.
-    if (!stored) forgetCloudVersion();
-    return withGroupColors(migrate(stored ?? buildDemoDB()));
+    /**
+     * Whether this browser may claim to know which stored version it holds.
+     *
+     * Three ways it may not, and only the first was ever checked. The cache is
+     * missing or unreadable, so what follows is invented rather than
+     * remembered. The cache is from before it recorded what version it was, so
+     * it cannot say. Or the cache says one version and the cloud state says
+     * another, which is the one that cost a household months: the document
+     * write hit the browser's storage limit and threw, the hundred-byte
+     * version number kept saving perfectly, and the copy froze while the
+     * number went on counting. A browser in any of those states that keeps its
+     * version number looks, to `reconcile`, exactly like one already in step:
+     * it pulls nothing, and the first edit pushes a stale document over the
+     * real one at a number the server has no reason to refuse.
+     *
+     * Forgetting the number costs one fetch on the next load. It is the only
+     * answer that cannot lose anything.
+     */
+    if (!stored) forgetCloudVersion({ invented: true });
+    else if (stored.at === null || stored.at !== cloudState().version) forgetCloudVersion();
+    return withGroupColors(migrate(stored?.db ?? buildDemoDB()));
   });
   const [toast, setToast] = useState<string | null>(null);
   const undoStack = useRef<{ db: DB; label: string }[]>([]);
@@ -112,7 +128,61 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   /** The document the last logged action started from. See `apply`. */
   const lastLogged = useRef<DB | null>(null);
 
-  useEffect(() => { saveDB(db); }, [db]);
+  /**
+   * Cached against the version it is a copy of, and the number is dropped the
+   * moment the copy will not save.
+   *
+   * Not a warning somebody might read. A browser that cannot write its copy
+   * down is about to be holding a wrong one, and the only safe thing it can
+   * say afterwards is that it does not know what version it has.
+   */
+  /**
+   * Said out loud the first time, because silence is what made this expensive.
+   *
+   * Running out of room logged to the console and nowhere else, so the app
+   * went on looking completely normal while every copy it wrote was thrown
+   * away. Once per session: it will keep failing, and a toast per keystroke
+   * would be its own kind of unusable.
+   */
+  const toldOfCache = useRef(false);
+  useEffect(() => {
+    saveDB(db, cloudState().version);
+    if (cacheHealthy()) return;
+    forgetCloudVersion();
+    if (toldOfCache.current) return;
+    toldOfCache.current = true;
+    setToast("This browser is out of room to keep its own copy. Your budget still saves to the cloud, "
+      + "but close some other tabs or clear site data if this keeps happening.");
+  }, [db]);
+
+  /**
+   * Keeping the stamp up with the version when the document has not moved.
+   *
+   * The cache is a copy *of* a version, and a successful push advances the
+   * version without changing a byte of the document, so the effect above does
+   * not run and the stamp is left behind. Left alone it is harmless but
+   * wasteful: the next load would read a stamp that disagrees with the cloud
+   * state, correctly conclude it cannot prove what it holds, and fetch a
+   * document it already had. Re-stamped here instead, which costs one write on
+   * the occasions the version actually moves.
+   */
+  const held = useRef(db);
+  held.current = db;
+  const stamped = useRef(cloudState().version);
+  useEffect(() => {
+    const restamp = () => {
+      const at = cloudState().version;
+      // Zero is the absence of a version rather than one, and it is what
+      // forgetting writes. Stamping the cache with it would be a claim that
+      // this copy belongs to nothing.
+      if (!at || at === stamped.current) return;
+      stamped.current = at;
+      saveDB(held.current, at);
+      if (!cacheHealthy()) forgetCloudVersion();
+    };
+    window.addEventListener(CLOUD_EVENT, restamp);
+    return () => window.removeEventListener(CLOUD_EVENT, restamp);
+  }, []);
   useEffect(() => { saveLog(log); }, [log]);
   // vehicles depreciate whether or not anyone opens their page
   const refreshed = useRef(false);
@@ -130,10 +200,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     document.querySelector('meta[name="theme-color"]')
       ?.setAttribute("content", db.settings.theme === "light" ? "#f4f6f9" : "#0e1116");
   }, [db.settings.theme]);
+  /**
+   * The last write before the page goes away.
+   *
+   * `pagehide` rather than `beforeunload`, which mobile Safari does not fire
+   * at all and which never fires for an app swiped off the app switcher: a
+   * phone leaving mid-debounce lost whatever the last quarter second held, and
+   * nothing anywhere said so. `visibilitychange` covers the app being
+   * backgrounded without being closed, which on a phone is most of the time.
+   */
   useEffect(() => {
-    const flush = () => saveNow(db);
+    const flush = () => {
+      if (!saveNow(db, cloudState().version)) forgetCloudVersion();
+    };
+    const onHidden = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("beforeunload", flush);
-    return () => window.removeEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("beforeunload", flush);
+    };
   }, [db]);
 
   const [rulePrompt, setRulePrompt] = useState<RulePrompt | null>(null);
