@@ -108,8 +108,40 @@ export function CloudSync() {
    */
   const outdated = (meta: { build: number | null }): boolean => {
     if (meta.build === null || __BUILD__ >= meta.build) return false;
+
+    /**
+     * Reloaded here rather than asked for, once, and only with nothing unsent.
+     *
+     * Added to a phone's home screen this runs standalone: no address bar, no
+     * pull to refresh, and iOS suspends it and resumes the same frozen page
+     * instead of loading it again, so "reload the page" can mean force-quitting
+     * from the app switcher. That is a poor thing to ask of somebody whose
+     * budget has stopped saving, and it is the exact setup that kept an old
+     * copy alive for weeks in the first place.
+     *
+     * Once, though. The flag is per tab and survives the reload, so a build
+     * that is somehow still old afterwards stops and says so rather than
+     * turning into a reload loop on somebody's phone.
+     */
+    const key = `sovereign.reloaded.for.${meta.build}`;
+    let tried = true;
+    try {
+      tried = sessionStorage.getItem(key) !== null;
+      if (!tried) sessionStorage.setItem(key, "1");
+    } catch { /* private mode: treat as tried, and ask instead */ }
+
     haltSync("outdated");
-    act.current.notify("This tab is running an older version of Sovereign. Reload the page to keep saving.");
+    if (!tried && !cloudState().dirty) {
+      act.current.notify("Sovereign has been updated. Reloading…");
+      window.setTimeout(() => window.location.reload(), 600);
+      return true;
+    }
+    // Unsent work, so not reloaded out from under whoever is typing. It cannot
+    // be saved either way while this tab is refused, and a reload sets it
+    // aside where Settings can hand it back, but that is their call to make.
+    act.current.notify(cloudState().dirty
+      ? "This app is running an older version and cannot save. Settings, Sync across devices has a Reload button."
+      : "This app is running an older version of Sovereign. Reload it to keep saving.");
     return true;
   };
 
