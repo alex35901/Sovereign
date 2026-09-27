@@ -2431,8 +2431,18 @@ try {
         }));
       };
       const wait = (ms) => new Promise((d) => setTimeout(d, ms));
+      /*
+       * Position and the moment it was read, not position alone.
+       *
+       * The thresholds below are about what the strip did between two frames,
+       * and a sampler that missed a frame reads a jump the strip never made.
+       * Without the timestamp the two are indistinguishable in the failure
+       * message, so a run that fails under load looks exactly like a run that
+       * found the bug this check exists for. The gap is reported so the next
+       * one can be told apart instead of argued about.
+       */
       const trace = [];
-      const watch = setInterval(() => trace.push(at()), 16);
+      const watch = setInterval(() => trace.push([at(), performance.now()]), 16);
       // Moved in small steps, the way a thumb does: a synthetic finger that
       // leaps a hundred pixels at a time would put leaps in the trace and
       // leave nothing to measure against.
@@ -2449,17 +2459,23 @@ try {
       clearInterval(watch);
       let back = 0;
       let worst = 0;
+      let gap = 0;
       for (let i = 1; i < trace.length; i++) {
-        back = Math.max(back, trace[i] - trace[i - 1]);
-        worst = Math.max(worst, Math.abs(trace[i] - trace[i - 1]));
+        const moved = trace[i][0] - trace[i - 1][0];
+        back = Math.max(back, moved);
+        worst = Math.max(worst, Math.abs(moved));
+        // The gap that produced the worst reading, not the worst gap in the
+        // run: a stall while the strip was still is not what misreads it.
+        if (Math.abs(moved) === worst) gap = Math.round(trace[i][1] - trace[i - 1][1]);
       }
-      return { months: key() - from, back, worst };
+      return { months: key() - from, back, worst, gap };
     });
     check("two flicks in a row turn two months, neither of them swallowed",
       rapid.months === 2, `${rapid.months} months`);
     check("and catching one still flying picks it up rather than snapping it back",
       rapid.back <= 2 && rapid.worst <= 130,
-      `${rapid.back}px backwards, ${rapid.worst}px at once, in one frame`);
+      `${rapid.back}px backwards, ${rapid.worst}px at once, over ${rapid.gap}ms `
+      + `(a gap far past 16ms is the sampler missing frames, not the strip jumping)`);
 
     // A scroll must not drag the strip sideways at all, not merely fail to
     // turn it at the end: a thumb travelling down a phone drifts, and a screen
