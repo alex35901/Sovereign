@@ -5,6 +5,7 @@ import {
   retryDelay, setCloudState, shouldSay,
   stashConflict, subscribeSync,
 } from "../lib/cloud";
+import { haltSync } from "../lib/sync-halt";
 import { drainQueue } from "../lib/sync/drain";
 import { POLL_MIN_MS, pollDelay, saveDelay } from "../lib/sync/schedule";
 import type { DB } from "../types";
@@ -95,6 +96,22 @@ export function CloudSync() {
    * arriving from another device overwrote it without even offering it back.
    */
   const atMount = useRef<DB | null>(db);
+
+  /**
+   * Whether this tab has been left behind by a deploy, and should stop.
+   *
+   * The server refuses the write anyway, which is the part that matters and
+   * the part a tab running old code cannot talk its way out of. This is so a
+   * tab running code new enough to have this check stops before it tries,
+   * says why once, and does not spend the next hour retrying a save that is
+   * never going to be taken.
+   */
+  const outdated = (meta: { build: number | null }): boolean => {
+    if (meta.build === null || __BUILD__ >= meta.build) return false;
+    haltSync("outdated");
+    act.current.notify("This tab is running an older version of Sovereign. Reload the page to keep saving.");
+    return true;
+  };
 
   const install = (doc: DB): DB => {
     const installed = act.current.replaceFromCloud(doc);
@@ -261,6 +278,7 @@ export function CloudSync() {
     try {
       const meta = await head();
       if (isCancelled()) return;
+      if (outdated(meta)) return;
 
       if (!meta.found) {
         // nothing stored yet — this browser seeds it
@@ -438,6 +456,7 @@ export function CloudSync() {
       // megabyte a minute, per open tab, which is how a month's database
       // allowance went in two days.
       const meta = await head();
+      if (outdated(meta)) return moved;
       // Different from what THIS tab holds, rather than newer, and rather than
       // different from the shared number. A stored document that has gone
       // backwards was restored from a backup or rolled back after an accident,

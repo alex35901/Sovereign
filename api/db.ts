@@ -4,7 +4,7 @@ import { Buffer } from "node:buffer";
 import { bearer, passphraseOk, passphraseSet } from "./_auth.js";
 import { callerKey, clearFailures, lockedFor, lockedOutNow, noteFailure, readAttempt, waitMessage } from "./_ratelimit.js";
 import {
-  clearQueue, diagnose, findConnection, listHistory, queueStats, readDoc, readHistory, readMeta,
+  buildAllowed, clearQueue, diagnose, findConnection, listHistory, queueStats, readDoc, readHistory, readMeta,
   readQueue, readSeal, writeDoc,
 } from "./_store.js";
 
@@ -193,7 +193,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
 
     if (req.method === "PUT" || req.method === "POST") {
       const body = (typeof req.body === "string" ? safeParse(req.body) : req.body) as {
-        doc?: unknown; z?: string; baseVersion?: number; device?: string;
+        doc?: unknown; z?: string; baseVersion?: number; device?: string; build?: number;
       } | undefined;
       // `z` is the same document, gzipped and base64'd, which is how a browser
       // that can compress sends it. Inflated here into exactly what `doc`
@@ -210,7 +210,28 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         return send(400, { error: "A baseVersion is required so a stale write can be refused." });
       }
 
-      const result = await writeDoc(body.doc, body.baseVersion, body.device?.slice(0, 60) || "a browser");
+      /**
+       * Refused before it is written, not after.
+       *
+       * A tab runs the JavaScript it loaded with until it is closed, so a
+       * browser carrying a fixed bug cannot be reached by fixing it. The
+       * check has to live here, where the browser it is about gets no say.
+       * An older build than the one that last wrote is turned away and told
+       * to reload; the version check above cannot catch this, because a stale
+       * tab's claim about the version can be perfectly correct.
+       */
+      const build = typeof body.build === "number" && Number.isFinite(body.build) ? body.build : null;
+      const meta = await readMeta();
+      if (!buildAllowed(meta?.build ?? null, build)) {
+        return send(409, {
+          error: "This tab is running an older version of Sovereign than the one that last saved. "
+            + "Reload the page and try again: what you have here was loaded before the update.",
+          stale: true,
+          build: meta?.build ?? null,
+        });
+      }
+
+      const result = await writeDoc(body.doc, body.baseVersion, body.device?.slice(0, 60) || "a browser", build);
       if (result.wouldDecrypt) {
         return send(409, {
           error: "This budget is encrypted, and this browser hasn't been unlocked. "

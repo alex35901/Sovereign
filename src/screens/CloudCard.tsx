@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Cloud, CloudOff, Download, RefreshCw, Stethoscope } from "lucide-react";
+import { Cloud, CloudOff, Download, RefreshCw, RotateCcw, Stethoscope } from "lucide-react";
 import { useDB, useStore } from "../store";
 import {
   LockedError, clearConflict, cloudEnabled, cloudState, diagnose, head, passphrase, probe,
@@ -354,9 +354,18 @@ export function CloudCard() {
                   ? "Too many wrong passphrases were sent from this network, so the server has shut it out for a while. Wait for the time it gave, then enter the passphrase again."
                   : halt === "encrypted"
                     ? "This budget is encrypted and this browser has no key for it. Enter the encryption passphrase under Encryption below; the sync passphrase will not open it."
-                    : "The server refused the passphrase this browser had. The usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
-                Nothing has been lost: this browser's copy is intact and will upload once it reconnects.
+                    : halt === "outdated"
+                      ? "This tab is running an older version of Sovereign than the one that last saved. A tab keeps the version it was opened with until it is reloaded, so nothing will change here until you reload. The server is refusing its saves on purpose, because a tab left open across an update used to save a copy from before it over everything newer."
+                      : "The server refused the passphrase this browser had. The usual reason is that SYNC_PASSPHRASE was changed in Vercel. Enter the new one below."}{" "}
+                {halt === "outdated"
+                  ? "Nothing has been lost, and nothing here has been saved over: reload the page to pick up where the other devices are."
+                  : "Nothing has been lost: this browser's copy is intact and will upload once it reconnects."}
               </span>
+              {halt === "outdated" ? (
+                <Btn variant="primary" onClick={() => window.location.reload()}>
+                  <RotateCcw size={14} /> Reload now
+                </Btn>
+              ) : null}
             </div>
           ) : null}
           <span className="small row" style={{ gap: 6, color: "var(--muted)" }}>

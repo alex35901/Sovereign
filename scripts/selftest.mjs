@@ -76,6 +76,7 @@ await build({
       export { default as cronHandler, refreshPlaid } from "./api/cron/sync.ts";
       export { fetchItemRaw as plaidRaw, plaidCreds, describe as plaidDescribe, PlaidError, MAX_PAGES as PLAID_MAX_PAGES, PAGE_SIZE as PLAID_PAGE_SIZE, PRODUCT_NOT_READY } from "./api/_plaid.ts";
       export { bearer, passphraseOk, passphraseSet } from "./api/_auth.ts";
+      export { buildAllowed } from "./api/_store.ts";
       export { withWake } from "./api/_store.ts";
       export { findConnection } from "./api/_store.ts";
       export { retryDelay, mayPush, isBlocking, RETRY_MS, cloudState, setCloudState, forgetCloudVersion, shouldSay, QUIET_MS, needsAttention } from "./src/lib/cloud.ts";
@@ -206,6 +207,33 @@ const withEnv = async (vars, fn) => {
  * the top of what was there, unattended, on a timer. What replaces them is the
  * pair below, which assert the absence rather than the behaviour.
  */
+
+await test("a tab older than the last writer is refused, and an equal one is not", () => {
+  // The rule a browser cannot talk its way out of. A tab runs the JavaScript
+  // it loaded with until it is closed, so a deploy never reaches the tabs
+  // already open: one left open across a fix went on saving a copy from
+  // before it, on its own timer, over everything newer. The browser that
+  // needs to stop is by definition running code from before the rule, so the
+  // rule lives on the server.
+  assert.equal(M.buildAllowed(2000, 1000), false, "an older build must not write");
+  assert.equal(M.buildAllowed(2000, null), false, "nor one too old to say what it is");
+  assert.equal(M.buildAllowed(2000, 2000), true, "the ordinary case: every device on one deploy");
+  assert.equal(M.buildAllowed(2000, 3000), true, "and a newer one is the one doing the updating");
+
+  // A document nothing has stamped yet belongs to whoever is there. Refusing
+  // these would lock every existing household out of saving at the moment
+  // this shipped, which is a worse failure than the one it prevents.
+  assert.equal(M.buildAllowed(null, null), true);
+  assert.equal(M.buildAllowed(null, 1000), true);
+  assert.equal(M.buildAllowed(0, 1000), true, "and zero is not a build, it is the absence of one");
+
+  // A stamp from the future is a wrong clock, not a build. Obeying one would
+  // refuse every device for ever, and nothing could raise it again, because
+  // the only thing that can is a write.
+  const now = 1_000_000;
+  assert.equal(M.buildAllowed(now + 25 * 60 * 60_000, 1000, now), true, "nonsense must not lock the door");
+  assert.equal(M.buildAllowed(now + 60_000, 1000, now), false, "but ordinary skew is still a real build");
+});
 
 await test("nothing in the app can pull from the retired bridge", () => {
   assert.equal(M.ADAPTERS.length, 0, "no adapter may offer the bridge");

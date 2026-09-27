@@ -19,7 +19,17 @@ export type Halt =
   /** Too many wrong answers from this address; the server is timing us out. */
   | "locked"
   /** The document is encrypted and this browser has no key for it. */
-  | "encrypted";
+  | "encrypted"
+  /**
+   * This tab is running an older build than the one that last wrote.
+   *
+   * Not a thing to retry. A tab keeps the JavaScript it loaded with until it
+   * is closed, so whatever is wrong with this one is wrong until somebody
+   * reloads, and going on saving is how a tab left open across a fix reverted
+   * a household's budget for a week from code that had already been repaired.
+   * The only way out is a reload, which no amount of waiting will do.
+   */
+  | "outdated";
 
 let halted: Halt | null = null;
 

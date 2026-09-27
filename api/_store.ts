@@ -280,6 +280,19 @@ export async function db(): Promise<Pool> {
 
 /** Postgres for "that table is not there". */
 const UNDEFINED_TABLE = "42P01";
+/**
+ * A column the query wants and the table has not got.
+ *
+ * Recovered from for the same reason a missing table is. The DDL a table is
+ * built from grows a column now and then, and an instance that ensured the
+ * table under the old shape has remembered it as fine: every query it runs
+ * afterwards fails on a column the ALTER beside the CREATE would have added.
+ * In practice a deploy brings new instances that run the DDL before their
+ * first query, so this is the belt rather than the braces — but the failure it
+ * would otherwise cause is every read and every write throwing, which is the
+ * whole app down and not one feature missing.
+ */
+const UNDEFINED_COLUMN = "42703";
 
 export interface OnDemandTable {
   /** Makes sure the table is there. */
@@ -295,14 +308,16 @@ export interface OnDemandTable {
  *
  * Which table was missing is not in the error in any form worth parsing, so a
  * 42P01 forgets all of them. Rebuilding one that was there anyway costs a
- * statement that does nothing.
+ * statement that does nothing. A 42703 is the same situation one step in: the
+ * table is there, under a shape from before the DDL grew a column.
  */
 export async function guardTables<T>(tables: readonly OnDemandTable[], run: () => Promise<T>): Promise<T> {
   await Promise.all(tables.map((t) => t.ensure()));
   try {
     return await run();
   } catch (err) {
-    if ((err as { code?: string })?.code !== UNDEFINED_TABLE) throw err;
+    const code = (err as { code?: string })?.code;
+    if (code !== UNDEFINED_TABLE && code !== UNDEFINED_COLUMN) throw err;
     // Once, because a second failure is a real one.
     for (const t of tables) t.forget();
     await Promise.all(tables.map((t) => t.ensure()));
@@ -370,7 +385,8 @@ const documentTable = onDemandTable(`
     updated_at timestamptz NOT NULL,
     updated_by text NOT NULL,
     doc jsonb NOT NULL
-  )
+  );
+  ALTER TABLE budget_document ADD COLUMN IF NOT EXISTS build bigint
 `);
 
 /**
@@ -467,6 +483,18 @@ export interface DocMeta {
   sealed: boolean;
   /** How many overnight pulls are waiting in the queue. */
   queued: number;
+  /**
+   * The build of the app that last wrote, as a millisecond timestamp.
+   *
+   * A browser tab keeps running the JavaScript it loaded with until it is
+   * closed or reloaded, so a deploy does not reach the tabs that are already
+   * open. One of those went on writing for a week after the bug it carried had
+   * been fixed, and no amount of fixing could reach it. This is what lets a
+   * write from an older app than the one that last wrote be refused instead.
+   *
+   * Null for a document last written before any of this existed.
+   */
+  build: number | null;
 }
 
 /**
@@ -489,7 +517,7 @@ export interface DocMeta {
  */
 export async function readMeta(): Promise<DocMeta | null> {
   const { rows } = await guardTables([documentTable, queueTable], async () => (await db()).query(
-    `SELECT version, updated_at, updated_by, (doc ? 'ct') AS sealed,
+    `SELECT version, updated_at, updated_by, build, (doc ? 'ct') AS sealed,
             (SELECT count(*)::int FROM sync_queue) AS queued
        FROM budget_document WHERE id = $1`,
     [ROW_ID],
@@ -502,6 +530,7 @@ export async function readMeta(): Promise<DocMeta | null> {
     updatedBy: String(row.updated_by),
     sealed: row.sealed === true,
     queued: Number(row.queued ?? 0),
+    build: row.build === null || row.build === undefined ? null : Number(row.build),
   };
 }
 
@@ -581,6 +610,46 @@ export function writeAllowed(currentVersion: number, baseVersion: number | null)
   return baseVersion === null || currentVersion === baseVersion;
 }
 
+/**
+ * Whether a browser running this build is still allowed to write.
+ *
+ * A tab keeps running the JavaScript it loaded with until it is closed or
+ * reloaded. A deploy does not reach the tabs that are already open, so a tab
+ * carrying a bug goes on carrying it for as long as it stays open, and no
+ * amount of fixing can reach it. That is not hypothetical here: a desktop tab
+ * left open across a fix went on reverting a household's budget to a copy from
+ * before it, on its own half-hourly timer, with nobody at the keyboard.
+ *
+ * So the rule is enforced here rather than in the browser, because the browser
+ * that needs to obey it is by definition running code from before the rule
+ * existed. An older build is refused and told to reload. A build that matches,
+ * or is newer, writes as normal, and a document nothing has stamped yet
+ * accepts anyone.
+ *
+ * Deliberately not a version handshake. Equal builds pass, so the ordinary
+ * case of several devices on the same deploy costs nothing.
+ */
+export function buildAllowed(
+  storedBuild: number | null,
+  writerBuild: number | null,
+  now = Date.now(),
+): boolean {
+  if (!storedBuild) return true;
+  /**
+   * A stamp from the future is not a build, it is a wrong clock.
+   *
+   * The stamp is the build machine's own `Date.now()`, and if one ever came
+   * out badly wrong it would sit in the document refusing every device for
+   * ever, with no way back in: the only thing that can raise the stored value
+   * is a write, and nothing would be allowed to write. A day's grace covers
+   * any ordinary skew between a builder and this server, and anything past it
+   * is disregarded rather than obeyed. Locking a household out of its own
+   * budget is a worse failure than the one this rule prevents.
+   */
+  if (storedBuild > now + 24 * 60 * 60_000) return true;
+  return writerBuild !== null && writerBuild >= storedBuild;
+}
+
 export interface WriteResult {
   ok: boolean;
   /** Set when the write was refused because someone else got there first. */
@@ -601,7 +670,12 @@ export interface WriteResult {
  * `baseVersion` of 0 means "only if nothing is there yet"; null forces the
  * write, which the cron uses because it always reads immediately beforehand.
  */
-export async function writeDoc(doc: unknown, baseVersion: number | null, by: string): Promise<WriteResult> {
+export async function writeDoc(
+  doc: unknown,
+  baseVersion: number | null,
+  by: string,
+  build: number | null = null,
+): Promise<WriteResult> {
   // Both tables, because the write touches both and a missing one must heal
   // rather than fail the save.
   return guardTables([documentTable, historyTable], async () => {
@@ -702,14 +776,17 @@ export async function writeDoc(doc: unknown, baseVersion: number | null, by: str
       }
 
       await client.query(
-        `INSERT INTO budget_document (id, version, updated_at, updated_by, doc)
-         VALUES ($1, $2, $3, $4, $5::jsonb)
+        `INSERT INTO budget_document (id, version, updated_at, updated_by, doc, build)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)
          ON CONFLICT (id) DO UPDATE SET
            version = EXCLUDED.version,
            updated_at = EXCLUDED.updated_at,
            updated_by = EXCLUDED.updated_by,
-           doc = EXCLUDED.doc`,
-        [ROW_ID, version, updatedAt, by, JSON.stringify(doc)],
+           doc = EXCLUDED.doc,
+           -- Never downwards. A write the rule below let through because it
+           -- came from the same build must not lower the bar for the next one.
+           build = GREATEST(COALESCE(EXCLUDED.build, 0), COALESCE(budget_document.build, 0))`,
+        [ROW_ID, version, updatedAt, by, JSON.stringify(doc), build],
       );
       await client.query("COMMIT");
       return { ok: true, stored: { version, updatedAt, updatedBy: by, doc } };

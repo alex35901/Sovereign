@@ -49,7 +49,19 @@ function apiFunctions(): Plugin {
   };
 }
 
+/**
+ * When this bundle was built, baked in so a tab can say how old it is.
+ *
+ * A browser tab runs the JavaScript it loaded with until it is closed or
+ * reloaded. A deploy reaches nobody who already has the app open, so a tab
+ * carrying a bug goes on carrying it, and there is no way to fix it from here.
+ * The server refuses a write from a build older than the one that last wrote,
+ * and this is the number it compares. Milliseconds, so it only ever goes up.
+ */
+const BUILD = Date.now();
+
 export default defineConfig({
   plugins: [react(), apiFunctions()],
+  define: { __BUILD__: JSON.stringify(BUILD) },
   server: { port: 5273 },
 });

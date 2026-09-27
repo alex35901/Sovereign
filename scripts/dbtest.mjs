@@ -802,6 +802,95 @@ await test("a queued pull nobody can open is left alone rather than thrown away"
   assert.deepEqual(out.ids, [], "an unreadable row must not be acknowledged, or it would be deleted");
 });
 
+await test("the build column is added to a table that already exists", async () => {
+  /*
+   * The production path, which no other test here takes.
+   *
+   * Every other test starts from a dropped table and creates the current
+   * shape, so the CREATE covers it and the ALTER beside it never has to do
+   * anything. A real database has the table already, in the shape it had
+   * before this column existed, and getting that wrong would not be a failed
+   * check: it would be every read and every write throwing, which is the whole
+   * app down rather than one rule not working.
+   */
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  await c.connect();
+  try {
+    await c.query("DROP TABLE IF EXISTS budget_document");
+    await c.query(`CREATE TABLE budget_document (
+      id integer PRIMARY KEY, version integer NOT NULL,
+      updated_at timestamptz NOT NULL, updated_by text NOT NULL, doc jsonb NOT NULL)`);
+    await c.query(`INSERT INTO budget_document
+      VALUES (1, 7, now(), 'a browser', '{"rules":["kept"]}'::jsonb)`);
+  } finally { await c.end(); }
+  // Nothing is told that the shape changed. An instance that ensured this
+  // table earlier has it remembered as fine, which is exactly the state a
+  // warm instance would be in, and recovering from that is the point.
+  const before = await M.readMeta();
+  assert.equal(before.version, 7, "the document that was already there is still there");
+  assert.equal(before.build, null, "and nothing has stamped it yet, so anyone may write");
+
+  const done = await M.writeDoc({ rules: ["kept", "added"] }, 7, "a browser", 2000);
+  assert.equal(done.ok, true, "a write against the migrated table has to land");
+  const after = await M.readMeta();
+  assert.equal(after.version, 8);
+  assert.equal(after.build, 2000, "and the build it came from is recorded");
+  await wipe();
+});
+
+await test("a tab left open across a deploy is refused, end to end", async () => {
+  /*
+   * The failure this exists for, through the real handler.
+   *
+   * A browser tab keeps the JavaScript it loaded with until it is closed or
+   * reloaded, so a deploy reaches nobody who already has the app open. A
+   * desktop tab left open across a fix went on reverting a household's budget
+   * to a copy from before it, on its own half-hourly timer, with nobody at the
+   * keyboard, and no amount of fixing could reach it. The version check cannot
+   * catch that: a stale tab's claim about the version can be perfectly
+   * correct. This is the check that can.
+   */
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  await wipe(); await clearAttempts();
+
+  // The phone, on today's build.
+  const first = await asServer({ doc: { rules: ["one"] }, baseVersion: 0, build: 2000 }, "PUT");
+  assert.equal(first.status, 200);
+  const at = JSON.parse((await asServer(undefined, "GET")).text).version;
+
+  // The desktop tab, opened last week, holding a copy from before. Its
+  // baseVersion is honest: it polled and knows what version the document is.
+  const stale = await asServer({ doc: { rules: [] }, baseVersion: at, build: 1000 }, "PUT");
+  assert.equal(stale.status, 409, "the older tab must be turned away");
+  const said = JSON.parse(stale.text);
+  assert.equal(said.stale, true, "and told it is stale rather than merely in conflict");
+  assert.match(said.error, /older version/i);
+  assert.match(said.error, /reload/i, "with the one thing that actually fixes it");
+
+  // A tab so old it says nothing about its build is the oldest of all.
+  const mute = await asServer({ doc: { rules: [] }, baseVersion: at }, "PUT");
+  assert.equal(mute.status, 409, "a tab from before builds were stamped is older, not exempt");
+  assert.equal(JSON.parse(mute.text).stale, true);
+
+  // Nothing was written by either of them.
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.deepEqual(after.doc.rules, ["one"], "the rules must still be there");
+  assert.equal(after.version, at, "and no version was spent on a refused write");
+
+  // The ordinary case is untouched: another device on the same deploy saves.
+  const peer = await asServer({ doc: { rules: ["one", "two"] }, baseVersion: at, build: 2000 }, "PUT");
+  assert.equal(peer.status, 200, "an equal build is the normal case and must cost nothing");
+
+  // And the deploy that comes next raises the bar rather than lowering it.
+  const next = JSON.parse((await asServer(undefined, "GET")).text).version;
+  const newer = await asServer({ doc: { rules: ["one", "two", "three"] }, baseVersion: next, build: 3000 }, "PUT");
+  assert.equal(newer.status, 200);
+  const afterNewer = JSON.parse((await asServer(undefined, "GET")).text).version;
+  const back = await asServer({ doc: { rules: [] }, baseVersion: afterNewer, build: 2000 }, "PUT");
+  assert.equal(back.status, 409, "yesterday's build cannot write once today's has");
+  await wipe();
+});
+
 await test("the version check cannot catch a stale document wearing a current number", async () => {
   /*
    * Why the document and its version travel as one value in the sync loop

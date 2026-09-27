@@ -338,10 +338,27 @@ export async function push(doc: DB, baseVersion: number): Promise<PushResult> {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(packed
-      ? { z: packed, baseVersion, device: deviceName() }
-      : { doc: payload, baseVersion, device: deviceName() }),
+      ? { z: packed, baseVersion, device: deviceName(), build: __BUILD__ }
+      : { doc: payload, baseVersion, device: deviceName(), build: __BUILD__ }),
   });
-  if (res.status === 409) throw new CloudError(await messageOf(res, "Changed elsewhere."), 409);
+  if (res.status === 409) {
+    /**
+     * Two different 409s, and only one of them is a race.
+     *
+     * "Changed elsewhere" is the ordinary one: another device saved first, and
+     * the loop settles it by taking the stored copy. `stale` is not that. It
+     * means this tab is running an older build than the one that last wrote,
+     * which no amount of retrying or reconciling will fix, because the code
+     * that would do the reconciling is the code that is out of date. Retrying
+     * it is what a stale tab did for a week. It stands down instead.
+     */
+    const body = await res.clone().json().catch(() => null) as { stale?: boolean; error?: string } | null;
+    if (body?.stale) {
+      haltSync("outdated");
+      throw new CloudError(body.error ?? "This tab is running an older version. Reload the page.", 409);
+    }
+    throw new CloudError(await messageOf(res, "Changed elsewhere."), 409);
+  }
   if (!res.ok) throw new CloudError(await messageOf(res, `Save failed (${res.status})`), res.status);
   return (await res.json()) as PushResult;
 }
@@ -372,6 +389,15 @@ export interface Meta {
   updatedBy: string | null;
   sealed: boolean;
   /**
+   * The build of the app that last wrote, in milliseconds.
+   *
+   * Null for a document last saved before builds were stamped. A browser whose
+   * own build is older than this one must not write: see `buildAllowed` on the
+   * server, which is where the rule is actually enforced, because a tab that
+   * needs to obey it is running code from before it existed.
+   */
+  build: number | null;
+  /**
    * How many overnight pulls are waiting.
    *
    * Answered by the same request that answers the version, so the browser only
@@ -391,6 +417,7 @@ export async function head(): Promise<Meta> {
     updatedBy: body.updatedBy ?? null,
     sealed: !!body.sealed,
     queued: Number(body.queued ?? 0),
+    build: body.build == null ? null : Number(body.build),
   };
 }
 
