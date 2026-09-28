@@ -1484,9 +1484,55 @@ try {
     await tiles.close();
 
     // A cell wide enough for a name shows one; a narrow one shows a dot.
+    /*
+     * One bill that is definitely unpaid, whatever day of the month it is.
+     *
+     * The checks below are about the colour of the mark an unpaid bill wears.
+     * A bill is marked paid once a transaction matches it, and by the end of
+     * the month the demo has paid every one of its own: from about the 25th
+     * there are no unpaid bills left, every mark is a tick, and each of those
+     * checks fails against a calendar that is telling the truth. That lesson
+     * has been half-learned here once already — the count used to have to be
+     * four, which failed on the 20th, and was loosened to "however many there
+     * are, they agree", which is still false when the answer is none.
+     *
+     * So the fixture stops depending on the date rather than the assertion
+     * being loosened again. A merchant with no transactions behind it is never
+     * matched by one, so this stays unpaid on the 1st and on the 31st alike.
+     *
+     * Seeded into a fresh page rather than written and reloaded: leaving a
+     * page now flushes its own copy of the document over localStorage, so a
+     * write followed by a reload is overwritten by the page that was already
+     * open before the new one ever reads it.
+     */
+    const ahead = await (async () => {
+      const first = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+      await first.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+      await first.waitForTimeout(1200);
+      const doc = await first.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const now = new Date();
+        const last = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const on = String(Math.min(now.getDate() + 1, last)).padStart(2, "0");
+        db.recurring = [...(db.recurring ?? []), {
+          id: "r_ahead", merchant: "Ahead Insurance", categoryId: db.categories[0].id,
+          accountId: db.accounts[0].id, amount: -120_00, cadence: "monthly",
+          nextDate: `${now.toISOString().slice(0, 7)}-${on}`, kind: "bill", detected: false,
+        }];
+        return JSON.stringify(db);
+      });
+      await first.close();
+      return doc;
+    })();
+
     const wide = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    await wide.addInitScript((d) => {
+      if (sessionStorage.getItem("bp-rec")) return;
+      localStorage.setItem("sovereign.db.v1", d);
+      sessionStorage.setItem("bp-rec", "1");
+    }, ahead);
     await wide.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
-    await wide.waitForTimeout(800);
+    await wide.waitForTimeout(1000);
     const named = await wide.evaluate(() => {
       // Drawn, not merely styled: an element inside a display:none parent still
       // computes its own display, so asking it directly says "flex" for

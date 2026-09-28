@@ -13,7 +13,6 @@ import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history
 import type { ReachState } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
 import { PlaidLinkError, openPlaidLink } from "../lib/sync/plaid-link";
-import { linkReference } from "../lib/sync/link-error";
 import { Link } from "react-router-dom";
 import { ACCOUNT_TYPE_LABEL } from "../lib/select";
 import { Btn, Card, CardHead, ConfirmButton, cx } from "../components/ui";
@@ -328,10 +327,12 @@ export function PlaidCard() {
        * first thing their support asks for.
        */
       if (err instanceof PlaidLinkError) {
-        const ref = linkReference(err.detail);
+        // The message already ends with Plaid's reference: describeLinkFailure
+        // puts it there. Adding it again here printed the session and request
+        // twice in a row, in a notification long enough already.
         actions.patchSettings({
           plaidItems: items.map((i) => (i.itemId === item.itemId
-            ? { ...i, lastError: { message: ref ? `${err.message} ${ref}` : err.message, at: new Date().toISOString() } }
+            ? { ...i, lastError: { message: err.message, at: new Date().toISOString() } }
             : i)),
         });
       }

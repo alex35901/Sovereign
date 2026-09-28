@@ -1,7 +1,8 @@
-import type { DB, ID, ISODate } from "../types.js";
+import type { Account, DB, ID, ISODate } from "../types.js";
 import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recurringList } from "./select.js";
 import { integrations, healthOf, staleSince } from "./integrations.js";
 import { connectionOf } from "./connection.js";
+import type { Connection } from "./connection.js";
 import { goalOutlook } from "./goal-funding.js";
 import { addDays, monthLabel, sinceLabel, thisMonth, today } from "./date.js";
 import { priceChanges } from "./price-watch.js";
@@ -294,6 +295,12 @@ export function balanceSwings(db: DB, now: ISODate = today()): Swing[] {
   return out;
 }
 
+/** "A and B", "A, B and C" — a list somebody would say out loud. */
+function listed(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export function notices(db: DB, now: ISODate = today()): Notice[] {
   const out: Notice[] = [];
 
@@ -376,19 +383,48 @@ export function notices(db: DB, now: ISODate = today()): Notice[] {
     }
   }
 
-  // ── a bank that has stopped answering ──
+  /**
+   * A bank that has stopped answering: one notice per bank, not per account.
+   *
+   * The trouble belongs to the login rather than to the accounts behind it,
+   * and the fix is one press of Reconnect however many there are. A household
+   * with a current account, a savings account and two IRAs at one bank got
+   * four identical notifications, each carrying the same paragraph of Plaid's,
+   * which filled the list and said nothing the first one had not.
+   */
+  const troubled = new Map<string, { accounts: Account[]; conn: Connection }>();
   for (const account of db.accounts) {
     if (account.hidden || account.closedAt) continue;
     const conn = connectionOf(account, db, Date.parse(now) || Date.now());
     if (conn.state !== "attention") continue;
+    // By the bank's name as this document spells it, so two accounts at one
+    // bank meet here whether or not they came in through the same connection.
+    const key = (account.institution ?? "").trim().toLowerCase() || account.id;
+    const held = troubled.get(key);
+    // The connection kept is the first one's: every account behind one login
+    // reports the same trouble, because the trouble is the login's.
+    if (held) held.accounts.push(account);
+    else troubled.set(key, { accounts: [account], conn });
+  }
+
+  for (const { accounts, conn } of troubled.values()) {
+    const bank = accounts[0].institution?.trim() || accounts[0].name;
+    const names = accounts.map((a) => a.name);
     out.push({
-      id: `connection:${account.id}:${conn.lastAt?.slice(0, 10) ?? "never"}`,
+      // Keyed on the bank rather than on an account, or dismissing it would
+      // leave the same notice behind once for every account it covers.
+      id: `connection:${bank.toLowerCase()}:${conn.lastAt?.slice(0, 10) ?? "never"}`,
       kind: "connection",
-      title: `${account.name} needs reconnecting`,
-      body: conn.detail ?? conn.status,
+      title: `${bank} needs reconnecting`,
+      body: [
+        conn.detail ?? conn.status,
+        names.length > 1 ? `Affects ${listed(names)}.` : "",
+      ].filter(Boolean).join(" "),
       at: conn.lastAt?.slice(0, 10) ?? now,
       when: conn.lastAt ? `last answered ${sinceLabel(conn.lastAt, new Date(`${now}T12:00:00.000Z`))}` : "never connected",
-      to: `/accounts/${account.id}`,
+      // One account has a page worth landing on. Several do not share one, and
+      // the button that actually fixes this is in Settings either way.
+      to: accounts.length === 1 ? `/accounts/${accounts[0].id}` : "/settings",
       tone: "neg",
     });
   }

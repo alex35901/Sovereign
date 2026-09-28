@@ -7308,6 +7308,67 @@ await test("a provider that has quietly stopped becomes a notice, not just a col
     "five days with no attempt is a bank sync that has stopped");
 });
 
+await test("a bank that will not answer is one notice, not one per account", () => {
+  // Four accounts at one bank produced four identical notifications, each
+  // carrying the same paragraph of Plaid's. The trouble belongs to the login,
+  // and so does the fix: one press of Reconnect covers all of them.
+  const base = M.emptyDB();
+  const at = (id, name) => ({
+    id, name, institution: "Wells Fargo", type: "savings", balance: 100,
+    includeInNetWorth: true, hidden: false, history: [], order: 0,
+    syncSource: "plaid", syncId: `s_${id}`, plaidItemId: "item-1",
+    lastSyncedAt: "2026-09-28T09:00:00.000Z",
+  });
+  const db = {
+    ...base,
+    accounts: [at("a1", "LLC Savings"), at("a2", "Alex Roth IRA"), at("a3", "Alex IRA")],
+    settings: {
+      ...base.settings,
+      plaidItems: [{
+        accessToken: "tok", itemId: "item-1", institution: "Wells Fargo", kind: "bank",
+        addedAt: "2026-01-01T00:00:00.000Z",
+        lastError: { message: "The bank is not answering Plaid at the moment.", at: "2026-09-28T09:00:00.000Z" },
+      }],
+    },
+  };
+
+  const said = M.NT.notices(db, "2026-09-28").filter((n) => n.kind === "connection");
+  assert.equal(said.length, 1, `${said.length} notices for one bank`);
+  assert.match(said[0].title, /^Wells Fargo needs reconnecting$/, said[0].title);
+  assert.match(said[0].body, /not answering Plaid/);
+  // It still says which accounts are behind it, or a household with one bad
+  // login among several has no idea what it is looking at.
+  assert.match(said[0].body, /LLC Savings, Alex Roth IRA and Alex IRA/, said[0].body);
+  assert.equal(said[0].to, "/settings", "several accounts share no page; Reconnect is in Settings");
+
+  // Dismissing it dismisses it, rather than leaving two more behind.
+  const read = M.NT.markRead(db, [said[0].id]);
+  assert.equal(M.NT.unread(read, "2026-09-28").some((n) => n.kind === "connection"), false);
+
+  // A bank with one account still points at that account's own page.
+  const one = { ...db, accounts: [db.accounts[0]] };
+  const solo = M.NT.notices(one, "2026-09-28").filter((n) => n.kind === "connection");
+  assert.equal(solo.length, 1);
+  assert.equal(solo[0].to, "/accounts/a1");
+  assert.doesNotMatch(solo[0].body, /Affects/, "one account needs no list of itself");
+
+  // And two different banks are two notices, which is the point of grouping by
+  // bank rather than collapsing everything into one.
+  const two = {
+    ...db,
+    accounts: [...db.accounts, { ...at("a9", "Chase Checking"), institution: "Chase", plaidItemId: "item-2" }],
+    settings: {
+      ...db.settings,
+      plaidItems: [...db.settings.plaidItems, {
+        accessToken: "tok2", itemId: "item-2", institution: "Chase", kind: "bank",
+        addedAt: "2026-01-01T00:00:00.000Z",
+        lastError: { message: "Chase is not answering either.", at: "2026-09-28T09:00:00.000Z" },
+      }],
+    },
+  };
+  assert.equal(M.NT.notices(two, "2026-09-28").filter((n) => n.kind === "connection").length, 2);
+});
+
 await test("the swing becomes a notice that points at the account", () => {
   const db = swingDB();
   const all = M.NT.notices(db, "2026-09-10");
