@@ -2022,6 +2022,33 @@ await test("a rollover category can't give away more than it holds", () => {
   assert.equal(moved, 26100, "capped at what's left");
 });
 
+await test("and one carrying a debt has nothing to give at all", () => {
+  // The two tests above ask whether a carry is positive, which was the same
+  // question as "does this category carry" only while a carry could not go
+  // below zero. Now it can, and a debt read as "no rollover here" would have
+  // offered out this month's whole plan: money the category is already spent
+  // well past. July planned $200 and spent $900, so $700 of debt arrives on
+  // top of August's $100 plan.
+  const db = M.emptyDB();
+  db.categories = db.categories.map((c) => (c.id === "c_home_improvement" ? { ...c, rollover: true } : c));
+  db.budgets = { "2026-07": { c_home_improvement: 20000 }, "2026-08": { c_home_improvement: 10000, c_groceries: 60000 } };
+  db.transactions = [{
+    id: "t1", accountId: "a1", date: "2026-07-05", merchant: "M", amount: -90000,
+    categoryId: "c_home_improvement", tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: "",
+  }];
+
+  const src = M.moveCandidates(db, "2026-08").find((c) => c.categoryId === "c_home_improvement");
+  assert.equal(src.rollover, -70000, "the debt carried in");
+  assert.equal(src.planned, 10000, "and this month was planned as usual");
+  assert.equal(src.remaining, -60000, "leaving it sixty under before a penny is spent");
+
+  assert.equal(M.surplusOf(src), 0, "nothing is on offer");
+  assert.equal(M.moveCeiling(src), 0, "and nothing can be forced out of it either");
+  const { moved } = M.moveBudget(db, "2026-08", "c_home_improvement", "c_groceries", 10000);
+  assert.equal(moved, 0, "so the move does nothing rather than inventing the money");
+  assert.equal(M.suggestedAmount(src, { ...src, remaining: -50000 }), 0);
+});
+
 await test("moving shifts both sides and conserves the total", () => {
   const db = moveDb();
   const before = M.budgetTable(db, "2026-08").flatMap((g) => g.rows).reduce((s, r) => s + r.planned, 0);
@@ -5315,10 +5342,33 @@ await test("a month nobody budgeted is still a month money was spent in", () => 
 
   assert.equal(
     carry({ "2026-07": { c1: 10000 }, "2026-09": { c1: 10000 } }, [txn("2026-08-09", -30000)]),
-    0, "and a spent one takes it away, which it never used to");
+    -20000, "and a spent one takes it away and keeps going, which it never used to");
 
-  // Overspending is not a debt carried forward, only a surplus is.
-  assert.equal(carry({ "2026-08": { c1: 10000 } }, [txn("2026-08-09", -30000)]), 0);
+  // An overspend is a debt carried forward, exactly as a surplus is carried
+  // forward. This was floored at zero, so a category two thousand over in
+  // August opened September with its whole plan to spend, as though the
+  // overspend had been forgiven overnight.
+  assert.equal(carry({ "2026-08": { c1: 10000 } }, [txn("2026-08-09", -30000)]), -20000);
+
+  // Two months of it, so the debt is shown to accumulate rather than being
+  // replaced by whatever the last month happened to do.
+  assert.equal(
+    carry({ "2026-07": { c1: 10000 }, "2026-08": { c1: 10000 } },
+      [txn("2026-07-09", -30000), txn("2026-08-09", -30000)]),
+    -40000, "a second bad month deepens it");
+
+  // And it is paid off by underspending, rather than needing to be cleared by
+  // hand: the carry is one running figure, not a penalty with its own rules.
+  assert.equal(
+    carry({ "2026-07": { c1: 10000 }, "2026-08": { c1: 50000 } }, [txn("2026-07-09", -30000)]),
+    30000, "and a good month pays it back off");
+
+  // Nothing carries until the category has been planned for once. Otherwise
+  // every category with rollover switched on would open with a debt made of
+  // whatever was spent before anybody budgeted for it.
+  assert.equal(
+    carry({ "2026-08": { c_groceries: 10000 }, "2026-09": { c1: 10000 } }, [txn("2026-08-09", -30000)]),
+    0, "spending before the first plan is not a debt");
 
   // A category with rollover off carries nothing, whatever the months say.
   const off = { ...db0, categories: [...base.categories, { ...cat, rollover: false }] };

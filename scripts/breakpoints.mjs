@@ -2712,6 +2712,81 @@ try {
     check("and the plan is marked where it fell", bad.marks === 1 && bad.at > 45 && bad.at < 75,
       `${bad.marks} marks at ${bad.at}%`);
     await spent.close();
+
+    // ── a carry can be a debt, and the card has to say so ──
+    //
+    // The carry was floored at zero on its way into the next month, so a
+    // category two thousand over in one month opened the next with its whole
+    // plan and "carried in $0", as though the overspend had been forgiven.
+    // The arithmetic is pinned in scripts/selftest.mjs. What is checked here
+    // is the card somebody actually reads: that the figure arrives, that it
+    // is not drawn in the colour used for money you still have, and that
+    // what is available to spend has had it taken off.
+    const asMonth = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const nowD = new Date();
+    const thisMonth = asMonth(nowD);
+    const prevMonth = asMonth(new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1));
+    const expenseIds = new Set(doc.categories
+      .filter((c) => doc.groups.find((g) => g.id === c.groupId)?.kind === "expense")
+      .map((c) => c.id));
+    // The biggest expense plan this month, so the row is easy to find and the
+    // debt is large against it rather than lost in rounding.
+    const picked = Object.entries(doc.budgets[thisMonth] ?? {})
+      .filter(([id]) => expenseIds.has(id))
+      .sort((a, b) => b[1] - a[1])[0];
+
+    if (picked) {
+      const catId = picked[0];
+      const catName = doc.categories.find((c) => c.id === catId)?.name ?? "";
+      const debtDoc = {
+        ...doc,
+        categories: doc.categories.map((c) => (c.id === catId ? { ...c, rollover: true } : c)),
+        // A small plan last month against a large charge in it, so whatever
+        // the demo already spent there, the month closes well under.
+        budgets: { ...doc.budgets, [prevMonth]: { ...(doc.budgets[prevMonth] ?? {}), [catId]: 10000 } },
+        transactions: [...doc.transactions, {
+          id: "t-carried-debt", accountId: doc.accounts[0].id, date: `${prevMonth}-05`,
+          merchant: "Last month", amount: -180000, categoryId: catId, tags: [],
+          pending: false, reviewed: true, hideFromReports: false, createdAt: `${prevMonth}-05`,
+        }],
+      };
+
+      const dp = await seeded(debtDoc, 1180);
+      if (await tryStep("the card for a category that overspent last month opens", async () => {
+        await dp.locator(`.list-row:has(a.cat-open:text-is("${catName}")) .bcol-left`)
+          .first().hover({ timeout: 8000 });
+        await dp.locator(".hc-body").first().waitFor({ timeout: 5000 });
+      })) {
+        const card = await dp.evaluate(() => {
+          const money = (t) => Number((t ?? "").replace(/[$,]/g, "").match(/-?\d+(\.\d+)?/)?.[0] ?? "NaN");
+          const line = (label) => [...document.querySelectorAll(".hc-line")]
+            .find((l) => l.querySelector(".lbl")?.textContent.trim() === label);
+          const val = (label) => line(label)?.querySelector(".lbl + span");
+          return {
+            carried: money(val("Carried in")?.textContent),
+            carriedClass: val("Carried in")?.className ?? "",
+            planned: money(val("Planned")?.textContent),
+            available: money(val("Available to spend")?.textContent),
+            foot: document.querySelector(".hc-foot")?.innerText.replace(/\n/g, " | ") ?? "",
+          };
+        });
+        check("it says the overspend carried in rather than nothing",
+          card.carried < 0, `carried in ${card.carried}`);
+        check("and does not draw a debt in the colour money you still have is drawn in",
+          /\bneg\b/.test(card.carriedClass) && !/\bpos\b/.test(card.carriedClass), card.carriedClass);
+        // Within a dollar: every figure here is rounded to whole dollars for
+        // display, so three of them need not add up to the cent.
+        check("and takes it off what there is to spend, rather than leaving the plan whole",
+          Math.abs(card.available - (card.planned + card.carried)) <= 1 && card.available < card.planned,
+          `${card.planned} + ${card.carried} = ${card.available}`);
+        // "Nothing planned" against a full plan is the reading the old
+        // zero-share line gave once available went below zero.
+        check("saying what is left rather than claiming nothing was planned",
+          !/Nothing planned/.test(card.foot) && /overspent in the months before/.test(card.foot),
+          card.foot.slice(0, 150));
+      }
+      await dp.close();
+    }
   }
 
   if (want("accounts")) {

@@ -59,9 +59,14 @@ export function suggestCounterpart(
  * For an ordinary category that is this month's plan less what's been spent.
  * A rollover category can also give away what carried in, so its surplus is
  * simply what's left, which is usually more than the month's plan.
+ *
+ * Both tests below ask whether anything carried at all, not whether what
+ * carried was a surplus. A carry can now be a debt, and reading a debt as "no
+ * rollover here" would offer this month's whole plan out of a category that is
+ * already spent past it. What's left answers nothing, which is correct.
  */
 export function surplusOf(from: MoveCandidate): number {
-  return from.rollover > 0
+  return from.rollover !== 0
     ? Math.max(0, from.remaining)
     : Math.max(0, Math.min(from.remaining, from.planned));
 }
@@ -73,7 +78,7 @@ export function surplusOf(from: MoveCandidate): number {
  * money it never had.
  */
 export function moveCeiling(from: MoveCandidate): number {
-  return from.rollover > 0 ? Math.max(0, from.remaining) : Math.max(0, from.planned);
+  return from.rollover !== 0 ? Math.max(0, from.remaining) : Math.max(0, from.planned);
 }
 
 /** The move that would square both sides, without overdrawing either. */

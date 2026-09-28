@@ -326,9 +326,14 @@ function RemainingCard({ row }: { row: BudgetRow }) {
             line that appears only when something carried leaves "rollover is
             off" and "rollover is on and nothing was left" looking identical,
             which is the difference somebody is actually trying to see. */}
-        {row.category.rollover && !income
-          ? <HcLine label="Carried in" value={row.rollover} tone={row.rollover ? "pos" : undefined} />
-          : null}
+        {row.category.rollover && !income ? (
+          <HcLine
+            label="Carried in" value={row.rollover}
+            // A carry can be a debt, and a debt must not be drawn in the
+            // colour the app uses for money you still have.
+            tone={row.rollover > 0 ? "pos" : row.rollover < 0 ? "neg" : undefined}
+          />
+        ) : null}
         <HcLine label={income ? "Expected" : "Planned"} value={row.planned} />
         {income ? null : <HcLine label="Available to spend" value={available} />}
         <HcLine label={income ? "Received" : "Actual"} value={row.actual} />
@@ -347,14 +352,24 @@ function RemainingCard({ row }: { row: BudgetRow }) {
         {row.category.rollover && !income && !row.rollover ? (
           <div className="tiny faint">Nothing was left over in the months before this one.</div>
         ) : null}
+        {row.category.rollover && !income && row.rollover < 0 ? (
+          <div className="tiny faint">
+            {fmt0(-row.rollover)} was overspent in the months before this one, so it comes off this month.
+          </div>
+        ) : null}
         <div className="tiny faint">
           {income
             ? (share === null
               ? `Nothing expected. ${fmt0(row.actual)} received`
               : `${share}% of the ${fmt0(available)} expected has arrived`)
-            : (share === null
-              ? `Nothing planned. ${fmt0(row.actual)} spent`
-              : `${share}% of the ${fmt0(available)} available spent`)}
+            // Planned and available part company once a debt carries in: a
+            // month can have a full plan and nothing to spend against it, and
+            // saying "nothing planned" there would be plainly false.
+            : (available <= 0 && (row.planned !== 0 || row.rollover !== 0)
+              ? `Nothing available. ${fmt0(row.actual)} spent`
+              : share === null
+                ? `Nothing planned. ${fmt0(row.actual)} spent`
+                : `${share}% of the ${fmt0(available)} available spent`)}
         </div>
       </div>
     </>

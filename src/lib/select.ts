@@ -622,6 +622,14 @@ export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
 /**
  * Accumulated under/overspend carried into `month`, for categories with rollover on.
  * Walks forward from the first budgeted month so a long history stays consistent.
+ *
+ * Both directions. This used to floor the carry at zero, so a surplus carried
+ * and an overspend simply vanished: a category two thousand over in August
+ * opened September with nothing carried in and its whole plan to spend, as
+ * though the two thousand had been forgiven overnight. That is not what a
+ * rollover envelope is. Money you did not spend is still yours next month and
+ * money you did spend is already gone, and the second half is the one that
+ * changes behaviour. The walk is capped at twenty-four months either way.
  */
 export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number {
   const cat = db.categories.find((c) => c.id === categoryId);
@@ -654,11 +662,21 @@ export function rolloverFor(db: DB, month: MonthKey, categoryId: string): number
   const months: MonthKey[] = [];
   for (let m = budgeted[0]!; m < month; m = addMonths(m, 1)) months.push(m);
   let carry = 0;
+  /**
+   * Nothing carries until the category has been planned for once.
+   *
+   * This used to be a test on the carry being zero, which said the same thing
+   * only while a carry could not go below it. With overspend counted, a carry
+   * that came back to exactly zero would have started skipping unplanned
+   * months again, and any spending in them would have gone uncounted.
+   */
+  let started = false;
   for (const m of months.slice(-24)) {
     const planned = plannedFor(db, m, categoryId);
-    if (!planned && carry === 0) continue;
+    if (!started && !planned) continue;
+    started = true;
     const actual = actualsFor(db, m).get(categoryId) ?? 0;
-    carry = Math.max(0, carry + planned - actual);
+    carry += planned - actual;
   }
   return carry;
 }
