@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Send } from "lucide-react";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -16,6 +17,15 @@ import { cloudEnabled } from "../lib/cloud";
  * into today's conversation is worse than looking them up again.
  */
 
+/**
+ * The longest question another screen may hand over in the address bar.
+ *
+ * The parameter is whatever is in the URL, and the URL is not ours: a link
+ * from anywhere could arrive carrying a wall of text to put in front of the
+ * model. The buttons that use it need a sentence, so a sentence is the limit.
+ */
+const ASK_LIMIT = 300;
+
 const SUGGESTIONS = [
   "Where did the money go last month?",
   "Am I on track for my goals?",
@@ -29,10 +39,20 @@ export default function Hopper() {
   const history = db.hopper ?? [];
 
   const [question, setQuestion] = useState("");
+  /**
+   * The question being answered, kept apart from the box it was typed in.
+   *
+   * The box is cleared the moment it is sent, so it cannot also be what the
+   * bubble above the answer shows, and a question handed over from another
+   * screen was never in the box at all.
+   */
+  const [asked, setAsked] = useState("");
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState<Progress | null>(null);
   const [failed, setFailed] = useState<{ message: string; hint?: string } | null>(null);
   const foot = useRef<HTMLDivElement>(null);
+  const [params, setParams] = useSearchParams();
+  const handed = useRef(false);
 
   // Follow the answer as it is written, the way any chat does.
   useEffect(() => { foot.current?.scrollIntoView({ behavior: "smooth", block: "end" }); },
@@ -41,6 +61,7 @@ export default function Hopper() {
   const send = async (text: string) => {
     const q = text.trim();
     if (!q || busy) return;
+    setAsked(q);
     setQuestion("");
     setFailed(null);
     setBusy(true);
@@ -57,6 +78,30 @@ export default function Hopper() {
       setLive(null);
     }
   };
+
+  /**
+   * A question another screen sent here, asked the moment the page opens.
+   *
+   * Once only, and the parameter is cleared as it goes: leaving it in the URL
+   * would ask the same thing again on every back button, and the ref stops a
+   * re-render from starting a second run before the first has stored itself.
+   *
+   * Nothing is sent from a browser that cannot reach Hopper. The screen below
+   * says so and says where to fix it, and the question stays in the address
+   * bar so coming back here with it connected still asks.
+   */
+  useEffect(() => {
+    const over = params.get("ask");
+    if (!over || handed.current || !cloudEnabled()) return;
+    handed.current = true;
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("ask");
+      return next;
+    }, { replace: true });
+    void send(over.slice(0, ASK_LIMIT));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
 
   if (!cloudEnabled()) {
     return (
@@ -118,7 +163,7 @@ export default function Hopper() {
 
         {live ? (
           <div className="col" style={{ gap: 10 }}>
-            <div className="hopper-you">{question || "…"}</div>
+            <div className="hopper-you">{asked || "…"}</div>
             <Card>
               {live.text ? <Answer text={live.text} /> : (
                 <span className="small muted">

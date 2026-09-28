@@ -85,6 +85,12 @@ export function sortRows<T, K extends string>(
   });
 }
 
+/** The words under the arrow, so the heading and its label always agree. */
+const how = (dir: SortDir | null): string =>
+  dir === "asc" ? "Sorted low to high. Click for high to low."
+    : dir === "desc" ? "Sorted high to low. Click to clear."
+    : "Click to sort";
+
 /** A heading that sorts its column, and says which way it is pointing. */
 export function SortTh<K extends string>({ field, sort, onSort, children, className, width }: {
   field: K;
@@ -104,18 +110,44 @@ export function SortTh<K extends string>({ field, sort, onSort, children, classN
       // is not a picture of an arrow.
       aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
     >
-      <button
-        type="button"
-        onClick={() => onSort(field)}
-        title={
-          dir === "asc" ? "Sorted low to high. Click for high to low."
-            : dir === "desc" ? "Sorted high to low. Click to clear."
-            : "Click to sort"
-        }
-      >
+      <button type="button" onClick={() => onSort(field)} title={how(dir)}>
         <span className="truncate">{children}</span>
         {dir === "asc" ? <ArrowUp size={12} /> : dir === "desc" ? <ArrowDown size={12} /> : null}
       </button>
     </th>
+  );
+}
+
+/**
+ * The same heading, for a table drawn as a grid of spans rather than a table.
+ *
+ * Not a `<th>`, so no aria-sort: the attribute means nothing outside a real
+ * column header and a screen reader would read it as noise or skip it. The
+ * direction goes into the button's own label instead, which is announced
+ * wherever the button is.
+ */
+export function SortHead<K extends string>({ field, sort, onSort, children, label, className }: {
+  field: K;
+  sort: Sort<K> | null;
+  onSort: (key: K) => void;
+  children: ReactNode;
+  /** What to call this column out loud, when the heading is not plain text. */
+  label?: string;
+  className?: string;
+}) {
+  const on = sort?.key === field;
+  const dir = on ? sort.dir : null;
+  const name = label ?? (typeof children === "string" ? children : field);
+  return (
+    <button
+      type="button"
+      className={cx("sort-head", on && "on", className)}
+      onClick={() => onSort(field)}
+      title={how(dir)}
+      aria-label={`${name}. ${how(dir)}`}
+    >
+      <span className="truncate">{children}</span>
+      {dir === "asc" ? <ArrowUp size={12} /> : dir === "desc" ? <ArrowDown size={12} /> : null}
+    </button>
   );
 }

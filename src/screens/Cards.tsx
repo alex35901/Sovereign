@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Plus, Sparkles, Trash2 } from "lucide-react";
 import type { Account, CandidateCard, CardRewards, EarnRule, ID } from "../types";
 import { useDB, useStore } from "../store";
@@ -12,6 +13,7 @@ import { candidateValue, cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } 
 import { draftRewards, toRules } from "../lib/hopper/rewards";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
+import { SortHead, sortRows, useSort } from "../components/sort";
 import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, SelectInput, Tile, cx } from "../components/ui";
 
 /**
@@ -27,6 +29,9 @@ import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, Sel
 /** A year's saving smaller than this is not worth a line of red. */
 const WORTH_SAYING = 100;
 
+/** The columns of the category table, by what they hold. */
+type CatField = "name" | "spend" | "best" | "earned" | "gap";
+
 const PERIODS = [
   { value: "month", label: "a month" },
   { value: "quarter", label: "a quarter" },
@@ -37,12 +42,33 @@ const PERIODS = [
 export default function Cards() {
   const db = useDB();
   const { actions } = useStore();
+  const nav = useNavigate();
   const cards = useMemo(() => cardAccounts(db), [db]);
   const [editing, setEditing] = useState<Account | null>(null);
   const [weighing, setWeighing] = useState<CandidateCard | "new" | null>(null);
+  const { sort, toggle: onSort } = useSort<CatField>();
   const to = today();
   const from = rangeStart("1y");
   const report = useMemo(() => cardReport(db, from, to), [db, from, to]);
+  const catName = useMemo(
+    () => new Map(db.categories.map((c) => [c.id, c.name])),
+    [db.categories],
+  );
+
+  /**
+   * Hand the question to Hopper rather than answer it here.
+   *
+   * This page is arithmetic on cards the household already holds, and it has
+   * no list of products to look anything up in. What a card on the market
+   * pays is a question for the model, on its own screen, where the answer
+   * arrives with Hopper's usual caveats attached instead of sitting in a
+   * table of figures the app worked out itself.
+   */
+  const askAboutCards = (categoryId: ID) => {
+    const name = catName.get(categoryId) ?? "this category";
+    const q = `Which credit cards would be good for my ${name} spending? Look at what I spent on ${name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`;
+    nav(`/hopper?ask=${encodeURIComponent(q)}`);
+  };
 
   if (!cards.length) {
     return (
@@ -62,6 +88,25 @@ export default function Cards() {
 
   const unconfirmed = cards.filter((a) => !a.rewards?.confirmedAt);
   const byId = new Map(cards.map((a) => [a.id, a]));
+
+  // Cut to the worst two dozen first and sort what is left, so a click on a
+  // heading reorders the rows on screen rather than fetching different ones.
+  // Unsorted is the order the report came in: biggest miss first.
+  const catRows = sortRows(
+    report.categories.filter((c) => c.spend > 0).slice(0, 24),
+    sort,
+    (c, key) => {
+      if (key === "spend") return c.spend;
+      if (key === "earned") return c.earned;
+      if (key === "gap") return c.gap;
+      if (key === "name") return catName.get(c.categoryId) ?? "Uncategorized";
+      // Only the rows worth moving name a card. The rest say "stay put",
+      // which is not a card name, so they gather at the bottom either way.
+      return c.gap >= WORTH_SAYING && c.bestAccountId
+        ? byId.get(c.bestAccountId)?.name ?? "a card"
+        : null;
+    },
+  );
 
   return (
     <>
@@ -153,20 +198,22 @@ export default function Cards() {
         <Card pad={false}>
           <CardHead
             flush title="Where to put each purchase"
-            sub="The last year, biggest miss first. The best card is the one to reach for at the till, given what the caps had already taken."
+            sub="The last year, biggest miss first, or click a heading to reorder it. The best card is the one to reach for at the till, given what the caps had already taken."
           />
           <div className="card-cat head">
-            <span className="tiny faint">Category</span>
-            <span className="tiny faint card-cat-spend">Spent</span>
-            <span className="tiny faint">Reach for</span>
-            <span className="tiny faint card-cat-earned">Earned</span>
-            <span className="tiny faint card-cat-gap">Missed</span>
+            <span className="tiny faint"><SortHead field="name" sort={sort} onSort={onSort}>Category</SortHead></span>
+            <span className="tiny faint card-cat-spend"><SortHead field="spend" sort={sort} onSort={onSort}>Spent</SortHead></span>
+            <span className="tiny faint card-cat-best"><SortHead field="best" sort={sort} onSort={onSort}>Reach for</SortHead></span>
+            <span className="tiny faint card-cat-earned"><SortHead field="earned" sort={sort} onSort={onSort}>Earned</SortHead></span>
+            <span className="tiny faint card-cat-gap"><SortHead field="gap" sort={sort} onSort={onSort}>Missed</SortHead></span>
+            <span />
           </div>
-          {report.categories.filter((c) => c.spend > 0).slice(0, 24).map((c) => {
+          {catRows.map((c) => {
             // A saving that rounds to nothing is nothing. Printing "+$0" in
             // red against every line of a wallet that is already right turns
             // the one column worth reading into noise.
             const worth = c.gap >= WORTH_SAYING;
+            const name = catName.get(c.categoryId) ?? "this category";
             return (
               <div key={c.categoryId} className="card-cat">
                 <span className="card-cat-name"><CategoryTag categoryId={c.categoryId} /></span>
@@ -183,19 +230,19 @@ export default function Cards() {
                 <span className={cx("num tiny card-cat-gap", worth && "neg")}>
                   {worth ? `+${fmt0(c.gap)}` : "-"}
                 </span>
+                <button
+                  type="button"
+                  className="card-cat-ask"
+                  title={`Ask Hopper which cards suit ${name}`}
+                  aria-label={`Ask Hopper which cards suit ${name}`}
+                  onClick={() => askAboutCards(c.categoryId)}
+                >
+                  <Sparkles size={13} />
+                </button>
               </div>
             );
           })}
         </Card>
-
-        {report.offCard.spend > 0 ? (
-          <Card>
-            <CardHead
-              title="Paid another way"
-              sub={`${fmt0(report.offCard.spend)} of last year never went near a card. Most of what lands here cannot: a mortgage, a tax bill, the water rates. Where it can, it would be worth about ${fmt0(report.offCard.could)} a year.`}
-            />
-          </Card>
-        ) : null}
 
         <Card pad={false}>
           <CardHead
@@ -217,7 +264,8 @@ export default function Cards() {
 
         <span className="tiny faint" style={{ padding: "0 2px" }}>
           Worked out from your own purchases over the last year, and from what you have said each card pays.
-          Sovereign holds no list of card products and never recommends one.
+          Sovereign itself holds no list of card products. The spark beside a row asks Hopper, who answers
+          from what he was trained on rather than from any live offer, so check the terms of anything he names.
         </span>
       </div>
       {editing ? (

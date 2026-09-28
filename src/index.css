@@ -494,6 +494,16 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .th-sort > button:hover { color: var(--text); }
 .th-sort.on > button { color: var(--text); }
 .th-sort > button > svg { flex: none; }
+/* The same control where the table is a grid of spans. Inline rather than
+   block, so the cell's own text-align still decides where it sits. */
+.sort-head {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  padding: 0; background: none; border: 0; cursor: pointer;
+  font: inherit; letter-spacing: inherit; text-transform: inherit;
+  color: inherit; text-align: inherit;
+}
+.sort-head:hover, .sort-head.on { color: var(--text); }
+.sort-head > svg { flex: none; }
 /* Centred columns keep their heading centred, right-aligned ones right. */
 .tbl-holdings .th-sort > button { justify-content: center; }
 .tbl-holdings .th-sort.hold-name > button { justify-content: flex-start; }
@@ -1480,15 +1490,28 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .card-unset { background: var(--accent-soft); color: var(--accent); }
 .card-cat {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 84px minmax(0, 130px) 76px 72px;
+  grid-template-columns: minmax(0, 1fr) 84px minmax(0, 130px) 76px 72px 26px;
   align-items: center; gap: 10px;
   padding: 9px 16px; border-bottom: 1px solid var(--line-soft);
 }
 .card-cat:last-child { border-bottom: 0; }
 .card-cat.head { background: var(--surface-2); padding-top: 8px; padding-bottom: 8px; text-transform: uppercase; letter-spacing: .06em; }
 .card-cat-name { min-width: 0; }
-.card-cat-spend, .card-cat-earned, .card-cat-gap { text-align: right; }
-.card-cat-best { min-width: 0; color: var(--muted); }
+/* Everything but the category name sits in the middle of its column, so the
+   four figures read as a block down the page and each heading sits over the
+   thing it sorts rather than off to one side of it. */
+.card-cat-spend, .card-cat-earned, .card-cat-gap, .card-cat-best { text-align: center; }
+.card-cat-best { min-width: 0; }
+/* Rows only: on the heading this would outrank .faint and leave one column
+   brighter than the four beside it. */
+.card-cat:not(.head) .card-cat-best { color: var(--muted); }
+.card-cat-ask {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  background: none; border: 0; border-radius: 7px;
+  color: var(--faint); cursor: pointer;
+}
+.card-cat-ask:hover { background: var(--surface-3); color: var(--accent); }
 .card-ask {
   display: flex; align-items: center; gap: 14px;
   padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
@@ -1804,6 +1827,16 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
     text-underline-offset: 3px;
   }
 
+  /* ── cards ──
+     Six columns will not fit a phone at their desk widths. Rather than drop
+     one, the figures give up their slack: every column keeps its place, so
+     the table still reads down the page as a table. */
+  .card-cat {
+    grid-template-columns: minmax(0, 1fr) 64px minmax(0, 88px) 60px 58px 24px;
+    gap: 6px; padding-left: 12px; padding-right: 12px;
+  }
+  .card-cat-ask { width: 24px; height: 24px; }
+
   .g3 { grid-template-columns: minmax(0, 1fr); }
   /* The name, then the two controls under it: three across leaves the account
      name about forty pixels. */
@@ -1822,6 +1855,11 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
   .list-row { gap: 6px; padding: 10px 10px; }
   .budget-head { gap: 6px; }
   .card-head.bgroup-head { padding-left: 10px; padding-right: 10px; }
+  .card-cat {
+    grid-template-columns: minmax(0, 1fr) 56px minmax(0, 70px) 52px 50px 22px;
+    gap: 5px; padding-left: 10px; padding-right: 10px;
+  }
+  .card-cat-ask { width: 22px; height: 22px; }
 }
 
 @media (width <= 359px) {

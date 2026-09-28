@@ -7319,6 +7319,79 @@ try {
         await wl.evaluate((n) => document.body.innerText.includes(n), second), second);
     }
 
+    // ── the category table sorts, and hands a row to Hopper ──
+    //
+    // Read off the rendered cells rather than off the report: the point is
+    // that clicking a heading reorders what is on the screen, and a check
+    // against the data behind it would pass with the table drawn in any order.
+    const spends = () => wl.evaluate(() => [...document.querySelectorAll(".card-cat:not(.head) .card-cat-spend")]
+      .map((e) => Number(e.innerText.replace(/[$,]/g, "")) || 0));
+    const heads = () => wl.locator(".card-cat.head .sort-head");
+
+    check("the category table is sorted biggest miss first before anything is clicked",
+      await wl.evaluate(() => {
+        const gaps = [...document.querySelectorAll(".card-cat:not(.head) .card-cat-gap")]
+          .map((e) => Number(e.innerText.replace(/[^\d.]/g, "")) || 0);
+        return gaps.every((g, i) => i === 0 || gaps[i - 1] >= g);
+      }), "");
+
+    const unsorted = await spends();
+    if (await tryStep("a heading can be clicked to sort the table", async () => {
+      await heads().nth(1).click({ timeout: 8000 });
+      await wl.waitForTimeout(300);
+    })) {
+      const asc = await spends();
+      check("which puts the smallest first",
+        asc.length === unsorted.length && asc.every((v, i) => i === 0 || asc[i - 1] <= v),
+        asc.slice(0, 5).join(" "));
+      check("and says so on the heading itself",
+        /low to high/.test(await heads().nth(1).getAttribute("title") ?? ""),
+        await heads().nth(1).getAttribute("title") ?? "");
+
+      await heads().nth(1).click({ timeout: 8000 });
+      await wl.waitForTimeout(300);
+      const desc = await spends();
+      check("a second click turns it round",
+        desc.every((v, i) => i === 0 || desc[i - 1] >= v), desc.slice(0, 5).join(" "));
+
+      // The third state is the reason for three: a table with no way back to
+      // the order it arrived in has lost what that order meant.
+      await heads().nth(1).click({ timeout: 8000 });
+      await wl.waitForTimeout(300);
+      const back = await spends();
+      check("and a third gives back the order it came in",
+        back.join(",") === unsorted.join(","),
+        `${back.slice(0, 5).join(" ")} against ${unsorted.slice(0, 5).join(" ")}`);
+    }
+
+    check("every category row offers to ask Hopper about it",
+      await wl.evaluate(() => {
+        const rows = document.querySelectorAll(".card-cat:not(.head)").length;
+        const asks = document.querySelectorAll(".card-cat:not(.head) .card-cat-ask").length;
+        return rows > 0 && rows === asks;
+      }), "");
+
+    // What is irrelevant is not shown. This card said what never went near a
+    // card at all, which is not what the page is for.
+    check("and nothing on the page is about spending that never went near a card",
+      !(await wl.evaluate(() => /Paid another way/.test(document.body.innerText))), "");
+
+    if (await tryStep("the ask button carries the question to Hopper", async () => {
+      await wl.locator(".card-cat:not(.head) .card-cat-ask").first().click({ timeout: 8000 });
+      await wl.waitForTimeout(700);
+    })) {
+      const url = wl.url();
+      check("naming that one category, not the page in general",
+        /\/hopper\?/.test(url) && /credit%20cards/.test(url) && decodeURIComponent(url).length > 60,
+        decodeURIComponent(url).slice(-90));
+      // No passphrase in a preview, so Hopper cannot reach anything. The one
+      // thing it must not do is send the question anyway and fail silently.
+      check("and says plainly that this browser is not connected, rather than hanging",
+        /needs this browser connected/i.test(await wl.evaluate(() => document.body.innerText)), "");
+      await wl.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+      await wl.waitForTimeout(1500);
+    }
+
     // Saving a half-finished draft must not promote a guess to a checked
     // figure. The two buttons mean different things and the page leans on the
     // difference to tell the reader which of the two it is showing them.
