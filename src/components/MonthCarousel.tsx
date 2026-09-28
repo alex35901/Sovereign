@@ -170,11 +170,24 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
     },
     width,
     () => held.current,
-    // On the first pixel of a drag rather than on touch: a tap that goes
-    // nowhere, or a touch the browser takes away for its own scrolling, would
-    // otherwise park the strip half way through a turn with nothing left to
-    // finish it, and it would sit there until the next gesture.
-    flush,
+    /*
+     * On the first pixel of a drag rather than on touch, and that goes for
+     * both things that happen here.
+     *
+     * Settling whatever was already under way, because a tap that goes
+     * nowhere, or a touch the browser takes away for its own scrolling, would
+     * otherwise park the strip half way through a turn with nothing left to
+     * finish it, and it would sit there until the next gesture.
+     *
+     * And arming the months either side. That used to be done on touchstart,
+     * which meant every tap anywhere on the sheet mounted two more budget
+     * sheets under the finger before the tap had finished. Rebuilding the row
+     * out from under a tap is how a tap stops counting: on a phone the first
+     * one was swallowed and everything needed tapping twice. A drag is the
+     * only gesture that needs the neighbours, and it is the only one that
+     * gets them now.
+     */
+    () => { setArmed(true); flush(); },
   );
 
   if (!enabled) return <>{children(month)}</>;
@@ -184,9 +197,6 @@ export function MonthCarousel({ month, onChange, enabled, children }: {
       <div
         className="month-track" ref={track}
         {...handlers}
-        onTouchStart={(e) => { setArmed(true); handlers.onTouchStart(e); }}
-        onTouchEnd={handlers.onTouchEnd}
-        onTouchCancel={handlers.onTouchCancel}
       >
         {[-1, 0, 1].map((step) => (
           <div

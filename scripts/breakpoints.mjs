@@ -2470,6 +2470,52 @@ try {
       }
       return { months: key() - from, back, worst, gap };
     });
+    // ── a tap is not a drag, and must not rebuild the row under the finger ──
+    //
+    // The months either side used to be mounted on touchstart, so every tap
+    // anywhere on the sheet built two more budget sheets before the tap had
+    // finished. On a phone that swallowed the first tap and everything needed
+    // tapping twice: opening a category took two goes. Asserted on what the
+    // row actually holds rather than on whether a tap navigated, because the
+    // engines that drop the click in that situation and the one here do not
+    // agree, and the rebuild is the defect either way.
+    const rowAfter = await ph.evaluate(async () => {
+      const el = document.querySelector(".month-track");
+      const filled = () => [...document.querySelectorAll(".month-panel")]
+        .filter((p) => !p.hasAttribute("data-in-frame") && p.childElementCount > 0).length;
+      const fire = (type, cx, cy) => {
+        const t = new Touch({ identifier: 3, target: el, clientX: cx, clientY: cy });
+        const empty = type === "touchend";
+        el.dispatchEvent(new TouchEvent(type, {
+          bubbles: true, cancelable: true,
+          touches: empty ? [] : [t], targetTouches: empty ? [] : [t], changedTouches: [t],
+        }));
+      };
+      const wait = (ms) => new Promise((d) => setTimeout(d, ms));
+
+      const before = filled();
+      // A tap: down and up in one place, the way a thumb opens a category.
+      fire("touchstart", 160, 430);
+      await wait(40);
+      fire("touchend", 160, 430);
+      await wait(120);
+      const afterTap = filled();
+
+      // And a real drag, which does need them.
+      fire("touchstart", 300, 430);
+      for (let i = 1; i <= 4; i++) { await wait(10); fire("touchmove", 300 - i * 20, 430); }
+      await wait(60);
+      const afterDrag = filled();
+      fire("touchend", 220, 430);
+      await wait(700);
+      return { before, afterTap, afterDrag };
+    });
+    check("a tap does not mount the months either side",
+      rowAfter.afterTap === 0,
+      `${rowAfter.afterTap} neighbour(s) built by a tap (was ${rowAfter.before} before it)`);
+    check("and a drag still gets them, or there would be nothing to drag to",
+      rowAfter.afterDrag > 0, `${rowAfter.afterDrag} neighbour(s) after a drag`);
+
     check("two flicks in a row turn two months, neither of them swallowed",
       rapid.months === 2, `${rapid.months} months`);
     check("and catching one still flying picks it up rather than snapping it back",

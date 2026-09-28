@@ -278,22 +278,33 @@ await test("a cache that will not write does not leave a version number behind",
     const moved = { ...db, settings: { ...db.settings, householdName: "the evening's work" } };
     assert.equal(M.saveNow(moved, 8), false, "a write that cannot land must say so");
     assert.equal(M.cacheHealthy(), false, "and must be answerable afterwards");
+    assert.equal(M.loadDB().at, null,
+      "and must not leave a stamp behind vouching for a document it did not write");
 
     // The cache is still the old copy, still stamped with the old version,
     // which is the whole point: it does not claim to be something it is not.
     const back = M.loadDB();
-    assert.equal(back.at, 7, "the stamp did not advance with a write that failed");
-    assert.notEqual(back.db.settings.householdName, "the evening's work");
+    assert.notEqual(back.db.settings.householdName, "the evening's work",
+      "the cached document is still the one that did fit");
 
     // A copy written before stamps existed cannot say what it is either, and
     // must not be taken for current.
     full = false;
     real.setItem("sovereign.db.v1", JSON.stringify(db));
+    real.removeItem("sovereign.db.at.v1");
     assert.equal(M.loadDB().at, null, "an unstamped cache says so rather than guessing");
+
+    // And the document itself is stored exactly as it always was, with the
+    // stamp beside it rather than wrapped around it. Everything that reads
+    // this cache from outside the app expects the document at the top level.
+    assert.equal(M.saveNow(db, 9), true);
+    assert.deepEqual(JSON.parse(real.getItem("sovereign.db.v1")).accounts, db.accounts);
+    assert.equal(real.getItem("sovereign.db.at.v1"), "9");
   } finally {
     console.error = quiet;
     globalThis.localStorage = real;
     real.removeItem("sovereign.db.v1");
+    real.removeItem("sovereign.db.at.v1");
   }
 });
 

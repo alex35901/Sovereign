@@ -5,39 +5,40 @@ import { addMonths, thisMonth } from "./date.js";
 import { FUTURE_MONTHS } from "./select.js";
 
 const KEY = "sovereign.db.v1";
-
 /**
- * The cached document, and the stored version it is a copy of.
+ * Which stored version the cached document is a copy of.
  *
- * One value under one key, on purpose. These used to be two: the document
- * here, and the version number in the cloud state under its own key. A phone
- * ran out of room for the document, the write threw, the failure went to
- * console.error and nowhere else, and every write after it threw too. The
- * version number is a hundred bytes and kept saving perfectly. So the cache
- * froze at the last size that fitted while the number went on counting, and
- * the next load read a document that was months old and a number saying it
- * was current. Nothing was wrong as far as the sync loop could tell, and the
- * first edit pushed that frozen copy over everything since, at a version the
- * server had no reason to refuse.
+ * Its own key, but written in the same breath as the document and only ever
+ * after the document write has actually landed. That order is the whole point.
  *
- * Written together, they cannot drift: a copy that did not save does not leave
- * a number behind claiming it did.
+ * These used to be the document here and the version number over in the cloud
+ * state, written at different moments by different code. A phone ran out of
+ * room for the document, the write threw, the failure went to console.error
+ * and nowhere else, and every write after it threw too. The version number is
+ * a hundred bytes and kept saving perfectly. So the cache froze at the last
+ * size that fitted while the number went on counting, and the next load read
+ * a document months old beside a number saying it was current. Nothing looked
+ * wrong to the sync loop, and the first edit pushed that frozen copy over
+ * everything since, at a version the server had no reason to refuse.
+ *
+ * Written this way they can still end up disagreeing, but only ever in the
+ * direction that is safe: a document that failed to save leaves the stamp
+ * behind with it, so the browser knows it cannot vouch for what it is holding
+ * and goes to the server instead. The document itself keeps the shape it has
+ * always had, which is what everything reading this cache from the outside
+ * expects.
  */
-interface Cached {
-  /** The version of the stored document this copy was taken from. */
-  at: number;
-  db: DB;
-}
+const AT_KEY = "sovereign.db.at.v1";
 
 export interface LoadedDB {
   db: DB;
   /**
    * What this copy is a version of, or null when it cannot say.
    *
-   * Null for a cache written before the two were kept together. A browser that
-   * cannot say which version it holds must not claim one: it reconciles from
-   * scratch and takes what the server has, which costs one fetch and is the
-   * only answer that cannot lose anything.
+   * Null for a cache written before the stamp existed, and for one whose write
+   * failed part way. A browser that cannot say which version it holds must not
+   * claim one: it reconciles from scratch and takes what the server has, which
+   * costs one fetch and is the only answer that cannot lose anything.
    */
   at: number | null;
 }
@@ -46,11 +47,11 @@ export function loadDB(): LoadedDB | null {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Cached | DB;
-    const wrapped = typeof (parsed as Cached).at === "number" && (parsed as Cached).db !== undefined;
-    return wrapped
-      ? { db: migrate((parsed as Cached).db), at: (parsed as Cached).at }
-      : { db: migrate(parsed as DB), at: null };
+    const at = Number(localStorage.getItem(AT_KEY));
+    return {
+      db: migrate(JSON.parse(raw) as DB),
+      at: Number.isFinite(at) && at > 0 ? at : null,
+    };
   } catch {
     return null;
   }
@@ -77,12 +78,17 @@ export const cacheHealthy = (): boolean => lastWriteOk;
 
 function write(db: DB, at: number): boolean {
   try {
-    localStorage.setItem(KEY, JSON.stringify({ at, db } satisfies Cached));
+    localStorage.setItem(KEY, JSON.stringify(db));
+    // Only now, and only because the line above did not throw.
+    localStorage.setItem(AT_KEY, String(at));
     lastWriteOk = true;
     return true;
   } catch (err) {
     // Not swallowed into the console this time. Running out of room here is
-    // how a household lost months of work, quietly, over and over.
+    // how a household lost months of work, quietly, over and over. The stamp
+    // goes rather than staying to vouch for a document that may not have been
+    // written, which is the failure this whole arrangement exists to stop.
+    try { localStorage.removeItem(AT_KEY); } catch { /* nothing left to do */ }
     console.error("Could not cache the budget in this browser.", err);
     lastWriteOk = false;
     return false;
@@ -102,6 +108,7 @@ export function saveNow(db: DB, at: number): boolean {
 
 export function clearDB(): void {
   localStorage.removeItem(KEY);
+  localStorage.removeItem(AT_KEY);
 }
 
 /**
