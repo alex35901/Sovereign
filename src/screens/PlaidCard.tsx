@@ -100,6 +100,47 @@ export function PlaidCard() {
    */
   const stillFetching = useRef(new Set<string>());
 
+  /**
+   * What Plaid actually holds for one bank, asked and nothing else.
+   *
+   * Full history, below, is not this: it can open the Link dialog, tell Plaid
+   * to go and fetch, and then wait minutes for the answer. That is the wrong
+   * thing to reach for when the question is "why has nothing arrived since
+   * August", because it changes the thing being diagnosed.
+   *
+   * These four facts settle it between them. Plaid's own last successful
+   * transactions update says whether Plaid has been refreshing this item at
+   * all. The newest transaction it holds says whether there is anything to
+   * come. The total says whether the window is empty. And the consented
+   * products say whether this connection ever agreed to hand transactions
+   * over, which no amount of syncing will fix on its own.
+   */
+  const askPlaid = async (item: PlaidItemRef) => {
+    setBusy(item.itemId);
+    setError(null);
+    setNote(null);
+    setReach(null);
+    try {
+      const said = await reportHistory(item, windowFor(undefined));
+      setReach({ itemId: item.itemId, ...describeReach(said, item.institution) });
+      setNote([
+        said.newest ? `Newest transaction Plaid holds: ${said.newest}.` : "Plaid holds no transactions in this window.",
+        said.oldest ? `Oldest: ${said.oldest}.` : "",
+        `${said.total.toLocaleString()} in the last two years.`,
+        said.lastUpdate
+          ? `Plaid last refreshed this bank's transactions ${said.lastUpdate.slice(0, 16).replace("T", " ")}.`
+          : "Plaid has never reported a successful transactions refresh for this bank.",
+        said.consented.length && !said.consented.includes("transactions")
+          ? "This connection has not consented to transactions at all, which is what Reconnect fixes."
+          : "",
+      ].filter(Boolean).join(" "));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not ask Plaid.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const runCheck = async () => {
     setBusy("check");
     setError(null);
@@ -527,6 +568,14 @@ export function PlaidCard() {
                     title="Sign in again without changing this item's access token"
                   >
                     <KeyRound size={12} /> {busy === item.itemId ? "Opening…" : "Reconnect"}
+                  </Btn>
+                  <Btn
+                    size="sm"
+                    onClick={() => void askPlaid(item)}
+                    disabled={busy !== null}
+                    title="Ask Plaid what it holds for this bank, and change nothing"
+                  >
+                    <Stethoscope size={12} /> What Plaid has
                   </Btn>
                   <Btn
                     size="sm"
