@@ -614,6 +614,27 @@ export function PlaidCard() {
                 {items.filter((i) => i.lastError).map((i) => `${i.institution}: ${i.lastError!.message}`).join(" · ")}
               </div>
             ) : null}
+            {/* What the last pull worked but declined to file. Kept on the
+                item, so it is still here long after the sync that found it:
+                this used to live in a toast, which meant a household syncing
+                on the schedule was never told at all, and one who pressed the
+                button had to read it before it went. Selectable, because the
+                answer to "why is this transaction missing" is a thing people
+                want to send to somebody. */}
+            {items.some((i) => i.lastNotes?.notes.length) ? (
+              <div className="col" style={{ gap: 6 }}>
+                {items.filter((i) => i.lastNotes?.notes.length).map((i) => (
+                  <div key={i.itemId} className="small" style={{ userSelect: "text" }}>
+                    <b>{i.institution}</b>, last pull{" "}
+                    {new Date(i.lastNotes!.at).toLocaleString()}: the bank answered, and these rows were
+                    left out on purpose.
+                    <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                      {i.lastNotes!.notes.map((n) => <li key={n}>{n}</li>)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}

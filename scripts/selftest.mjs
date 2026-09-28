@@ -6282,6 +6282,57 @@ await test("an investment-only item has no transactions, which is not a failure"
   assert.equal(out.transactions, 0);
 });
 
+await test("what a pull declined to file is kept on the connection, not shown and lost", async () => {
+  /*
+   * "0 new transactions" reads the same whether the bank sent nothing or sent
+   * a fortnight that every rule in the merge threw away, and the second is the
+   * failure that hides for weeks. The merge has always worked out which it
+   * was; the words only ever went to a card's local state, so a household
+   * syncing on the schedule — which is the point of the schedule — was never
+   * told, and one who pressed the button had to read it before the next press
+   * replaced it.
+   */
+  const item = {
+    accessToken: "tok", itemId: "item-1", institution: "Third National",
+    kind: "bank", addedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const base = M.emptyDB();
+  // An account deleted here on purpose, which the bank still offers. Its rows
+  // are declined, and that is exactly what somebody needs told.
+  let db = {
+    ...base,
+    settings: {
+      ...base.settings,
+      plaidItems: [item],
+      deletedAccountKeys: ["name:third national|everyday"],
+    },
+  };
+  const apply = (fn) => { db = fn(db); };
+
+  const wire = () => withFetch(async () => new Response(JSON.stringify({
+    accounts: [{ account_id: "pa1", name: "Everyday", type: "depository", subtype: "checking", balances: { current: 10 } }],
+    transactions: [{ transaction_id: "pt1", account_id: "pa1", date: "2026-09-26", amount: 5, name: "COFFEE" }],
+    holdings: [], securities: [], total: 1, truncated: false,
+  }), { status: 200 }), () => M.syncPlaidItem(apply, item));
+
+  await wire();
+
+  const kept = db.settings.plaidItems[0].lastNotes;
+  assert.ok(kept, "the connection has to remember what it turned away");
+  assert.ok(kept.at, "stamped with the pull it describes");
+  assert.equal(kept.notes.length, 1);
+  assert.match(kept.notes[0], /deleted here on purpose/i, kept.notes[0]);
+  assert.match(kept.notes[0], /Everyday/);
+  assert.deepEqual(db.transactions, [], "and the rows really were left out");
+
+  // A clean pull says so by leaving nothing behind: these describe the last
+  // pull, not every pull there has ever been.
+  db = { ...db, settings: { ...db.settings, deletedAccountKeys: [] } };
+  await wire();
+  assert.equal(db.settings.plaidItems[0].lastNotes, undefined, "a pull with nothing to report clears it");
+  assert.equal(db.transactions.length, 1, "and files the row this time");
+});
+
 await test("an unattended pull can add and revise, and can never take away", () => {
   /*
    * The property that matters after a provider spent a day writing over a

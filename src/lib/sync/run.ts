@@ -95,8 +95,17 @@ export async function syncPlaidItem(
       (res.holdingsUpdated ? `, ${res.holdingsUpdated} holdings` : "");
     changed = res.transactionsAdded > 0 || res.accountsAdded > 0 || res.holdingsUpdated > 0;
     const stamped = (cur.settings.plaidItems ?? []).map((i) =>
-      // A pull that worked clears whatever the last one said.
-      i.itemId === item.itemId ? { ...i, ...item, lastSyncAt: payload!.fetchedAt, lastError: undefined } : i);
+      // A pull that worked clears whatever the last one said, and records what
+      // this one quietly did not file. Both are replaced outright rather than
+      // added to: they describe the last pull, not every pull there has been.
+      (i.itemId === item.itemId
+        ? {
+          ...i, ...item,
+          lastSyncAt: payload!.fetchedAt,
+          lastError: undefined,
+          lastNotes: notes.length ? { notes, at: payload!.fetchedAt } : undefined,
+        }
+        : i));
     return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
   }, `sync ${item.institution}`);
 

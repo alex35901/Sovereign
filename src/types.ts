@@ -531,6 +531,22 @@ export interface PlaidItemRef {
    */
   lastError?: { message: string; at: string };
   /**
+   * What the last pull declined to file, and when, in plain words.
+   *
+   * Not an error: the pull worked. These are the rows the merge's own rules
+   * threw away — a floor date, an account deleted here on purpose, rows for an
+   * account this document does not track, two connections claiming the same
+   * one. "0 new transactions" reads identically whether the bank sent nothing
+   * or sent a fortnight that every rule rejected, and the second is the
+   * failure that hides for weeks.
+   *
+   * Kept on the item rather than shown and forgotten. They used to live in a
+   * card's local state, so only somebody who pressed Sync now and read it
+   * before it was replaced ever saw them: a household on the schedule, which
+   * is the whole point of the schedule, was never told at all.
+   */
+  lastNotes?: { notes: string[]; at: string };
+  /**
    * How far back Plaid was last asked to reach for this item, in days.
    *
    * Plaid settles an item's reach when it is linked, not when it is read, and
