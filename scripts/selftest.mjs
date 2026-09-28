@@ -5584,6 +5584,76 @@ await test("two accounts claiming one account at the bank is said out loud", () 
   assert.deepEqual(closed.sharedIds, []);
 });
 
+await test("a bank's own refusal is red, dated, and beats the guess about it", () => {
+  // The account page used to read only the provider-wide meter, so a bank that
+  // had just told the app outright it was not answering went on being
+  // described by the quiet heuristic below it, which reasons from how long
+  // nothing has arrived. An answer from the bank beats an inference about it.
+  const base = M.emptyDB();
+  const account = {
+    id: "a1", name: "LLC Savings", institution: "Wells Fargo", type: "savings", balance: 100,
+    includeInNetWorth: true, hidden: false, history: [], order: 0,
+    syncSource: "plaid", syncId: "pa1", plaidItemId: "item-1",
+    lastSyncedAt: "2026-09-28T09:00:00.000Z",
+  };
+  const now = Date.parse("2026-09-28T09:30:00.000Z");
+  const db = {
+    ...base,
+    accounts: [account],
+    settings: {
+      ...base.settings,
+      plaidItems: [{
+        accessToken: "tok", itemId: "item-1", institution: "Wells Fargo", kind: "bank",
+        addedAt: "2026-01-01T00:00:00.000Z",
+        lastError: {
+          message: "The bank is not answering Plaid at the moment. (INSTITUTION_NOT_RESPONDING)",
+          at: "2026-09-28T09:00:00.000Z",
+        },
+      }],
+    },
+  };
+
+  const said = M.connectionOf(account, db, now);
+  assert.equal(said.state, "attention", "a bank that will not answer is not merely quiet");
+  assert.match(said.detail, /not answering Plaid/);
+  assert.match(said.detail, /Last tried 30m ago/, said.detail);
+
+  // And it outranks the quiet note, which would otherwise be guessing about
+  // the very thing the bank has already answered.
+  assert.doesNotMatch(said.detail, /usual gap/);
+
+  // Cleared by a pull that works, because a bank that answers again has
+  // stopped being the problem.
+  const mended = { ...db, settings: { ...db.settings, plaidItems: [{ ...db.settings.plaidItems[0], lastError: undefined }] } };
+  assert.notEqual(M.connectionOf(account, mended, now).state, "attention");
+});
+
+await test("a connection that has gone quiet says what to press about it", () => {
+  // "A login that needs renewing looks like this" is a diagnosis with nothing
+  // to do about it. The one thing that would settle it is a button somewhere
+  // else, so the note names it.
+  const base = M.emptyDB();
+  const account = {
+    id: "a1", name: "LLC Savings", institution: "Wells Fargo", type: "savings", balance: 100,
+    includeInNetWorth: true, hidden: false, history: [], order: 0,
+    syncSource: "plaid", syncId: "pa1", lastSyncedAt: "2026-09-28T09:00:00.000Z",
+  };
+  const day = (n) => new Date(Date.parse("2026-08-04T00:00:00.000Z") - n * 86400000).toISOString().slice(0, 10);
+  // A steady four-day rhythm, then nothing for fifty-five.
+  const db = {
+    ...base,
+    accounts: [account],
+    transactions: [0, 4, 8, 12, 16, 20].map((n, i) => ({
+      id: `t${i}`, accountId: "a1", date: day(n), amount: -1000, merchant: "Shop", pending: false, tags: [],
+    })),
+  };
+
+  const said = M.connectionOf(account, db, Date.parse("2026-09-28T09:30:00.000Z"));
+  assert.equal(said.state, "stale");
+  assert.equal(said.status, "No new transactions");
+  assert.match(said.detail, /Reconnect/, said.detail);
+});
+
 await test("a connection says which accounts came in through it", () => {
   const base = M.emptyDB();
   let n = 0;

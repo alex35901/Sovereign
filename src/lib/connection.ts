@@ -50,6 +50,25 @@ const PROVIDER: Record<string, string> = {
  */
 export const MISSES = 3;
 
+/**
+ * How long ago, in the fewest words that are still true.
+ *
+ * Only ever for an attempt that failed, where "when did this last happen" is
+ * half the answer: a bank that would not answer a minute ago and one that
+ * would not answer a fortnight ago call for quite different things.
+ */
+function ago(iso: string, now: number): string {
+  const ms = now - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "just now";
+  const mins = Math.round(ms / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
 export function connectionOf(account: Account, db: DB, now: number = Date.now()): Connection {
   const source = account.syncSource ?? "manual";
   const provider = PROVIDER[source] ?? source;
@@ -90,6 +109,27 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
    * nowhere else. One that names nobody is about the connection as a whole
    * and is still shown on all of them.
    */
+  /**
+   * What this account's own connection last said, which beats anything said
+   * about the provider as a whole.
+   *
+   * A reconnect that Plaid turned away records the reason on the item. Without
+   * this the row never saw it: it read only the provider-wide meter, so a bank
+   * that had just told the app outright it was not answering went on being
+   * described by the guess below, which reasons from how long things have been
+   * quiet. A real answer, from the bank, beats an inference about it.
+   */
+  const item = (db.settings.plaidItems ?? []).find((i) => (
+    account.plaidItemId ? i.itemId === account.plaidItemId : i.institution === account.institution
+  ));
+  if (source === "plaid" && item?.lastError) {
+    return {
+      state: "attention", provider, lastAt,
+      status: "Needs attention",
+      detail: `${item.lastError.message} Last tried ${ago(item.lastError.at, now)}.`,
+    };
+  }
+
   const error = meterOf(db.settings.usage, source, "ever", now).error;
   /**
    * Every bank this document knows by name, whether or not an account has
@@ -128,7 +168,9 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
       status: "No new transactions",
       detail: `The balance is still arriving, but nothing has come through since ${quiet.since}. `
         + `That is ${quiet.days} days, against a usual gap of ${quiet.usual}. `
-        + "A connection being upgraded or a login that needs renewing at the bank looks like this.",
+        + "A connection being upgraded or a login that needs renewing looks like this. "
+        + "Press Reconnect on this bank in Settings: it signs in again without changing anything here, "
+        + "and says what the bank answered.",
     };
   }
 
