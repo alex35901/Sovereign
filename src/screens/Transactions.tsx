@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { forget, keep, recall } from "../lib/session-view";
 import { ArrowRight, CheckCheck, Download, EyeOff, Filter, ListChecks, Plus, Repeat, Search, Tag as TagIcon, Trash2, Upload, X } from "lucide-react";
 import type { DB, Transaction } from "../types";
 import { useDB, useStore } from "../store";
@@ -97,6 +98,19 @@ const PAGE = 120;
 
 type Preset = "all" | "unreviewed" | "uncategorized" | "income" | "expense" | "hidden";
 
+/** Where this screen was left, for as long as the app is open. */
+const REMEMBERED = "transactions.filters";
+interface Kept {
+  /** The filters that live in the address bar, as they were written there. */
+  search: string;
+  /** And the three that do not: the search box, the preset, and the tag. */
+  q: string;
+  preset: Preset;
+  tagId: string;
+  /** How far down the list had been paged, so coming back can be that far. */
+  limit: number;
+}
+
 /**
  * A bound out of the URL: cents, or nothing asked for.
  *
@@ -114,16 +128,37 @@ export default function Transactions() {
   const { actions, suggestRule } = useStore();
   const [params, setParams] = useSearchParams();
 
-  const [q, setQ] = useState("");
-  const [preset, setPreset] = useState<Preset>("all");
-  const [accountId, setAccountId] = useState(params.get("account") ?? "");
-  const [categoryId, setCategoryId] = useState(params.get("category") ?? "");
-  const [period, setPeriodState] = useState<DateFilter>(() => fromParams((k) => params.get(k)));
-  const [tagId, setTagId] = useState("");
+  /**
+   * Where this screen starts: the link that opened it, or the last look at it.
+   *
+   * A link that carries filters is somebody saying which transactions they
+   * want — from a category's Actual figure, from a merchant, from a chart —
+   * and it always wins. A bare /transactions, from the sidebar or the way
+   * back, is the case this is for: the filters were thrown away every time,
+   * so narrowing to one account, opening a row and coming back meant setting
+   * it all up again.
+   *
+   * Worked out once. Later renders read the live params, which is where the
+   * filters live from then on.
+   */
+  const opened = useMemo(() => {
+    if (params.toString()) return { from: params, kept: null as Kept | null };
+    const kept = recall<Kept | null>(REMEMBERED, null);
+    return { from: kept?.search ? new URLSearchParams(kept.search) : params, kept };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const at = opened.from;
+
+  const [q, setQ] = useState(opened.kept?.q ?? "");
+  const [preset, setPreset] = useState<Preset>(opened.kept?.preset ?? "all");
+  const [accountId, setAccountId] = useState(at.get("account") ?? "");
+  const [categoryId, setCategoryId] = useState(at.get("category") ?? "");
+  const [period, setPeriodState] = useState<DateFilter>(() => fromParams((k) => at.get(k)));
+  const [tagId, setTagId] = useState(opened.kept?.tagId ?? "");
   // Cents, signed, and null for "not asked". Read out of the URL like every
   // other filter, so a narrowed view is still a link.
-  const [minAmount, setMinAmount] = useState<number | null>(() => fromParam(params.get("min")));
-  const [maxAmount, setMaxAmount] = useState<number | null>(() => fromParam(params.get("max")));
+  const [minAmount, setMinAmount] = useState<number | null>(() => fromParam(at.get("min")));
+  const [maxAmount, setMaxAmount] = useState<number | null>(() => fromParam(at.get("max")));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /**
    * Whether the list is in multi-select. Off by default: a checkbox on every
@@ -134,8 +169,29 @@ export default function Transactions() {
   const [editing, setEditing] = useState<Transaction | null>(null);
   const [importing, setImporting] = useState(false);
   const [adding, setAdding] = useState(false);
-  const [limit, setLimit] = useState(PAGE);
+  /**
+   * How much of the list is rendered.
+   *
+   * Remembered with the filters because coming back to the right place in a
+   * long list needs the list to be that long again: restoring to the top of a
+   * single page and leaving the reader to scroll it all back is most of the
+   * annoyance this is meant to fix. Capped, so a session that paged a long way
+   * down does not make the next visit render thousands of rows before it draws
+   * anything.
+   */
+  const [limit, setLimit] = useState(() => Math.min(opened.kept?.limit ?? PAGE, PAGE * 6));
   const bottom = useRef<HTMLDivElement>(null);
+
+  // Put back into the address bar, so a restored view is still a link and
+  // everything below here reads the params rather than knowing about this.
+  useEffect(() => {
+    if (opened.kept?.search) setParams(new URLSearchParams(opened.kept.search), { replace: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    keep(REMEMBERED, { search: params.toString(), q, preset, tagId, limit });
+  }, [params, q, preset, tagId, limit]);
 
   // Worked out once rather than per transaction: a between-dates filter over
   // several thousand rows should not re-parse its own bounds for each one.
@@ -258,6 +314,9 @@ export default function Transactions() {
     setMinAmount(null); setMaxAmount(null);
     setPeriodState(ALL);
     setParams({});
+    // Clearing has to mean cleared. Without this the next visit would restore
+    // what was just thrown away, which is the opposite of pressing Clear.
+    forget(REMEMBERED);
   };
   const filterCount = [accountId, categoryId, tagId].filter(Boolean).length
     + (preset === "all" ? 0 : 1) + (isNarrowed(period) ? 1 : 0)

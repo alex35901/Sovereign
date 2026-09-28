@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { MobileTabs, Sidebar } from "./shell/Sidebar";
-import { ScrollToTop } from "./shell/ScrollToTop";
+import { ScrollMemory } from "./shell/ScrollMemory";
 import { AutoSync } from "./components/AutoSync";
 import { PropertyRefresh } from "./components/PropertyRefresh";
 import { CloudSync } from "./components/CloudSync";
@@ -38,7 +38,7 @@ export default function App() {
       <AutoSync />
       <PropertyRefresh />
       <CloudSync />
-      <ScrollToTop />
+      <ScrollMemory />
       <Sidebar />
       <div className="main">
         <Routes>

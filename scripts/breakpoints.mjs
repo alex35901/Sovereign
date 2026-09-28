@@ -3039,6 +3039,106 @@ try {
     await byHand.close();
   }
 
+  if (want("kept-view")) {
+    // ── what a screen looked like a moment ago ──
+    //
+    // Three separate complaints with one shape: the app throws away what you
+    // just told it. Filters gone on the way back, the budget on this month
+    // again after reading August, and a list you had scrolled for a minute
+    // back at the top because you opened one row off it.
+    //
+    // Everything here is one client-side session on purpose. A reload is a
+    // new session for the scroll map, which lives in memory, so a test that
+    // navigates with goto would be testing that a reload forgets — which it
+    // does, and which is not what anybody is asking about.
+    const ctx = await browser.newContext({ viewport: { width: 1180, height: 900 } });
+    const page = await ctx.newPage();
+    await page.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1200);
+
+    await page.evaluate(() => window.scrollTo(0, 1600));
+    await page.waitForTimeout(400);
+    const leftAt = await page.evaluate(() => Math.round(window.scrollY));
+
+    /*
+     * Clicked from where it already is, not with Playwright's own click.
+     *
+     * Playwright scrolls a target into view first, which moves the page out
+     * from under the very thing being measured: the first attempt at this
+     * reported the app had failed to restore anything, when what had happened
+     * was the harness scrolling back to the top before clicking.
+     */
+    const opened = await page.evaluate(() => {
+      const seen = [...document.querySelectorAll("a[href^='/categories/']")].find((a) => {
+        const r = a.getBoundingClientRect();
+        return r.top > 120 && r.bottom < window.innerHeight - 120 && r.width > 0;
+      });
+      if (!seen) return null;
+      seen.click();
+      return seen.getAttribute("href");
+    });
+    await page.waitForTimeout(1200);
+    check("a row drilled into from far down the list opens its own page",
+      Boolean(opened) && new URL(page.url()).pathname.startsWith("/categories/"),
+      `${opened} -> ${new URL(page.url()).pathname}`);
+
+    await page.locator(".topbar-back").first().click({ timeout: 5000 });
+    await page.waitForTimeout(1600);
+    const landed = await page.evaluate(() => Math.round(window.scrollY));
+    check("and the way back lands where it was left, not at the top",
+      Math.abs(landed - leftAt) <= 60, `left ${leftAt}, came back to ${landed}`);
+
+    // ── filters survive leaving and coming back ──
+    const narrowed = await page.evaluate(() => {
+      const pick = [...document.querySelectorAll("select")].find((s) => /account/i.test(s.name || s.id || ""));
+      return pick ? pick.options.length : 0;
+    });
+    await page.evaluate(() => {
+      const cat = JSON.parse(localStorage.getItem("sovereign.db.v1")).categories[2].id;
+      window.history.pushState({}, "", `/transactions?category=${cat}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await page.waitForTimeout(900);
+    const filtered = new URL(page.url()).search;
+    await page.evaluate(() => document.querySelector("a[href='/dashboard']")?.click());
+    await page.waitForTimeout(800);
+    await page.evaluate(() => document.querySelector("a[href='/transactions']")?.click());
+    await page.waitForTimeout(1200);
+    check("a filtered list is still filtered when you come back to it",
+      Boolean(filtered) && new URL(page.url()).search === filtered,
+      `left with ${filtered || "(none)"}, came back with ${new URL(page.url()).search || "(none)"} (${narrowed} accounts offered)`);
+
+    // ── the budget stays on the month being read ──
+    const month = () => page.evaluate(() => {
+      const hit = [...document.querySelectorAll("button, span, h1, h2, div")]
+        .map((n) => (n.children.length ? "" : n.textContent.trim()))
+        .find((t) => /^[A-Z][a-z]{2,8}\s+\d{4}$/.test(t));
+      return hit ?? "(not found)";
+    });
+    const stepBack = () => page.evaluate(() => {
+      const btn = [...document.querySelectorAll("button")]
+        .find((x) => /previous/i.test(x.getAttribute("aria-label") || x.title || ""));
+      btn?.click();
+      return Boolean(btn);
+    });
+    await page.evaluate(() => document.querySelector("a[href='/budget']")?.click());
+    await page.waitForTimeout(1200);
+    const opensOn = await month();
+    await stepBack();
+    await page.waitForTimeout(800);
+    const readingNow = await month();
+    await page.evaluate(() => document.querySelector("a[href='/dashboard']")?.click());
+    await page.waitForTimeout(800);
+    await page.evaluate(() => document.querySelector("a[href='/budget']")?.click());
+    await page.waitForTimeout(1200);
+    const cameBackTo = await month();
+    check("the budget comes back to the month being read, not to this one",
+      readingNow !== opensOn && cameBackTo === readingNow,
+      `opened on ${opensOn}, moved to ${readingNow}, came back to ${cameBackTo}`);
+
+    await ctx.close();
+  }
+
   if (want("tx-filters")) {
     // ── the filters, behind the funnel ──
     //

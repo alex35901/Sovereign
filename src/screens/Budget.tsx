@@ -14,13 +14,26 @@ import { BudgetMovePopover } from "./BudgetMovePopover";
 import { MonthNav } from "../components/pickers";
 import { MonthCarousel } from "../components/MonthCarousel";
 import { COLUMN_LABEL, DEFAULT_COLUMN, otherColumn, readColumn, toggleHint } from "../lib/budget-column";
+import { keep, recall } from "../lib/session-view";
 import type { BudgetColumn } from "../lib/budget-column";
 
 /** Where the column choice is remembered, per browser. */
 const COLUMN_KEY = "sovereign.budget.column";
 
 export default function Budget() {
-  const [month, setMonth] = useState(thisMonth());
+  /**
+   * The month being read, kept for as long as the app is open.
+   *
+   * Reading August, opening a category and coming back to September is the
+   * same complaint as a list that forgets it was filtered: the screen throws
+   * away the one thing you told it. This month is still the answer on a fresh
+   * start, and Today, beside the month, is still one press away.
+   */
+  const [month, setMonth] = useState(() => {
+    const seen = recall<string | null>("budget.month", null);
+    return seen && /^\d{4}-\d{2}$/.test(seen) ? seen : thisMonth();
+  });
+  useEffect(() => { keep("budget.month", month); }, [month]);
   const phone = useMediaQuery(PHONE);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
