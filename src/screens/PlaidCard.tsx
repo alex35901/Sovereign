@@ -12,7 +12,8 @@ import { accountsOf, itemFor } from "../lib/sync/adopt";
 import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
 import type { ReachState } from "../lib/sync/history";
 import type { PlaidDiagnosis } from "../lib/sync/plaid";
-import { openPlaidLink } from "../lib/sync/plaid-link";
+import { PlaidLinkError, openPlaidLink } from "../lib/sync/plaid-link";
+import { linkReference } from "../lib/sync/link-error";
 import { Link } from "react-router-dom";
 import { ACCOUNT_TYPE_LABEL } from "../lib/select";
 import { Btn, Card, CardHead, ConfirmButton, cx } from "../components/ui";
@@ -310,6 +311,30 @@ export function PlaidCard() {
       await syncItem({ ...item, lastError: undefined });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reconnect.");
+      /**
+       * Kept on the connection, not just shown.
+       *
+       * Link says precisely what went wrong and then the dialog closes and
+       * takes it with it. Without this the row goes back to guessing from how
+       * long the bank has been quiet — "a connection being upgraded or a login
+       * that needs renewing looks like this" — while the app has just been
+       * told, by Plaid, that the bank is not answering. A household should not
+       * have to catch that sentence before it disappears.
+       *
+       * Into lastError because that is where the row already looks, and the
+       * next pull that works clears it, which is exactly right: a bank that
+       * answers again has stopped being the problem. Plaid's own reference
+       * goes with it, since it cannot be recovered afterwards and it is the
+       * first thing their support asks for.
+       */
+      if (err instanceof PlaidLinkError) {
+        const ref = linkReference(err.detail);
+        actions.patchSettings({
+          plaidItems: items.map((i) => (i.itemId === item.itemId
+            ? { ...i, lastError: { message: ref ? `${err.message} ${ref}` : err.message, at: new Date().toISOString() } }
+            : i)),
+        });
+      }
     } finally {
       setBusy(null);
     }
