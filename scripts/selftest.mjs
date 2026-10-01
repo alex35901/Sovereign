@@ -14377,6 +14377,68 @@ await test("what was earned is read off the card the money actually went on", ()
   assert.equal(food.bestAccountId, "b", "and it names which card that was");
 });
 
+await test("a rate can be tied to a shop rather than to a category", () => {
+  // The thing a store card is: five percent at one chain, whatever is bought
+  // there, and the base rate everywhere else. No category says "Amazon", so
+  // before this there was no way to write one down at all.
+  const store = cash(1, [earnRule("r", 5, [], { merchants: ["Amazon"] })]);
+  assert.equal(M.CD.earned(store, [buy("2026-03-01", "food", 100, "Amazon")]), 5_00);
+  assert.equal(M.CD.earned(store, [buy("2026-03-01", "gas", 100, "Amazon")]), 5_00,
+    "whatever it was bought, because the rule is about the shop");
+  assert.equal(M.CD.earned(store, [buy("2026-03-01", "food", 100, "Corner Shop")]), 1_00,
+    "and the base rate everywhere else");
+
+  // Matched by the key the rest of the app groups shops under, so a rule
+  // written "Amazon" claims a charge the bank spelled in capitals.
+  assert.equal(M.CD.earned(store, [buy("2026-03-01", "food", 100, "AMAZON")]), 5_00);
+  assert.equal(M.CD.earned(store, [buy("2026-03-01", "food", 100, "  amazon  ")]), 5_00);
+  // But not a shop that merely contains the name: these are whole names, not
+  // a search, or a rule for "Apple" would claim Applebee's.
+  assert.equal(M.CD.earned(store, [buy("2026-03-01", "food", 100, "Amazon Prime")]), 1_00);
+});
+
+await test("and a rate naming both claims a purchase matching either", () => {
+  const both = cash(1, [earnRule("r", 4, ["food"], { merchants: ["Amazon"] })]);
+  assert.equal(M.CD.earned(both, [buy("2026-03-01", "food", 100, "Corner Shop")]), 4_00, "the category");
+  assert.equal(M.CD.earned(both, [buy("2026-03-01", "gas", 100, "Amazon")]), 4_00, "or the shop");
+  assert.equal(M.CD.earned(both, [buy("2026-03-01", "food", 100, "Amazon")]), 4_00,
+    "and a purchase matching both earns it once, not twice");
+  assert.equal(M.CD.earned(both, [buy("2026-03-01", "gas", 100, "Corner Shop")]), 1_00, "neither");
+});
+
+await test("a shop rate is capped like any other, and shared across the wallet", () => {
+  const capped = cash(1, [earnRule("r", 5, [], { merchants: ["Amazon"], cap: 1_000_00, period: "year" })]);
+  // $1,000 at 5%, the rest at 1%, once; not once per purchase and not once
+  // per category the purchases happened to fall in.
+  assert.equal(
+    M.CD.earned(capped, [buy("2026-03-01", "food", 800, "Amazon"), buy("2026-04-01", "gas", 800, "Amazon")]),
+    50_00 + 6_00);
+});
+
+await test("the routing reaches for the store card at its own shop", () => {
+  // The whole point of being able to write one down: the page has to send
+  // Amazon to the Amazon card and everything else to the flat one.
+  const db = walletDB(
+    [
+      { id: "a", name: "Flat Two", rewards: cash(2) },
+      { id: "b", name: "Amazon Visa", rewards: cash(1, [earnRule("r", 5, [], { merchants: ["Amazon"] })]) },
+    ],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 1_000, extra: { merchant: "Amazon" } },
+      { on: "a", date: "2026-03-02", cat: "food", dollars: 1_000, extra: { merchant: "Corner Shop" } },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  const amazon = r.merchants.find((m) => m.name === "Amazon");
+  assert.equal(amazon.earned, 20_00, "2% where it actually went");
+  assert.equal(amazon.best, 50_00, "5% on the card that names the shop");
+  assert.equal(amazon.bestAccountId, "b");
+
+  const corner = r.merchants.find((m) => m.name === "Corner Shop");
+  assert.equal(corner.best, 20_00, "which has nothing to do with the store card");
+  assert.equal(corner.bestAccountId, "a", "so the flat card keeps everywhere else");
+});
+
 await test("the same money is cut by shop as well as by category", () => {
   // Cards are not sold by category: one that pays well at a single chain is a
   // slice of a category in one table and the whole line in the other.
@@ -14723,6 +14785,56 @@ await test("a category nobody has is dropped rather than invented", () => {
 await test("category names are matched however they were cased", () => {
   const d = draft({ rules: [{ rate: 4, categories: ["  groceries ", "GAS"] }] });
   assert.deepEqual(d.rules[0].categories, ["Groceries", "Gas"], "and come back spelled the way the document spells them");
+});
+
+await test("a shop a card is tied to comes back as a rate with no category", () => {
+  // The store-card case. There is no category called "Amazon", so a draft
+  // that could only answer in categories could not describe one at all.
+  const d = draft({ rules: [{ rate: 5, categories: [], merchants: ["Amazon"] }] });
+  assert.equal(d.rules.length, 1, "kept, though it names no category");
+  assert.deepEqual(d.rules[0].merchants, ["Amazon"]);
+  assert.deepEqual(d.rules[0].categories, []);
+
+  // Still dropped when it claims nothing at all.
+  assert.equal(draft({ rules: [{ rate: 5, categories: [], merchants: [] }] }).rules.length, 0);
+  assert.equal(draft({ rules: [{ rate: 5, categories: ["Nightclubs"] }] }).rules.length, 0);
+});
+
+await test("and shop names are bounded rather than believed", () => {
+  // They cannot be checked against a list the way categories can: the point
+  // of them is a chain this household may never have been to. So the shape
+  // is what is enforced, and a person still reads the form before it saves.
+  const d = draft({ rules: [{
+    rate: 5, categories: [],
+    merchants: [
+      "  Amazon  ", "AMAZON", "amazon",
+      "x".repeat(400),
+      "", "   ", null, 42,
+      ...Array.from({ length: 40 }, (_, i) => `Shop ${i}`),
+    ],
+  }] });
+  const shops = d.rules[0].merchants;
+  assert.ok(shops.length <= 12, `${shops.length} shops kept`);
+  assert.equal(shops[0], "Amazon", "trimmed, and spelled the way it was written");
+  assert.equal(shops.filter((m) => m.toLowerCase() === "amazon").length, 1,
+    "deduplicated without case deciding anything");
+  assert.ok(shops.every((m) => m.length <= 60), "and none of them a wall of text");
+  assert.ok(shops.every((m) => m.trim()), "no blanks");
+  assert.equal(shops.includes("42"), true, "a number becomes its text rather than throwing");
+});
+
+await test("a drafted shop rate survives being turned into a rule", () => {
+  const cats = [{ id: "c_food", name: "Groceries" }];
+  const d = draft({ rules: [
+    { rate: 5, categories: [], merchants: ["Amazon"] },
+    { rate: 4, categories: ["Groceries"], merchants: [] },
+  ] });
+  const rules = M.toRules(d, cats);
+  assert.equal(rules.length, 2);
+  assert.deepEqual(rules[0].merchants, ["Amazon"]);
+  assert.deepEqual(rules[0].categoryIds, [], "a store rate names no category");
+  assert.equal(rules[1].merchants, undefined, "and a category rate carries no empty list");
+  assert.deepEqual(rules[1].categoryIds, ["c_food"]);
 });
 
 await test("a rate that cannot be a rate is not shown as one", () => {

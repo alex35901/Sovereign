@@ -31,6 +31,7 @@ outside the object.
     {
       "rate": number,      // earned per dollar in these categories
       "categories": string[], // names, chosen ONLY from the list you are given
+      "merchants": string[],  // shops this rate is tied to, e.g. ["Amazon"]
       "cap": number,       // dollars of spending the rate applies to, 0 for none
       "period": "month" | "quarter" | "year" | "",
       "label": string      // a short condition, e.g. "booked through the issuer"
@@ -41,6 +42,11 @@ outside the object.
 
 Rules:
 - Only use category names from the list given. Drop a bonus you cannot map.
+- A rate tied to particular shops goes in "merchants" as plain names, and does
+  not need a category: a store card paying its rate at one chain is
+  {"rate": 5, "categories": [], "merchants": ["Amazon"]}. Use merchants only
+  where the card really is tied to named shops, not as a guess at what a
+  category contains.
 - Rates are per dollar as the card counts them: 3 for 3% cash back, 3 for 3x
   points. Do not convert one into the other.
 - Caps matter. If a rate is capped, say so; if you do not know, leave cap 0.
@@ -52,6 +58,7 @@ Rules:
 export interface DraftRule {
   rate: number;
   categories: string[];
+  merchants: string[];
   cap?: number;
   period?: EarnRule["period"];
   label?: string;
@@ -68,6 +75,8 @@ export interface RewardsDraft {
 /** Rates outside this are a misread, not a card. */
 const MAX_RATE = 20;
 const MAX_FEE = 10_000;
+/** More shops than this on one rate is a list of guesses, not a card's terms. */
+const MAX_MERCHANTS = 12;
 
 const num = (v: unknown, fallback: number, max: number): number => {
   const n = typeof v === "number" ? v : Number.parseFloat(String(v ?? ""));
@@ -103,14 +112,35 @@ export function readDraft(text: string, known: readonly string[]): RewardsDraft 
       const categories = (Array.isArray(row.categories) ? row.categories : [])
         .map((c) => names.get(String(c).toLowerCase().trim()))
         .filter((c): c is string => !!c);
+      /**
+       * Shop names, which cannot be checked against a list the way categories
+       * can: the point of them is a chain this household may never have been
+       * to. So they are bounded instead of validated - trimmed, kept short,
+       * kept few, and deduplicated - and they land in a form somebody reads
+       * before anything is saved, exactly as every other line of this draft
+       * does.
+       */
+      const seen = new Set<string>();
+      const merchants: string[] = [];
+      for (const raw of Array.isArray(row.merchants) ? row.merchants : []) {
+        const name = String(raw ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+        // Deduplicated without case deciding anything, but kept as written:
+        // this goes in a form a person reads, and "amazon" in a box they are
+        // checking against their own card reads as a typo rather than a draft.
+        if (!name || seen.has(name.toLowerCase())) continue;
+        seen.add(name.toLowerCase());
+        merchants.push(name);
+        if (merchants.length >= MAX_MERCHANTS) break;
+      }
       // A rate with nothing to apply to is not a rate. Dropped rather than
       // shown, because an empty row in the form reads as something to fill in.
-      if (!categories.length) return [];
+      if (!categories.length && !merchants.length) return [];
       const period = String(row.period ?? "");
       const cap = num(row.cap, 0, 1_000_000);
       return [{
         rate: num(row.rate, 1, MAX_RATE),
         categories,
+        merchants,
         cap: cap > 0 ? cap : undefined,
         period: cap > 0 && PERIODS.has(period) ? period as EarnRule["period"] : undefined,
         label: typeof row.label === "string" ? row.label.slice(0, 80) : undefined,
@@ -134,11 +164,13 @@ export function toRules(draft: RewardsDraft, categories: readonly Category[]): E
     const categoryIds = r.categories
       .map((n) => byName.get(n.toLowerCase()))
       .filter((id): id is ID => !!id);
-    if (!categoryIds.length) return [];
+    const merchants = r.merchants ?? [];
+    if (!categoryIds.length && !merchants.length) return [];
     return [{
       id: uid("er"),
       rate: r.rate,
       categoryIds,
+      merchants: merchants.length ? merchants : undefined,
       cap: r.cap ? Math.round(r.cap * 100) : undefined,
       period: r.period,
       label: r.label,

@@ -179,6 +179,20 @@ export interface EarnRule {
   rate: number;
   /** Which categories earn it. Empty is the card's own base rate. */
   categoryIds: ID[];
+  /**
+   * Which shops earn it, by name, whatever they were bought.
+   *
+   * Cards are not sold only by category: a store card pays its rate at one
+   * chain and the base rate everywhere else, and there is no category that
+   * says "Amazon". Held as the name rather than as an id because a shop is
+   * not a thing this document owns, and because a card being weighed up may
+   * name a shop the household has never been to.
+   *
+   * A purchase earns the rule if it matches EITHER list, so a rule with
+   * merchants and no categories is a store rate and one with both is "these
+   * categories, and also these shops".
+   */
+  merchants?: string[];
   /** Spend this rate applies to before it drops to base, in cents. */
   cap?: number;
   /** What the cap resets on. Absent with a cap means it never resets. */

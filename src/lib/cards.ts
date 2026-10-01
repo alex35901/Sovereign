@@ -63,8 +63,20 @@ function capKey(rule: EarnRule, date: ISODate): string {
 }
 
 /** The rules that claim a category, best rate first. */
-const claiming = (r: CardRewards, categoryId: ID): EarnRule[] =>
-  r.rules.filter((x) => x.categoryIds.includes(categoryId)).sort((a, b) => b.rate - a.rate);
+/**
+ * The rules a purchase earns, best first.
+ *
+ * Either list claims it. Matching a shop by the same key the rest of the app
+ * groups merchants under, so a rule naming "Amazon" claims a charge the bank
+ * spelled "AMAZON" without the household having to spell it the bank's way.
+ */
+const claiming = (r: CardRewards, line: { categoryId: ID; merchant?: string }): EarnRule[] => {
+  const who = merchantKey(line.merchant ?? "");
+  return r.rules
+    .filter((x) => x.categoryIds.includes(line.categoryId)
+      || (!!who && (x.merchants ?? []).some((m) => merchantKey(m) === who)))
+    .sort((a, b) => b.rate - a.rate);
+};
 
 /**
  * What these purchases earn on this card, in cents of value.
@@ -89,7 +101,7 @@ export function earnDetail(rewards: CardRewards, spend: readonly SpendLine[]) {
   for (const line of [...spend].sort((a, b) => (a.date < b.date ? -1 : 1))) {
     let left = line.amount;
     let here = 0;
-    for (const rule of claiming(rewards, line.categoryId)) {
+    for (const rule of claiming(rewards, line)) {
       if (left <= 0) break;
       if (rule.cap === undefined) { here += left * rule.rate; left = 0; break; }
       const key = `${rule.id}:${capKey(rule, line.date)}`;
@@ -227,7 +239,7 @@ function bestRouting(cards: { id: ID; rewards: CardRewards }[], spend: readonly 
     const charges: { key: string; amount: number }[] = [];
     let left = line.amount;
     let points = 0;
-    for (const rule of claiming(c.rewards, line.categoryId)) {
+    for (const rule of claiming(c.rewards, line)) {
       if (left <= 0) break;
       if (rule.cap === undefined) { points += left * rule.rate; left = 0; break; }
       const key = `${c.id}:${rule.id}:${capKey(rule, line.date)}`;

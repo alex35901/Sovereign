@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
-import { Plus, Sparkles, Trash2 } from "lucide-react";
+import { Plus, Sparkles, Store, Trash2 } from "lucide-react";
 import type { Account, CandidateCard, CardRewards, EarnRule, ID } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -10,6 +10,7 @@ import { addMonthsDate, today } from "../lib/date";
 import { rangeStart } from "../lib/range";
 import { fmt0 } from "../lib/money";
 import { uid } from "../lib/id";
+import { merchantIndex } from "../lib/select";
 import type { BonusProgress } from "../lib/cards";
 import { candidateValue, cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
 import { draftRewards, toRules } from "../lib/hopper/rewards";
@@ -414,6 +415,47 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
 }
 
 /**
+ * A shop to attach a rate to.
+ *
+ * A list the household has actually paid, offered rather than imposed: a card
+ * being weighed up can name a chain nobody here has been to yet, and a picker
+ * that only offered known shops could not express the one thing store cards
+ * are for. So it is a text box with its own suggestions behind it.
+ */
+function MerchantAdd({ onAdd }: { onAdd: (name: string) => void }) {
+  const db = useDB();
+  const [text, setText] = useState("");
+  const listId = useId();
+  // The spellings the rest of the app shows, commonest first, so picking one
+  // writes the same name the shop table and the merchant page use.
+  const known = useMemo(
+    () => [...merchantIndex(db).values()].sort((a, b) => b.count - a.count).slice(0, 400),
+    [db],
+  );
+  const add = () => {
+    const name = text.trim();
+    if (!name) return;
+    onAdd(name);
+    setText("");
+  };
+  return (
+    <span className="row" style={{ gap: 6, minWidth: 0 }}>
+      <input
+        className="input" list={listId} value={text} placeholder="Shop"
+        aria-label="Shop this rate applies at"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+        style={{ minWidth: 0 }}
+      />
+      <datalist id={listId}>
+        {known.map((m) => <option key={m.name} value={m.name} />)}
+      </datalist>
+      <Btn size="sm" onClick={add} disabled={!text.trim()}><Plus size={12} /> Shop</Btn>
+    </span>
+  );
+}
+
+/**
  * What one card pays, said plainly enough to be checked against the card.
  *
  * The same form for a card in the wallet and one being weighed up, because
@@ -472,7 +514,10 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
   const save = (confirmed: boolean) => {
     onSave(name.trim() || startName, {
       pointCents, base, annualFee: annualFee || undefined,
-      rules: rules.filter((r) => r.categoryIds.length),
+      // A rate that claims nothing is not a rate. It used to have to name a
+      // category; a store rate names only a shop, and dropping those on save
+      // would have let somebody type one in and watch it vanish.
+      rules: rules.filter((r) => r.categoryIds.length || (r.merchants ?? []).length),
       bonus: requirement > 0 ? { requirement, from: bonusFrom, by: bonusBy } : undefined,
       // Stamped only when a person says the terms are right. Saving a draft
       // keeps whatever the last confirmation was, so a half-finished edit
@@ -560,7 +605,15 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
                 <Trash2 size={14} />
               </button>
             </div>
-            {r.categoryIds.length ? (
+            <MerchantAdd
+              onAdd={(name) => {
+                const have = r.merchants ?? [];
+                if (!have.some((m) => m.toLowerCase() === name.toLowerCase())) {
+                  patch(r.id, { merchants: [...have, name] });
+                }
+              }}
+            />
+            {r.categoryIds.length || (r.merchants ?? []).length ? (
               <div className="row wrap" style={{ gap: 5 }}>
                 {r.categoryIds.map((id) => (
                   <CategoryTag
@@ -568,8 +621,23 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
                     onClick={() => patch(r.id, { categoryIds: r.categoryIds.filter((x) => x !== id) })}
                   />
                 ))}
+                {(r.merchants ?? []).map((name) => (
+                  <span
+                    key={name} className="chip card-rule-shop" title={`${name}: click to remove`}
+                    onClick={() => patch(r.id, {
+                      merchants: (r.merchants ?? []).filter((x) => x !== name),
+                    })}
+                  >
+                    <Store size={11} />
+                    <span className="truncate" style={{ maxWidth: 130 }}>{name}</span>
+                  </span>
+                ))}
               </div>
-            ) : <span className="tiny faint">Pick at least one category, or this rate does nothing.</span>}
+            ) : (
+              <span className="tiny faint">
+                Pick a category or a shop, or this rate does nothing. A purchase earns it if it matches either.
+              </span>
+            )}
             <div className="row" style={{ gap: 8 }}>
               <span className="tiny faint">up to</span>
               <span className="card-rule-cap">

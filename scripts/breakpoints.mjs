@@ -7844,8 +7844,51 @@ try {
       check("holding a rate, a category, a cap and what the cap resets on",
         /up to/.test(rule.fields) && rule.periods.join(",") === "a month,a quarter,a year,ever",
         `${rule.fields.slice(0, 80)} // ${rule.periods.join(",")}`);
-      check("and saying so when it would do nothing without a category",
-        /Pick at least one category/.test(rule.fields), rule.fields.slice(0, 90));
+      check("and saying so when it would do nothing without a category or a shop",
+        /Pick a category or a shop/.test(rule.fields), rule.fields.slice(0, 110));
+
+      // ── a rate tied to a shop ──
+      //
+      // What a store card is, and what no category can say: there is no
+      // category called "Amazon". A rate that could only name categories
+      // could not describe the card at all.
+      if (await tryStep("a shop can be typed onto a rate", async () => {
+        await wl.locator('.card-rule input[aria-label="Shop this rate applies at"]')
+          .fill("Amazon", { timeout: 8000 });
+        await wl.locator(".card-rule button", { hasText: "Shop" }).click({ timeout: 8000 });
+        await wl.locator(".card-rule-shop").waitFor({ timeout: 5000 });
+      })) {
+        const tagged = await wl.evaluate(() => ({
+          shops: [...document.querySelectorAll(".card-rule-shop")].map((e) => e.innerText.trim()),
+          // The box empties, or a second press adds the same shop twice.
+          left: document.querySelector('.card-rule input[aria-label="Shop this rate applies at"]')?.value ?? "?",
+          text: document.querySelector(".card-rule")?.innerText.replace(/\n/g, " | ") ?? "",
+          // The household's own shops are offered behind the box, so the
+          // common case is picking one rather than spelling it.
+          suggested: document.querySelectorAll(".card-rule datalist option").length,
+        }));
+        check("which shows as its own mark, not as a category",
+          tagged.shops.length === 1 && /Amazon/.test(tagged.shops[0]), tagged.shops.join(", "));
+        check("and clears the box it was typed in, so it cannot be added twice",
+          tagged.left === "", `left "${tagged.left}"`);
+        check("and stops saying the rate does nothing, because now it does",
+          !/Pick a category or a shop/.test(tagged.text), tagged.text.slice(0, 110));
+        check("with this household's own shops offered behind the box",
+          tagged.suggested > 3, `${tagged.suggested} suggestions`);
+
+        if (await tryStep("and the mark can be pressed to take it off again", async () => {
+          await wl.locator(".card-rule-shop").first().click({ timeout: 8000 });
+          await wl.waitForTimeout(300);
+        })) {
+          check("leaving the rate claiming nothing, and saying so again",
+            (await wl.locator(".card-rule-shop").count()) === 0
+            && /Pick a category or a shop/.test(
+              await wl.evaluate(() => document.querySelector(".card-rule")?.innerText ?? "")),
+            `${await wl.locator(".card-rule-shop").count()} shops left`);
+        }
+      }
+      await wl.locator(".modal-foot button", { hasText: "Cancel" }).click({ timeout: 8000 });
+      await wl.waitForTimeout(400);
     }
     await wl.close();
   }

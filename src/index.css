@@ -1505,6 +1505,14 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* Rows only: on the heading this would outrank .faint and leave one column
    brighter than the four beside it. */
 .card-cat:not(.head) .card-cat-best { color: var(--muted); }
+/* A shop on an earn rule, beside the category chips and plainly not one of
+   them: the two claim a purchase by different tests and a reader has to be
+   able to see which is which at a glance. */
+.card-rule-shop {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: transparent; color: var(--accent); font-weight: 500;
+}
 .card-cat-ask {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; padding: 0;
