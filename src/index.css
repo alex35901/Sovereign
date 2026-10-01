@@ -1534,6 +1534,30 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   background: var(--surface-2);
 }
 .card-ask .btn { flex: none; }
+/* ── rules ──
+   A grid rather than a flex row, so the Transactions heading sits over the
+   column it sorts. With flex the heading had to be padded to the width of two
+   buttons and a toggle by hand, which is a measurement that goes stale the
+   first time either button changes its label. */
+.rule-row {
+  display: grid;
+  /* Every track a fixed width except the name, because the heading row is its
+     own grid: "auto" is sized from each grid's own contents, so a header cell
+     holding nothing and a row cell holding two buttons came out different
+     widths and the heading sat a hundred pixels off the column it labels. */
+  grid-template-columns: 38px minmax(0, 1fr) 120px 140px;
+  align-items: center; gap: 12px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.rule-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.rule-row:last-child { border-bottom: 0; }
+.rule-row.head {
+  background: var(--surface-2); padding-top: 8px; padding-bottom: 8px;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.rule-hits { text-align: center; }
+.rules-filter { display: flex; flex-direction: column; gap: 6px; padding: 0 16px 12px; }
+
 .card-rule {
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px 11px; border: 1px solid var(--line); border-radius: 10px;
@@ -1851,6 +1875,8 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
     grid-template-columns: minmax(0, 1fr) 64px minmax(0, 88px) 60px 58px 24px;
     gap: 6px; padding-left: 12px; padding-right: 12px;
   }
+  .rule-row { grid-template-columns: 34px minmax(0, 1fr) 84px 128px; gap: 8px; padding-left: 12px; padding-right: 12px; }
+  .rules-filter { padding-left: 12px; padding-right: 12px; }
   .ask-spark { width: 24px; height: 24px; }
 
   .g3 { grid-template-columns: minmax(0, 1fr); }
@@ -1875,6 +1901,8 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
     grid-template-columns: minmax(0, 1fr) 56px minmax(0, 70px) 52px 50px 22px;
     gap: 5px; padding-left: 10px; padding-right: 10px;
   }
+  .rule-row { grid-template-columns: 32px minmax(0, 1fr) 62px 120px; gap: 7px; padding-left: 10px; padding-right: 10px; }
+  .rules-filter { padding-left: 10px; padding-right: 10px; }
   .ask-spark { width: 22px; height: 22px; }
 }
 

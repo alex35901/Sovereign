@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Minus, Plus, Trash2 } from "lucide-react";
+import { Filter, Minus, Plus, Search, Trash2 } from "lucide-react";
 import type { Category, CategoryGroup, ID, Rule } from "../types";
 import { useDB, useStore } from "../store";
 import { MATCH_WORD, countMatches, merchantTests } from "../lib/rules";
 import type { MerchantTest } from "../lib/rules";
 import { Btn, Card, CardHead, ConfirmButton, Field, Modal, MoneyInput, Popover, SelectInput, TagPill, TextInput, Toggle, cx } from "../components/ui";
 import { AccountPicker, CategoryPicker } from "../components/pickers";
+import { SortHead, sortRows, useSort } from "../components/sort";
 import { groupColor, GROUP_TONES, TONE_NAMES } from "../lib/category-colors";
 import { EmojiPicker } from "../components/EmojiPicker";
 
@@ -376,41 +377,199 @@ function describeMerchant(c: Rule["criteria"]): string {
  * every other screen keeps its actions, rather than in this card's own header
  * where they were a second set of controls six inches below the first.
  */
+/**
+ * Every rule, with a way to find the one you mean.
+ *
+ * A household that has been running a while has a few hundred of these, and a
+ * list that long is a list nobody reads: the question is never "what are all
+ * my rules", it is "what did I write about Amazon", or "which of these never
+ * fire any more". So it searches and narrows, and the one column worth
+ * ordering by orders.
+ */
 export function RulesPanel({ adding, onAddingDone }: { adding: boolean; onAddingDone: () => void }) {
   const db = useDB();
   const { actions } = useStore();
   const [editing, setEditing] = useState<Rule | null>(null);
-  const enabled = db.rules.filter((r) => r.enabled);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState<"" | "on" | "off">("");
+  const [direction, setDirection] = useState<"" | "in" | "out">("");
+  const [categoryId, setCategoryId] = useState("");
+  const [accountId, setAccountId] = useState("");
+  const [hits, setHits] = useState<"" | "none">("");
+  const { sort, toggle: onSort } = useSort<"matches">();
+
+  /**
+   * How many transactions each rule touches, counted once per document.
+   *
+   * This used to be worked out inside the row, so every render walked the
+   * whole ledger once per rule: three hundred rules against twenty thousand
+   * transactions is six million tests to redraw a list. Keyed on the document,
+   * which is replaced whole on every write, so the answer cannot outlive the
+   * figures it came from.
+   */
+  const counts = useMemo(
+    () => new Map(db.rules.map((r) => [r.id, countMatches(db, r)])),
+    [db],
+  );
+  const catName = useMemo(() => new Map(db.categories.map((c) => [c.id, c.name])), [db.categories]);
+
+  const narrowed = [status, direction, categoryId, accountId, hits].filter(Boolean).length;
+  const clear = () => {
+    setStatus(""); setDirection(""); setCategoryId(""); setAccountId(""); setHits("");
+  };
+
+  const filtered = useMemo(() => {
+    const needle = q.toLowerCase().trim();
+    return db.rules.filter((r) => {
+      if (status === "on" && !r.enabled) return false;
+      if (status === "off" && r.enabled) return false;
+      if (direction && r.criteria.direction !== direction) return false;
+      if (categoryId && r.actions.categoryId !== categoryId) return false;
+      if (accountId && r.criteria.accountId !== accountId) return false;
+      if (hits === "none" && (counts.get(r.id) ?? 0) > 0) return false;
+      if (!needle) return true;
+      // Everything somebody might type looking for one rule: what they called
+      // it, the text it looks for, what it renames to, and what it files it
+      // under. Searching only the name would miss every rule left untitled.
+      return [
+        r.name,
+        ...merchantTests(r.criteria).map((t) => t.text),
+        r.actions.renameMerchant ?? "",
+        r.actions.categoryId ? catName.get(r.actions.categoryId) ?? "" : "",
+      ].join(" ").toLowerCase().includes(needle);
+    });
+  }, [db.rules, q, status, direction, categoryId, accountId, hits, counts, catName]);
+
+  const shown = sortRows(filtered, sort, (r) => counts.get(r.id) ?? 0);
+  const filtering = narrowed > 0 || q.trim().length > 0;
 
   return (
     <Card pad={false}>
-      <CardHead
-        flush title="Rules"
-        sub={`${enabled.length} of ${db.rules.length} on, applied to every imported or synced transaction, in order`}
-      />
-      {db.rules.map((r) => (
-        <div key={r.id} className="list-row">
-          <Toggle on={r.enabled} onChange={(v) => actions.updateRule(r.id, { enabled: v })} />
-          <div className="grow col" style={{ gap: 1 }}>
-            <span style={{ fontWeight: 500 }}>{r.name}</span>
-            <span className="tiny faint truncate">
-              {describeMerchant(r.criteria)}
-              {r.criteria.accountId ? ` · in ${db.accounts.find((a) => a.id === r.criteria.accountId)?.name ?? "an account"}` : ""}
-              {r.criteria.direction ? ` · ${r.criteria.direction === "in" ? "money in" : "money out"}` : ""}
-              {" → "}
-              {r.actions.categoryId ? db.categories.find((c) => c.id === r.actions.categoryId)?.name : "no category change"}
-              {r.actions.renameMerchant ? `, rename to "${r.actions.renameMerchant}"` : ""}
-              {r.actions.addTags?.length
-                ? `, tag ${r.actions.addTags.map((id) => db.tags.find((t) => t.id === id)?.name).filter(Boolean).join(", ")}`
-                : ""}
-            </span>
+      <CardHead flush title="Rules" />
+      <div className="rules-filter">
+        <div className="row filter-bar" style={{ gap: 8 }}>
+          <div className="search grow" style={{ minWidth: 0 }}>
+            <Search size={14} />
+            <TextInput value={q} onChange={setQ} placeholder="Search rules" />
           </div>
-          <span className="tiny faint">{countMatches(db, r)} match</span>
-          <Btn size="sm" variant="ghost" onClick={() => actions.applyRuleToExisting(r.id)}>Run now</Btn>
-          <Btn size="sm" variant="ghost" onClick={() => setEditing(r)}>Edit</Btn>
+          <Popover
+            align="right" width={290} className="filter-panel"
+            trigger={(open) => (
+              <button
+                className={cx("btn btn-icon filter-toggle", narrowed > 0 && "on")}
+                onClick={open} title="Filters" aria-label="Filters"
+              >
+                <Filter size={16} />
+                {narrowed ? <span className="filter-count">{narrowed}</span> : null}
+              </button>
+            )}
+          >
+            {(close) => (
+              <div className="col" style={{ gap: 12 }}>
+                <div className="spread">
+                  <span style={{ fontWeight: 600 }}>Filters</span>
+                  {narrowed ? (
+                    <Btn size="sm" variant="ghost" onClick={() => { clear(); close(); }}>
+                      <Trash2 size={13} /> Clear all
+                    </Btn>
+                  ) : null}
+                </div>
+                <Field label="Switched">
+                  <SelectInput
+                    value={status} onChange={(v) => setStatus(v as "" | "on" | "off")}
+                    placeholder="On and off"
+                    options={[{ value: "on", label: "On" }, { value: "off", label: "Off" }]}
+                  />
+                </Field>
+                <Field label="Direction" hint="Rules that only look at money going one way">
+                  <SelectInput
+                    value={direction} onChange={(v) => setDirection(v as "" | "in" | "out")}
+                    placeholder="Either way"
+                    options={[{ value: "in", label: "Money in" }, { value: "out", label: "Money out" }]}
+                  />
+                </Field>
+                <Field label="Files it under">
+                  <CategoryPicker
+                    value={categoryId} onChange={setCategoryId} clearLabel="Any category"
+                  />
+                </Field>
+                <Field label="Only in account">
+                  <AccountPicker value={accountId} onChange={setAccountId} allowAll />
+                </Field>
+                {/* The one filter that is a cleanup tool: a rule nothing
+                    matches any more is a rule to look at, and finding them in
+                    three hundred rows by eye is not a job anybody does. */}
+                <Field label="Matches" hint="A rule nothing matches is usually one to delete">
+                  <SelectInput
+                    value={hits} onChange={(v) => setHits(v as "" | "none")}
+                    placeholder="Any number"
+                    options={[{ value: "none", label: "Nothing at all" }]}
+                  />
+                </Field>
+              </div>
+            )}
+          </Popover>
         </div>
-      ))}
-      {!db.rules.length ? <div style={{ padding: 16 }}><span className="small faint">No rules yet.</span></div> : null}
+        {filtering ? (
+          <span className="tiny faint">
+            {shown.length.toLocaleString()} of {db.rules.length.toLocaleString()} rules
+          </span>
+        ) : null}
+        {/* Said only when it is true. Rules run top to bottom, so a list in
+            any other order is not the order they fire in, and a sorted list
+            that did not say so would be quietly misleading about the one
+            thing this page is about. */}
+        {sort ? <span className="tiny warn">Sorted, so this is not the order they run in.</span> : null}
+      </div>
+      {shown.length ? (
+        <>
+          <div className="rule-row head">
+            <span />
+            <span />
+            <span className="tiny faint rule-hits">
+              <SortHead field="matches" sort={sort} onSort={onSort}>Transactions</SortHead>
+            </span>
+            <span />
+          </div>
+          {shown.map((r) => (
+            <div key={r.id} className="rule-row">
+              <Toggle on={r.enabled} onChange={(v) => actions.updateRule(r.id, { enabled: v })} />
+              <div className="col" style={{ gap: 1, minWidth: 0 }}>
+                <span style={{ fontWeight: 500 }}>{r.name}</span>
+                <span className="tiny faint truncate">
+                  {describeMerchant(r.criteria)}
+                  {r.criteria.accountId ? ` · in ${db.accounts.find((a) => a.id === r.criteria.accountId)?.name ?? "an account"}` : ""}
+                  {r.criteria.direction ? ` · ${r.criteria.direction === "in" ? "money in" : "money out"}` : ""}
+                  {" → "}
+                  {r.actions.categoryId ? catName.get(r.actions.categoryId) : "no category change"}
+                  {r.actions.renameMerchant ? `, rename to "${r.actions.renameMerchant}"` : ""}
+                  {r.actions.addTags?.length
+                    ? `, tag ${r.actions.addTags.map((id) => db.tags.find((t) => t.id === id)?.name).filter(Boolean).join(", ")}`
+                    : ""}
+                </span>
+              </div>
+              <span className="num tiny faint rule-hits">{(counts.get(r.id) ?? 0).toLocaleString()}</span>
+              <span className="rule-actions">
+                <Btn size="sm" variant="ghost" onClick={() => actions.applyRuleToExisting(r.id)}>Run now</Btn>
+                <Btn size="sm" variant="ghost" onClick={() => setEditing(r)}>Edit</Btn>
+              </span>
+            </div>
+          ))}
+        </>
+      ) : (
+        <div style={{ padding: 16 }}>
+          <span className="small faint">
+            {db.rules.length
+              ? "No rules match what you are looking for."
+              : "No rules yet."}
+          </span>
+          {db.rules.length && filtering ? (
+            <div className="row" style={{ marginTop: 10 }}>
+              <Btn size="sm" onClick={() => { clear(); setQ(""); }}>Clear search and filters</Btn>
+            </div>
+          ) : null}
+        </div>
+      )}
       {editing || adding ? (
         <RuleModal rule={editing ?? undefined} onClose={() => { setEditing(null); onAddingDone(); }} />
       ) : null}

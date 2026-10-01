@@ -8281,6 +8281,129 @@ try {
   }
 
 
+  if (want("rule-list")) {
+    // ── finding one rule among hundreds ──
+    //
+    // A household that has been running a while has a few hundred of these,
+    // and the question is never "what are all my rules": it is "what did I
+    // write about this shop" or "which of these never fire any more".
+    const rl = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    await rl.goto(`${BASE}/rules`, { waitUntil: "networkidle" });
+    await rl.waitForTimeout(1200);
+
+    const list = () => rl.evaluate(() => {
+      const mid = (el) => { const b = el.getBoundingClientRect(); return Math.round(b.left + b.width / 2); };
+      const head = document.querySelector(".rule-row.head .rule-hits");
+      const cell = document.querySelector(".rule-row:not(.head) .rule-hits");
+      return {
+        rows: document.querySelectorAll(".rule-row:not(.head)").length,
+        heading: head?.innerText.trim() ?? "",
+        // The heading has to sit over the column it sorts, not merely exist.
+        headMid: head ? mid(head) : -1,
+        cellMid: cell ? mid(cell) : -1,
+        counts: [...document.querySelectorAll(".rule-row:not(.head) .rule-hits")]
+          .map((e) => e.innerText.trim()),
+        names: [...document.querySelectorAll(".rule-row:not(.head) .col > span")]
+          .filter((e) => !e.classList.contains("tiny")).map((e) => e.innerText.trim()),
+        card: document.querySelector(".card")?.innerText ?? "",
+      };
+    });
+
+    const before = await list();
+    check("the rules list heads its count column, over the column it counts",
+      before.heading.toLowerCase() === "transactions" && before.headMid === before.cellMid,
+      `"${before.heading}" at ${before.headMid}, cells at ${before.cellMid}`);
+    // "54 match" was the whole cell. The heading says what the number is, so
+    // the number does not have to say it again.
+    check("and the count is a number on its own, not a sentence",
+      before.counts.length > 0 && before.counts.every((c) => /^[\d,]+$/.test(c)),
+      before.counts.join(" | "));
+    check("with the line about how many are on taken off the card",
+      !/applied to every imported/.test(before.card), before.card.slice(0, 90));
+    check("and a search box at the top of it",
+      (await rl.locator('.card input[placeholder="Search rules"]').count()) === 1, "");
+
+    if (await tryStep("searching narrows the list to what was asked for", async () => {
+      await rl.locator('.card input[placeholder="Search rules"]').fill(before.names[0] ?? "", { timeout: 8000 });
+      await rl.waitForTimeout(400);
+    })) {
+      const found = await list();
+      check("leaving the rule that was searched for and not the others",
+        found.rows >= 1 && found.rows < before.rows && found.names.includes(before.names[0]),
+        `${found.rows} of ${before.rows}: ${found.names.join(", ")}`);
+      check("and saying how many of how many are being shown",
+        new RegExp(`${found.rows} of ${before.rows} rules`).test(found.card), found.card.slice(0, 120));
+    }
+
+    // A search that finds nothing says so, and offers the way back. A blank
+    // card with no explanation reads as the rules having been deleted.
+    await rl.locator('.card input[placeholder="Search rules"]').fill("zzzz no such rule", { timeout: 8000 });
+    await rl.waitForTimeout(400);
+    const none = await list();
+    check("a search matching nothing says so rather than going blank",
+      none.rows === 0 && /No rules match/.test(none.card), none.card.slice(0, 110));
+    check("and offers a way back to the whole list",
+      (await rl.locator(".card button", { hasText: "Clear search and filters" }).count()) === 1, "");
+    await rl.locator(".card button", { hasText: "Clear search and filters" }).click({ timeout: 8000 });
+    await rl.waitForTimeout(400);
+    check("which brings them all back",
+      (await list()).rows === before.rows, `${(await list()).rows} of ${before.rows}`);
+
+    // Sorting. Rules run top to bottom, so the order on screen means
+    // something, and a sorted list has to say that it is no longer that order.
+    if (await tryStep("the count column sorts", async () => {
+      await rl.locator(".rule-row.head .sort-head").click({ timeout: 8000 });
+      await rl.waitForTimeout(400);
+    })) {
+      const asc = (await list()).counts.map((c) => Number(c.replace(/,/g, "")));
+      check("smallest first",
+        asc.every((v, i) => i === 0 || asc[i - 1] <= v), asc.join(" "));
+      check("and says the list is no longer the order the rules run in",
+        /not the order they run in/.test((await list()).card), "");
+
+      await rl.locator(".rule-row.head .sort-head").click({ timeout: 8000 });
+      await rl.waitForTimeout(400);
+      const desc = (await list()).counts.map((c) => Number(c.replace(/,/g, "")));
+      check("a second click turns it round",
+        desc.every((v, i) => i === 0 || desc[i - 1] >= v), desc.join(" "));
+
+      await rl.locator(".rule-row.head .sort-head").click({ timeout: 8000 });
+      await rl.waitForTimeout(400);
+      const back = await list();
+      check("and a third gives back the order they fire in, and stops warning",
+        back.counts.join(",") === before.counts.join(",")
+        && !/not the order they run in/.test(back.card),
+        `${back.counts.join(" ")} against ${before.counts.join(" ")}`);
+    }
+
+    // The filters. Money in and money out was the ask; the rest are what the
+    // same panel can answer once it exists.
+    if (await tryStep("the filter panel opens", async () => {
+      await rl.locator(".card .filter-toggle").click({ timeout: 8000 });
+      await rl.locator(".filter-panel").waitFor({ timeout: 5000 });
+    })) {
+      const fields = await rl.evaluate(() =>
+        [...document.querySelectorAll(".filter-panel label")].map((l) => l.innerText.trim()));
+      check("offering direction and category, and more besides",
+        /direction/i.test(fields.join(" ")) && /files it under/i.test(fields.join(" "))
+        && fields.length >= 4,
+        fields.join(" | "));
+
+      if (await tryStep("and money in can be picked", async () => {
+        await rl.locator('.filter-panel .field:has(label:text-is("Direction")) select')
+          .selectOption("in", { timeout: 8000 });
+        await rl.waitForTimeout(400);
+      })) {
+        const only = await list();
+        check("leaving only the rules that look at money coming in",
+          only.rows > 0 && only.rows < before.rows, `${only.rows} of ${before.rows}`);
+        check("and marking the filter button as narrowing something",
+          (await rl.locator(".card .filter-toggle.on .filter-count").count()) === 1, "");
+      }
+    }
+    await rl.close();
+  }
+
   if (want("rule-conditions")) {
     // ── a rule can ask for more than one thing about the merchant ──
     //
