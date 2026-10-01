@@ -6747,6 +6747,53 @@ await test("occurrences before the next known date are counted too", () => {
   assert.deepEqual(earlier, ["2026-09-15"], "walked back three months to find it");
 });
 
+await test("a schedule does not exist before the day it started", () => {
+  // The walk runs backwards as well as forwards, which is what makes looking
+  // at a past month possible and also what made it lie: a subscription set up
+  // this morning was drawn onto every month of the past and counted in each
+  // of their totals.
+  const started = rec({ nextDate: "2026-10-01", startDate: "2026-08-15" });
+  assert.deepEqual(M.occurrences(started, "2026-01-01", "2026-12-31"),
+    ["2026-09-01", "2026-10-01", "2026-11-01", "2026-12-01"],
+    "nothing before August the 15th, so September is the first one");
+
+  // A window entirely before it began holds nothing at all.
+  assert.deepEqual(M.occurrences(started, "2026-05-01", "2026-05-31"), []);
+  // One that ends on the day it began holds nothing either: the first charge
+  // is the 1st of September, not the 15th of August.
+  assert.deepEqual(M.occurrences(started, "2026-01-01", "2026-08-15"), []);
+
+  // A start date landing exactly on an occurrence keeps that occurrence,
+  // rather than being read as "after".
+  assert.deepEqual(M.occurrences(rec({ nextDate: "2026-10-01", startDate: "2026-09-01" }), "2026-01-01", "2026-10-31"),
+    ["2026-09-01", "2026-10-01"]);
+
+  // Absent means unlimited, which is what every schedule written before this
+  // field existed has to go on being.
+  assert.equal(M.occurrences(rec({ nextDate: "2026-10-01" }), "2026-01-01", "2026-12-31").length, 12);
+  // And a start date before the window changes nothing.
+  assert.equal(M.occurrences(rec({ nextDate: "2026-10-01", startDate: "2020-01-01" }), "2026-01-01", "2026-12-31").length, 12);
+});
+
+await test("and a month before it started costs nothing, rather than its full price", () => {
+  // The figure at the top of the page is walked the same way the calendar
+  // under it is, so a start date that only moved the marks would leave the
+  // totals claiming money that was never committed.
+  const list = [rec({ amount: -20_00, nextDate: "2026-10-01", startDate: "2026-09-01" })];
+  const before = M.recurringSpend(list, "2026-07-01", "2026-07-31", "2026-10-01");
+  assert.equal(before.total, 0, "July was before this existed");
+  assert.equal(before.spent, 0);
+  assert.equal(before.left, 0);
+
+  const after = M.recurringSpend(list, "2026-09-01", "2026-09-30", "2026-10-01");
+  assert.equal(after.total, 20_00, "September is the month it began");
+  assert.equal(after.spent, 20_00, "and it has already fallen due");
+
+  // A year spanning the start counts only the months from it onwards.
+  const year = M.recurringSpend(list, "2026-01-01", "2026-12-31", "2026-10-01");
+  assert.equal(year.total, 20_00 * 4, "September through December");
+});
+
 await test("a weekly bill lands four or five times depending on the month", () => {
   const weekly = rec({ cadence: "weekly", nextDate: "2026-09-04" });
   assert.equal(M.occurrences(weekly, "2026-09-01", "2026-09-30").length, 4);

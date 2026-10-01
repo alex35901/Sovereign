@@ -43,6 +43,7 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
   const [cadence, setCadence] = useState<Cadence>(item.cadence);
   const [kind, setKind] = useState<Recurring["kind"]>(item.kind);
   const [nextDate, setNextDate] = useState(item.nextDate);
+  const [startDate, setStartDate] = useState(item.startDate ?? "");
   const [categoryId, setCategoryId] = useState(item.categoryId);
   const [accountId, setAccountId] = useState(item.accountId ?? "");
 
@@ -54,6 +55,7 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
   const save = () => {
     const name = merchant.trim() || item.merchant;
     if (on) {
+      const started = startDate.trim();
       actions.upsertRecurring({
         ...item,
         // Derived from the name so a hand-written schedule and a detected one
@@ -61,6 +63,11 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
         id: recurringIdFor(name),
         merchant: name,
         amount, cadence, kind, nextDate, categoryId,
+        // The key is left out rather than set to nothing when the field is
+        // blank. A manual entry is spread over the detected one it shadows,
+        // so writing undefined here would wipe the start date the detector
+        // read off the first charge, every time anything else was edited.
+        ...(started ? { startDate: started } : {}),
         accountId: accountId || undefined,
         detected: false,
         dismissed: false,
@@ -116,9 +123,22 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
             <Field label="Frequency"><SelectInput value={cadence} onChange={setCadence} options={CADENCES} /></Field>
             <Field label="Type"><SelectInput value={kind} onChange={setKind} options={KINDS} /></Field>
           </div>
-          <Field label="Next date" hint="Used to work out the charges still to come at this merchant">
-            <input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
-          </Field>
+          <div className="row" style={{ gap: 12 }}>
+            <Field label="Next date" hint="Used to work out the charges still to come at this merchant">
+              <input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
+            </Field>
+            {/* Only looking back needs this, which is why it is allowed to be
+                empty: a schedule that has run longer than anybody remembers
+                has no honest start date, and made-up ones are worse than
+                none. Blank means it has always been here. */}
+            <Field label="Started" hint="Left blank, it is treated as having always run">
+              <input
+                className="input" type="date" value={startDate}
+                max={nextDate || undefined}
+                onChange={(e) => setStartDate(e.target.value)}
+              />
+            </Field>
+          </div>
           <div className="row" style={{ gap: 12 }}>
             <Field label="Amount" hint="Negative for anything going out">
               <MoneyInput value={amount} onChange={setAmount} />

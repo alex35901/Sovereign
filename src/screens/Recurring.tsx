@@ -1,10 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { CalendarDays, Check, Pencil, Plus, TrendingDown, TrendingUp } from "lucide-react";
 import type { Recurring as RecurringItem } from "../types";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel, longDate, monthEnd, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
+import { dateLabel, longDate, monthEnd, monthLabel, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
 import { occurrences, paidOccurrences, recurringList, recurringSpend } from "../lib/select";
 import { priceChanges, yearlyImpact } from "../lib/price-watch";
 import { isNewRecurring, isSeen } from "../lib/notifications";
@@ -13,7 +13,9 @@ import { cadenceLabel } from "../lib/recurring";
 import type { RecurringSpend } from "../lib/select";
 import { MonthGrid } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Money, cx } from "../components/ui";
-import { CategoryTag } from "../components/pickers";
+import { CategoryTag, MonthNav } from "../components/pickers";
+import { PHONE, useMediaQuery } from "../lib/media";
+import { keep, recall } from "../lib/session-view";
 import { RecurringEditor } from "./RecurringEditor";
 import { MerchantAvatar } from "./Transactions";
 
@@ -32,6 +34,10 @@ const blank = (): RecurringItem => ({
   amount: 0,
   cadence: "monthly",
   nextDate: today(),
+  // Added today means it began today. Without this a subscription set up this
+  // morning appears in every month of the past, which is the whole reason the
+  // field exists; somebody who knows it started earlier can say so.
+  startDate: today(),
   kind: "bill",
   detected: false,
 });
@@ -43,14 +49,33 @@ export default function Recurring() {
 
   const list = useMemo(() => recurringList(db), [db]);
 
+  /**
+   * Which month the page is showing, remembered for the session.
+   *
+   * The same arrangement the budget has, and for the same reason: looking at
+   * July, opening a merchant and coming back to October throws away the one
+   * thing you told the screen. Today's month is still the answer on a fresh
+   * start.
+   */
+  const [month, setMonth] = useState(() => {
+    const seen = recall<string | null>("recurring.month", null);
+    return seen && /^\d{4}-\d{2}$/.test(seen) ? seen : thisMonth();
+  });
+  useEffect(() => { keep("recurring.month", month); }, [month]);
+  const phone = useMediaQuery(PHONE);
+  const now = thisMonth();
+  const past = month < now;
+  const future = month > now;
+  const year = month.slice(0, 4);
+  const sameYear = year === now.slice(0, 4);
+
   // Both figures come off the schedule this page draws, so the tiles and the
   // calendar under them cannot disagree about what a month holds.
-  const month = thisMonth();
-  const thisMonthSpend = useMemo(
+  const monthSpend = useMemo(
     () => recurringSpend(list, monthStart(month), monthEnd(month), today()),
     [list, month],
   );
-  const thisYearSpend = useMemo(
+  const yearSpend = useMemo(
     () => recurringSpend(list, `${month.slice(0, 4)}-01-01`, `${month.slice(0, 4)}-12-31`, today()),
     [list, month],
   );
@@ -80,10 +105,13 @@ export default function Recurring() {
     return out;
   }, [db, list, month]);
 
+  const nav = <MonthNav month={month} onChange={setMonth} heading={phone} />;
+
   return (
     <>
       <TopBar
-        title="Recurring"
+        title={phone ? nav : "Recurring"}
+        actions={phone ? undefined : nav}
         primary={
           <Btn variant="primary" onClick={() => setEditing({ item: blank(), exists: false })}>
             <Plus size={14} /> Recurring
@@ -94,17 +122,25 @@ export default function Recurring() {
         {/* How much of what is committed has already gone, so what is left is
             a figure to plan against rather than a total to work out. */}
         <div className="grid g2">
+          {/* Named for the month being read rather than for today. "This
+              month" over July's figures, reached by pressing the arrow twice,
+              is the screen disagreeing with itself. */}
           <SpendTile
-            label="This month" spend={thisMonthSpend}
-            sub={thisMonthSpend.upcoming
-              ? `${thisMonthSpend.upcoming} more due this month`
-              : "nothing else due this month"}
+            label={past || future ? monthLabel(month) : "This month"} spend={monthSpend}
+            sub={past
+              ? "the month is over"
+              : monthSpend.upcoming
+                ? `${monthSpend.upcoming} more due${future ? "" : " this month"}`
+                : `nothing else due${future ? " then" : " this month"}`}
           />
           <SpendTile
-            label="This year" spend={thisYearSpend}
-            sub={thisYearSpend.upcoming
-              ? `${thisYearSpend.upcoming} more due this year`
-              : "nothing else due this year"}
+            label={sameYear ? "This year" : year}
+            spend={yearSpend}
+            sub={year < now.slice(0, 4)
+              ? "the year is over"
+              : yearSpend.upcoming
+                ? `${yearSpend.upcoming} more due ${sameYear ? "this year" : `in ${year}`}`
+                : `nothing else due ${sameYear ? "this year" : `in ${year}`}`}
           />
         </div>
 
@@ -114,7 +150,15 @@ export default function Recurring() {
             screen is for, and in a third of the width its cells could hold a
             dot and nothing else. */}
         <Card>
-          <CardHead title="This month" sub={<span className="row" style={{ gap: 5 }}><CalendarDays size={13} /> {dateLabel(today(), { year: true })}</span>} />
+          <CardHead
+            title={past || future ? monthLabel(month) : "This month"}
+            sub={
+              <span className="row" style={{ gap: 5 }}>
+                <CalendarDays size={13} />
+                {past || future ? monthLabel(month) : dateLabel(today(), { year: true })}
+              </span>
+            }
+          />
           <MonthGrid year={y} month={m} marks={marks} />
           <div className="divider" />
           <div className="row" style={{ gap: 16 }}>

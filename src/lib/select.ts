@@ -819,6 +819,10 @@ export function detectRecurring(db: DB): Recurring[] {
       // The charge that completed the pattern, so a caller can tell a
       // subscription that started last month from one that has run for years.
       detectedAt: sorted[2].date,
+      // And the first one, which is when it actually began. Taken from the
+      // ledger rather than guessed: looking back at a month before a
+      // merchant's first charge should find nothing at that merchant.
+      startDate: sorted[0].date,
       kind: last.amount > 0 ? "income" : avg < 5000 ? "subscription" : "bill",
       detected: true,
     });
@@ -876,6 +880,18 @@ export function recurringByMerchant(db: DB): Map<string, Recurring> {
  * day at a time.
  */
 export function occurrences(r: Recurring, from: ISODate, to: ISODate): ISODate[] {
+  /**
+   * Nothing before the day it started.
+   *
+   * The walk below runs backwards as well as forwards, which is what makes
+   * looking at a past month possible at all and also what made it lie: a
+   * subscription added this morning was drawn onto every month of the past
+   * and counted in each of their totals. A schedule with no start date is
+   * unlimited, as it was before this existed.
+   */
+  const begins = r.startDate && r.startDate > from ? r.startDate : from;
+  if (begins > to) return [];
+
   // Every date is measured from the one known date rather than from the last
   // one worked out. Stepping a month at a time loses the day it started on:
   // the 31st clamps to the 28th in February, and a walk that carries on from
@@ -888,8 +904,8 @@ export function occurrences(r: Recurring, from: ISODate, to: ISODate): ISODate[]
   const out: ISODate[] = [];
 
   let n = 0;
-  while (n > -CAP && at(n) > from) n--;
-  while (n < CAP && at(n) < from) n++;
+  while (n > -CAP && at(n) > begins) n--;
+  while (n < CAP && at(n) < begins) n++;
   for (; n < CAP && at(n) <= to; n++) out.push(at(n));
   return out;
 }

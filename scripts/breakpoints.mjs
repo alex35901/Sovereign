@@ -1906,6 +1906,77 @@ try {
         mine?.paid ? "ticked with no charge behind it" : "not ticked");
     }
     await ghost.close();
+
+    // ── going back a month, and not finding things that had not started ──
+    //
+    // The schedule is walked outwards from its next date in both directions,
+    // so before this a subscription entered this morning was drawn onto every
+    // month of the past and counted in each of their totals. The arithmetic
+    // is pinned in scripts/selftest.mjs; what is checked here is that the
+    // arrows exist, that they move the page, and that the calendar they move
+    // honours the start date.
+    const back = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    const freshDoc = await (async () => {
+      const seed = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+      await seed.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+      await seed.waitForTimeout(1200);
+      const doc = await seed.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const month = new Date().toISOString().slice(0, 7);
+        db.recurring = [...(db.recurring ?? []), {
+          id: "r_brandnew", merchant: "Brand New Thing", categoryId: db.categories[0].id,
+          accountId: db.accounts[0].id, amount: -9_99, cadence: "monthly",
+          nextDate: `${month}-10`, startDate: `${month}-01`, kind: "subscription", detected: false,
+        }];
+        return JSON.stringify(db);
+      });
+      await seed.close();
+      return doc;
+    })();
+    await back.addInitScript((d) => {
+      if (sessionStorage.getItem("bp-back")) return;
+      localStorage.setItem("sovereign.db.v1", d);
+      sessionStorage.setItem("bp-back", "1");
+    }, freshDoc);
+    await back.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await back.waitForTimeout(1000);
+
+    const readMonth = (page) => page.evaluate(() => ({
+      month: document.querySelector(".topbar .month-nav-label")?.innerText.trim() ?? "",
+      heads: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
+      marks: [...document.querySelectorAll(".cal-name-text")].map((n) => n.textContent.trim()),
+    }));
+
+    const nowOn = await readMonth(back);
+    check("the recurring page carries a month in its bar, with a way either side",
+      /^[A-Z][a-z]+ \d{4}$/.test(nowOn.month)
+      && (await back.locator(".topbar button[aria-label='Previous month']").count()) === 1
+      && (await back.locator(".topbar button[aria-label='Next month']").count()) === 1,
+      `${nowOn.month || "no month"}`);
+    check("and this month's calendar holds something that started this month",
+      nowOn.marks.includes("Brand New Thing"), `${nowOn.marks.length} marks`);
+
+    if (await tryStep("the arrow walks the page back through the months", async () => {
+      for (let i = 0; i < 3; i++) {
+        await back.locator(".topbar button[aria-label='Previous month']").click({ timeout: 5000 });
+        await back.waitForTimeout(350);
+      }
+    })) {
+      const then = await readMonth(back);
+      check("which says which month it landed on, in the bar and over the calendar",
+        then.month !== nowOn.month && then.heads.some((h) => h === then.month),
+        `${nowOn.month} -> ${then.month}, heads ${then.heads.join(" | ")}`);
+      // The whole point. Three months back is before this subscription
+      // existed, and drawing it there would be inventing a charge.
+      check("and does not show a subscription that had not started yet",
+        !then.marks.includes("Brand New Thing"),
+        then.marks.includes("Brand New Thing") ? "drawn three months before it began" : "absent, correctly");
+      // Something that has run for years is still there, so the check above
+      // is testing a start date rather than an empty calendar.
+      check("while the bills that were already running are still drawn",
+        then.marks.length > 0, `${then.marks.length} marks`);
+    }
+    await back.close();
   }
 
   if (want("notifications")) {

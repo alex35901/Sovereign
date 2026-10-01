@@ -381,6 +381,18 @@ export interface Recurring {
   amount: number;
   cadence: Cadence;
   nextDate: ISODate;
+  /**
+   * The day this began, before which it did not exist.
+   *
+   * A schedule is walked outwards from nextDate in both directions, which is
+   * right for working out what is still to come and wrong for looking back:
+   * a subscription set up this morning was otherwise drawn across every month
+   * of the past as though it had always been running, and counted in those
+   * months' totals. Optional, and absent means no limit, because a schedule
+   * that predates this field has no honest answer and inventing one would
+   * erase history rather than describe it.
+   */
+  startDate?: ISODate;
   kind: "bill" | "income" | "subscription";
   /** true when detected from history rather than entered by hand */
   detected: boolean;
