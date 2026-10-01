@@ -34,15 +34,26 @@ export function Money({ value, cents = true, sign, colored, compact, className, 
   return <span className={cx("num", tone, className)} style={style}>{text}</span>;
 }
 
-export function Tile({ label, value, sub, tone, onClick }: {
+export function Tile({ label, value, sub, tone, onClick, action }: {
   label: string; value: ReactNode; sub?: ReactNode; tone?: "pos" | "neg"; onClick?: () => void;
+  /**
+   * A control in the corner, beside the figures rather than above them.
+   *
+   * Outside whatever the tile's own click does, which is the point: a tile
+   * that opens something, with a button that opens something else, must not
+   * do both at once.
+   */
+  action?: ReactNode;
 }) {
   return (
     <Card style={onClick ? { cursor: "pointer" } : undefined}>
-      <div onClick={onClick} className="col" style={{ gap: 6 }}>
-        <span className="tile-label">{label}</span>
-        <span className={cx("tile-value", "num", tone)}>{value}</span>
-        {sub ? <span className="small muted">{sub}</span> : null}
+      <div className="tile-top">
+        <div onClick={onClick} className="col grow" style={{ gap: 6, minWidth: 0 }}>
+          <span className="tile-label">{label}</span>
+          <span className={cx("tile-value", "num", tone)}>{value}</span>
+          {sub ? <span className="small muted">{sub}</span> : null}
+        </div>
+        {action ? <span className="tile-action">{action}</span> : null}
       </div>
     </Card>
   );

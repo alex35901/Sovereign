@@ -36,6 +36,9 @@ const WORTH_SAYING = 100;
 /** How many rows a reach-for table shows before it offers the rest. */
 const PREVIEW = 24;
 
+/** What the spark beside the daily driver is for, said once. */
+const ASK_DRIVER = "Ask Hopper which card pays most on everything";
+
 /** The columns of the two reach-for tables, by what they hold. */
 type CatField = "name" | "spend" | "best" | "earned" | "gap";
 
@@ -166,6 +169,21 @@ export default function Cards() {
             <Tile
               label="Daily driver" value={report.driver ? report.driver.name : "None"}
               sub={report.driver ? `${report.driver.rate}% on anything with no bonus` : "No card has terms yet"}
+              action={
+                <button
+                  type="button"
+                  className="ask-spark"
+                  title={ASK_DRIVER}
+                  aria-label={ASK_DRIVER}
+                  onClick={() => askHopper(
+                    report.driver
+                      ? `Which credit cards pay the most on everything, with no categories to track and no rotating bonuses? The best flat rate in my wallet is ${report.driver.rate}% on anything with no bonus, from my ${report.driver.name}. Name a few that beat it, say what each one pays and what it costs a year, and say plainly if nothing beats what I already carry.`
+                      : "Which credit cards pay the most on everything, with no categories to track and no rotating bonuses? Name a few, and say what each one pays and what it costs a year.",
+                  )}
+                >
+                  <Sparkles size={13} />
+                </button>
+              }
             />
           </div>
         </Card>
@@ -389,7 +407,7 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
                 </span>
                 <button
                   type="button"
-                  className="card-cat-ask"
+                  className="ask-spark"
                   title={askTitle(r)}
                   aria-label={askTitle(r)}
                   onClick={() => onAsk(r)}

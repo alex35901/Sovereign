@@ -316,6 +316,11 @@ h3 { font-size: 14px; }
 .card.flush { padding: 0; overflow: clip; }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .card-head.flush { padding: 14px 16px; margin: 0; border-bottom: 1px solid var(--line-soft); }
+/* A tile with a control in its corner. The figures keep the whole width they
+   had; the control sits beside them rather than above, so adding one does not
+   shorten the one line a tile has to say something in. */
+.tile-top { display: flex; align-items: flex-start; gap: 8px; }
+.tile-action { flex: none; margin-top: -2px; }
 .tile-label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .tile-value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
 .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--faint); font-weight: 600; }
@@ -1513,13 +1518,16 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: transparent; color: var(--accent); font-weight: 500;
 }
-.card-cat-ask {
+/* The one control that hands a question to Hopper, wherever it sits: a row of
+   the reach-for tables, or the corner of a tile. Named for what it does
+   rather than for the table it started in. */
+.ask-spark {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; padding: 0;
   background: none; border: 0; border-radius: 7px;
   color: var(--faint); cursor: pointer;
 }
-.card-cat-ask:hover { background: var(--surface-3); color: var(--accent); }
+.ask-spark:hover { background: var(--surface-3); color: var(--accent); }
 .card-ask {
   display: flex; align-items: center; gap: 14px;
   padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px;
@@ -1843,7 +1851,7 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
     grid-template-columns: minmax(0, 1fr) 64px minmax(0, 88px) 60px 58px 24px;
     gap: 6px; padding-left: 12px; padding-right: 12px;
   }
-  .card-cat-ask { width: 24px; height: 24px; }
+  .ask-spark { width: 24px; height: 24px; }
 
   .g3 { grid-template-columns: minmax(0, 1fr); }
   /* The name, then the two controls under it: three across leaves the account
@@ -1867,7 +1875,7 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
     grid-template-columns: minmax(0, 1fr) 56px minmax(0, 70px) 52px 50px 22px;
     gap: 5px; padding-left: 10px; padding-right: 10px;
   }
-  .card-cat-ask { width: 22px; height: 22px; }
+  .ask-spark { width: 22px; height: 22px; }
 }
 
 @media (width <= 359px) {

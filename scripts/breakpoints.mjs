@@ -7583,7 +7583,7 @@ try {
     check("every category row offers to ask Hopper about it",
       await wl.evaluate(() => {
         const rows = document.querySelectorAll(".card-cat:not(.head)").length;
-        const asks = document.querySelectorAll(".card-cat:not(.head) .card-cat-ask").length;
+        const asks = document.querySelectorAll(".card-cat:not(.head) .ask-spark").length;
         return rows > 0 && rows === asks;
       }), "");
 
@@ -7591,6 +7591,47 @@ try {
     // card at all, which is not what the page is for.
     check("and nothing on the page is about spending that never went near a card",
       !(await wl.evaluate(() => /Paid another way/.test(document.body.innerText))), "");
+
+    // ── the spark beside the daily driver ──
+    //
+    // The tables ask about one category or one shop. This one asks the
+    // question the three tiles raise and cannot answer: what to carry for
+    // everything that has no bonus at all. It has to carry what the wallet
+    // already pays, or the answer comes back without knowing what to beat.
+    // Found by its own label, read case-insensitively: a tile's label is
+    // uppercased in CSS, so what the page reports is not what the source says.
+    const tile = await wl.evaluate(() => {
+      const top = [...document.querySelectorAll(".tile-top")]
+        .find((t) => /daily driver/i.test(t.querySelector(".tile-label")?.innerText ?? ""));
+      if (!top) return null;
+      const spark = top.querySelector(".ask-spark");
+      return {
+        has: !!spark,
+        label: spark?.getAttribute("aria-label") ?? "",
+        // The figures keep their width: a control in the corner must not
+        // shorten the one line a tile has to say something in.
+        value: top.querySelector(".tile-value")?.innerText.trim() ?? "",
+      };
+    });
+    check("the daily driver carries its own question for Hopper",
+      tile !== null && tile.has && /pays most on everything/i.test(tile.label),
+      tile === null ? "no tile" : tile.label || "no label");
+    check("and the tile still says which card that is",
+      tile !== null && tile.value.length > 0, tile?.value ?? "");
+
+    if (await tryStep("pressing it hands that question over", async () => {
+      await wl.locator('.tile-top:has(.tile-label:text-matches("daily driver", "i")) .ask-spark')
+        .first().click({ timeout: 8000 });
+      await wl.waitForTimeout(700);
+    })) {
+      const asked = decodeURIComponent(wl.url());
+      check("naming what the wallet already pays, so the answer has something to beat",
+        /\/hopper\?/.test(asked) && /pay the most on everything/i.test(asked)
+        && /no rotating bonuses/i.test(asked),
+        asked.slice(-120));
+      await wl.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+      await wl.waitForTimeout(1500);
+    }
 
     // ── the same question, asked of shops ──
     //
@@ -7605,7 +7646,7 @@ try {
       if (!card) return null;
       return {
         rows: card.querySelectorAll(".card-cat:not(.head)").length,
-        asks: card.querySelectorAll(".card-cat:not(.head) .card-cat-ask").length,
+        asks: card.querySelectorAll(".card-cat:not(.head) .ask-spark").length,
         heads: [...card.querySelectorAll(".card-cat.head .sort-head")].map((h) => h.innerText.trim()),
         names: [...card.querySelectorAll(".card-cat-name a")].map((a) => ({
           // The avatar's initials are the first line of the link, so the name
@@ -7680,7 +7721,7 @@ try {
     }
 
     if (await tryStep("the ask button carries the question to Hopper", async () => {
-      await wl.locator(".card-cat:not(.head) .card-cat-ask").first().click({ timeout: 8000 });
+      await wl.locator(".card-cat:not(.head) .ask-spark").first().click({ timeout: 8000 });
       await wl.waitForTimeout(700);
     })) {
       const url = wl.url();
