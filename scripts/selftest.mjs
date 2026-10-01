@@ -14412,7 +14412,33 @@ await test("the same money is cut by shop as well as by category", () => {
   assert.equal(sum(r.merchants, "best"), r.totals.best);
 
   assert.deepEqual(r.merchants.map((m) => m.name), ["Amazon", "Corner Shop"],
-    "biggest miss first, as the categories are");
+    "biggest spender first");
+});
+
+await test("a shop the wallet already handles well is still on the list", () => {
+  // The complaint this answers. Shops led with the biggest miss, as the
+  // categories do, and were cut to two dozen: a big merchant the cards
+  // already pay well on has no miss, so it sorted to the bottom of several
+  // hundred and fell off the end. Looking up the place you spend most at is
+  // the whole reason for the table, so the order is what was spent.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }, { id: "b", name: "Gas Four", rewards: cash(1, [earnRule("r", 4, ["gas"])]) }],
+    [
+      // Nothing to move: one card, no bonus that touches it, and it is
+      // already on the card that pays most. A big, perfectly handled shop.
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 5_000, extra: { merchant: "Amazon" } },
+      // Small, but on the wrong card, so it has the only miss there is.
+      { on: "a", date: "2026-03-02", cat: "gas", dollars: 100, extra: { merchant: "Filling Station" } },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+
+  const amazon = r.merchants.find((m) => m.name === "Amazon");
+  assert.equal(amazon.spend, 5_000_00);
+  assert.equal(amazon.gap, 0, "nothing to move, which is why it used to vanish");
+  assert.equal(r.merchants[0].name, "Amazon", "and it leads the table rather than trailing it");
+  assert.equal(r.merchants[1].name, "Filling Station");
+  assert.ok(r.merchants[1].gap > 0, "the one with the miss is still there, second");
 });
 
 await test("and a cap is spent once, however the answer is cut up", () => {

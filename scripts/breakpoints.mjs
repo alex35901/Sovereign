@@ -7620,6 +7620,13 @@ try {
 
     check("the page cuts the same year by shop as well as by category",
       shops !== null && shops.rows > 3, shops === null ? "no shop table" : `${shops.rows} shops`);
+    // Biggest spender first, which is the order this table is for. Led by the
+    // biggest miss and cut to two dozen, a big shop the cards already handle
+    // well has no miss, sorts to the bottom of several hundred and falls off
+    // the end: looking one up is the whole point of the table.
+    check("led by what was spent, so the biggest shop cannot fall off the end",
+      shops !== null && shops.spends.every((v, i) => i === 0 || shops.spends[i - 1] >= v),
+      (shops?.spends ?? []).slice(0, 5).join(" "));
     // Compared in one case: the headings are uppercased in CSS, so what the
     // page reports is not what the source says.
     check("under the same five headings, named for what the column holds",
@@ -7632,6 +7639,29 @@ try {
       shops?.names.slice(0, 3).map((n) => `${n.text} -> ${n.href}`).join(" | ") ?? "");
     check("and the same offer to ask Hopper about each one",
       shops !== null && shops.asks === shops.rows, `${shops?.asks} of ${shops?.rows}`);
+
+    // Several hundred shops will not go on a page, so the table shows a
+    // preview and says how many it is holding back. A count that lied, or a
+    // button that opened nothing, would be worse than no button.
+    const more = wl.locator(`${cardOf(SHOPS)} .view-all`);
+    if (await more.count()) {
+      const said = Number(((await more.innerText()).match(/[\d,]+/)?.[0] ?? "0").replace(/,/g, ""));
+      check("and says how many shops it is holding back, rather than stopping silently",
+        said > shops.rows, `${said} against ${shops.rows} shown`);
+      if (await tryStep("the rest of the shops can be opened out", async () => {
+        await more.click({ timeout: 8000 });
+        await wl.waitForTimeout(400);
+      })) {
+        const opened = await column(SHOPS, ".card-cat-spend");
+        check("and the count it gave is the number that arrive",
+          opened !== null && opened.length === said, `${opened?.length} of ${said}`);
+        await more.click({ timeout: 8000 });
+        await wl.waitForTimeout(400);
+        const shut = await column(SHOPS, ".card-cat-spend");
+        check("with a way back to the short list",
+          shut !== null && shut.length === shops.rows, `${shut?.length} back from ${said}`);
+      }
+    }
 
     // Each table holds its own sort. Ordering the shops must not quietly
     // reorder the categories above them, which one shared hook would do.

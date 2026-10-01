@@ -413,7 +413,12 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
         bestAccountId: could ? leader(could.on) : undefined,
       };
     })
-    .sort((a, b) => b.gap - a.gap || b.spend - a.spend);
+    // Biggest spender first, unlike the categories, which lead with the
+    // biggest miss. The question asked of a shop is "is there a card for this
+    // place", and that is asked of the places the money actually goes,
+    // whether or not the wallet is already handling them well. Missed is a
+    // column and sorts on itself for anybody asking the other question.
+    .sort((a, b) => b.spend - a.spend || b.gap - a.gap);
 
   const earnedTotal = cards.reduce((n, c) => n + c.earned, 0);
   const top = [...wallet].sort((a, b) =>

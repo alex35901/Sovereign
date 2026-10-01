@@ -32,6 +32,9 @@ import { MerchantAvatar } from "./Transactions";
 /** A year's saving smaller than this is not worth a line of red. */
 const WORTH_SAYING = 100;
 
+/** How many rows a reach-for table shows before it offers the rest. */
+const PREVIEW = 24;
+
 /** The columns of the two reach-for tables, by what they hold. */
 type CatField = "name" | "spend" | "best" | "earned" | "gap";
 
@@ -108,11 +111,8 @@ export default function Cards() {
   const unconfirmed = cards.filter((a) => !a.rewards?.confirmedAt);
   const byId = new Map(cards.map((a) => [a.id, a]));
 
-  // Cut to the worst two dozen before the table sorts what is left, so a
-  // click on a heading reorders the rows on screen rather than fetching
-  // different ones. The order they arrive in is biggest miss first.
   const catRows: ReachRow[] = report.categories
-    .filter((c) => c.spend > 0).slice(0, 24)
+    .filter((c) => c.spend > 0)
     .map((c) => ({
       key: c.categoryId,
       label: <CategoryTag categoryId={c.categoryId} />,
@@ -121,7 +121,7 @@ export default function Cards() {
     }));
 
   const shopRows: ReachRow[] = report.merchants
-    .filter((m) => m.spend > 0).slice(0, 24)
+    .filter((m) => m.spend > 0)
     .map((m) => ({
       key: m.key,
       // Where every other merchant in the app goes, by the spelling that page
@@ -237,6 +237,7 @@ export default function Cards() {
             `Which credit cards would be good for my ${r.name} spending? Look at what I spent on ${r.name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`,
           )}
           askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
+          noun="categories"
         />
 
         {/* The same question asked of shops rather than of kinds of spending.
@@ -245,7 +246,7 @@ export default function Cards() {
             beside forty other shops, and the whole line here. */}
         <ReachTable
           title="Where to put each shop"
-          sub="The last year at each place you paid, biggest miss first. A card aimed at one shop is invisible in the table above and obvious here."
+          sub="The last year at each place you paid, biggest first. Every shop a card touched is here, not only the ones above: a card aimed at one chain is invisible in a table of categories and obvious in this one."
           head="Merchant"
           rows={shopRows}
           byId={byId}
@@ -254,6 +255,7 @@ export default function Cards() {
           )}
           askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
           empty="Nothing has gone on a card yet."
+          noun="shops"
         />
 
         <Card pad={false}>
@@ -311,7 +313,7 @@ export default function Cards() {
  * them, and both read the same routing: the caps a purchase spends are spent
  * once, however the answer is later cut up.
  */
-function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty }: {
+function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun = "rows" }: {
   title: string;
   sub: string;
   /** What to call the first column. */
@@ -322,9 +324,12 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty }: {
   askTitle: (row: ReachRow) => string;
   /** Said instead of an empty table, when there is nothing to show. */
   empty?: string;
+  /** What the rows are, for the button that shows the rest of them. */
+  noun?: string;
 }) {
   const { sort, toggle: onSort } = useSort<CatField>();
-  const shown = sortRows(rows, sort, (r, key) => {
+  const [all, setAll] = useState(false);
+  const ranked = sortRows(rows, sort, (r, key) => {
     if (key === "spend") return r.spend;
     if (key === "earned") return r.earned;
     if (key === "gap") return r.gap;
@@ -335,6 +340,17 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty }: {
       ? byId.get(r.bestAccountId)?.name ?? "a card"
       : null;
   });
+  /**
+   * Cut after the sort rather than before it.
+   *
+   * A year has a few dozen categories and several hundred shops, so the
+   * second table has to open out, and once a button is saying how many are
+   * hidden the preview has to mean "the top so many by whatever this is
+   * sorted on". Slicing first would leave a click on Missed reordering the
+   * biggest spenders among themselves while the real misses stayed out of
+   * sight behind a button saying how many there were.
+   */
+  const shown = all ? ranked : ranked.slice(0, PREVIEW);
 
   return (
     <Card pad={false}>
@@ -382,6 +398,11 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty }: {
               </div>
             );
           })}
+          {ranked.length > PREVIEW ? (
+            <button className="btn view-all" onClick={() => setAll((v) => !v)}>
+              {all ? "Show fewer" : `Show all ${ranked.length.toLocaleString()} ${noun}`}
+            </button>
+          ) : null}
         </>
       ) : (
         <div style={{ padding: "4px 16px 16px" }}>
