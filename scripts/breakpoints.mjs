@@ -7528,16 +7528,28 @@ try {
     // Read off the rendered cells rather than off the report: the point is
     // that clicking a heading reorders what is on the screen, and a check
     // against the data behind it would pass with the table drawn in any order.
-    const spends = () => wl.evaluate(() => [...document.querySelectorAll(".card-cat:not(.head) .card-cat-spend")]
-      .map((e) => Number(e.innerText.replace(/[$,]/g, "")) || 0));
-    const heads = () => wl.locator(".card-cat.head .sort-head");
+    // Scoped to the card each table sits in. There are two of these now, the
+    // same columns cut by category and by shop, and a global selector reads
+    // the two as one list: sorting the first then looks like a failure,
+    // because the second is still in the order it arrived in.
+    const CATS = "Where to put each purchase";
+    const SHOPS = "Where to put each shop";
+    const cardOf = (title) => `.card:has(h2:text("${title}"))`;
+    const column = (title, cls) => wl.evaluate(([t, c]) => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((x) => (x.querySelector("h2")?.innerText ?? "").startsWith(t));
+      if (!card) return null;
+      return [...card.querySelectorAll(`.card-cat:not(.head) ${c}`)]
+        .map((e) => Number(e.innerText.replace(/[^\d.]/g, "")) || 0);
+    }, [title, cls]);
 
+    const spends = () => column(CATS, ".card-cat-spend");
+    const heads = () => wl.locator(`${cardOf(CATS)} .card-cat.head .sort-head`);
+
+    const catGaps = await column(CATS, ".card-cat-gap");
     check("the category table is sorted biggest miss first before anything is clicked",
-      await wl.evaluate(() => {
-        const gaps = [...document.querySelectorAll(".card-cat:not(.head) .card-cat-gap")]
-          .map((e) => Number(e.innerText.replace(/[^\d.]/g, "")) || 0);
-        return gaps.every((g, i) => i === 0 || gaps[i - 1] >= g);
-      }), "");
+      catGaps !== null && catGaps.every((g, i) => i === 0 || catGaps[i - 1] >= g),
+      (catGaps ?? []).slice(0, 5).join(" "));
 
     const unsorted = await spends();
     if (await tryStep("a heading can be clicked to sort the table", async () => {
@@ -7579,6 +7591,63 @@ try {
     // card at all, which is not what the page is for.
     check("and nothing on the page is about spending that never went near a card",
       !(await wl.evaluate(() => /Paid another way/.test(document.body.innerText))), "");
+
+    // ── the same question, asked of shops ──
+    //
+    // The point of the second table: a card aimed at one chain is a slice of
+    // a category in the first one, sitting beside forty other shops, and the
+    // whole line here. What is checked is that it is a real second cut of the
+    // same money rather than a copy of the first, that it sorts on its own,
+    // and that its rows lead where every other merchant in the app leads.
+    const shops = await wl.evaluate((t) => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((x) => (x.querySelector("h2")?.innerText ?? "").startsWith(t));
+      if (!card) return null;
+      return {
+        rows: card.querySelectorAll(".card-cat:not(.head)").length,
+        asks: card.querySelectorAll(".card-cat:not(.head) .card-cat-ask").length,
+        heads: [...card.querySelectorAll(".card-cat.head .sort-head")].map((h) => h.innerText.trim()),
+        names: [...card.querySelectorAll(".card-cat-name a")].map((a) => ({
+          // The avatar's initials are the first line of the link, so the name
+          // is read off the element holding it rather than off the text.
+          text: a.querySelector(".truncate")?.textContent.trim() ?? "",
+          href: a.getAttribute("href"),
+        })),
+        spends: [...card.querySelectorAll(".card-cat:not(.head) .card-cat-spend")]
+          .map((e) => Number(e.innerText.replace(/[^\d.]/g, "")) || 0),
+      };
+    }, SHOPS);
+
+    check("the page cuts the same year by shop as well as by category",
+      shops !== null && shops.rows > 3, shops === null ? "no shop table" : `${shops.rows} shops`);
+    // Compared in one case: the headings are uppercased in CSS, so what the
+    // page reports is not what the source says.
+    check("under the same five headings, named for what the column holds",
+      shops !== null
+      && shops.heads.join(" / ").toLowerCase() === "merchant / spent / reach for / earned / missed",
+      shops?.heads.join(" / ") ?? "");
+    check("with a row per shop that leads to that shop's own page",
+      shops !== null && shops.names.length === shops.rows
+      && shops.names.every((n) => n.href === `/merchants/${encodeURIComponent(n.text)}`),
+      shops?.names.slice(0, 3).map((n) => `${n.text} -> ${n.href}`).join(" | ") ?? "");
+    check("and the same offer to ask Hopper about each one",
+      shops !== null && shops.asks === shops.rows, `${shops?.asks} of ${shops?.rows}`);
+
+    // Each table holds its own sort. Ordering the shops must not quietly
+    // reorder the categories above them, which one shared hook would do.
+    const catsBefore = await column(CATS, ".card-cat-spend");
+    if (await tryStep("the shop table sorts on its own", async () => {
+      await wl.locator(`${cardOf(SHOPS)} .card-cat.head .sort-head`).nth(1).click({ timeout: 8000 });
+      await wl.waitForTimeout(350);
+    })) {
+      const after = await column(SHOPS, ".card-cat-spend");
+      check("putting its own smallest first",
+        after !== null && after.every((v, i) => i === 0 || after[i - 1] <= v),
+        (after ?? []).slice(0, 5).join(" "));
+      check("and leaving the table above it where it was",
+        JSON.stringify(await column(CATS, ".card-cat-spend")) === JSON.stringify(catsBefore),
+        "the categories moved when the shops were sorted");
+    }
 
     if (await tryStep("the ask button carries the question to Hopper", async () => {
       await wl.locator(".card-cat:not(.head) .card-cat-ask").first().click({ timeout: 8000 });

@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { Plus, Sparkles, Trash2 } from "lucide-react";
 import type { Account, CandidateCard, CardRewards, EarnRule, ID } from "../types";
@@ -15,6 +17,7 @@ import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { SortHead, sortRows, useSort } from "../components/sort";
 import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, SelectInput, Tile, cx } from "../components/ui";
+import { MerchantAvatar } from "./Transactions";
 
 /**
  * Which card to reach for, worked out from what was actually bought.
@@ -29,8 +32,27 @@ import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, Sel
 /** A year's saving smaller than this is not worth a line of red. */
 const WORTH_SAYING = 100;
 
-/** The columns of the category table, by what they hold. */
+/** The columns of the two reach-for tables, by what they hold. */
 type CatField = "name" | "spend" | "best" | "earned" | "gap";
+
+/**
+ * One line of a reach-for table, whatever the first column happens to be.
+ *
+ * The categories and the shops ask the same question of the same routing and
+ * differ only in what they are cut by, so they are one table drawn twice
+ * rather than two tables that have to be kept agreeing by hand.
+ */
+interface ReachRow {
+  key: string;
+  /** What the first column draws. */
+  label: ReactNode;
+  /** How that column sorts, which a drawn node cannot answer for itself. */
+  name: string;
+  spend: number;
+  earned: number;
+  gap: number;
+  bestAccountId?: ID;
+}
 
 const PERIODS = [
   { value: "month", label: "a month" },
@@ -46,7 +68,6 @@ export default function Cards() {
   const cards = useMemo(() => cardAccounts(db), [db]);
   const [editing, setEditing] = useState<Account | null>(null);
   const [weighing, setWeighing] = useState<CandidateCard | "new" | null>(null);
-  const { sort, toggle: onSort } = useSort<CatField>();
   const to = today();
   const from = rangeStart("1y");
   const report = useMemo(() => cardReport(db, from, to), [db, from, to]);
@@ -64,10 +85,8 @@ export default function Cards() {
    * arrives with Hopper's usual caveats attached instead of sitting in a
    * table of figures the app worked out itself.
    */
-  const askAboutCards = (categoryId: ID) => {
-    const name = catName.get(categoryId) ?? "this category";
-    const q = `Which credit cards would be good for my ${name} spending? Look at what I spent on ${name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`;
-    nav(`/hopper?ask=${encodeURIComponent(q)}`);
+  const askHopper = (question: string) => {
+    nav(`/hopper?ask=${encodeURIComponent(question)}`);
   };
 
   if (!cards.length) {
@@ -89,24 +108,37 @@ export default function Cards() {
   const unconfirmed = cards.filter((a) => !a.rewards?.confirmedAt);
   const byId = new Map(cards.map((a) => [a.id, a]));
 
-  // Cut to the worst two dozen first and sort what is left, so a click on a
-  // heading reorders the rows on screen rather than fetching different ones.
-  // Unsorted is the order the report came in: biggest miss first.
-  const catRows = sortRows(
-    report.categories.filter((c) => c.spend > 0).slice(0, 24),
-    sort,
-    (c, key) => {
-      if (key === "spend") return c.spend;
-      if (key === "earned") return c.earned;
-      if (key === "gap") return c.gap;
-      if (key === "name") return catName.get(c.categoryId) ?? "Uncategorized";
-      // Only the rows worth moving name a card. The rest say "stay put",
-      // which is not a card name, so they gather at the bottom either way.
-      return c.gap >= WORTH_SAYING && c.bestAccountId
-        ? byId.get(c.bestAccountId)?.name ?? "a card"
-        : null;
-    },
-  );
+  // Cut to the worst two dozen before the table sorts what is left, so a
+  // click on a heading reorders the rows on screen rather than fetching
+  // different ones. The order they arrive in is biggest miss first.
+  const catRows: ReachRow[] = report.categories
+    .filter((c) => c.spend > 0).slice(0, 24)
+    .map((c) => ({
+      key: c.categoryId,
+      label: <CategoryTag categoryId={c.categoryId} />,
+      name: catName.get(c.categoryId) ?? "Uncategorized",
+      spend: c.spend, earned: c.earned, gap: c.gap, bestAccountId: c.bestAccountId,
+    }));
+
+  const shopRows: ReachRow[] = report.merchants
+    .filter((m) => m.spend > 0).slice(0, 24)
+    .map((m) => ({
+      key: m.key,
+      // Where every other merchant in the app goes, by the spelling that page
+      // uses: a row that names a shop should lead to the shop.
+      label: (
+        <Link
+          to={`/merchants/${encodeURIComponent(m.name)}`}
+          className="row cat-open" style={{ gap: 7, minWidth: 0 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MerchantAvatar name={m.name} size={20} />
+          <span className="tiny truncate">{m.name}</span>
+        </Link>
+      ),
+      name: m.name,
+      spend: m.spend, earned: m.earned, gap: m.gap, bestAccountId: m.bestAccountId,
+    }));
 
   return (
     <>
@@ -195,54 +227,34 @@ export default function Cards() {
           })}
         </Card>
 
-        <Card pad={false}>
-          <CardHead
-            flush title="Where to put each purchase"
-            sub="The last year, biggest miss first, or click a heading to reorder it. The best card is the one to reach for at the till, given what the caps had already taken."
-          />
-          <div className="card-cat head">
-            <span className="tiny faint"><SortHead field="name" sort={sort} onSort={onSort}>Category</SortHead></span>
-            <span className="tiny faint card-cat-spend"><SortHead field="spend" sort={sort} onSort={onSort}>Spent</SortHead></span>
-            <span className="tiny faint card-cat-best"><SortHead field="best" sort={sort} onSort={onSort}>Reach for</SortHead></span>
-            <span className="tiny faint card-cat-earned"><SortHead field="earned" sort={sort} onSort={onSort}>Earned</SortHead></span>
-            <span className="tiny faint card-cat-gap"><SortHead field="gap" sort={sort} onSort={onSort}>Missed</SortHead></span>
-            <span />
-          </div>
-          {catRows.map((c) => {
-            // A saving that rounds to nothing is nothing. Printing "+$0" in
-            // red against every line of a wallet that is already right turns
-            // the one column worth reading into noise.
-            const worth = c.gap >= WORTH_SAYING;
-            const name = catName.get(c.categoryId) ?? "this category";
-            return (
-              <div key={c.categoryId} className="card-cat">
-                <span className="card-cat-name"><CategoryTag categoryId={c.categoryId} /></span>
-                <span className="num tiny faint card-cat-spend">{fmt0(c.spend)}</span>
-                <span className="card-cat-best">
-                  {/* Only when there is something to change. With nothing in
-                      it, naming a card reads as "switch to this" against a
-                      saving of nothing. */}
-                  {worth && c.bestAccountId
-                    ? <span className="tiny truncate">{byId.get(c.bestAccountId)?.name ?? "a card"}</span>
-                    : <span className="tiny faint">stay put</span>}
-                </span>
-                <span className="num tiny faint card-cat-earned">{fmt0(c.earned)}</span>
-                <span className={cx("num tiny card-cat-gap", worth && "neg")}>
-                  {worth ? `+${fmt0(c.gap)}` : "-"}
-                </span>
-                <button
-                  type="button"
-                  className="card-cat-ask"
-                  title={`Ask Hopper which cards suit ${name}`}
-                  aria-label={`Ask Hopper which cards suit ${name}`}
-                  onClick={() => askAboutCards(c.categoryId)}
-                >
-                  <Sparkles size={13} />
-                </button>
-              </div>
-            );
-          })}
-        </Card>
+        <ReachTable
+          title="Where to put each purchase"
+          sub="The last year, biggest miss first, or click a heading to reorder it. The best card is the one to reach for at the till, given what the caps had already taken."
+          head="Category"
+          rows={catRows}
+          byId={byId}
+          onAsk={(r) => askHopper(
+            `Which credit cards would be good for my ${r.name} spending? Look at what I spent on ${r.name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`,
+          )}
+          askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
+        />
+
+        {/* The same question asked of shops rather than of kinds of spending.
+            Cards are not sold by category: one that pays five percent at a
+            single chain is a slice of "Shopping" in the table above, sitting
+            beside forty other shops, and the whole line here. */}
+        <ReachTable
+          title="Where to put each shop"
+          sub="The last year at each place you paid, biggest miss first. A card aimed at one shop is invisible in the table above and obvious here."
+          head="Merchant"
+          rows={shopRows}
+          byId={byId}
+          onAsk={(r) => askHopper(
+            `Which credit cards would be good for my spending at ${r.name}? Look at what I spent there over the last year and what my cards earn on it now, then say whether any card aimed at ${r.name} is worth it, and what it pays.`,
+          )}
+          askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
+          empty="Nothing has gone on a card yet."
+        />
 
         <Card pad={false}>
           <CardHead
@@ -287,6 +299,96 @@ export default function Cards() {
         />
       ) : null}
     </>
+  );
+}
+
+/**
+ * One reach-for table: what was spent, where it should have gone, and what
+ * reaching for the wrong card cost.
+ *
+ * Drawn twice on this page, by category and by shop. Each copy holds its own
+ * sort, so ordering the shops does not quietly reorder the categories above
+ * them, and both read the same routing: the caps a purchase spends are spent
+ * once, however the answer is later cut up.
+ */
+function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty }: {
+  title: string;
+  sub: string;
+  /** What to call the first column. */
+  head: string;
+  rows: ReachRow[];
+  byId: Map<ID, Account>;
+  onAsk: (row: ReachRow) => void;
+  askTitle: (row: ReachRow) => string;
+  /** Said instead of an empty table, when there is nothing to show. */
+  empty?: string;
+}) {
+  const { sort, toggle: onSort } = useSort<CatField>();
+  const shown = sortRows(rows, sort, (r, key) => {
+    if (key === "spend") return r.spend;
+    if (key === "earned") return r.earned;
+    if (key === "gap") return r.gap;
+    if (key === "name") return r.name;
+    // Only the rows worth moving name a card. The rest say "stay put", which
+    // is not a card name, so they gather at the bottom either way.
+    return r.gap >= WORTH_SAYING && r.bestAccountId
+      ? byId.get(r.bestAccountId)?.name ?? "a card"
+      : null;
+  });
+
+  return (
+    <Card pad={false}>
+      <CardHead flush title={title} sub={sub} />
+      {shown.length ? (
+        <>
+          <div className="card-cat head">
+            <span className="tiny faint"><SortHead field="name" sort={sort} onSort={onSort}>{head}</SortHead></span>
+            <span className="tiny faint card-cat-spend"><SortHead field="spend" sort={sort} onSort={onSort}>Spent</SortHead></span>
+            <span className="tiny faint card-cat-best"><SortHead field="best" sort={sort} onSort={onSort}>Reach for</SortHead></span>
+            <span className="tiny faint card-cat-earned"><SortHead field="earned" sort={sort} onSort={onSort}>Earned</SortHead></span>
+            <span className="tiny faint card-cat-gap"><SortHead field="gap" sort={sort} onSort={onSort}>Missed</SortHead></span>
+            <span />
+          </div>
+          {shown.map((r) => {
+            // A saving that rounds to nothing is nothing. Printing "+$0" in
+            // red against every line of a wallet that is already right turns
+            // the one column worth reading into noise.
+            const worth = r.gap >= WORTH_SAYING;
+            return (
+              <div key={r.key} className="card-cat">
+                <span className="card-cat-name">{r.label}</span>
+                <span className="num tiny faint card-cat-spend">{fmt0(r.spend)}</span>
+                <span className="card-cat-best">
+                  {/* Only when there is something to change. With nothing in
+                      it, naming a card reads as "switch to this" against a
+                      saving of nothing. */}
+                  {worth && r.bestAccountId
+                    ? <span className="tiny truncate">{byId.get(r.bestAccountId)?.name ?? "a card"}</span>
+                    : <span className="tiny faint">stay put</span>}
+                </span>
+                <span className="num tiny faint card-cat-earned">{fmt0(r.earned)}</span>
+                <span className={cx("num tiny card-cat-gap", worth && "neg")}>
+                  {worth ? `+${fmt0(r.gap)}` : "-"}
+                </span>
+                <button
+                  type="button"
+                  className="card-cat-ask"
+                  title={askTitle(r)}
+                  aria-label={askTitle(r)}
+                  onClick={() => onAsk(r)}
+                >
+                  <Sparkles size={13} />
+                </button>
+              </div>
+            );
+          })}
+        </>
+      ) : (
+        <div style={{ padding: "4px 16px 16px" }}>
+          <span className="small faint">{empty ?? "Nothing to show yet."}</span>
+        </div>
+      )}
+    </Card>
   );
 }
 

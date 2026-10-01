@@ -1,6 +1,6 @@
 import type { Account, CardRewards, DB, EarnRule, ID, ISODate, SignupBonus } from "../types.js";
 import { monthOf, parseISO, today } from "./date.js";
-import { categoryKind, counts, lines, mutedAccountIds } from "./select.js";
+import { categoryKind, counts, lines, merchantIndex, merchantKey, mutedAccountIds } from "./select.js";
 
 /**
  * What a wallet of cards actually earns, against the spending that happened.
@@ -36,6 +36,15 @@ export function cardAccounts(db: DB): Account[] {
 export interface SpendLine {
   date: ISODate;
   categoryId: ID;
+  /**
+   * Who it was paid to, as the ledger spells it.
+   *
+   * Carried on the line rather than looked up later because the routing walks
+   * these in date order under a shared set of caps: asking afterwards which
+   * card a merchant's purchases went to would mean a second walk, and a
+   * second walk would hand every merchant a fresh cap.
+   */
+  merchant: string;
   /** Positive cents. Outflows arrive negative and are turned here. */
   amount: number;
 }
@@ -71,6 +80,7 @@ const claiming = (r: CardRewards, categoryId: ID): EarnRule[] =>
 export function earnDetail(rewards: CardRewards, spend: readonly SpendLine[]) {
   const used = new Map<string, number>();
   const byCategory = new Map<ID, number>();
+  const byMerchant = new Map<string, number>();
   let points = 0;
   // rate is per dollar and amounts are cents, so the product is points per
   // cent; pointCents turns points into cents of value.
@@ -93,6 +103,8 @@ export function earnDetail(rewards: CardRewards, spend: readonly SpendLine[]) {
     here += left * rewards.base;
     points += here;
     byCategory.set(line.categoryId, (byCategory.get(line.categoryId) ?? 0) + here);
+    const who = merchantKey(line.merchant ?? "");
+    if (who) byMerchant.set(who, (byMerchant.get(who) ?? 0) + here);
   }
 
   // Rounded once at the end for the total and once per category, so a table of
@@ -101,6 +113,7 @@ export function earnDetail(rewards: CardRewards, spend: readonly SpendLine[]) {
   return {
     total: value(points),
     byCategory: new Map([...byCategory].map(([id, p]) => [id, value(p)])),
+    byMerchant: new Map([...byMerchant].map(([who, p]) => [who, value(p)])),
   };
 }
 
@@ -141,11 +154,34 @@ export interface CategoryLine {
   bestAccountId?: ID;
 }
 
+/**
+ * The same question as a CategoryLine, asked of one shop rather than one kind
+ * of spending.
+ *
+ * Worth asking separately because cards are not sold by category. A card that
+ * pays five percent at one chain and one percent everywhere else is invisible
+ * in a table of categories, where that chain is a slice of "Shopping" sitting
+ * next to forty other shops; against the shop itself it is the whole line.
+ */
+export interface MerchantLine {
+  /** The lowercased name the rest of the app groups merchants by. */
+  key: string;
+  /** The spelling to show, which is the one the merchants page shows. */
+  name: string;
+  spend: number;
+  earned: number;
+  best: number;
+  gap: number;
+  bestAccountId?: ID;
+}
+
 export interface CardReport {
   from: ISODate;
   to: ISODate;
   cards: CardLine[];
   categories: CategoryLine[];
+  /** The shops themselves, biggest miss first, as the categories are. */
+  merchants: MerchantLine[];
   totals: { spend: number; earned: number; best: number; gap: number };
   /** The card to reach for when nothing has a bonus, and what it pays. */
   driver?: { accountId: ID; name: string; rate: number };
@@ -173,6 +209,7 @@ export interface CardReport {
 function bestRouting(cards: { id: ID; rewards: CardRewards }[], spend: readonly SpendLine[]) {
   const used = new Map<string, number>();
   const byCategory = new Map<ID, { best: number; on: Map<ID, number> }>();
+  const byMerchant = new Map<string, { best: number; on: Map<ID, number> }>();
   const byCard = new Map<ID, number>();
   let total = 0;
 
@@ -221,9 +258,19 @@ function bestRouting(cards: { id: ID; rewards: CardRewards }[], spend: readonly 
     at.best += value;
     at.on.set(pick.id, (at.on.get(pick.id) ?? 0) + line.amount);
     byCategory.set(line.categoryId, at);
+    // The same decision, filed by who it was paid to. One pass, so the caps a
+    // purchase spends are spent once however the answer is later cut up, and
+    // the two tables on the page cannot disagree about which card to reach for.
+    const who = merchantKey(line.merchant ?? "");
+    if (who) {
+      const here = byMerchant.get(who) ?? { best: 0, on: new Map<ID, number>() };
+      here.best += value;
+      here.on.set(pick.id, (here.on.get(pick.id) ?? 0) + line.amount);
+      byMerchant.set(who, here);
+    }
     byCard.set(pick.id, (byCard.get(pick.id) ?? 0) + line.amount);
   }
-  return { total, byCategory, byCard };
+  return { total, byCategory, byMerchant, byCard };
 }
 
 /** Which card the routing leaned on for a category, by spend rather than count. */
@@ -252,16 +299,21 @@ function walkSpend(db: DB, from: ISODate, to: ISODate) {
   const elsewhere: SpendLine[] = [];
   const byCard = new Map<ID, SpendLine[]>();
   const spent = new Map<ID, number>();
+  const spentAt = new Map<string, number>();
 
   for (const t of db.transactions) {
     if (t.date < from || t.date > to || !counts(t, muted)) continue;
     for (const l of lines(t)) {
       // Only money going out, and only on something that is really a purchase.
       if (l.amount >= 0 || categoryKind(db, l.categoryId) === "transfer") continue;
-      const line: SpendLine = { date: t.date, categoryId: l.categoryId, amount: -l.amount };
+      const line: SpendLine = {
+        date: t.date, categoryId: l.categoryId, merchant: t.merchant, amount: -l.amount,
+      };
       if (onCard.has(t.accountId)) {
         carded.push(line);
         spent.set(l.categoryId, (spent.get(l.categoryId) ?? 0) + line.amount);
+        const who = merchantKey(t.merchant);
+        if (who) spentAt.set(who, (spentAt.get(who) ?? 0) + line.amount);
         const at = byCard.get(t.accountId) ?? [];
         at.push(line);
         byCard.set(t.accountId, at);
@@ -270,7 +322,7 @@ function walkSpend(db: DB, from: ISODate, to: ISODate) {
       }
     }
   }
-  return { carded, elsewhere, byCard, spent };
+  return { carded, elsewhere, byCard, spent, spentAt };
 }
 
 /** What went on a card in the window, for anything weighing one card against another. */
@@ -284,11 +336,12 @@ export const spendOnCard = (db: DB, accountId: ID, from: ISODate, to: ISODate): 
 export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
   const accounts = cardAccounts(db);
   const wallet = accounts.map((a) => ({ id: a.id, rewards: rewardsOf(a) }));
-  const { carded, elsewhere, byCard, spent } = walkSpend(db, from, to);
+  const { carded, elsewhere, byCard, spent, spentAt } = walkSpend(db, from, to);
 
-  // What was actually earned, card by card, and per category so the table can
-  // set the two side by side.
+  // What was actually earned, card by card, and per category and per merchant
+  // so the tables can set what was earned beside what could have been.
   const actualByCategory = new Map<ID, number>();
+  const actualByMerchant = new Map<string, number>();
   const cards: CardLine[] = accounts.map((a) => {
     const r = rewardsOf(a);
     const mine = byCard.get(a.id) ?? [];
@@ -298,6 +351,9 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
     const detail = earnDetail(r, mine);
     for (const [categoryId, got] of detail.byCategory) {
       actualByCategory.set(categoryId, (actualByCategory.get(categoryId) ?? 0) + got);
+    }
+    for (const [who, got] of detail.byMerchant) {
+      actualByMerchant.set(who, (actualByMerchant.get(who) ?? 0) + got);
     }
     return {
       accountId: a.id,
@@ -338,12 +394,33 @@ export function cardReport(db: DB, from: ISODate, to: ISODate): CardReport {
     })
     .sort((a, b) => b.gap - a.gap || b.spend - a.spend);
 
+  // The spelling the merchants page uses, so a row that links there does not
+  // rename the shop on the way. Worked out from every transaction rather than
+  // from this window's, because the most common spelling of a name is a fact
+  // about the ledger and not about the last twelve months of it.
+  const spellings = merchantIndex(db);
+  const merchants: MerchantLine[] = [...spentAt.entries()]
+    .map(([key, spend]) => {
+      const got = actualByMerchant.get(key) ?? 0;
+      const could = best.byMerchant.get(key);
+      return {
+        key,
+        name: spellings.get(key)?.name ?? key,
+        spend,
+        earned: got,
+        best: could?.best ?? 0,
+        gap: Math.max(0, (could?.best ?? 0) - got),
+        bestAccountId: could ? leader(could.on) : undefined,
+      };
+    })
+    .sort((a, b) => b.gap - a.gap || b.spend - a.spend);
+
   const earnedTotal = cards.reduce((n, c) => n + c.earned, 0);
   const top = [...wallet].sort((a, b) =>
     b.rewards.base * b.rewards.pointCents - a.rewards.base * a.rewards.pointCents)[0];
 
   return {
-    from, to, cards, categories,
+    from, to, cards, categories, merchants,
     totals: {
       spend: carded.reduce((n, l) => n + l.amount, 0),
       earned: earnedTotal,

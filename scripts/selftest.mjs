@@ -14228,7 +14228,8 @@ await test("what is set aside is only ever what would have been a debt", () => {
 
 const earnRule = (id, rate, categoryIds, extra = {}) => ({ id, rate, categoryIds, ...extra });
 const cash = (base, rules = []) => ({ pointCents: 1, base, rules });
-const buy = (date, categoryId, dollars) => ({ date, categoryId, amount: dollars * 100 });
+const buy = (date, categoryId, dollars, merchant = "Shop") =>
+  ({ date, categoryId, merchant, amount: dollars * 100 });
 
 await test("a flat card pays its rate on everything", () => {
   const card = cash(2);
@@ -14374,6 +14375,83 @@ await test("what was earned is read off the card the money actually went on", ()
   const food = r.categories.find((c) => c.categoryId === "food");
   assert.equal(food.gap, 20_00);
   assert.equal(food.bestAccountId, "b", "and it names which card that was");
+});
+
+await test("the same money is cut by shop as well as by category", () => {
+  // Cards are not sold by category: one that pays well at a single chain is a
+  // slice of a category in one table and the whole line in the other.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }, { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) }],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 600, extra: { merchant: "Amazon" } },
+      { on: "a", date: "2026-03-02", cat: "food", dollars: 400, extra: { merchant: "Corner Shop" } },
+      { on: "a", date: "2026-03-03", cat: "gas", dollars: 200, extra: { merchant: "Amazon" } },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+
+  const amazon = r.merchants.find((m) => m.name === "Amazon");
+  assert.equal(amazon.spend, 800_00, "both categories, one shop");
+  assert.equal(amazon.earned, 16_00, "2% on all of it, where it actually went");
+  // $600 of food belongs on the 4% card, the $200 of gas does not.
+  assert.equal(amazon.best, 24_00 + 4_00);
+  assert.equal(amazon.gap, 12_00);
+  assert.equal(amazon.bestAccountId, "b", "most of its money wants the grocery card");
+
+  const corner = r.merchants.find((m) => m.name === "Corner Shop");
+  assert.equal(corner.spend, 400_00);
+  assert.equal(corner.gap, 8_00);
+
+  // The invariant that matters: one routing, cut two ways. Both tables have
+  // to add up to the same money, or the page is claiming two different years.
+  const sum = (rows, k) => rows.reduce((n, x) => n + x[k], 0);
+  assert.equal(sum(r.merchants, "spend"), sum(r.categories, "spend"));
+  assert.equal(sum(r.merchants, "spend"), r.totals.spend);
+  assert.equal(sum(r.merchants, "earned"), sum(r.categories, "earned"));
+  assert.equal(sum(r.merchants, "best"), sum(r.categories, "best"));
+  assert.equal(sum(r.merchants, "best"), r.totals.best);
+
+  assert.deepEqual(r.merchants.map((m) => m.name), ["Amazon", "Corner Shop"],
+    "biggest miss first, as the categories are");
+});
+
+await test("and a cap is spent once, however the answer is cut up", () => {
+  // The bug a second routing pass would have introduced. Each shop walked on
+  // its own would hand every one of them a fresh cap, and a wallet with a
+  // thousand-dollar quarterly cap would appear to have one per merchant.
+  const capped = cash(1, [earnRule("r", 5, ["food"], { cap: 1_000_00, capPer: "quarter" })]);
+  const db = walletDB(
+    [{ id: "a", name: "Flat One", rewards: cash(1) }, { id: "b", name: "Capped Five", rewards: capped }],
+    [
+      { on: "a", date: "2026-01-10", cat: "food", dollars: 800, extra: { merchant: "Amazon" } },
+      { on: "a", date: "2026-01-11", cat: "food", dollars: 800, extra: { merchant: "Corner Shop" } },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  const sum = (rows, k) => rows.reduce((n, x) => n + x[k], 0);
+
+  // $1,000 at 5% and the remaining $600 at 1%, once across the whole wallet.
+  assert.equal(r.totals.best, 50_00 + 6_00);
+  assert.equal(sum(r.merchants, "best"), r.totals.best,
+    "the shops add up to the wallet, rather than each getting their own cap");
+  assert.equal(sum(r.merchants, "best"), sum(r.categories, "best"));
+});
+
+await test("one shop spelled two ways is one row", () => {
+  // Grouped the way the rest of the app groups merchants, so the row leads to
+  // the same page the merchants list does, under the spelling that page uses.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 100, extra: { merchant: "Amazon" } },
+      { on: "a", date: "2026-03-02", cat: "food", dollars: 100, extra: { merchant: "amazon" } },
+      { on: "a", date: "2026-03-03", cat: "food", dollars: 100, extra: { merchant: "Amazon" } },
+    ],
+  );
+  const r = M.CD.cardReport(db, ...YEAR);
+  assert.equal(r.merchants.length, 1, "three charges, one shop");
+  assert.equal(r.merchants[0].spend, 300_00);
+  assert.equal(r.merchants[0].name, "Amazon", "named by the commonest spelling, not the last");
 });
 
 await test("a card payment is not a purchase on the card it clears", () => {
