@@ -536,6 +536,50 @@ export async function identifyItem(creds: PlaidCreds, accessToken: string): Prom
   return { institution, logo, domain, itemId };
 }
 
+/**
+ * The two answers behind "why has this stopped", fetched but not interpreted.
+ *
+ * /item/get says how this one connection is faring. /institutions/get_by_id,
+ * asked for status, says how the institution is faring for every Plaid
+ * customer at once. Either on its own is ambiguous; together they are not,
+ * which is the whole reason both are asked for.
+ *
+ * Raw on purpose. The reading is a pure function in src/lib/sync/health.ts,
+ * tested there against made-up outages. A verdict worked out here would only
+ * ever be exercised against whatever the bank happened to be doing that day.
+ * Neither endpoint is billed per call.
+ */
+export async function itemDiagnosis(creds: PlaidCreds, accessToken: string): Promise<{
+  item: unknown;
+  institution: unknown;
+  institutionId?: string;
+  requestId?: string;
+}> {
+  const got = await plaidCall(creds, "/item/get", { access_token: accessToken });
+  const held = got?.item as { institution_id?: string } | undefined;
+  const institutionId = typeof held?.institution_id === "string" ? held.institution_id : undefined;
+
+  // Never fatal. A bank whose status Plaid declines to report still has an
+  // item worth reading, and half an answer beats an error page.
+  //
+  // Status only: the optional metadata flag would add the logo, the colour
+  // and the website, which this call has no use for and which is a base64
+  // image on every press.
+  const institution = institutionId
+    ? await plaidCall(creds, "/institutions/get_by_id", {
+      institution_id: institutionId,
+      country_codes: ["US"],
+      options: { include_status: true },
+    }).catch(() => null)
+    : null;
+
+  // Plaid's own reference for this call, which is the first thing its support
+  // asks for and cannot be recovered afterwards.
+  const requestId = typeof got?.request_id === "string" ? got.request_id : undefined;
+
+  return { item: got, institution, institutionId, requestId };
+}
+
 /** "https://www.chase.com/" → "chase.com" */
 function hostOf(url: string): string | undefined {
   try {

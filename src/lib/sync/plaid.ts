@@ -248,6 +248,17 @@ export const refreshItem = (item: { accessToken: string }): Promise<boolean> =>
 export const reportHistory = (item: { accessToken: string }, since: string): Promise<ItemReach> =>
   postJSON<ItemReach>(PROXY, { action: "report", accessToken: item.accessToken, startDate: since, endDate: today() });
 
+/**
+ * What Plaid says about this connection, and about the bank behind it.
+ *
+ * Both halves raw, because reading them is a pure function that
+ * src/lib/sync/health.ts owns and selftest exercises against outages that
+ * have never happened. Nothing is decided here.
+ */
+export const diagnoseItem = (item: { accessToken: string }): Promise<{
+  item: unknown; institution: unknown; institutionId?: string; requestId?: string;
+}> => postJSON(PROXY, { action: "health", accessToken: item.accessToken });
+
 export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPayload> {
   const raw = await postJSON<SyncResponse>(PROXY, {
     action: "sync",

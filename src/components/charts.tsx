@@ -622,13 +622,33 @@ export function CompareChart({
         {previous.length > 1 ? (
           <path d={path(previous)} fill="none" stroke={color("--muted")} strokeWidth={2} strokeLinejoin="round" opacity={0.65} />
         ) : null}
-        {current.length > 1 ? (
+        {current.length ? (
           <>
+            {/* No area under a single point: a shape needs two corners, and
+                one day's spending is a reading rather than a region. */}
+            {current.length > 1 ? (
+              <path
+                d={`${path(current)} L${x(current[current.length - 1][0]).toFixed(1)},${(padT + innerH).toFixed(1)} L${x(current[0][0]).toFixed(1)},${(padT + innerH).toFixed(1)} Z`}
+                fill={`url(#cmp-${uid})`}
+              />
+            ) : null}
             <path
-              d={`${path(current)} L${x(current[current.length - 1][0]).toFixed(1)},${(padT + innerH).toFixed(1)} L${x(current[0][0]).toFixed(1)},${(padT + innerH).toFixed(1)} Z`}
-              fill={`url(#cmp-${uid})`}
+              /**
+               * A single point repeated, so that one day into a month there
+               * is still something to see.
+               *
+               * An SVG path of one point draws nothing at all, so this was
+               * gated on having two and the first of every month showed last
+               * month's line alone under a legend promising two of them. A
+               * zero-length line is drawn by a round cap as a dot, which is
+               * what one day of spending honestly looks like.
+               */
+              d={current.length > 1
+                ? path(current)
+                : `${path(current)} L${x(current[0][0]).toFixed(1)},${y(current[0][1]).toFixed(1)}`}
+              fill="none" stroke={color(tone)} strokeWidth={2.5}
+              strokeLinejoin="round" strokeLinecap="round"
             />
-            <path d={path(current)} fill="none" stroke={color(tone)} strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round" />
           </>
         ) : null}
         {tip ? (

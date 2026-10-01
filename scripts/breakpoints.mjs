@@ -45,7 +45,8 @@ let chromium;
  * one run is checking widths and screens that a given change cannot reach.
  * Mutation-testing a single dialog meant paying for all of it once per
  * mutation, which is how verifying one screen came to cost an hour of
- * wall clock. `--only=detail` runs the sections whose name contains "detail"
+ * wall clock. `--only=detail` runs the sections whose name contains "detail",
+ * and `--only=detail,goals` runs the sections matching either
  * and skips the rest.
  *
  * A filtered run is never allowed to look like a full one: what was skipped is
@@ -53,9 +54,17 @@ let chromium;
  * same sentence at a glance and only one of them means the app is fine.
  */
 const ONLY = (process.argv.slice(2).find((a) => a.startsWith("--only=")) ?? "").slice("--only=".length);
+/**
+ * Comma-separated, so a full run can be split across several invocations.
+ *
+ * The whole suite takes longer than some harnesses will hold a command open
+ * for, and "run it in three batches" is otherwise "run it three times and
+ * throw two of the answers away".
+ */
+const WANTED = ONLY.split(",").map((s) => s.trim()).filter(Boolean);
 const skipped = [];
 const want = (name) => {
-  if (!ONLY || name.includes(ONLY)) return true;
+  if (!WANTED.length || WANTED.some((w) => name.includes(w))) return true;
   skipped.push(name);
   return false;
 };
@@ -1474,12 +1483,16 @@ try {
     // The exact cadence counts are checked in scripts/selftest.mjs.
     const [month, year] = top;
     const ratio = month.total > 0 ? year.total / month.total : 0;
-    // The lower end allows a cent: both totals are rounded to whole cents, so
-    // twelve times a monthly figure and the yearly one drawn beside it can
-    // land a penny apart without anything being wrong. It is thirteen
-    // payments a year this is watching for, not a rounding step.
+    // Upward only, and deliberately. The thing worth catching is a walk that
+    // steps thirty days instead of a month, which gives thirteen payments a
+    // year and a total eight percent high. The lower end cannot be pinned at
+    // twelve: the demo has a quarterly bill, so a month that happens to
+    // contain it carries a quarter of a year's worth in its own figure and
+    // the ratio drops below twelve through nothing being wrong at all. It
+    // did, in October, and the exact cadence counts are checked against the
+    // arithmetic in scripts/selftest.mjs rather than against the calendar.
     check("the year is twelve months of bills, not thirteen",
-      ratio > 11.99 && ratio < 12.5,
+      ratio > 9 && ratio < 12.5,
       `${year.total} is ${ratio.toFixed(2)} of ${month.total}`);
     await tiles.close();
 
@@ -1514,10 +1527,27 @@ try {
         const now = new Date();
         const last = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
         const on = String(Math.min(now.getDate() + 1, last)).padStart(2, "0");
+        const month = now.toISOString().slice(0, 7);
+        // The other end of the same lesson. A merchant with nothing behind it
+        // is never ticked, which held the unpaid half of these checks on the
+        // 31st; on the 1st the demo has paid nothing yet and the paid half
+        // failed instead. So one bill is given a charge that matches it, on
+        // the first of this month, and is therefore ticked on every date the
+        // suite can run.
+        const paidOn = `${month}-01`;
         db.recurring = [...(db.recurring ?? []), {
           id: "r_ahead", merchant: "Ahead Insurance", categoryId: db.categories[0].id,
           accountId: db.accounts[0].id, amount: -120_00, cadence: "monthly",
-          nextDate: `${now.toISOString().slice(0, 7)}-${on}`, kind: "bill", detected: false,
+          nextDate: `${month}-${on}`, kind: "bill", detected: false,
+        }, {
+          id: "r_settled", merchant: "Settled Water", categoryId: db.categories[0].id,
+          accountId: db.accounts[0].id, amount: -75_00, cadence: "monthly",
+          nextDate: paidOn, kind: "bill", detected: false,
+        }];
+        db.transactions = [...db.transactions, {
+          id: "t_settled", accountId: db.accounts[0].id, date: paidOn,
+          merchant: "Settled Water", amount: -75_00, categoryId: db.categories[0].id,
+          tags: [], pending: false, reviewed: true, hideFromReports: false, createdAt: paidOn,
         }];
         return JSON.stringify(db);
       });
@@ -1621,16 +1651,30 @@ try {
       cal.pos === cal.posText, `${cal.pos} against ${cal.posText}`);
     // The pair is redefined for the light theme, and a mark tuned only against
     // the dark one goes unnoticed until somebody switches.
+    // The income colours are sampled in the light theme as well, not carried
+    // over from the dark one. The pair is redefined per theme, so comparing a
+    // light dot against a dark token only worked while the first dot in the
+    // month happened to be a bill: on a month opening with an income mark it
+    // picked out the light theme's own green and called it the bill colour.
     const inLight = await wide.evaluate(() => {
       const root = document.documentElement;
       const was = root.getAttribute("data-theme");
       root.setAttribute("data-theme", "light");
+      const token = (name) => {
+        const el = document.createElement("span");
+        el.style.color = getComputedStyle(root).getPropertyValue(name).trim();
+        document.body.appendChild(el);
+        const got = getComputedStyle(el).color;
+        el.remove();
+        return got;
+      };
+      const pos = token("--pos");
       const dots = [...document.querySelectorAll(".cal-name .dot")]
         .map((d) => getComputedStyle(d).backgroundColor);
       if (was) root.setAttribute("data-theme", was); else root.removeAttribute("data-theme");
-      return [...new Set(dots)];
+      return { dots: [...new Set(dots)], pos };
     });
-    const lightBill = inLight.find((c) => c !== cal.pos && c !== cal.posText);
+    const lightBill = inLight.dots.find((c) => c !== inLight.pos);
     check("in the light theme too", lightBill !== undefined && reads(lightBill) === "red",
       `${lightBill} reads ${lightBill ? reads(lightBill) : "nothing"}`);
     // A dot small enough to be mostly edge arrives washed out whatever colour
@@ -3489,21 +3533,35 @@ try {
       `${nw.label ? `labelled "${nw.label}"` : "no label"}, ${nw.spans} periods, ${nw.axis} axis labels`);
 
     // Spending: this month stops at today, last month runs the whole month.
+    //
+    // Every figure read out defensively. On the first of a month this month's
+    // line is a single point or no path at all, and destructuring two paths
+    // out of one threw inside the page — which did not fail this check, it
+    // took the whole run down with an uncaught exception and skipped every
+    // section after it. A check that cannot be made is a check that says so.
     const spend = await dash.evaluate(() => {
       const card = [...document.querySelectorAll(".card")].find((c) => /^Spending/.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!card) return { lines: 0, priorEnd: null, nowEnd: null, keys: [] };
       const paths = [...card.querySelectorAll("path[stroke]")];
-      const xs = (d) => [...d.matchAll(/[ML](-?[\d.]+),/g)].map((m) => parseFloat(m[1]));
-      const [prior, now] = paths.map((p) => xs(p.getAttribute("d")));
+      const xs = (d) => [...(d ?? "").matchAll(/[ML](-?[\d.]+),/g)].map((m) => parseFloat(m[1]));
+      const end = (p) => {
+        const got = p ? xs(p.getAttribute("d")) : [];
+        return got.length ? Math.max(...got) : null;
+      };
       return {
         lines: paths.length,
-        priorEnd: Math.max(...prior),
-        nowEnd: Math.max(...now),
+        priorEnd: end(paths[0]),
+        nowEnd: end(paths[1]),
         keys: [...card.querySelectorAll(".cmp-key span")].map((e) => e.innerText.trim()),
       };
     });
     check("spending draws both months on one scale", spend.lines === 2, `${spend.lines} lines`);
-    check("this month stops short of last month, because the month is not over",
-      spend.nowEnd < spend.priorEnd, `this ${spend.nowEnd} vs last ${spend.priorEnd}`);
+    // Only when there is a line to measure. On the first of the month there
+    // is one day of spending and nothing meaningful to compare the length of.
+    if (spend.priorEnd !== null && spend.nowEnd !== null) {
+      check("this month stops short of last month, because the month is not over",
+        spend.nowEnd < spend.priorEnd, `this ${spend.nowEnd} vs last ${spend.priorEnd}`);
+    }
     check("and says which line is which",
       spend.keys.join(" / ") === "This month / Last month", spend.keys.join(" / "));
 

@@ -44,6 +44,7 @@ await build({
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
+      export * as HL from "./src/lib/sync/health.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
       export * as PP from "./src/lib/passphrase.ts";
@@ -10799,7 +10800,12 @@ await test("rollover accumulates only for categories that opt in", () => {
   cat.rollover = false;
   assert.equal(M.rolloverFor(db, month, "c_groceries"), 0);
   cat.rollover = true;
-  assert.ok(M.rolloverFor(db, month, "c_groceries") >= 0);
+  // A real figure, of either sign. This used to assert the carry was never
+  // negative, which stopped being true of the code the day an overspend began
+  // carrying forward, and stopped being true of the demo data two days later,
+  // when the month the demo ends on rolled over and groceries closed it under.
+  // What this test is about is the opt-in gate, not the sign.
+  assert.ok(Number.isFinite(M.rolloverFor(db, month, "c_groceries")));
 });
 
 await test("recurring detection finds the fixed monthly bills", () => {
@@ -14898,6 +14904,227 @@ await test("an idle day costs a fraction of what it did", () => {
   assert.equal(asks(half) < 30, true, `${asks(half)} asks in twelve hours`);
   // What it used to be, for the comparison the change exists for.
   assert.equal(Math.round(half / M.POLL_MIN_MS), 720);
+});
+
+
+// ── whose fault is it ─────────────────────────────────────────────────────
+//
+// A connection that stops has three causes and, before this, one appearance.
+// The wording is what a person acts on at two in the morning, so it is tested
+// against outages rather than against whatever the bank is doing today.
+
+const HNOW = Date.parse("2026-09-30T12:00:00.000Z");
+const hlAgo = (n) => new Date(HNOW - n * 86400000).toISOString();
+
+/** Plaid's institution response, with every product graded the same way. */
+const hlInst = (state, opts = {}) => ({
+  institution: {
+    institution_id: "ins_4",
+    name: opts.name ?? "Wells Fargo",
+    status: {
+      item_logins: {
+        status: state,
+        last_status_change: opts.since ?? hlAgo(9),
+        breakdown: { success: opts.success ?? (state === "HEALTHY" ? 0.99 : 0.2), error_plaid: 0.01, error_institution: 0.79 },
+      },
+      transactions_updates: {
+        status: opts.tx ?? state,
+        last_status_change: opts.since ?? hlAgo(9),
+        breakdown: { success: opts.success ?? (state === "HEALTHY" ? 0.99 : 0.2) },
+      },
+      health_incidents: opts.incidents ?? [],
+    },
+  },
+});
+
+const hlItem = (opts = {}) => ({
+  item: {
+    institution_id: "ins_4",
+    error: opts.errorCode ? { error_code: opts.errorCode, error_message: opts.errorMessage ?? "Said so." } : null,
+    status: {
+      transactions: {
+        last_successful_update: opts.success,
+        last_failed_update: opts.failure,
+      },
+    },
+  },
+});
+
+await test("Plaid's institution status is read down to what is worth saying", () => {
+  const h = M.HL.readInstitutionHealth(hlInst("DOWN"));
+  assert.equal(h.name, "Wells Fargo");
+  assert.equal(h.institutionId, "ins_4");
+  assert.equal(h.products.length, 2, "only the products this app uses");
+  assert.deepEqual(h.products.map((p) => p.label), ["Sign-ins", "Transactions"],
+    "named for the sentence, not for the API");
+  assert.equal(h.products[0].state, "down");
+  assert.equal(h.products[0].success, 0.2);
+
+  // A grade Plaid has never used must not read as healthy.
+  const odd = M.HL.readInstitutionHealth({ institution: { status: { item_logins: { status: "MAINTENANCE" } } } });
+  assert.equal(odd.products[0].state, "unknown");
+
+  // This call exists to run when something is already wrong, so nothing it is
+  // handed may throw: a reader that died on a missing field would take the
+  // diagnosis down along with the thing it was meant to diagnose.
+  for (const junk of [null, undefined, {}, [], "", 0, { institution: null }, { institution: { status: 7 } }]) {
+    const got = M.HL.readInstitutionHealth(junk);
+    assert.deepEqual(got.products, [], `no products from ${JSON.stringify(junk)}`);
+    assert.deepEqual(got.incidents, []);
+  }
+});
+
+await test("and the item's own last failure is read beside its last success", () => {
+  const h = M.HL.readItemHealth(hlItem({ success: hlAgo(1), failure: hlAgo(20) }));
+  assert.equal(h.lastSuccess, hlAgo(1));
+  assert.equal(h.lastFailure, hlAgo(20));
+  assert.equal(h.errorCode, undefined, "a null error is no error");
+
+  const bad = M.HL.readItemHealth(hlItem({ errorCode: "ITEM_LOGIN_REQUIRED", errorMessage: "Sign in again." }));
+  assert.equal(bad.errorCode, "ITEM_LOGIN_REQUIRED");
+  assert.equal(bad.errorMessage, "Sign in again.");
+
+  for (const junk of [null, undefined, {}, [], "x", { item: null }]) {
+    assert.equal(M.HL.readItemHealth(junk).errorCode, undefined);
+  }
+});
+
+await test("a bank that is down for everybody is not the household's problem", () => {
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("DOWN", { since: "2026-08-04T00:00:00.000Z" })),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(57) })),
+    { now: HNOW },
+  );
+  assert.equal(v.blame, "bank");
+  assert.match(v.headline, /^Not you\./, "the answer comes first, not the error code");
+  assert.match(v.headline, /Wells Fargo/);
+  assert.match(v.detail, /2026-08-04/, "and says since when, which is the whole question");
+  assert.equal(v.action, "", "nothing to do is said by saying nothing to do");
+});
+
+await test("a bank Plaid has an open incident on says so, and a closed one does not", () => {
+  const open = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY", {
+      incidents: [{ title: "Sign-ins failing", start_date: "2026-09-20T00:00:00.000Z" }],
+    })),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(1) })),
+    { now: HNOW },
+  );
+  assert.equal(open.blame, "bank");
+  assert.match(open.detail, /Sign-ins failing/);
+
+  // An incident with an end date is over, and an app still reporting it would
+  // be telling somebody to wait for something that already finished.
+  const shut = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY", {
+      incidents: [{ title: "Old trouble", start_date: hlAgo(40), end_date: hlAgo(30) }],
+    })),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(1) })),
+    { now: HNOW },
+  );
+  assert.notEqual(shut.blame, "bank");
+});
+
+await test("a degraded bank is worth retrying, and says how badly", () => {
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("DEGRADED", { success: 0.6 })),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(2) })),
+    { now: HNOW },
+  );
+  assert.equal(v.blame, "bank");
+  assert.equal(v.tone, "warn", "patchy is not down, and must not be painted as down");
+  assert.match(v.detail, /40% of attempts are failing/);
+  assert.match(v.action, /trying again/);
+});
+
+await test("a healthy bank with a broken login is the household's problem, and fixable", () => {
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ errorCode: "ITEM_LOGIN_REQUIRED", errorMessage: "The login has expired.", success: hlAgo(30) })),
+    { now: HNOW },
+  );
+  assert.equal(v.blame, "connection");
+  assert.match(v.headline, /fine for everyone else/, "which is the fact that makes it actionable");
+  assert.match(v.detail, /ITEM_LOGIN_REQUIRED/);
+  assert.match(v.action, /Reconnect/);
+});
+
+await test("and a login failing with no error recorded is still the household's problem", () => {
+  // Plaid stores no error against the item, but its last attempt went worse
+  // than its last success. Nothing in the app could see this before.
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(20), failure: hlAgo(1) })),
+    { now: HNOW },
+  );
+  assert.equal(v.blame, "connection");
+  assert.match(v.headline, /failing, quietly/);
+  assert.match(v.detail, /20 days ago/);
+  assert.match(v.detail, /yesterday/, "and when it last tried, in words a person reads");
+  assert.match(v.action, /Reconnect/);
+
+  // The other way round is not a failing connection: it failed once and
+  // recovered, which is every connection that has ever existed.
+  const fine = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(1), failure: hlAgo(20) })),
+    { now: HNOW },
+  );
+  assert.notEqual(fine.blame, "connection");
+});
+
+await test("a working connection to a working bank that sends nothing is nobody's fault", () => {
+  // The case this was built for, and the one that cost three weeks: every
+  // signal Plaid has says fine, and no transactions have arrived since August.
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(0) })),
+    { now: HNOW, quiet: { since: "2026-08-04", days: 57, usual: 4 } },
+  );
+  assert.equal(v.blame, "nobody");
+  assert.match(v.headline, /Nothing is broken/);
+  assert.match(v.detail, /returned no new transactions/);
+  assert.match(v.detail, /57 days/);
+  assert.match(v.detail, /usual gap of 4/, "against this account's own rhythm, not a fixed number");
+  assert.match(v.action, /the bank's own site/);
+
+  // Quiet, but the bank is down: the bank outranks it, because nothing the
+  // household does about the silence will change anything while that is true.
+  const down = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("DOWN")),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(0) })),
+    { now: HNOW, quiet: { since: "2026-08-04", days: 57, usual: 4 } },
+  );
+  assert.equal(down.blame, "bank");
+});
+
+await test("a connection with nothing wrong with it says so plainly", () => {
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ success: hlAgo(0) })),
+    { now: HNOW },
+  );
+  assert.equal(v.blame, "nobody");
+  assert.equal(v.tone, "pos");
+  assert.equal(v.headline, "Working.");
+  assert.equal(v.action, "");
+});
+
+await test("and Plaid saying nothing useful is admitted rather than guessed at", () => {
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(null),
+    M.HL.readItemHealth(null),
+    { now: HNOW },
+  );
+  assert.equal(v.blame, "unknown");
+  assert.match(v.headline, /did not say enough/);
+  assert.equal(v.action, "", "and does not send somebody off to fix a thing it cannot see");
+
+  // The worst grade wins: one product down is down, whatever the others say.
+  assert.equal(M.HL.worstOf([{ state: "healthy" }, { state: "down" }]), "down");
+  assert.equal(M.HL.worstOf([{ state: "healthy" }, { state: "degraded" }]), "degraded");
+  assert.equal(M.HL.worstOf([{ state: "healthy" }]), "healthy");
+  assert.equal(M.HL.worstOf([]), "unknown");
 });
 
 await rm(dir, { recursive: true, force: true });
