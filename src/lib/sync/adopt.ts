@@ -1,7 +1,7 @@
 import type { Account, DB, ISODate } from "../../types.js";
 import { addDays } from "../date.js";
 import type { ItemKind } from "./kind.js";
-import { carriesHoldings } from "./kind.js";
+import { carriesHoldings, carriesTransactions } from "./kind.js";
 
 /**
  * Moving an account from one provider to another without losing it.
@@ -114,13 +114,22 @@ const within = (a: readonly string[], b: readonly string[]): boolean => a.every(
 export function itemFor<T extends { institution: string; kind: ItemKind }>(
   items: readonly T[],
   institution: string,
-  kind: ItemKind = "bank",
+  /**
+   * What the connection has to carry, rather than what it is called.
+   *
+   * This used to compare kinds exactly, which stopped being the same question
+   * the day one connection could carry both: a login already pulling a bank's
+   * transactions and its holdings is not of kind "bank", so looking for a bank
+   * would walk straight past it and offer to open a second connection to the
+   * institution it was already connected to.
+   */
+  needs: "transactions" | "investments" = "transactions",
 ): T | undefined {
   const want = core(institution);
   // Too little to be a name. Matching on it would match everything.
   if (want.join("").length < 4) return undefined;
   return items.find((i) => {
-    if (i.kind !== kind) return false;
+    if (!(needs === "transactions" ? carriesTransactions(i.kind) : carriesHoldings(i.kind))) return false;
     const held = core(i.institution);
     if (held.join("").length < 4) return false;
     return within(want, held) || within(held, want);

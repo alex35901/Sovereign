@@ -147,6 +147,9 @@ function Diagnosis({ account, db }: { account: Account; db: DB }) {
 export function ConnectionCard({ account }: { account: Account }) {
   const db = useDB();
   const c = connectionOf(account, db);
+  // Said it was fed by Plaid, and nothing is feeding it: the connection it
+  // came in on has been disconnected.
+  const orphaned = account.syncSource === "plaid" && !itemFor(account, db);
 
   return (
     <Card pad={false}>
@@ -184,7 +187,13 @@ export function ConnectionCard({ account }: { account: Account }) {
           that without asking the server, and the link endpoint already answers
           "PLAID_CLIENT_ID and PLAID_SECRET are not set" in words. */}
       {account.syncSource === "plaid" ? <Diagnosis account={account} db={db} /> : null}
-      {account.syncSource !== "plaid" ? <SwitchToPlaid account={account} /> : null}
+      {/* Offered to an account nothing is feeding, which now includes one
+          left behind by a connection that was disconnected. Those keep saying
+          they are fed by Plaid, because that is what they were, and without
+          this the one path that points an existing account at a connection,
+          keeping its history rather than filing a second copy beside it, was
+          hidden from exactly the accounts that needed it most. */}
+      {account.syncSource !== "plaid" || orphaned ? <SwitchToPlaid account={account} /> : null}
     </Card>
   );
 }

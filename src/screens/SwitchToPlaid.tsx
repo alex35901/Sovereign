@@ -48,7 +48,7 @@ export function SwitchToPlaid({ account }: { account: Account }) {
    * a household moving its chequing and its savings across should end up with
    * one connection, not two of the plan's ten fighting over the same accounts.
    */
-  const held = itemFor(db.settings.plaidItems ?? [], account.institution ?? "", "bank");
+  const held = itemFor(db.settings.plaidItems ?? [], account.institution ?? "", "transactions");
 
   /**
    * @param anotherLogin skips the connection already held and opens Plaid, for

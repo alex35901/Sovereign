@@ -169,7 +169,7 @@ export function PlaidCard() {
       // second one for the same bank is usually a mistake and always costs
       // another of the plan's ten. Said rather than prevented: two logins at
       // one institution is a real arrangement, and only the household knows.
-      const twin = itemFor(items, item.institution, kind);
+      const twin = itemFor(items, item.institution, carriesTransactions(kind) ? "transactions" : "investments");
       actions.patchSettings({ plaidItems: [...items, item] });
       notify(`Connected ${item.institution}. Syncing…`);
       if (twin) {
@@ -523,7 +523,7 @@ export function PlaidCard() {
     // connections with nothing in the app ever mentioning it again. Nothing
     // waits on it and nothing fails if Plaid refuses.
     void releaseItem(item);
-    notify(`Disconnected ${item.institution}. Its accounts and history stay put.`);
+    notify(`Disconnected ${item.institution}. Its accounts and every transaction stay put, and connecting it again picks them back up by name.`);
   };
 
   return (

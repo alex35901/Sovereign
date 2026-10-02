@@ -15446,6 +15446,25 @@ await test("a connection says what it is missing, and says nothing when it is wh
   assert.equal(M.KD.kindLabel("investment"), "investments");
 });
 
+await test("a connection carrying both is found when a bank is wanted", () => {
+  // Looking for the login a bank's accounts should move onto used to compare
+  // kinds exactly, which walked straight past a connection already pulling
+  // that bank's transactions and its holdings, and offered to open a second
+  // connection to an institution already connected. On a plan with ten that
+  // is a slot spent on a duplicate.
+  const items = [
+    { institution: "Wells Fargo", kind: "both", itemId: "i1" },
+    { institution: "Vanguard", kind: "investment", itemId: "i2" },
+  ];
+  assert.equal(M.itemFor(items, "Wells Fargo", "transactions")?.itemId, "i1");
+  assert.equal(M.itemFor(items, "Wells Fargo", "investments")?.itemId, "i1",
+    "and for holdings too, because it carries those as well");
+
+  // One carrying only the other thing is still not the answer.
+  assert.equal(M.itemFor(items, "Vanguard", "transactions"), undefined);
+  assert.equal(M.itemFor(items, "Vanguard", "investments")?.itemId, "i2");
+});
+
 await test("positions behind a connection that fetches them are not a misreading", () => {
   // The warning that tells somebody their holdings are never asked for has to
   // stop once they are. It is keyed on whether this connection fetches them,
