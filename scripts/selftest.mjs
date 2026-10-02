@@ -45,7 +45,7 @@ await build({
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
       export { filesIt, UNCATEGORIZED } from "./src/lib/categories.ts";
-      export { reels, rollMs, wheelMs, SPINS } from "./src/components/Rolling.tsx";
+      export { ease, valueAt, worthRolling, REVEAL_MS } from "./src/components/Rolling.tsx";
       export * as OF from "./src/lib/hopper/offers.ts";
       export * as HL from "./src/lib/sync/health.ts";
       export * as B from "./src/lib/buckets.ts";
@@ -14867,87 +14867,87 @@ await test("an answer that is not a list at all is refused", () => {
   assert.deepEqual(M.OF.readOffers('{}').deals, []);
 });
 
-/* ── the figure rolling into place ─────────────────────────────────────── */
+/* ── the figure following the pen as its chart is drawn ────────────────── */
 
-const turning = (slots) => slots.map((s) => (s.to === undefined ? "." : "o")).join("");
-
-await test("only the digits that changed turn", () => {
-  // The rule as asked for: 10,056 to 10,775 moves the last three and leaves
-  // the ten alone. A wheel spinning under a figure that did not change is
-  // saying something happened there that did not.
-  const s = M.reels("10,056", "10,775");
-  assert.equal(turning(s), "...ooo");
-  assert.equal(s.map((x) => x.ch).join(""), "10,775", "and it still reads as the new figure");
-
-  // Where it lands: two whole turns, then the digit.
-  assert.deepEqual(s[3], { ch: "7", from: 0, to: M.SPINS * 10 + 7 });
-  assert.deepEqual(s[4], { ch: "7", from: 5, to: M.SPINS * 10 + 7 });
-  assert.deepEqual(s[5], { ch: "5", from: 6, to: M.SPINS * 10 + 5 });
+await test("the figure opens where the chart opens and lands where it lands", () => {
+  const line = [100, 200, 400];
+  assert.equal(M.valueAt(line, 0), 100, "the first point, not today's figure");
+  assert.equal(M.valueAt(line, 1), 400);
+  // Both ends exact: a walk that stopped a pound short would leave the
+  // headline disagreeing with itself for as long as anybody looked at it.
+  assert.equal(M.valueAt(line, 1.5), 400, "and never past the end");
+  assert.equal(M.valueAt(line, -1), 100);
 });
 
-await test("and the separators stand still while the digits turn past them", () => {
-  const s = M.reels("$1,056.00", "$9,775.00");
-  // The comma and the point are not wheels, whatever is going on either side.
-  assert.equal(turning(s), ".o.ooo.oo");
-  assert.equal(s.map((x) => x.ch).join(""), "$9,775.00");
+await test("and reads the line between its points rather than snapping to them", () => {
+  // The line is drawn straight between the points, so the pen really is at
+  // the figure this gives: half way between two days is half way up the step.
+  assert.equal(M.valueAt([0, 100], 0.5), 50);
+  assert.equal(M.valueAt([0, 100, 300], 0.5), 100, "the middle point itself");
+  assert.equal(M.valueAt([0, 100, 300], 0.75), 200);
+
+  // The shapes a series can arrive in, none of which take the headline down.
+  assert.equal(M.valueAt([42], 0.5), 42);
+  assert.equal(M.valueAt([], 0.5), 0);
 });
 
-await test("everything below the first change turns, as the lower wheels of one do", () => {
-  // Including digits that happen to come back to themselves. The hundreds
-  // moving and the units sitting still is not what an odometer looks like.
-  const s = M.reels("10,056", "10,756");
-  assert.equal(turning(s), "...ooo");
-  assert.equal(s[4].from, 5);
-  assert.equal(s[4].to, M.SPINS * 10 + 5, "a full turn back to where it was");
+await test("the digits that are not changing do not move", () => {
+  // The whole point, and it falls out of reading the real series rather than
+  // being a rule imposed on top: a month that ran from 10,056 to 10,775 never
+  // shows a figure that does not begin "$10,", so nothing flickers there.
+  const line = [10_056_00, 10_300_00, 10_775_00];
+  const seen = new Set();
+  for (let i = 0; i <= 200; i++) {
+    seen.add(M.fmt(Math.round(M.valueAt(line, M.ease(i / 200)))).slice(0, 4));
+  }
+  assert.deepEqual([...seen], ["$10,"], `saw ${[...seen].join(", ")}`);
+
+  // And the column that is changing really does change, or the check above
+  // would pass just as well on a figure that never moved at all.
+  const hundreds = new Set();
+  for (let i = 0; i <= 200; i++) {
+    hundreds.add(M.fmt(Math.round(M.valueAt(line, M.ease(i / 200)))).slice(4, 5));
+  }
+  assert.ok(hundreds.size > 3, `only ${hundreds.size} values in the hundreds column`);
 });
 
-await test("a figure that gained a digit is lined up from the right", () => {
-  // Comparing from the left would call every column changed, because they all
-  // shifted along. From the right, only what really moved moves.
-  const s = M.reels("9,999", "10,001");
-  assert.equal(s.map((x) => x.ch).join(""), "10,001");
-  assert.equal(turning(s), "oo.ooo", "all of it, which is the truth here");
-
-  // And one that shrank is read off its own units, not off its first digit.
-  // Lined up from the left, the hundreds wheel here would start on the 1 of
-  // 1,500 rather than on the 5 that was actually in that column.
-  const back = M.reels("$1,500.00", "$500.00");
-  assert.equal(back.map((x) => x.ch).join(""), "$500.00");
-  assert.equal(back[1].from, 5, "the hundreds wheel starts where the hundreds were");
-  assert.equal(back[2].from, 0);
-  assert.equal(back[3].from, 0);
-  assert.ok(back.every((x) => x.from === undefined || (x.from >= 0 && x.from <= 9)),
-    "every wheel starts on a real digit");
+await test("it follows the wipe's own curve, so it sits under the pen", () => {
+  // Reading the line at a fraction of the elapsed time rather than of the
+  // distance covered would put the figure ahead of the pen through the first
+  // half of the draw and behind it through the second.
+  assert.equal(M.ease(0), 0);
+  assert.equal(M.ease(1), 1);
+  assert.ok(Math.abs(M.ease(0.5) - 0.5) < 0.01, `${M.ease(0.5)} half way`);
+  // Eased at both ends: slower off the mark and into the stop than through
+  // the middle, which is what the chart's own wipe does.
+  assert.ok(M.ease(0.1) < 0.1, `${M.ease(0.1)}`);
+  assert.ok(M.ease(0.9) > 0.9, `${M.ease(0.9)}`);
+  // Never backwards, whatever it is handed.
+  let last = -1;
+  for (let i = 0; i <= 100; i++) {
+    const v = M.ease(i / 100);
+    assert.ok(v >= last, `fell back at ${i}`);
+    last = v;
+  }
+  assert.equal(M.ease(-5), 0);
+  assert.equal(M.ease(5), 1);
 });
 
-await test("nothing turns when nothing changed", () => {
-  const s = M.reels("$42.00", "$42.00");
-  assert.equal(turning(s), "......");
-  assert.equal(M.rollMs(s), 0, "and a roll of no wheels takes no time");
+await test("a line with nothing to count does not count", () => {
+  // A flat month, a single point, or no series at all: a figure walking from
+  // itself to itself is movement for its own sake.
+  assert.equal(M.worthRolling([500, 500, 500]), false);
+  assert.equal(M.worthRolling([500]), false);
+  assert.equal(M.worthRolling([]), false);
+  assert.equal(M.worthRolling([500, 501]), true);
 });
 
-await test("the roll is over before the line it accompanies is drawn", () => {
-  // The wipe is two seconds. A figure still spinning after its chart has
-  // finished is the chart waiting for the number rather than the other way
-  // round, which is the wrong way round.
-  const many = M.reels("$0.00", "$9,876,543.21");
-  assert.ok(M.rollMs(many) <= 1900, `${M.rollMs(many)}ms`);
-  assert.ok(M.rollMs(many) > 0);
-
-  // Including the figure nobody has, which is what the ceiling is for: each
-  // wheel takes a little longer than the one on its left, and without a
-  // ceiling a long enough figure would still be turning a second after its
-  // chart had settled.
-  const absurd = M.reels("$0.00", "$1,234,567,890,123.45");
-  assert.ok(absurd.filter((x) => x.to !== undefined).length >= 13, "enough wheels to reach it");
-  assert.equal(M.rollMs(absurd), 1900, "capped at the length of the wipe");
-
-  // The leftmost settles first and the units last, so it reads as settling
-  // rather than as everything stopping at once.
-  const n = many.filter((x) => x.to !== undefined).length;
-  assert.ok(M.wheelMs(0, n) < M.wheelMs(n - 1, n));
-  assert.equal(Math.round(M.wheelMs(n - 1, n)), M.rollMs(many), "the last one defines the length");
+await test("the walk is as long as the wipe it follows", () => {
+  // The same two seconds as chart-reveal in index.css. A figure that finished
+  // first would stop dead under a line still being drawn.
+  assert.equal(M.REVEAL_MS, 2000);
 });
+
 
 /* ── choosing a category is the review ─────────────────────────────────── */
 

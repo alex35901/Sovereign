@@ -1628,47 +1628,24 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 /* ── charts arriving ──────────────────────────────────────────────────── */
 
-/* ── the figure rolling into place while its chart draws ──
-   One wheel per digit that changed. The strip of numerals is pseudo-element
-   content on purpose: it is three times through 0 to 9 and would otherwise be
-   read out, copied and asserted on as part of the figure, and a pseudo
-   element's content is none of those things. The real character stays in the
-   span, merely invisible, so what the figure says never depends on whether it
-   has finished moving.
-
-   The line height is pinned here rather than inherited, because the wheel
-   steps by exactly one line and the step has to be a number this file knows. */
-.rolling { --reel-line: 1.15em; }
-.reel {
-  display: inline-block; overflow: hidden;
-  height: var(--reel-line); line-height: var(--reel-line);
-  /* A clipping inline-block puts its baseline at its bottom edge, so the whole
-     figure would otherwise ride up by the depth of a descender. Every
-     character is one of these, so one nudge puts all of them back together. */
-  vertical-align: -0.23em;
+/* ── the figure following the pen as its chart is drawn ──
+   What is shown while it walks is pseudo-element content, set a frame at a
+   time from a custom property. The figure itself stays in the span the whole
+   way: a pseudo element is read out by nothing, copied by nothing and
+   asserted on by nothing, so what this says and what can be taken off it
+   cannot disagree part way through. */
+.rolling-on { position: relative; color: transparent; }
+.rolling-on::before {
+  content: var(--roll-text, "");
+  position: absolute; left: 0; top: 0; white-space: pre;
+  color: var(--text);
 }
-.reel .reel-end { opacity: 0; }
-.reel.turn::before {
-  /* Each newline written "\A " with the space. A CSS escape runs until it has
-     six hex digits or meets whitespace, so "\A1" is not a newline and a one:
-     it is U+00A1. Without the spaces every other digit vanishes into an
-     upside-down exclamation mark and the wheels show nothing at all. */
-  content: "0\A 1\A 2\A 3\A 4\A 5\A 6\A 7\A 8\A 9\A 0\A 1\A 2\A 3\A 4\A 5\A 6\A 7\A 8\A 9\A 0\A 1\A 2\A 3\A 4\A 5\A 6\A 7\A 8\A 9\A";
-  position: absolute; left: 0; top: 0;
-  white-space: pre; line-height: var(--reel-line);
-  animation: reel-roll var(--reel-ms) cubic-bezier(0.22, 0.75, 0.2, 1) both;
-}
-.reel.turn { position: relative; }
-@keyframes reel-roll {
-  from { transform: translateY(calc(var(--reel-from) * var(--reel-line) * -1)); }
-  to { transform: translateY(calc(var(--reel-to) * var(--reel-line) * -1)); }
-}
-/* Asked for less of this: the figure is simply its figure, at once. The
-   component mounts no wheel at all under the setting, so there is nothing here
+/* Asked for less movement: the figure is simply its figure, at once. The
+   component starts no walk at all under the setting, so there is nothing here
    to switch off; this is the belt to that braces. */
 @media (prefers-reduced-motion: reduce) {
-  .reel.turn::before { display: none; }
-  .reel .reel-end { opacity: 1; }
+  .rolling-on { color: inherit; }
+  .rolling-on::before { display: none; }
 }
 
 /* The wipe that draws a chart in, left to right. Scaled rather than resized:

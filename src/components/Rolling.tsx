@@ -1,160 +1,168 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useMediaQuery } from "../lib/media";
 import { cx } from "./ui";
 
 /**
- * The headline figure, rolled into place like an odometer while its chart
- * draws itself in.
+ * The headline figure, following the pen as its chart is drawn.
  *
- * The companion to Reveal in charts.tsx, and it runs off the same signal: when
- * the series changes the line is wiped in again, and the number above it
- * should arrive the same way rather than snapping to its answer a second and a
- * half before the line gets there.
+ * The companion to Reveal in charts.tsx, and it runs off the same signal and
+ * the same clock. The wipe uncovers the line left to right over two seconds;
+ * this reads the line at whatever point the wipe has reached and says that
+ * figure, so the number starts where the chart starts, walks the series as it
+ * appears, and arrives at today's figure exactly as the pen reaches the right
+ * edge.
  *
- * Only the digits that actually changed move. Going from 10,056 to 10,775 the
- * "10," is the same figure it was and a wheel spinning under it would be
- * saying something happened there that did not. Everything from the first
- * digit that differs rightward turns, which is what the lower wheels of a real
- * odometer do, and everything to its left stands still.
+ * Digits that are not changing do not move, which is what anybody actually
+ * wants from this: a month that ran from 10,056 to 10,775 shows a "10," that
+ * never flickers, because every figure in between begins with it. That falls
+ * out of reading the real series rather than being a rule imposed on top.
+ *
+ * It replaces a per-digit odometer. Wheels looked right in a still frame and
+ * wrong in motion: every one of them crawled between two numerals for most of
+ * the animation and read as a figure stuck half way, and because the headline
+ * is today's figure rather than the last plotted one, changing the timeframe
+ * moved the chart without moving the number and nothing ran at all.
  */
 
-/** One character of the figure, and where its wheel starts and stops. */
-export interface Slot {
-  /** What is finally shown here. */
-  ch: string;
-  /** Where the wheel starts, in digit positions. Absent means it does not turn. */
-  from?: number;
-  /** Where it stops: whole spins, plus the digit to land on. */
-  to?: number;
-}
+/** As long as the wipe in index.css, because it is following it. */
+export const REVEAL_MS = 2000;
 
-/** How many times a turning wheel comes all the way round before it lands. */
-export const SPINS = 2;
+/** The wipe's own curve, so the figure sits under the pen and not behind it. */
+const CURVE = [0.37, 0, 0.63, 1] as const;
 
 /**
- * What each character of `to` does, given what was there before.
+ * One axis of a cubic bezier whose ends are pinned at 0 and 1.
  *
- * The two are lined up from the right, because that is how a number grows: a
- * figure that gained a digit has had every column shift along, and comparing
- * from the left would call every one of them changed.
+ * The usual polynomial form: three coefficients worked out from the two
+ * control points.
  */
-export function reels(from: string, to: string, spins = SPINS): Slot[] {
-  // Padded on the left when the old figure was shorter, trimmed from the left
-  // when it was longer: either way the columns line up at the units.
-  const was = from.length >= to.length
-    ? from.slice(from.length - to.length)
-    : " ".repeat(to.length - from.length) + from;
+const axis = (t: number, a: number, b: number): number => {
+  const c = 3 * a;
+  const d = 3 * (b - a) - c;
+  const e = 1 - c - d;
+  return ((e * t + d) * t + c) * t;
+};
 
-  let first = to.length;
-  for (let i = 0; i < to.length; i++) {
-    if (to[i] !== was[i]) { first = i; break; }
+/**
+ * The CSS easing, solved in JavaScript.
+ *
+ * A cubic bezier gives y from a parameter, not from x, so x has to be solved
+ * for first. Binary subdivision rather than Newton: it is a handful of
+ * iterations either way, this one cannot run away on a flat stretch of the
+ * curve, and this is a curve with one.
+ */
+export function ease(x: number, curve: readonly number[] = CURVE): number {
+  if (!(x > 0)) return 0;
+  if (x >= 1) return 1;
+  let lo = 0;
+  let hi = 1;
+  let t = x;
+  for (let i = 0; i < 24; i++) {
+    const at = axis(t, curve[0]!, curve[2]!);
+    if (Math.abs(at - x) < 1e-5) break;
+    if (at < x) lo = t; else hi = t;
+    t = (lo + hi) / 2;
   }
-
-  return [...to].map((ch, i) => {
-    // Nothing to the left of the first change moves, and a comma is not a
-    // wheel: the separators sit still while the digits turn past them.
-    if (i < first || ch < "0" || ch > "9") return { ch };
-    const had = was[i] ?? "";
-    const start = had >= "0" && had <= "9" ? Number(had) : 0;
-    return { ch, from: start, to: spins * 10 + Number(ch) };
-  });
+  return axis(t, curve[1]!, curve[3]!);
 }
 
-/** How long one wheel takes, and how much longer each one to its right takes. */
-const BASE_MS = 900;
-const STEP_MS = 90;
-/** Never longer than the wipe it accompanies, which is two seconds. */
-const LONGEST_MS = 1900;
-
-/** The whole roll, which is however long its slowest wheel takes. */
-export function rollMs(slots: readonly Slot[]): number {
-  const turning = slots.filter((s) => s.to !== undefined).length;
-  return turning ? Math.min(LONGEST_MS, BASE_MS + (turning - 1) * STEP_MS) : 0;
+/**
+ * Where the line is, a given fraction of the way along it.
+ *
+ * Interpolated between the two points either side rather than snapped to the
+ * nearer one, because the line itself is drawn straight between them: the pen
+ * really is at the figure this returns. Both ends are exact, so it opens on
+ * the first point and lands on the last.
+ */
+export function valueAt(path: readonly number[], p: number): number {
+  if (!path.length) return 0;
+  if (path.length === 1) return path[0]!;
+  if (!(p > 0)) return path[0]!;
+  if (p >= 1) return path[path.length - 1]!;
+  const span = (path.length - 1) * p;
+  const i = Math.floor(span);
+  const a = path[i]!;
+  const b = path[i + 1] ?? a;
+  return a + (b - a) * (span - i);
 }
 
-/** One wheel's own duration, so the leftmost settles first and the units last. */
-export function wheelMs(index: number, total: number): number {
-  const span = rollMs(Array.from({ length: total }, () => ({ ch: "0", from: 0, to: 0 })));
-  return total <= 1 ? span : BASE_MS + ((span - BASE_MS) * index) / (total - 1);
-}
+/** Whether there is anything to watch: a flat line has nothing to count. */
+export const worthRolling = (path: readonly number[]): boolean =>
+  path.length > 1 && path.some((v) => v !== path[0]);
 
-export function Rolling({ value, format, run, className }: {
+export function Rolling({ value, through, format, run, className }: {
+  /** Where it ends, and what the figure says at every moment regardless. */
   value: number;
-  /** How the figure is written. Both ends of the roll go through this. */
+  /** The line it follows on the way there. */
+  through: readonly number[];
   format: (n: number) => string;
   /**
-   * What makes it run again. The same rule Reveal follows: it changes when the
-   * series changes and stands still while a finger moves over the chart, or
-   * every scrub would set the wheels going.
+   * What makes it run again: the same signature the wipe uses. It changes when
+   * the series changes, including when the timeframe does, and stands still
+   * while a finger moves over the chart.
    */
   run: string;
   className?: string;
 }) {
   const still = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const [roll, setRoll] = useState<{ slots: Slot[]; ms: number; seq: number } | null>(null);
+  const node = useRef<HTMLSpanElement>(null);
   const seenRun = useRef<string | null>(null);
-  const settled = useRef(value);
-  const seq = useRef(0);
+  const frame = useRef(0);
+  // Held in a ref so a caller passing a fresh function on every render does
+  // not restart the walk under its own feet.
+  const write = useRef(format);
+  write.current = format;
 
+  /**
+   * One effect, not two.
+   *
+   * The run and the figure change together when the timeframe moves, so a
+   * separate effect watching the figure would cancel the walk the first one
+   * had just started: effects run in order and the second would always win.
+   * Which of the two happened is decided here instead.
+   */
   useEffect(() => {
-    if (seenRun.current === run) {
-      // The same chart, a different figure: a finger is on it. Snap, and drop
-      // any roll still running, whose ending digits are now the wrong ones.
-      settled.current = value;
-      setRoll((cur) => (cur ? null : cur));
-      return;
-    }
-    const first = seenRun.current === null;
-    const from = first ? 0 : settled.current;
+    const el = node.current;
+    if (!el) return;
+    const stop = () => {
+      cancelAnimationFrame(frame.current);
+      el.classList.remove("rolling-on");
+      el.style.removeProperty("--roll-text");
+    };
+
+    const fresh = seenRun.current !== run;
     seenRun.current = run;
-    settled.current = value;
+    // The same chart, a different figure: a finger is on it. The figure is
+    // following the finger now, and a walk still running underneath would be
+    // answering a question nobody is asking any more.
+    if (!fresh) { stop(); return; }
     if (still) return;
-    const slots = reels(format(from), format(value));
-    const ms = rollMs(slots);
-    if (ms > 0) { seq.current += 1; setRoll({ slots, ms, seq: seq.current }); }
-  }, [run, value, format, still]);
 
-  // Cleared on a timer rather than on the animation's own event: the event
-  // comes from a pseudo-element, there is one per wheel, and the last to
-  // finish is not always the last in the list once a figure changes length.
-  useEffect(() => {
-    if (!roll) return;
-    const t = window.setTimeout(() => setRoll(null), roll.ms + 60);
-    return () => window.clearTimeout(t);
-  }, [roll]);
+    const path = [...through];
+    // The headline is today's figure, which is not always the last point
+    // plotted, so it is the last step of the walk rather than left off it.
+    if (path.length && path[path.length - 1] !== value) path.push(value);
+    if (!worthRolling(path)) return;
 
-  const text = format(value);
-  if (!roll) return <span className={cx("num", className)}>{text}</span>;
+    const begun = performance.now();
+    el.classList.add("rolling-on");
+    const step = () => {
+      const p = Math.min(1, (performance.now() - begun) / REVEAL_MS);
+      const at = valueAt(path, ease(p));
+      // Through the pseudo-element, which is read by nothing and copied by
+      // nothing: the figure in the span stays the figure throughout, so what
+      // this says and what can be taken off it never disagree.
+      el.style.setProperty("--roll-text", JSON.stringify(write.current(at)));
+      if (p < 1) { frame.current = requestAnimationFrame(step); return; }
+      stop();
+    };
+    frame.current = requestAnimationFrame(step);
+    return stop;
+    // `through` is left out on purpose: it is a fresh array on every render
+    // and `run` is the signature of what is in it, which is the whole reason
+    // that signature exists.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run, value, still]);
 
-  const turning = roll.slots.filter((s) => s.to !== undefined).length;
-  let nth = -1;
-  return (
-    <span className={cx("num rolling", className)} key={roll.seq}>
-      {/* Every character in the same kind of box, turning or not. A wheel has
-          to clip, a clipping inline-block takes its baseline from its bottom
-          edge rather than from its text, and a figure where only some of the
-          characters did that would sit on two baselines at once. */}
-      {roll.slots.map((s, i) => {
-        if (s.to === undefined) return <span key={i} className="reel">{s.ch}</span>;
-        nth += 1;
-        return (
-          <span
-            key={i}
-            className="reel turn"
-            style={{
-              "--reel-from": s.from,
-              "--reel-to": s.to,
-              "--reel-ms": `${Math.round(wheelMs(nth, turning))}ms`,
-            } as React.CSSProperties}
-          >
-            {/* The real character, kept in the text so that what the figure
-                says and what can be read off it never disagree, including
-                while it is turning. Hidden by opacity rather than by
-                visibility, which would take it out of the text as well. */}
-            <span className="reel-end">{s.ch}</span>
-          </span>
-        );
-      })}
-    </span>
-  );
+  return <span ref={node} className={cx("num rolling", className)}>{format(value)}</span>;
 }

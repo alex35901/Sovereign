@@ -179,8 +179,17 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
             same signal, so the figure and its chart arrive together. The
             signature stands still under a finger, which is what keeps the
             wheels out of a scrub. */}
+        {/* Walked up the line while the line is wiped in, off the same
+            signature, so the figure starts where the chart starts and arrives
+            as the pen reaches the right edge. The signature stands still under
+            a finger, which is what keeps a scrub out of it, and it carries the
+            range, so changing the timeframe runs it again even though today's
+            figure is the same figure it was. */}
         <div className="nw-value">
-          <Rolling value={shown} format={fmt} run={revealKey([range, series.length, series[0], series[series.length - 1]])} />
+          <Rolling
+            value={shown} through={series} format={fmt}
+            run={revealKey([range, series.length, series[0], series[series.length - 1]])}
+          />
         </div>
         <Delta move={move} period={window ?? periodOf(range)} />
         {compare?.length ? (

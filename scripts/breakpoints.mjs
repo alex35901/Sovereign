@@ -8378,71 +8378,96 @@ try {
   }
 
   if (want("rolling")) {
-    // ── the figure rolling in with its chart ──
+    // ── the figure following the pen ──
     //
-    // The one thing that must survive a flourish: what the figure says. The
-    // wheels are three times through 0 to 9, and if any of that reached the
-    // text then every check in this suite that reads a headline, and every
-    // copy and paste, would get a number nobody has.
+    // Three things it has to do: open where the chart opens rather than at
+    // today's figure, keep saying today's figure in its text the whole way,
+    // and run again when the timeframe moves. The last one is the one that
+    // was broken: the headline is today's figure, which does not change when
+    // the range does, so nothing noticed the chart had been redrawn.
     const rl = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await rl.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
 
     const read = () => rl.evaluate(() => {
-      const el = document.querySelector(".nw-value");
+      const el = document.querySelector(".nw-value .rolling");
+      if (!el) return null;
+      const before = getComputedStyle(el, "::before").content;
       return {
-        text: el?.innerText.trim() ?? "",
-        content: el?.textContent.trim() ?? "",
-        wheels: document.querySelectorAll(".reel.turn").length,
+        text: el.innerText.trim(),
+        walking: el.classList.contains("rolling-on"),
+        // What is actually on screen while it walks, which is the pseudo
+        // element rather than the text under it.
+        shown: before === "none" ? null : before.replace(/^"|"$/g, ""),
       };
     });
+    const money = (t) => Number((t ?? "").replace(/[^\d.]/g, "")) || 0;
 
-    // Sampled while it is still moving, which is the only moment this can go
-    // wrong and the moment a passing test run would read it.
-    await rl.waitForTimeout(500);
-    const mid = await read();
-    check("the figure turns its wheels as the line is drawn",
-      mid.wheels > 0, `${mid.wheels} wheels`);
-    check("and still says the figure while they are turning",
-      /^-?\$[\d,]+\.\d\d$/.test(mid.text) && mid.text === mid.content,
-      `"${mid.text}" / "${mid.content}"`);
+    // Sampled across the draw, which is the only window this can be seen in.
+    const seen = [];
+    for (let i = 0; i < 12; i++) { seen.push(await read()); await rl.waitForTimeout(170); }
+    const walked = seen.filter((s) => s?.walking && s.shown);
+    check("the figure walks while the line is drawn",
+      walked.length >= 3, `${walked.length} of ${seen.length} samples walking`);
+    // Never a figure nobody has: every frame is read off the real series.
+    check("and every figure it passes through is a figure, not a smear",
+      walked.every((s) => /^-?\$[\d,]+\.\d\d$/.test(s.shown)),
+      walked.map((s) => s.shown).slice(0, 4).join(" | "));
+    check("while its text says today's figure throughout",
+      new Set(seen.filter(Boolean).map((s) => s.text)).size === 1,
+      [...new Set(seen.filter(Boolean).map((s) => s.text))].join(" | "));
 
-    await rl.waitForTimeout(2600);
+    const first = walked[0];
+    const last = seen[seen.length - 1];
+    check("opening at the start of the line rather than at the end of it",
+      first !== undefined && last !== null && money(first.shown) !== money(last.text),
+      `${first?.shown} against ${last?.text}`);
+
+    await rl.waitForTimeout(2200);
     const done = await read();
-    check("which stop, rather than spinning for ever",
-      done.wheels === 0, `${done.wheels} still turning`);
-    check("leaving the same figure they settled on",
-      done.text === mid.text, `${mid.text} -> ${done.text}`);
+    check("and stopping on today's figure, which it then keeps",
+      done !== null && !done.walking && done.shown === null
+      && /^-?\$[\d,]+\.\d\d$/.test(done.text),
+      `${done?.text}, walking ${done?.walking}`);
 
-    // A finger on the chart must not set them going: the figure follows the
-    // scrub, and a wheel per sample would be a fruit machine.
+    // The report: changing the timeframe redraws the chart, so it has to run
+    // again. It did not, because today's figure is the same figure it was.
+    if (await tryStep("the timeframe can be changed", async () => {
+      await rl.locator(".nw-card button", { hasText: "1Y" }).click({ timeout: 8000 });
+      await rl.waitForTimeout(220);
+    })) {
+      const after = await read();
+      check("which sets the figure walking again, from the new line's own start",
+        after !== null && after.walking && after.shown !== null
+        && money(after.shown) !== money(after.text),
+        `${after?.shown} walking ${after?.walking}`);
+    }
+
+    // A finger on the chart stops it: the figure is following the finger by
+    // then, and a walk still running underneath would answer nothing.
     const box = await rl.locator(".nw-card svg").first().boundingBox();
     if (box) {
-      await rl.mouse.move(box.x + box.width * 0.4, box.y + box.height / 2);
-      await rl.waitForTimeout(250);
+      await rl.mouse.move(box.x + box.width * 0.45, box.y + box.height / 2);
+      await rl.waitForTimeout(220);
       const scrubbed = await read();
-      check("and a finger moving over the chart does not start them again",
-        scrubbed.wheels === 0, `${scrubbed.wheels} wheels under the pointer`);
-      await rl.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
-      await rl.waitForTimeout(250);
-      check("while the figure still follows it",
-        (await read()).text !== "", "");
+      check("and a finger on the chart stops it rather than racing it",
+        scrubbed !== null && !scrubbed.walking, `walking ${scrubbed?.walking}`);
     }
     await rl.close();
 
-    // Asked for less movement: no wheels at all, and the figure simply there.
+    // Asked for less movement: the figure is simply there, at once.
     const calm = await browser.newContext({
       viewport: { width: 1280, height: 900 }, reducedMotion: "reduce",
     });
     const cp = await calm.newPage();
     await cp.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
-    await cp.waitForTimeout(600);
-    const quiet = await cp.evaluate(() => ({
-      wheels: document.querySelectorAll(".reel.turn").length,
-      text: document.querySelector(".nw-value")?.innerText.trim() ?? "",
-    }));
+    await cp.waitForTimeout(500);
+    const quiet = await cp.evaluate(() => {
+      const el = document.querySelector(".nw-value .rolling");
+      return { walking: el?.classList.contains("rolling-on") ?? false, text: el?.innerText.trim() ?? "" };
+    });
     check("under reduced motion the figure is simply its figure, at once",
-      quiet.wheels === 0 && /^-?\$[\d,]+\.\d\d$/.test(quiet.text),
-      `${quiet.wheels} wheels, "${quiet.text}"`);
+      !quiet.walking && /^-?\$[\d,]+\.\d\d$/.test(quiet.text),
+      `walking ${quiet.walking}, "${quiet.text}"`);
     await calm.close();
   }
 
