@@ -46,6 +46,7 @@ await build({
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
       export { filesIt, UNCATEGORIZED } from "./src/lib/categories.ts";
       export { reels, rollMs, wheelMs, SPINS } from "./src/components/Rolling.tsx";
+      export * as OF from "./src/lib/hopper/offers.ts";
       export * as HL from "./src/lib/sync/health.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
@@ -14757,6 +14758,113 @@ await test("a category you already played better than the plan shows no saving",
   assert.ok(food.best < food.earned, "and the purchase-by-purchase plan spent that cap on the petrol");
   assert.equal(food.gap, 0, "so there is nothing to say, rather than something negative to say");
   assert.ok(r.totals.gap >= 0);
+});
+
+/* ── this month's sign-up offers, checked rather than believed ─────────── */
+
+const offers = (obj) => M.OF.readOffers(JSON.stringify(obj));
+const deal = (card, spend, reward, extra = {}) => ({ card, spend, reward, ...extra });
+
+await test("offers come back in dollars, kept in cents, ranked by what they pay", () => {
+  const { deals } = offers({ deals: [
+    deal("Low Ratio", 5_000, 500),    // 0.10
+    deal("Best", 1_000, 300),         // 0.30
+    deal("Middle", 2_000, 400),       // 0.20
+  ], note: "As of last year." });
+
+  assert.deepEqual(deals.map((d) => d.card), ["Best", "Middle", "Low Ratio"],
+    "best value first, which is the only ordering this list has");
+  assert.equal(deals[0].spend, 1_000_00, "dollars in, cents kept");
+  assert.equal(deals[0].reward, 300_00);
+  assert.equal(M.OF.ratioOf(deals[0]), 0.3);
+});
+
+await test("the ratio is worked out rather than read off the answer", () => {
+  // Arithmetic is the app's job. A model that offered its own ratio could put
+  // a card at the top of the list by getting a division wrong.
+  const { deals } = offers({ deals: [
+    { ...deal("Honest", 1_000, 100), ratio: 99 },
+    { ...deal("Better", 1_000, 200), ratio: 0.001 },
+  ] });
+  assert.deepEqual(deals.map((d) => d.card), ["Better", "Honest"]);
+  assert.equal(M.OF.ratioOf(deals[0]), 0.2);
+});
+
+await test("a bonus too small to mean anything is left out", () => {
+  // $20 back on a $50 spend is a ratio of 0.4, which would sit above every
+  // real offer on the list and say nothing. The floor is enforced here as
+  // well as asked for, because a rule that only exists in a prompt is not one.
+  const { deals } = offers({ deals: [
+    deal("Tiny", 50, 20),
+    deal("Just Under", 1_000, 99.99),
+    deal("Just Over", 1_000, 100),
+  ] });
+  assert.deepEqual(deals.map((d) => d.card), ["Just Over"]);
+  assert.equal(M.OF.MIN_REWARD, 100_00);
+});
+
+await test("and so is anything with no spend to rank it against", () => {
+  const { deals } = offers({ deals: [
+    deal("No Minimum", 0, 200),
+    deal("Negative", -500, 200),
+    deal("Real", 1_000, 200),
+  ] });
+  assert.deepEqual(deals.map((d) => d.card), ["Real"],
+    "a ratio needs something to divide by");
+});
+
+await test("a figure that cannot be a figure is not shown as one", () => {
+  const { deals } = offers({ deals: [
+    deal("Absurd Spend", 9_000_000, 500),
+    deal("Absurd Reward", 1_000, 90_000),
+    deal("", 1_000, 500),
+    deal("Fine", 1_000, 500),
+  ] });
+  assert.deepEqual(deals.map((d) => d.card), ["Fine"]);
+});
+
+await test("the same card twice does not take two of the five places", () => {
+  const { deals } = offers({ deals: [
+    deal("Sapphire Preferred", 4_000, 600),
+    deal("sapphire preferred", 4_000, 550),
+    deal("Other", 1_000, 100),
+  ] });
+  assert.equal(deals.length, 2);
+  assert.equal(deals[0].card, "Sapphire Preferred", "the first spelling, kept as written");
+});
+
+await test("no more than five survive onto the card", () => {
+  const many = Array.from({ length: 30 }, (_, i) => deal(`Card ${i}`, 1_000, 100 + i));
+  const { deals } = offers({ deals: many });
+  assert.equal(deals.length, M.OF.KEEP);
+  assert.equal(deals.length, 5);
+  assert.equal(deals[0].card, "Card 29", "and they are the best five, not the first five");
+});
+
+await test("the terms beside a deal are bounded, not believed", () => {
+  const { deals, note } = offers({
+    deals: [deal("Long", 1_000, 500, { note: "x".repeat(400), months: 3 })],
+    note: "y".repeat(900),
+  });
+  assert.ok(deals[0].note.length <= 90, `${deals[0].note.length} characters`);
+  assert.equal(deals[0].months, 3);
+  assert.ok(note.length <= 300);
+
+  // A window nobody offers is dropped rather than printed.
+  assert.equal(offers({ deals: [deal("A", 1_000, 500, { months: 0 })] }).deals[0].months, undefined);
+  assert.equal(offers({ deals: [deal("B", 1_000, 500, { months: 900 })] }).deals[0].months, undefined);
+});
+
+await test("an answer that is not a list at all is refused", () => {
+  assert.throws(() => M.OF.readOffers("I do not know of any."));
+  assert.throws(() => M.OF.readOffers("{ not json"));
+  assert.throws(() => M.OF.readOffers(""));
+  // Chatter around it is still read: models say "Here you go" whatever happens.
+  assert.equal(M.OF.readOffers('Sure:\n```json\n{"deals":[],"note":"none"}\n```').note, "none");
+  // And a shape that is json but nothing like the question gives an empty list
+  // rather than throwing, because an empty list is a true answer.
+  assert.deepEqual(M.OF.readOffers('{"deals":"lots"}').deals, []);
+  assert.deepEqual(M.OF.readOffers('{}').deals, []);
 });
 
 /* ── the figure rolling into place ─────────────────────────────────────── */

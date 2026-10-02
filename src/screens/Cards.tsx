@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
@@ -6,7 +6,7 @@ import { Plus, Sparkles, Store, Trash2 } from "lucide-react";
 import type { Account, CandidateCard, CardRewards, EarnRule, ID } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { addMonthsDate, today } from "../lib/date";
+import { addMonthsDate, dateLabel, thisMonth, today } from "../lib/date";
 import { rangeStart } from "../lib/range";
 import { fmt0 } from "../lib/money";
 import { uid } from "../lib/id";
@@ -14,6 +14,8 @@ import { merchantIndex } from "../lib/select";
 import type { BonusProgress } from "../lib/cards";
 import { candidateValue, cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
 import { draftRewards, toRules } from "../lib/hopper/rewards";
+import { MIN_REWARD, fetchOffers, ratioOf } from "../lib/hopper/offers";
+import { cloudEnabled } from "../lib/cloud";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { SortHead, sortRows, useSort } from "../components/sort";
@@ -246,6 +248,8 @@ export default function Cards() {
           })}
         </Card>
 
+        <Offers />
+
         <ReachTable
           title="Where to put each purchase"
           sub="The last year, biggest miss first, or click a heading to reorder it. The best card is the one to reach for at the till, given what the caps had already taken."
@@ -428,6 +432,123 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
           <span className="small faint">{empty ?? "Nothing to show yet."}</span>
         </div>
       )}
+    </Card>
+  );
+}
+
+/** The columns of the offers table. */
+type DealField = "card" | "spend" | "reward" | "ratio";
+
+/**
+ * This month's sign-up offers, asked for once a month.
+ *
+ * The only thing on this page that is not arithmetic on the household's own
+ * year, and it is labelled as such: a recollection with a date on it. Nothing
+ * about them is sent to get it, because "what is on offer" has no answer that
+ * depends on their money.
+ *
+ * "Monthly" means the first time the page is opened in a new month, which is
+ * the only schedule an app with no server that can read its own data can keep.
+ * Said plainly on the card rather than dressed up as a cron.
+ */
+function Offers() {
+  const db = useDB();
+  const { actions } = useStore();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const asked = useRef(false);
+  const { sort, toggle: onSort } = useSort<DealField>({ key: "ratio", dir: "desc" });
+
+  const held = db.cardOffers;
+  const month = thisMonth();
+  const stale = !held || held.month !== month;
+
+  const run = useCallback(async () => {
+    setBusy(true);
+    setFailed(null);
+    try {
+      const { deals, note } = await fetchOffers();
+      actions.rememberCardOffers(deals, note);
+    } catch (err) {
+      setFailed(err instanceof Error ? err.message : "Hopper could not be reached.");
+    } finally {
+      setBusy(false);
+    }
+  }, [actions]);
+
+  // Once a month, and once per visit however many times this re-renders. A
+  // failure does not stamp the month, so the next visit tries again rather
+  // than the card sitting empty until February.
+  useEffect(() => {
+    if (!stale || asked.current || !cloudEnabled()) return;
+    asked.current = true;
+    void run();
+  }, [stale, run]);
+
+  const rows = sortRows(held?.deals ?? [], sort, (d, key) => {
+    if (key === "spend") return d.spend;
+    if (key === "reward") return d.reward;
+    if (key === "ratio") return ratioOf(d);
+    return d.card;
+  });
+
+  return (
+    <Card pad={false}>
+      <CardHead
+        flush title="Worth opening this month"
+        sub={`The best of what Hopper remembers being on offer, by what the bonus pays against what it takes to earn it. Nothing beneath ${fmt0(MIN_REWARD)} of reward, because a small enough bonus makes a ratio that means nothing.`}
+        right={
+          <Btn size="sm" onClick={() => void run()} disabled={busy}>
+            <Sparkles size={13} /> {busy ? "Asking" : "Refresh"}
+          </Btn>
+        }
+      />
+      {rows.length ? (
+        <>
+          <div className="deal-row head">
+            <span className="tiny faint"><SortHead field="card" sort={sort} onSort={onSort}>Card</SortHead></span>
+            <span className="tiny faint deal-num"><SortHead field="spend" sort={sort} onSort={onSort}>Spend</SortHead></span>
+            <span className="tiny faint deal-num"><SortHead field="reward" sort={sort} onSort={onSort}>Reward</SortHead></span>
+            <span className="tiny faint deal-num"><SortHead field="ratio" sort={sort} onSort={onSort}>Per $1</SortHead></span>
+          </div>
+          {rows.map((d) => (
+            <div key={d.card} className="deal-row">
+              <span className="col" style={{ gap: 1, minWidth: 0 }}>
+                <span className="truncate" style={{ fontWeight: 500 }}>{d.card}</span>
+                {d.note || d.months ? (
+                  <span className="tiny faint truncate">
+                    {[d.note, d.months ? `within ${d.months} months` : ""].filter(Boolean).join(" · ")}
+                  </span>
+                ) : null}
+              </span>
+              <span className="num tiny faint deal-num">{fmt0(d.spend)}</span>
+              <span className="num tiny deal-num">{fmt0(d.reward)}</span>
+              {/* Cents back per dollar spent, which is the ratio said in a
+                  unit somebody can picture. 0.1 is ten cents on the dollar. */}
+              <span className="num tiny bold deal-num">{ratioOf(d).toFixed(2)}</span>
+            </div>
+          ))}
+        </>
+      ) : (
+        <div style={{ padding: "4px 16px 16px" }}>
+          <span className="small faint">
+            {busy ? "Asking Hopper what is on offer."
+              : failed ? "Nothing to show, because the question could not be asked."
+              : cloudEnabled() ? "Hopper had nothing it was confident enough to list."
+              : "Hopper needs this browser connected. Connect under Settings, Sync across devices."}
+          </span>
+        </div>
+      )}
+      <div className="col" style={{ gap: 3, padding: "10px 16px 14px" }}>
+        {failed ? <span className="tiny neg">{failed}</span> : null}
+        {held ? (
+          <span className="tiny faint">
+            {held.note ? `${held.note} ` : ""}
+            Asked {dateLabel(held.at.slice(0, 10), { year: true })}. These are what Hopper was trained on
+            rather than live offers, so check the terms with the issuer before applying.
+          </span>
+        ) : null}
+      </div>
     </Card>
   );
 }

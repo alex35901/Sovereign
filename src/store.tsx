@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { Account, CandidateCard, CardRewards, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
+import type { Account, CandidateCard, CardDeal, CardRewards, Category, DB, EstateContact, EstateDocument, EstateRecord, Goal, Holding, HopperExchange, ID, MonthKey, Policy, Recurring, Rule, Tag, Transaction } from "./types";
 import { buildDemoDB, cacheHealthy, emptyDB, loadDB, migrate, saveDB, saveNow } from "./lib/storage";
-import { addMonths, today } from "./lib/date";
+import { addMonths, thisMonth, today } from "./lib/date";
 import { uid } from "./lib/id";
 import { applyRules } from "./lib/rules";
 import { toRules } from "./lib/rules-import";
@@ -519,6 +519,9 @@ export interface Actions {
   deleteEstateDocument: (id: ID) => void;
 
   /** A card nobody holds, kept so the question can be asked again. */
+  /** This month's sign-up offers, replacing whatever was there. */
+  rememberCardOffers: (deals: CardDeal[], note: string) => void;
+
   addCandidate: (name: string, rewards: CardRewards) => void;
   updateCandidate: (id: ID, patch: Partial<CandidateCard>) => void;
   deleteCandidate: (id: ID) => void;
@@ -821,6 +824,15 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
 
     // No undo label: a chat is not an edit, and offering to undo a question
     // would put it in the same stack as deleting an account.
+    rememberCardOffers: (deals, note) =>
+      apply((db) => ({
+        ...db,
+        // Replaced whole rather than appended: last month's offers are not
+        // worth the bytes they would be synced in, and a stale one beside a
+        // fresh one is a list nobody can read.
+        cardOffers: { month: thisMonth(), at: new Date().toISOString(), deals, note },
+      }), "card offers"),
+
     rememberHopper: (e) =>
       apply((db) => ({
         ...db,

@@ -658,6 +658,22 @@ export interface EstateRecord {
   reviewedAt?: ISODate;
 }
 
+/** One sign-up offer, in cents. Mirrors lib/hopper/offers. */
+export interface CardDeal {
+  card: string;
+  spend: number;
+  reward: number;
+  months?: number;
+  note?: string;
+}
+
+export interface CardOffers {
+  month: string;
+  at: string;
+  deals: CardDeal[];
+  note: string;
+}
+
 export interface DB {
   version: number;
   accounts: Account[];
@@ -685,6 +701,15 @@ export interface DB {
   estate?: EstateRecord;
   /** Cards being considered, which nobody holds. Absent until one is added. */
   candidates?: CandidateCard[];
+  /**
+   * This month's sign-up offers, as Hopper last remembered them.
+   *
+   * Kept in the document so the answer follows the household from phone to
+   * laptop and is asked for once a month rather than once a visit. One list,
+   * replaced whole: last month's offers are not worth the bytes they are
+   * synced in. See lib/hopper/offers.
+   */
+  cardOffers?: CardOffers;
   settings: Settings;
 }
 

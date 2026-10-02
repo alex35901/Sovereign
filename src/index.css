@@ -1493,6 +1493,22 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .card-row:last-child { border-bottom: 0; }
 .card-row:hover { background: var(--surface-2); }
 .card-unset { background: var(--accent-soft); color: var(--accent); }
+/* This month's offers. The same shape as the reach-for tables above it, with
+   its own widths: three figures rather than four, and a name that has a line
+   of terms under it. */
+.deal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px 92px 72px;
+  align-items: center; gap: 10px;
+  padding: 9px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.deal-row:last-child { border-bottom: 0; }
+.deal-row.head {
+  background: var(--surface-2); padding-top: 8px; padding-bottom: 8px;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.deal-num { text-align: center; }
+
 .card-cat {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 84px minmax(0, 130px) 76px 72px 26px;
@@ -1918,6 +1934,10 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
     grid-template-columns: minmax(0, 1fr) 64px minmax(0, 88px) 60px 58px 24px;
     gap: 6px; padding-left: 12px; padding-right: 12px;
   }
+  .deal-row {
+    grid-template-columns: minmax(0, 1fr) 70px 70px 56px;
+    gap: 6px; padding-left: 12px; padding-right: 12px;
+  }
   .rule-row { grid-template-columns: 34px minmax(0, 1fr) 84px 128px; gap: 8px; padding-left: 12px; padding-right: 12px; }
   .rules-filter { padding-left: 12px; padding-right: 12px; }
   .ask-spark { width: 24px; height: 24px; }
@@ -1942,6 +1962,10 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
   .card-head.bgroup-head { padding-left: 10px; padding-right: 10px; }
   .card-cat {
     grid-template-columns: minmax(0, 1fr) 56px minmax(0, 70px) 52px 50px 22px;
+    gap: 5px; padding-left: 10px; padding-right: 10px;
+  }
+  .deal-row {
+    grid-template-columns: minmax(0, 1fr) 58px 58px 46px;
     gap: 5px; padding-left: 10px; padding-right: 10px;
   }
   .rule-row { grid-template-columns: 32px minmax(0, 1fr) 62px 120px; gap: 7px; padding-left: 10px; padding-right: 10px; }

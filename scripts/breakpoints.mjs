@@ -8281,6 +8281,102 @@ try {
   }
 
 
+  if (want("offers")) {
+    // ── this month's sign-up offers ──
+    //
+    // The one thing on the cards page that is not arithmetic on the
+    // household's own year, so what is checked is that it says so, that it is
+    // ranked by the ratio it claims to be ranked by, and that every column
+    // sorts. The reading of the answer is pinned in scripts/selftest.mjs; a
+    // preview has no key, so the list is seeded rather than asked for.
+    const oc = await browser.newContext({ viewport: { width: 1100, height: 1200 } });
+    await oc.addInitScript(() => {
+      const patch = () => {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return false;
+        const db = JSON.parse(raw);
+        db.cardOffers = {
+          month: new Date().toISOString().slice(0, 7),
+          at: `${new Date().toISOString().slice(0, 10)}T09:00:00.000Z`,
+          note: "Current to early 2026.",
+          deals: [
+            { card: "Aaa Best Ratio", spend: 50_000, reward: 20_000, months: 3 },
+            { card: "Zzz Big Bonus", spend: 600_000, reward: 90_000, months: 6, note: "90,000 points" },
+            { card: "Mmm Middle", spend: 400_000, reward: 75_000, months: 3 },
+          ],
+        };
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+        return true;
+      };
+      if (!patch()) {
+        const t = setInterval(() => { if (patch()) clearInterval(t); }, 50);
+        setTimeout(() => clearInterval(t), 4000);
+      }
+    });
+    const op = await oc.newPage();
+    await op.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+    await op.waitForTimeout(1500);
+    await op.reload({ waitUntil: "networkidle" });
+    await op.waitForTimeout(1500);
+
+    const table = () => op.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /Worth opening this month/.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!card) return null;
+      const cell = (r, n) => r.querySelectorAll(".deal-num")[n]?.innerText.trim() ?? "";
+      return {
+        heads: [...card.querySelectorAll(".deal-row.head .sort-head")].map((h) => h.innerText.trim()),
+        names: [...card.querySelectorAll(".deal-row:not(.head) .truncate")]
+          .filter((e) => !e.classList.contains("tiny")).map((e) => e.innerText.trim()),
+        ratios: [...card.querySelectorAll(".deal-row:not(.head)")].map((r) => Number(cell(r, 2))),
+        spends: [...card.querySelectorAll(".deal-row:not(.head)")]
+          .map((r) => Number(cell(r, 0).replace(/[^\d.]/g, ""))),
+        foot: card.innerText.replace(/\n/g, " | "),
+      };
+    });
+
+    const t = await table();
+    check("the cards page lists what is worth opening this month",
+      t !== null && t.names.length === 3, t === null ? "no offers card" : `${t.names.length} deals`);
+    check("under four headings, every one of which sorts",
+      t !== null && t.heads.length === 4
+      && t.heads.join(" / ").toLowerCase() === "card / spend / reward / per $1",
+      t?.heads.join(" / ") ?? "");
+    // The ask: best ratio at the top before anybody touches it. $200 on $500
+    // beats $900 on $6,000, which is the whole point of ranking this way and
+    // the opposite of ranking by the size of the bonus.
+    check("ranked by what it pays against what it takes, biggest first",
+      t !== null && t.ratios.every((v, i) => i === 0 || t.ratios[i - 1] >= v)
+      && t.names[0] === "Aaa Best Ratio",
+      `${t?.names.join(", ")} at ${t?.ratios.join(", ")}`);
+    check("and says it is a recollection with a date on it, not a rate card",
+      t !== null && /trained on rather than live offers/.test(t.foot)
+      && /check the terms with the issuer/.test(t.foot),
+      t?.foot.slice(-120) ?? "");
+
+    const head = (n) => op.locator('.card:has(h2:text("Worth opening this month")) .deal-row.head .sort-head').nth(n);
+    if (await tryStep("another column can be sorted on", async () => {
+      await head(1).click({ timeout: 8000 });
+      await op.waitForTimeout(350);
+    })) {
+      const by = await table();
+      check("which reorders by that column rather than by the ratio",
+        by !== null && by.spends.every((v, i) => i === 0 || by.spends[i - 1] <= v),
+        by?.spends.join(" ") ?? "");
+
+      // Three states here as everywhere: the order it arrived in is the
+      // answer to the question the card asks, and it has to be reachable.
+      await head(1).click({ timeout: 8000 });
+      await op.waitForTimeout(300);
+      await head(1).click({ timeout: 8000 });
+      await op.waitForTimeout(300);
+      const back = await table();
+      check("and a third click gives back the ranking it opened on",
+        back !== null && back.names[0] === "Aaa Best Ratio", back?.names.join(", ") ?? "");
+    }
+    await oc.close();
+  }
+
   if (want("rolling")) {
     // ── the figure rolling in with its chart ──
     //
