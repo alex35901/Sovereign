@@ -8281,6 +8281,82 @@ try {
   }
 
 
+  if (want("review-on-file")) {
+    // ── choosing a category is the review ──
+    //
+    // Picking a category and then reaching for the switch beside it was two
+    // presses whose second answer was never in doubt. The switch still has to
+    // be there and still has to turn off by hand, so what is checked is that
+    // it flips on, that it is not forced, and that filing something back
+    // under Uncategorized does not claim it has been dealt with.
+    const rv = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    // Seeded unreviewed: the demo marks almost everything reviewed, and a
+    // switch that was already on proves nothing about turning it on.
+    await rv.addInitScript(() => {
+      const read = () => {
+        try { return JSON.parse(localStorage.getItem("sovereign.db.v1") ?? "null"); } catch { return null; }
+      };
+      const patch = () => {
+        const db = read();
+        if (!db?.transactions?.length) return false;
+        db.transactions = db.transactions.map((t, i) => (i < 4
+          ? { ...t, reviewed: false, categoryId: "c_uncategorized" }
+          : t));
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+        return true;
+      };
+      if (!patch()) {
+        // The document is written on the way up, so this waits for it.
+        const timer = setInterval(() => { if (patch()) clearInterval(timer); }, 50);
+        setTimeout(() => clearInterval(timer), 4000);
+      }
+    });
+    await rv.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await rv.waitForTimeout(1800);
+    await rv.reload({ waitUntil: "networkidle" });
+    await rv.waitForTimeout(1500);
+
+    const sw = () => rv.evaluate(() => {
+      const row = [...document.querySelectorAll(".modal .drow")]
+        .find((d) => /^Reviewed/.test(d.innerText.trim()));
+      const el = row?.querySelector('[role="switch"]');
+      return el ? el.getAttribute("aria-checked") : null;
+    });
+    const catButton = () => rv.locator('.modal .drow:has-text("Category") button').first();
+
+    if (await tryStep("an unreviewed transaction opens with its switch off", async () => {
+      await rv.locator(".list-row.tx-grid .truncate").first().click({ timeout: 8000 });
+      await rv.locator(".modal").waitFor({ timeout: 5000 });
+      await rv.waitForTimeout(400);
+    })) {
+      check("so there is something for choosing a category to change",
+        await sw() === "false", `switch reads ${await sw()}`);
+
+      if (await tryStep("and a category can be chosen in it", async () => {
+        await catButton().click({ timeout: 8000 });
+        await rv.locator(".menu button").first().waitFor({ timeout: 5000 });
+        // A real category, whatever this document happens to call them.
+        await rv.locator(".menu button").filter({ hasNotText: "Uncategorized" })
+          .first().click({ timeout: 8000 });
+        await rv.waitForTimeout(400);
+      })) {
+        check("which turns the reviewed switch on without a second press",
+          await sw() === "true", `switch reads ${await sw()}`);
+
+        // Automatic, not forced. The switch is on the same screen and the
+        // person still has the last word on it.
+        if (await tryStep("and it can still be turned back off by hand", async () => {
+          await rv.locator('.modal .drow:has-text("Reviewed") [role="switch"]').first().click({ timeout: 8000 });
+          await rv.waitForTimeout(300);
+        })) {
+          check("because choosing for somebody is not deciding for them",
+            await sw() === "false", `switch reads ${await sw()}`);
+        }
+      }
+    }
+    await rv.close();
+  }
+
   if (want("rule-list")) {
     // ── finding one rule among hundreds ──
     //

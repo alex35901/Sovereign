@@ -889,7 +889,18 @@ export function occurrences(r: Recurring, from: ISODate, to: ISODate): ISODate[]
    * and counted in each of their totals. A schedule with no start date is
    * unlimited, as it was before this existed.
    */
-  const begins = r.startDate && r.startDate > from ? r.startDate : from;
+  /**
+   * Never later than the date it says it is next due.
+   *
+   * A schedule has to contain its own next date: that date is an occurrence,
+   * and a start after it would hide the very charge the schedule was written
+   * for. It happens the moment somebody enters a bill today and dates it
+   * earlier this month, because a new schedule starts today by default. Fixed
+   * here rather than on the way in, so a document already holding the pair
+   * that way reads correctly without being rewritten first.
+   */
+  const started = r.startDate && r.startDate > r.nextDate ? r.nextDate : r.startDate;
+  const begins = started && started > from ? started : from;
   if (begins > to) return [];
 
   // Every date is measured from the one known date rather than from the last

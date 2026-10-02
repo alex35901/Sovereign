@@ -44,6 +44,7 @@ await build({
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
+      export { filesIt, UNCATEGORIZED } from "./src/lib/categories.ts";
       export * as HL from "./src/lib/sync/health.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
@@ -6773,6 +6774,25 @@ await test("a schedule does not exist before the day it started", () => {
   assert.equal(M.occurrences(rec({ nextDate: "2026-10-01" }), "2026-01-01", "2026-12-31").length, 12);
   // And a start date before the window changes nothing.
   assert.equal(M.occurrences(rec({ nextDate: "2026-10-01", startDate: "2020-01-01" }), "2026-01-01", "2026-12-31").length, 12);
+});
+
+await test("a schedule always contains the date it says it is next due", () => {
+  // The start date cannot post-date the next date. It happens the moment
+  // somebody enters a bill today and dates it earlier this month, because a
+  // new schedule starts today by default, and the charge it was written for
+  // then vanished off the calendar it was entered on.
+  const typed = rec({ nextDate: "2026-10-01", startDate: "2026-10-02" });
+  assert.deepEqual(M.occurrences(typed, "2026-10-01", "2026-10-31"), ["2026-10-01"],
+    "the first of October is still there, though it was entered on the second");
+
+  // And the months before it are still kept out: clamping to the next date is
+  // not the same as throwing the start date away.
+  assert.deepEqual(M.occurrences(typed, "2026-01-01", "2026-09-30"), []);
+
+  // A start date that sits where one normally sits is untouched by this.
+  assert.deepEqual(
+    M.occurrences(rec({ nextDate: "2026-10-01", startDate: "2026-08-15" }), "2026-01-01", "2026-10-31"),
+    ["2026-09-01", "2026-10-01"]);
 });
 
 await test("and a month before it started costs nothing, rather than its full price", () => {
@@ -14736,6 +14756,23 @@ await test("a category you already played better than the plan shows no saving",
   assert.ok(food.best < food.earned, "and the purchase-by-purchase plan spent that cap on the petrol");
   assert.equal(food.gap, 0, "so there is nothing to say, rather than something negative to say");
   assert.ok(r.totals.gap >= 0);
+});
+
+/* ── choosing a category is the review ─────────────────────────────────── */
+
+await test("filing something under a real category counts as having looked at it", () => {
+  // The press this saves: pick the category, then reach for the switch beside
+  // it, whose answer was never in doubt.
+  assert.equal(M.filesIt("c_groceries"), true);
+  assert.equal(M.filesIt("c_anything_at_all"), true);
+
+  // The two that are not a decision. Uncategorized is the absence of one, and
+  // sending something back to it is the opposite of having dealt with it.
+  assert.equal(M.filesIt(M.UNCATEGORIZED), false);
+  assert.equal(M.filesIt(""), false);
+  // Not a crash on the shapes a picker can hand back while it is being used.
+  assert.equal(M.filesIt(undefined), false);
+  assert.equal(M.filesIt(null), false);
 });
 
 /* ── a draft of what a card pays is checked, not trusted ───────────────── */

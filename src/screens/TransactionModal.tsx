@@ -5,7 +5,7 @@ import type { Bucket, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel, longDate, today } from "../lib/date";
 import { fmt, parseMoney, toInput } from "../lib/money";
-import { UNCATEGORIZED } from "../lib/categories";
+import { UNCATEGORIZED, filesIt } from "../lib/categories";
 import { Btn, Modal, Money, MoneyInput, SelectInput, TagPill, Toggle, cx } from "../components/ui";
 import { CategoryPicker } from "../components/pickers";
 import { ActivityLog } from "../components/ActivityLog";
@@ -133,6 +133,20 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   // dialog a row above.
   const inherited = bucketOf({ accountId, bucket: undefined } as Transaction, bucketIndex(db));
   const [splits, setSplits] = useState(txn?.splits?.map((s) => ({ categoryId: s.categoryId, amount: s.amount })) ?? []);
+
+  /**
+   * Choosing a category marks it reviewed, because choosing one is the review.
+   *
+   * On only, and never off: a transaction already dealt with does not become
+   * undealt-with because its category moved, and one filed back under
+   * Uncategorized has not been looked at. The switch is on the same screen
+   * and still turns off by hand, so this saves the press that always had the
+   * same answer without taking the decision away.
+   */
+  const pickCategory = (id: string) => {
+    setCategoryId(id);
+    if (filesIt(id)) setReviewed(true);
+  };
   const [explaining, setExplaining] = useState<ExplainFacts | null>(null);
   const [scheduling, setScheduling] = useState(false);
 
@@ -281,7 +295,7 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
           <span className="muted">Split across {splits.length}</span>
         ) : (
           <CategoryPicker
-            value={categoryId} onChange={setCategoryId}
+            value={categoryId} onChange={pickCategory}
             trigger={(cat, open) => (
               <button className="drow-btn" onClick={open}>
                 <span>{cat?.icon}</span>
@@ -387,7 +401,12 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
           <div key={i} className="row" style={{ gap: 8 }}>
             <CategoryPicker
               value={s.categoryId}
-              onChange={(id) => setSplits((prev) => prev.map((x, j) => (j === i ? { ...x, categoryId: id } : x)))}
+              onChange={(id) => {
+                setSplits((prev) => prev.map((x, j) => (j === i ? { ...x, categoryId: id } : x)));
+                // Splitting is the same act cut finer: naming where a piece
+                // of it goes is still somebody having read the row.
+                if (filesIt(id)) setReviewed(true);
+              }}
             />
             <div style={{ width: 120 }}>
               <MoneyInput

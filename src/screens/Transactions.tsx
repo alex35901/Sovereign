@@ -14,6 +14,7 @@ import { accountOptions, budgetedCategoryIds, budgetedSum, recurringByMerchant }
 import { cadenceLabel, recurringIdFor } from "../lib/recurring";
 import type { BudgetedSum } from "../lib/select";
 import { fmt } from "../lib/money";
+import { filesIt } from "../lib/categories";
 import { download } from "../lib/storage";
 import { AmountBound, Btn, Card, Empty, Field, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
@@ -476,7 +477,14 @@ export default function Transactions() {
                 value=""
                 onChange={(id) => {
                   const picked = db.transactions.filter((t) => selected.has(t.id));
-                  actions.updateMany([...selected], { categoryId: id, reviewed: true }, `categorize ${selected.size}`);
+                  // Reviewed only where a category was really chosen. Sending a
+                  // pile back to Uncategorized used to mark the lot as dealt
+                  // with, which is the opposite of what it says.
+                  actions.updateMany(
+                    [...selected],
+                    filesIt(id) ? { categoryId: id, reviewed: true } : { categoryId: id },
+                    `categorize ${selected.size}`,
+                  );
                   setSelected(new Set());
                   // One merchant across the selection is exactly the case a rule
                   // handles; a mixed batch has nothing to match on.
@@ -760,7 +768,10 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           <CategoryPicker
             value={txn.categoryId}
             onChange={(id) => {
-              actions.updateTransaction(txn.id, { categoryId: id, reviewed: true });
+              actions.updateTransaction(
+                txn.id,
+                filesIt(id) ? { categoryId: id, reviewed: true } : { categoryId: id },
+              );
               if (id !== txn.categoryId) suggestRule({ merchant: txn.merchant, categoryId: id });
             }}
             trigger={(cat, open) => (

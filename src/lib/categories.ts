@@ -105,5 +105,17 @@ export function defaultTaxonomy(): { groups: CategoryGroup[]; categories: Catego
 }
 
 export const UNCATEGORIZED = "c_uncategorized";
+
+/**
+ * Whether filing something here counts as having looked at it.
+ *
+ * Choosing a category is the review: somebody read the row, decided what it
+ * was and said so, and a switch flicked by hand straight afterwards was a
+ * second press whose answer was never in doubt. Uncategorized is the one
+ * answer that is not a decision, and sending something back to it is the
+ * opposite of having dealt with it, so it does not count.
+ */
+export const filesIt = (categoryId: string): boolean =>
+  !!categoryId && categoryId !== UNCATEGORIZED;
 export const TRANSFER = "c_transfer";
 export const CC_PAYMENT = "c_credit_card_payment";
