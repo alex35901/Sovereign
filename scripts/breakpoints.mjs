@@ -4473,6 +4473,23 @@ try {
           asked.every((a) => a.tickers.length <= 4) && asked.some((a) => a.tickers.length > 1),
           asked.map((a) => a.tickers.length).join(", "));
 
+        // A line with nothing behind it has to say which nothing. "No reading"
+        // is the same three words for a provider nobody has given a token to,
+        // a provider that refused, and a symbol it has never heard of, and
+        // only two of those are anything a reader can act on.
+        const why = await bench.evaluate(() => ({
+          legend: [...document.querySelectorAll(".nw-versus-item")].map((e) => e.innerText.replace(/\n/g, " ").trim()),
+          note: document.querySelector(".against-note")?.innerText.trim() ?? "",
+        }));
+        const blank = why.legend.filter((l) => !/[-+]\d/.test(l));
+        check("a benchmark with no reading says which kind of nothing it is",
+          blank.every((l) => /needs a token|fetching|no reading/.test(l)),
+          blank.join(" | ") || "every line has a reading");
+        check("and the note under the pills agrees with the lines above it",
+          blank.length === 0
+          || (/needs a token/.test(blank.join(" ")) === /Tiingo token/.test(why.note)),
+          `${blank.join(" | ")} against "${why.note}"`);
+
         const two = await bench.evaluate(() => ({
           lines: document.querySelectorAll(".nw-card .chart-wrap svg path[stroke]").length,
           legend: [...document.querySelectorAll(".nw-versus-item")].map((e) => e.innerText.replace(/\n/g, " ").trim()),

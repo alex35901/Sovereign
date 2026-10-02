@@ -15431,6 +15431,7 @@ const hlInst = (state, opts = {}) => ({
 const hlItem = (opts = {}) => ({
   item: {
     institution_id: "ins_4",
+    consented_products: opts.consented ?? ["transactions"],
     error: opts.errorCode ? { error_code: opts.errorCode, error_message: opts.errorMessage ?? "Said so." } : null,
     status: {
       transactions: {
@@ -15478,6 +15479,63 @@ await test("and the item's own last failure is read beside its last success", ()
   for (const junk of [null, undefined, {}, [], "x", { item: null }]) {
     assert.equal(M.HL.readItemHealth(junk).errorCode, undefined);
   }
+});
+
+await test("a connection nobody asked for transactions reports itself, not the bank", () => {
+  // The case that looked like a dead bank for weeks. A connection made for
+  // investments agreed to share holdings and nothing else, so this app never
+  // asks it for transactions and the bank was never asked to hand them over.
+  // Everything else then reads perfect: balances arrive, the login is fine,
+  // Plaid has the institution healthy, and nothing has come through since the
+  // day it was connected.
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ consented: ["investments"], success: hlAgo(0) })),
+    { now: HNOW, wantsTransactions: true, quiet: { since: "2026-08-04", days: 57, usual: 4 } },
+  );
+  assert.equal(v.blame, "connection");
+  assert.match(v.headline, /Nothing is asking this bank for transactions/);
+  assert.match(v.detail, /investments/, "and says what it was set up for instead");
+  assert.match(v.action, /again as a bank/, "with the one thing that fixes it");
+
+  // It outranks a quiet account and a down bank alike: it is true whatever
+  // the bank is doing, and waiting will never change it.
+  const down = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("DOWN")),
+    M.HL.readItemHealth(hlItem({ consented: ["investments"], success: hlAgo(0) })),
+    { now: HNOW, wantsTransactions: true },
+  );
+  assert.match(down.headline, /Nothing is asking this bank/);
+});
+
+await test("but a brokerage with no transactions is the arrangement, not a fault", () => {
+  // Holdings are what a brokerage has instead of a statement, so the same
+  // connection against an investment account must not be reported as broken.
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ consented: ["investments"], success: hlAgo(0) })),
+    { now: HNOW, wantsTransactions: false },
+  );
+  assert.notEqual(v.blame, "connection");
+  assert.equal(v.headline, "Working.");
+});
+
+await test("and a connection that did agree to transactions is read as before", () => {
+  const v = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth(hlItem({ consented: ["transactions", "balance"], success: hlAgo(0) })),
+    { now: HNOW, wantsTransactions: true, quiet: { since: "2026-08-04", days: 57, usual: 4 } },
+  );
+  assert.equal(v.blame, "nobody", "the bank is simply sending nothing");
+
+  // An older item lists nothing at all, and an absent list is not a refusal:
+  // reading silence as "never agreed" would report every one of them broken.
+  const old = M.HL.verdictOn(
+    M.HL.readInstitutionHealth(hlInst("HEALTHY")),
+    M.HL.readItemHealth({ item: { status: { transactions: { last_successful_update: hlAgo(0) } } } }),
+    { now: HNOW, wantsTransactions: true },
+  );
+  assert.doesNotMatch(old.headline, /Nothing is asking/);
 });
 
 await test("a bank that is down for everybody is not the household's problem", () => {

@@ -52,6 +52,14 @@ export interface ItemHealth {
   lastFailure?: string;
   errorCode?: string;
   errorMessage?: string;
+  /**
+   * What this connection was set up to share, in Plaid's own words.
+   *
+   * The field that answers the question nothing else could: a connection made
+   * for investments never agreed to hand over transactions, so the bank is not
+   * withholding them and the login is not broken. Nobody is asking.
+   */
+  consented: string[];
 }
 
 /**
@@ -132,11 +140,21 @@ export function readItemHealth(raw: unknown): ItemHealth {
   // The error can arrive on the item or beside it, depending on which call
   // carried it, and both spellings are worth reading.
   const err = ((item.error ?? top.error) ?? {}) as Record<string, unknown>;
+  // Both spellings: what it agreed to and what it is billed for. An older item
+  // carries only the second, and either answers the question.
+  const list = (v: unknown): string[] =>
+    (Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string");
+  const consented = [...new Set([
+    ...list(item.consented_products),
+    ...list(item.billed_products),
+    ...list(item.products),
+  ])];
   return {
     lastSuccess: str(tx.last_successful_update),
     lastFailure: str(tx.last_failed_update),
     errorCode: str(err.error_code),
     errorMessage: str(err.error_message) ?? str(err.display_message),
+    consented,
   };
 }
 
@@ -193,13 +211,60 @@ const pct = (v: number): number => Math.round(v * 100);
  * nothing, which is not a fault anywhere and cost this household three weeks
  * of assuming the app was broken.
  */
+/** Whether a connection agreed to share a thing at all. */
+const carries = (item: ItemHealth, product: string): boolean =>
+  item.consented.length === 0 || item.consented.includes(product);
+
+/** A list of products, said the way a person would say it. */
+const said = (products: readonly string[]): string => {
+  const named = products.filter((p) => p !== "transactions");
+  if (!named.length) return "something else";
+  if (named.length === 1) return named[0]!;
+  return `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+};
+
 export function verdictOn(
   inst: InstitutionHealth,
   item: ItemHealth,
-  opts: { quiet?: Quiet; now?: number } = {},
+  opts: {
+    quiet?: Quiet;
+    now?: number;
+    /**
+     * Whether this account should be getting transactions at all.
+     *
+     * False for a holdings account, where no transactions is the arrangement
+     * rather than a fault, and the check below would otherwise report every
+     * brokerage as broken.
+     */
+    wantsTransactions?: boolean;
+  } = {},
 ): Verdict {
   const now = opts.now ?? Date.now();
   const bank = inst.name ?? "this bank";
+  /**
+   * Nobody is asking, which is not the same as nothing answering.
+   *
+   * A connection made for investments agreed to share holdings and nothing
+   * else, so this app never asks it for transactions and the bank was never
+   * asked to hand them over. Everything else then looks perfect: balances
+   * arrive, the login is fine, Plaid is healthy, and no transaction has come
+   * through since the day it was connected. First of all of these, ahead even
+   * of a bank that is down for everybody: that is temporary and has nothing to
+   * do with the missing transactions, while this is true whatever the bank is
+   * doing and no amount of waiting will change it.
+   */
+  if (opts.wantsTransactions && !carries(item, "transactions")) {
+    return {
+      blame: "connection",
+      tone: "neg",
+      headline: "Nothing is asking this bank for transactions.",
+      detail: `This connection was set up to share ${said(item.consented)}, not transactions,`
+        + " so the bank has never been asked for them. Balances arrive because those were agreed to.",
+      action: "Connect this bank again as a bank rather than as investments."
+        + " The accounts and their history are kept.",
+    };
+  }
+
   const down = inst.products.filter((p) => p.state === "down");
   const degraded = inst.products.filter((p) => p.state === "degraded");
   const live = inst.incidents.filter(open);

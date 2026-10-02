@@ -45,6 +45,18 @@ function Row({ icon, label, children, help }: {
 }
 
 /**
+ * The account kinds a statement comes for.
+ *
+ * A brokerage has holdings rather than a statement, so a connection that
+ * hands over no transactions for one is the arrangement rather than a fault.
+ * Everything that spends has a statement, and silence on one of these is
+ * worth explaining.
+ */
+const WANTS_TRANSACTIONS = new Set<Account["type"]>([
+  "checking", "savings", "credit", "loan", "mortgage",
+]);
+
+/**
  * The Plaid item feeding this account, by the same rule the status uses.
  *
  * Its own item id when it has one, the institution otherwise: an account
@@ -90,6 +102,11 @@ function Diagnosis({ account, db }: { account: Account; db: DB }) {
           quiet: quietFor(
             db.transactions.filter((t) => t.accountId === account.id).map((t) => t.date),
           ),
+          // Read off this account rather than off the connection it arrived
+          // on, because the two can disagree and that disagreement is the
+          // fault being looked for: a current account on a connection made for
+          // investments is exactly the case where no transactions ever come.
+          wantsTransactions: WANTS_TRANSACTIONS.has(account.type),
         },
       ));
     } catch (err) {

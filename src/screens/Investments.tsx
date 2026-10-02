@@ -154,8 +154,22 @@ export default function Investments() {
     // word about why. A run of nulls draws nothing and says "no reading".
     const theirs = h && h.dates.length ? returnSeries(h, span.dates) : span.dates.map(() => null);
     const last = [...theirs].reverse().find((v) => v !== null) ?? null;
-    return { values: theirs, tone: pick.tone, label: pick.label, pct: last };
-  }), [picks, market.data, span.dates]);
+    // Said beside the line rather than only under the pills. Every one of
+    // these reads "no reading" otherwise, which is the same three words for a
+    // provider nobody has given a token to, a provider that refused, and a
+    // symbol it has genuinely never heard of. Only two of the three are
+    // anything the reader can do something about.
+    // Only the two causes that really are about every line at once. A fetch
+    // that failed is reported under the pills instead, because the state is
+    // one flag for the whole page and a symbol the provider has simply never
+    // heard of would otherwise be blamed on a request that went wrong: the
+    // honest answer for that one is still that there is no reading.
+    const why = last !== null ? undefined
+      : market.state === "nokey" ? "needs a token"
+      : market.state === "loading" ? "fetching"
+      : undefined;
+    return { values: theirs, tone: pick.tone, label: pick.label, pct: last, why };
+  }), [picks, market.data, market.state, span.dates]);
 
   const shownPoints = useMemo(() => {
     if (!compare.length) return series;

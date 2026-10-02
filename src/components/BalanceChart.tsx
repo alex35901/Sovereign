@@ -150,7 +150,17 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
    * shows the shape of it. Null where the series has no reading in the window
    * — a fund younger than the account, or a symbol the provider does not know.
    */
-  compare?: { values: (number | null)[]; tone: string; label: string; pct: number | null }[];
+  compare?: {
+    values: (number | null)[]; tone: string; label: string; pct: number | null;
+    /**
+     * Why there is no reading, where that is known.
+     *
+     * "No reading" on its own is the one answer that cannot be acted on: a
+     * symbol the provider has never heard of and a provider nobody has given
+     * a token to look identical, and only one of them is fixable.
+     */
+    why?: string;
+  }[];
 }) {
   // Where a finger is resting on the chart, if one is. Null means the whole
   // period, which is what the card says when nobody is touching it.
@@ -205,7 +215,7 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
                 <span className={c.pct !== null && c.pct < 0 ? "neg" : "pos"}>
                   {/* pctLabel is unsigned, because everywhere else the arrow
                       beside it carries the sign. Here there is no arrow. */}
-                  {c.pct === null ? "no reading" : `${c.pct < 0 ? "-" : "+"}${pctLabel(c.pct)}`}
+                  {c.pct === null ? (c.why ?? "no reading") : `${c.pct < 0 ? "-" : "+"}${pctLabel(c.pct)}`}
                 </span>
               </span>
             ))}
