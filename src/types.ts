@@ -1,5 +1,6 @@
 import type { SyncCadence } from "./lib/sync/schedule.js";
 import type { Usage } from "./lib/usage.js";
+import type { LinkFailureRecord } from "./lib/sync/link-log.js";
 /** All money is integer cents. Outflows are negative, inflows positive. */
 export type ID = string;
 export type ISODate = string; // YYYY-MM-DD
@@ -523,6 +524,15 @@ export interface Settings {
    * back on the next pull and it reappears, which reads as the delete failing.
    */
   deletedAccountKeys?: string[];
+  /**
+   * Link attempts that ended in an error, newest first.
+   *
+   * A reconnect can write what went wrong onto the item it was about. A new
+   * connection has no item to write it on, so the one case where the app
+   * cannot help, because nothing is connected yet, was the one case where it
+   * remembered nothing either. See lib/sync/link-log.
+   */
+  linkFailures?: LinkFailureRecord[];
 }
 
 export interface VehicleProfile {

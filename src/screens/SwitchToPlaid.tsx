@@ -5,7 +5,7 @@ import { useDB, useStore } from "../store";
 import { today } from "../lib/date";
 import { fmt } from "../lib/money";
 import { createLinkToken, exchangePublicToken, fetchItem } from "../lib/sync/plaid";
-import { openPlaidLink } from "../lib/sync/plaid-link";
+import { PlaidLinkError, openPlaidLink } from "../lib/sync/plaid-link";
 import { syncPlaidItem } from "../lib/sync";
 import { adopt, floorFor, itemFor } from "../lib/sync/adopt";
 import { accountKeys } from "../lib/sync/merge";
@@ -82,6 +82,10 @@ export function SwitchToPlaid({ account }: { account: Account }) {
         balance: a.balance, logo: a.logo, domain: a.domain,
       })));
     } catch (err) {
+      // Remembered as well as shown: the session id is what Plaid's support
+      // asks for, and this screen opens the same dialog the connections card
+      // does. See lib/sync/link-log.
+      if (err instanceof PlaidLinkError) actions.noteLinkFailure(err.detail);
       setError(err instanceof Error ? err.message : "Could not open Plaid.");
     } finally {
       setBusy(false);

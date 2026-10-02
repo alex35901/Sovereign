@@ -8305,6 +8305,185 @@ try {
     await rc.close();
   }
 
+
+  if (want("link-trouble")) {
+    // ── a bank that has refused the same way for a fortnight ──
+    //
+    // The app's advice on a sign-in the bank will not hand over is "it is not
+    // answering Plaid at the moment, try again later". That is right the first
+    // afternoon and wrong by the second week, and nothing here could tell the
+    // two apart, because nothing was counting: every attempt was a toast, and
+    // a new connection has no item to write an error onto.
+    const lt = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
+    const seed = await lt.newPage();
+    await seed.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await seed.waitForTimeout(1400);
+    await seed.close();
+    await lt.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        // One clock reading for all of them. Taken per call, each later call
+        // runs a hair after the one before, so "twelve days ago" came out a
+        // millisecond under twelve days and the span read as eleven.
+        const now = Date.now();
+        const ago = (days) => new Date(now - days * 86_400_000).toISOString();
+        db.settings.linkFailures = [
+          { institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING", view: "OAUTH", sessionId: "ls-new", requestId: "rq-new", at: ago(0) },
+          { institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING", view: "OAUTH", sessionId: "ls-mid", at: ago(5) },
+          { institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING", view: "OAUTH", sessionId: "ls-old", at: ago(12) },
+          // A different refusal at the same bank, which is a bank having a bad
+          // week rather than the thing above.
+          { institution: "Wells Fargo", code: "INVALID_CREDENTIALS", sessionId: "ls-cred", at: ago(6) },
+          // And one that stopped before Plaid named anything.
+          { at: ago(1) },
+        ];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* nothing to patch */ }
+    });
+    const page = await lt.newPage();
+    await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+
+    const said = await page.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!card) return null;
+      const text = card.innerText;
+      return {
+        counted: /5 sign-ins that did not finish/.test(text),
+        warned: card.querySelector(".warn")?.innerText ?? "",
+        text,
+        sessions: ["ls-new", "ls-mid", "ls-old", "ls-cred"].filter((s) => text.includes(s)),
+        unnamed: /1 more stopped before Plaid named a bank/.test(text),
+        // The disclosure is shut, so what is inside it is in the DOM and not
+        // in innerText. Read the link itself.
+        portal: !!card.querySelector('a[href="https://my.plaid.com"]'),
+      };
+    });
+    check("every sign-in that did not finish is counted, not just the last one",
+      said !== null && said.counted, said?.text.split("\n").slice(0, 3).join(" · "));
+    // The sentence this whole thing exists for: once a bank has refused the
+    // same way on different days, "try again later" has been tried.
+    check("a refusal that has outlived its outage says so, and names the bank",
+      said !== null && /Wells Fargo has refused this the same way 3 times over 12 days/.test(said.warned),
+      said?.warned);
+    check("and names the cause that waiting will not fix, with the place to check it",
+      said !== null
+      && /completed its OAuth registration and has full production access/.test(said.warned)
+      && /dashboard\.plaid\.com/.test(said.warned)
+      && /client_id/.test(said.warned),
+      said?.warned);
+    // A refusal that says what is wrong is not that. "The bank rejected that
+    // password" is not a thing to go and read a dashboard about.
+    check("a refusal that explains itself is listed and not escalated",
+      said !== null && said.text.includes("INVALID_CREDENTIALS")
+      && !said.warned.includes("INVALID_CREDENTIALS"), said?.warned);
+    check("and every reference Plaid's support will ask for is on the page",
+      said !== null && said.sessions.length === 4, said?.sessions.join(" "));
+    check("including the ones Plaid never named a bank for, counted rather than listed",
+      said !== null && said.unnamed, said?.text);
+    check("with the one place a person can revoke this themselves",
+      said !== null && said.portal, String(said?.portal));
+
+    // Selectable, because the answer to "why will this bank not connect" is a
+    // thing people paste into a support ticket.
+    const selectable = await page.evaluate(() => {
+      const el = document.querySelector(".link-refs");
+      return el && el.innerText.includes("ls-new") ? getComputedStyle(el).userSelect : "";
+    });
+    check("and the references can be selected to paste into one",
+      selectable === "text", selectable);
+
+    if (await tryStep("the count can be cleared", async () => {
+      await page.locator(".card", { hasText: "Connections" })
+        .getByRole("button", { name: "Forget these" }).click({ timeout: 8000 });
+      await page.waitForTimeout(700);
+    })) {
+      const after = await page.evaluate(() => ({
+        stored: JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.linkFailures,
+        shown: document.body.innerText.includes("sign-ins that did not finish"),
+      }));
+      check("which forgets them and takes the block away",
+        Array.isArray(after.stored) && after.stored.length === 0 && !after.shown,
+        JSON.stringify(after.stored));
+    }
+    await page.close();
+
+    // One failure is one failure: it is listed, and nothing is escalated.
+    await lt.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        db.settings.linkFailures = [{
+          institution: "Ally", code: "INSTITUTION_NOT_RESPONDING", sessionId: "ls-one",
+          at: new Date().toISOString(),
+        }];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* nothing to patch */ }
+    });
+    const once = await lt.newPage();
+    await once.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await once.waitForTimeout(1400);
+    const first = await once.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+      return {
+        text: card?.innerText ?? "",
+        warned: card?.querySelector(".warn")?.innerText ?? "",
+      };
+    });
+    // ── what the configuration check does not check ──
+    //
+    // Five ticks and then Link fails at the bank. The ticks are about the
+    // client_id and the secret; the banks that hand sign-in to their own
+    // website need their own registration on top, and nothing in a passing
+    // check hints at that.
+    const cfgCtx = await browser.newContext({ viewport: { width: 1280, height: 1100 } });
+    await cfgCtx.addInitScript(() => {
+      const real = window.fetch;
+      window.fetch = async (input, init) => {
+        const url = String(typeof input === "string" ? input : input.url);
+        if (!url.includes("/api/plaid")) return real(input, init);
+        const body = JSON.parse(init?.body ?? "{}");
+        if (body.action !== "diagnose") return new Response(JSON.stringify({ error: "no" }), { status: 400 });
+        return new Response(JSON.stringify({
+          environment: "production", envVarSet: false,
+          clientId: { length: 24, trimmed: false }, secret: { length: 30, trimmed: false },
+          probe: { ok: true, error: null }, worksIn: "production",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      };
+    });
+    const cfg = await cfgCtx.newPage();
+    await cfg.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await cfg.waitForTimeout(1300);
+    if (await tryStep("the configuration check runs", async () => {
+      await cfg.getByRole("button", { name: /Check configuration/ }).click({ timeout: 8000 });
+      await cfg.waitForTimeout(800);
+    })) {
+      const shown = await cfg.evaluate(() => {
+        const card = [...document.querySelectorAll(".card")]
+          .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+        return card?.innerText ?? "";
+      });
+      check("credentials Plaid accepts are reported as credentials, not as working banks",
+        /Plaid accepted these credentials for production/.test(shown)
+        && /covers the credentials, not the banks/.test(shown)
+        && /OAuth registration/.test(shown) && /full production access/.test(shown),
+        shown.split("\n").filter((l) => /credential|OAuth/i.test(l)).join(" · "));
+    }
+    await cfgCtx.close();
+
+    check("a bank that failed once is recorded and nothing is read into it",
+      /A sign-in that did not finish/.test(first.text) && first.text.includes("ls-one")
+      && !/refused this the same way/.test(first.warned),
+      `${first.text.split("\n")[0]} | ${first.warned}`);
+    await once.close();
+    await lt.close();
+  }
+
   if (want("settings-trim")) {
     // ── settings holds settings, not switches nobody moves ──
     //

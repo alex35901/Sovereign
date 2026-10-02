@@ -652,6 +652,10 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
   align-items: center; gap: 10px;
 }
 .reattach-row + .reattach-row { border-top: 1px solid var(--line-soft); padding-top: 10px; }
+/* Selectable, because the answer to "why will this bank not connect" is a
+   thing people paste into a support ticket, and the references in it cannot be
+   recovered once the dialog that produced them has closed. */
+.link-refs { user-select: text; }
 @media (max-width: 720px) {
   /* Stacked, with the arrow turned to point down the page at the thing it
      points at, rather than across a column that is no longer there. */

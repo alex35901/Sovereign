@@ -18,10 +18,11 @@ import { PlaidLinkError, openPlaidLink } from "../lib/sync/plaid-link";
 import { Link } from "react-router-dom";
 import { ACCOUNT_TYPE_LABEL } from "../lib/select";
 import { Btn, Card, CardHead, ConfirmButton, cx } from "../components/ui";
+import { LinkTrouble } from "./LinkTrouble";
 
 /** What the function sees, in words rather than raw values. */
 function Diagnosis({ check }: { check: PlaidDiagnosis }) {
-  const lines: { ok: boolean; text: string }[] = [];
+  const lines: { ok: boolean; text?: string; note?: string }[] = [];
 
   lines.push({
     ok: check.clientId.length > 0,
@@ -47,6 +48,22 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
       : `Plaid refused them. ${check.probe.error}`,
   });
 
+  // Said whenever the credentials work, because the check that passes here is
+  // narrower than it reads. It proves Plaid accepts this client_id and secret;
+  // it says nothing about the banks that hand sign-in over to their own
+  // website, which are most of the big ones and which need their own
+  // registration on top. A household reading five ticks and then watching Link
+  // fail at the bank has no way to know that from here.
+  if (check.probe.ok) {
+    lines.push({
+      ok: true,
+      note: "That covers the credentials, not the banks. Wells Fargo, Chase, Bank of America and the other "
+        + "large banks hand sign-in to their own website, and Plaid allows that only once this account has "
+        + "completed its OAuth registration and has full production access. Both are on dashboard.plaid.com, "
+        + "under the compliance section, and neither shows up as a bad key here.",
+    });
+  }
+
   const wrongKeys = check.probe.error === "INVALID_API_KEYS";
   const other = check.environment === "production" ? "sandbox" : "production";
   if (wrongKeys && check.worksIn) {
@@ -56,9 +73,15 @@ function Diagnosis({ check }: { check: PlaidDiagnosis }) {
   return (
     <div className="col" style={{ gap: 5, width: "100%", marginTop: 4 }}>
       {lines.map((l, i) => (
-        <div key={i} className={`small ${l.ok ? "muted" : "neg"}`}>
-          {l.ok ? "✓" : "✗"} {l.text}
-        </div>
+        l.note
+          // Not a tick: nothing was checked. It is what the ticks above do not
+          // cover, which is the part that fails for most people.
+          ? <div key={i} className="tiny faint" style={{ maxWidth: 560 }}>{l.note}</div>
+          : (
+            <div key={i} className={`small ${l.ok ? "muted" : "neg"}`}>
+              {l.ok ? "✓" : "✗"} {l.text}
+            </div>
+          )
       ))}
       {wrongKeys && check.worksIn === "sandbox" ? (
         <div className="small" style={{ marginTop: 6 }}>
@@ -101,6 +124,21 @@ export function PlaidCard() {
    * something happening right now at Plaid.
    */
   const stillFetching = useRef(new Set<string>());
+
+  /**
+   * An error, shown and remembered.
+   *
+   * Link reports a failure once, into a dialog that then closes and takes it
+   * with it. A reconnect could at least write it onto the item it was about;
+   * a new connection has nothing to write it on, so the one case where
+   * nothing here can help, because nothing is connected yet, was the one case
+   * where nothing was kept either. The session id is what Plaid's support
+   * asks for and cannot be recovered once the toast has gone.
+   */
+  const failed = (err: unknown, fallback: string) => {
+    if (err instanceof PlaidLinkError) actions.noteLinkFailure(err.detail);
+    setError(err instanceof Error ? err.message : fallback);
+  };
 
   /**
    * What Plaid actually holds for one bank, asked and nothing else.
@@ -179,7 +217,7 @@ export function PlaidCard() {
       }
       await syncItem(item);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not connect.");
+      failed(err, "Could not connect.");
     } finally {
       setBusy(null);
     }
@@ -269,7 +307,7 @@ export function PlaidCard() {
       notify(`${item.institution} now carries ${kindLabel(to)}. Syncing…`);
       await syncItem(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not switch this connection.");
+      failed(err, "Could not switch this connection.");
     } finally {
       setBusy(null);
     }
@@ -317,7 +355,7 @@ export function PlaidCard() {
       notify(`Reconnected ${item.institution}. Syncing…`);
       await syncItem({ ...item, lastError: undefined });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not reconnect.");
+      failed(err, "Could not reconnect.");
       /**
        * Kept on the connection, not just shown.
        *
@@ -459,7 +497,7 @@ export function PlaidCard() {
       }
     } catch (err) {
       setNote(null);
-      setError(err instanceof Error ? err.message : "Could not fetch the history.");
+      failed(err, "Could not fetch the history.");
     } finally {
       setBusy(null);
     }
@@ -511,7 +549,7 @@ export function PlaidCard() {
       // handed back before that is a bank with no way in at all.
       await releaseItem(item);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remake the connection.");
+      failed(err, "Could not remake the connection.");
     } finally {
       setBusy(null);
     }
@@ -743,6 +781,17 @@ export function PlaidCard() {
       ) : null}
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
+
+      {/* Under the connections and the last error, because it is the history
+          of that error: what has been tried, how long it has been failing,
+          and the references a support ticket needs. Renders nothing until a
+          sign-in has actually failed. */}
+      {db.settings.linkFailures?.length ? (
+        <>
+          <div className="divider" />
+          <LinkTrouble />
+        </>
+      ) : null}
 
       <div className="divider" />
       <SyncSchedule />

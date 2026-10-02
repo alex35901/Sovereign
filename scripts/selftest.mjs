@@ -96,6 +96,7 @@ await build({
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export * as RA from "./src/lib/sync/reattach.ts";
+      export * as LL from "./src/lib/sync/link-log.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -6244,6 +6245,147 @@ await test("a pending hold folded into the charge it became is not left pending"
   assert.equal(row.pending, false, "the connection that is answering says it settled");
   assert.equal(row.statement, "FUEL CO 1123");
   assert.equal(row.categoryId, "c-car", "and the household's category is still the household's");
+});
+
+
+// --- sign-ins that did not finish, counted ---------------------------------
+
+await test("a failed sign-in is remembered with the references support asks for", () => {
+  const f = {
+    message: "Couldn't connect to your institution",
+    code: "INSTITUTION_NOT_RESPONDING",
+    institution: "Wells Fargo",
+    view: "OAUTH",
+    sessionId: "ls-1",
+    requestId: "rq-1",
+  };
+  const one = M.LL.noteLinkFailure(undefined, f, "2026-10-02T09:00:00.000Z");
+  assert.deepEqual(one, [{
+    institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING", view: "OAUTH",
+    sessionId: "ls-1", requestId: "rq-1", at: "2026-10-02T09:00:00.000Z",
+  }]);
+
+  // Newest first, because the question is almost always about the last one.
+  const two = M.LL.noteLinkFailure(one, { ...f, sessionId: "ls-2" }, "2026-10-02T10:00:00.000Z");
+  assert.deepEqual(two.map((r) => r.sessionId), ["ls-2", "ls-1"]);
+
+  // Nothing empty is written. The whole document goes up on every save, and a
+  // run of keys holding undefined is a run of keys. Checked one field at a
+  // time, because a shape that is right when everything is present says
+  // nothing about the ordinary case where most of it is missing.
+  const at = "2026-10-02T09:00:00.000Z";
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, { code: "X" }, at), [{ code: "X", at }]);
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, { institution: "Ally" }, at), [{ institution: "Ally", at }]);
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, { view: "OAUTH" }, at), [{ view: "OAUTH", at }]);
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, { sessionId: "s" }, at), [{ sessionId: "s", at }]);
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, { requestId: "r" }, at), [{ requestId: "r", at }]);
+  // Link closing with nothing to say is still an attempt that happened, and
+  // the time of it is the whole of what there is to keep.
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, {}, at), [{ at }]);
+  // The message is not kept: it is Plaid's wording for the code, which is
+  // kept, and it is the longest thing in the record.
+  assert.deepEqual(M.LL.noteLinkFailure(undefined, { message: "Something went wrong" }, at), [{ at }]);
+
+  // Capped, or pressing a button that fails becomes a log file inside a
+  // document that is uploaded whole.
+  let log = [];
+  for (let i = 0; i < M.LL.LINK_LOG_MAX + 7; i++) {
+    log = M.LL.noteLinkFailure(log, { ...f, sessionId: `ls-${i}` }, `2026-10-02T09:${String(i).padStart(2, "0")}:00.000Z`);
+  }
+  assert.equal(log.length, M.LL.LINK_LOG_MAX);
+  assert.equal(log[0].sessionId, `ls-${M.LL.LINK_LOG_MAX + 6}`, "and the newest is the one kept");
+});
+
+await test("the same refusal on different days stops being a passing outage", () => {
+  const at = (day, hour) => `2026-09-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:00:00.000Z`;
+  const tried = (day, hour, over = {}) => ({
+    institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING",
+    sessionId: `ls-${day}-${hour}`, at: at(day, hour), ...over,
+  });
+
+  // One bad afternoon is a bad afternoon. Three presses inside an hour say
+  // nothing at all about whether waiting will help.
+  const afternoon = [tried(20, 14), tried(20, 14), tried(20, 15)];
+  assert.deepEqual(M.LL.escalation(afternoon), null);
+  assert.equal(M.LL.patternsIn(afternoon)[0].count, 3);
+  assert.equal(M.LL.patternsIn(afternoon)[0].days, 0);
+
+  // The same refusal on two different days is not weather.
+  const fortnight = [tried(20, 14), tried(23, 9), tried(28, 11)];
+  const worst = M.LL.escalation(fortnight);
+  assert.equal(worst.institution, "Wells Fargo");
+  assert.equal(worst.count, 3);
+  // Whole days between the first and the last, floored: the sentence says
+  // "over N days", and seven days and twenty-one hours is over seven.
+  assert.equal(worst.days, 7);
+  assert.equal(worst.firstAt, at(20, 14));
+  assert.equal(worst.lastAt, at(28, 11));
+  // Every reference, newest first, because a ticket wants all of them.
+  assert.deepEqual(worst.references.map((r) => r.sessionId), ["ls-28-11", "ls-23-9", "ls-20-14"]);
+
+  // Two attempts is not a pattern however far apart they are: a bank really
+  // does have two bad afternoons in a month.
+  assert.deepEqual(M.LL.escalation([tried(20, 14), tried(28, 11)]), null);
+
+  // And a refusal that says what is wrong is not this. "The bank rejected
+  // that password" is not a thing to go and read a dashboard about.
+  const credentials = [
+    tried(20, 14, { code: "INVALID_CREDENTIALS" }),
+    tried(23, 9, { code: "INVALID_CREDENTIALS" }),
+    tried(28, 11, { code: "INVALID_CREDENTIALS" }),
+  ];
+  assert.deepEqual(M.LL.escalation(credentials), null);
+
+  // Grouped by bank and by code: two different failures at one bank is a bank
+  // having a bad week, and the same one ten times is something else.
+  const mixed = [
+    tried(20, 14), tried(23, 9), tried(28, 11),
+    tried(21, 9, { institution: "Chase" }),
+    tried(22, 9, { code: "INTERNAL_SERVER_ERROR" }),
+  ];
+  const groups = M.LL.patternsIn(mixed);
+  assert.equal(groups.length, 3);
+  assert.equal(groups[0].count, 3, "the biggest group first");
+  assert.equal(M.LL.escalation(mixed).code, "INSTITUTION_NOT_RESPONDING");
+
+  // The longest-running one, where more than one has outlived its outage.
+  const both = [
+    tried(20, 14), tried(23, 9), tried(28, 11),
+    tried(26, 9, { institution: "Chase" }), tried(27, 9, { institution: "Chase" }), tried(28, 9, { institution: "Chase" }),
+  ];
+  assert.equal(M.LL.escalation(both).institution, "Wells Fargo");
+
+  // An attempt Link never named a bank for cannot be grouped, and is left out
+  // rather than filed under an empty name.
+  assert.deepEqual(M.LL.patternsIn([{ code: "INSTITUTION_DOWN", at: at(20, 14) }]), []);
+  assert.deepEqual(M.LL.patternsIn([{ institution: "Wells Fargo", at: at(20, 14) }]), []);
+  assert.deepEqual(M.LL.patternsIn(undefined), []);
+});
+
+await test("and what it says then is the thing waiting will not fix", () => {
+  const at = (day) => `2026-09-${String(day).padStart(2, "0")}T09:00:00.000Z`;
+  const log = [20, 23, 28].map((d) => ({
+    institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING", sessionId: `ls-${d}`, at: at(d),
+  }));
+  const said = M.LL.escalationAdvice(M.LL.escalation(log));
+  assert.match(said, /Wells Fargo/);
+  assert.match(said, /3 times/);
+  assert.match(said, /8 days/);
+  // The cause a household cannot see from inside the dialog and cannot wait
+  // out, named rather than hinted at, with the one place to go and look.
+  assert.match(said, /completed its OAuth registration and has full production access/);
+  assert.match(said, /dashboard\.plaid\.com/);
+  assert.match(said, /client_id/);
+  // And it says to ask the right question, which is not the one the error
+  // invites: "is the bank up" has been answered three times.
+  assert.match(said, /rather than whether the bank is up/);
+
+  // A day apart reads as a day apart rather than as "over 1 days".
+  const short = [20, 20, 21].map((d, i) => ({
+    institution: "Wells Fargo", code: "INSTITUTION_NOT_RESPONDING", sessionId: `s${i}`,
+    at: `2026-09-${String(d).padStart(2, "0")}T0${i}:00:00.000Z`,
+  }));
+  assert.match(M.LL.escalationAdvice(M.LL.escalation(short)), /since yesterday/);
 });
 
 await test("a window that came back short is told from a backfill still running", async () => {

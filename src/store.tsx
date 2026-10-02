@@ -25,6 +25,8 @@ import { blankEstate } from "./lib/estate";
 /** Tag colours for tags created by an import, spread across the palette. */
 const TAG_TONES = ["--c5", "--c3", "--c1", "--c7", "--c9", "--c11", "--c2", "--c4", "--c6", "--c8"];
 import { accountKeys } from "./lib/sync/merge";
+import { noteLinkFailure } from "./lib/sync/link-log";
+import type { LinkFailure } from "./lib/sync/link-error";
 import { added, record } from "./lib/activity";
 import type { LoggedAction } from "./lib/changelog";
 import { clearLog, diffAction, loadLog, revert, revertMessage, saveLog, trim } from "./lib/changelog";
@@ -378,6 +380,9 @@ export interface Actions {
   resetEmpty: () => void;
   loadDB: (db: DB) => void;
   patchSettings: (patch: Partial<DB["settings"]>) => void;
+  /** Remember a Link attempt that failed, references and all. */
+  noteLinkFailure: (f: LinkFailure) => void;
+  forgetLinkFailures: () => void;
 
   addAccount: (a: Omit<Account, "id" | "order" | "history">) => void;
   updateAccount: (id: ID, patch: Partial<Account>) => void;
@@ -560,6 +565,20 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     resetEmpty: () => apply(() => emptyDB(), "clear all data"),
     loadDB: (next) => apply(() => next, "restore backup"),
     patchSettings: (patch) => apply((db) => ({ ...db, settings: { ...db.settings, ...patch } })),
+
+    // Through apply rather than patchSettings, because two attempts in a row
+    // would otherwise read the same array twice and the second would drop the
+    // first.
+    noteLinkFailure: (f) =>
+      apply((db) => ({
+        ...db,
+        settings: {
+          ...db.settings,
+          linkFailures: noteLinkFailure(db.settings.linkFailures, f, new Date().toISOString()),
+        },
+      }), "record a failed sign-in attempt"),
+    forgetLinkFailures: () =>
+      apply((db) => ({ ...db, settings: { ...db.settings, linkFailures: [] } }), "forget failed sign-in attempts"),
 
     addAccount: (a) =>
       apply((db) => ({
