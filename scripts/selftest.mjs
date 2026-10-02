@@ -45,6 +45,7 @@ await build({
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
       export { filesIt, UNCATEGORIZED } from "./src/lib/categories.ts";
+      export { reels, rollMs, wheelMs, SPINS } from "./src/components/Rolling.tsx";
       export * as HL from "./src/lib/sync/health.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
@@ -14756,6 +14757,88 @@ await test("a category you already played better than the plan shows no saving",
   assert.ok(food.best < food.earned, "and the purchase-by-purchase plan spent that cap on the petrol");
   assert.equal(food.gap, 0, "so there is nothing to say, rather than something negative to say");
   assert.ok(r.totals.gap >= 0);
+});
+
+/* ── the figure rolling into place ─────────────────────────────────────── */
+
+const turning = (slots) => slots.map((s) => (s.to === undefined ? "." : "o")).join("");
+
+await test("only the digits that changed turn", () => {
+  // The rule as asked for: 10,056 to 10,775 moves the last three and leaves
+  // the ten alone. A wheel spinning under a figure that did not change is
+  // saying something happened there that did not.
+  const s = M.reels("10,056", "10,775");
+  assert.equal(turning(s), "...ooo");
+  assert.equal(s.map((x) => x.ch).join(""), "10,775", "and it still reads as the new figure");
+
+  // Where it lands: two whole turns, then the digit.
+  assert.deepEqual(s[3], { ch: "7", from: 0, to: M.SPINS * 10 + 7 });
+  assert.deepEqual(s[4], { ch: "7", from: 5, to: M.SPINS * 10 + 7 });
+  assert.deepEqual(s[5], { ch: "5", from: 6, to: M.SPINS * 10 + 5 });
+});
+
+await test("and the separators stand still while the digits turn past them", () => {
+  const s = M.reels("$1,056.00", "$9,775.00");
+  // The comma and the point are not wheels, whatever is going on either side.
+  assert.equal(turning(s), ".o.ooo.oo");
+  assert.equal(s.map((x) => x.ch).join(""), "$9,775.00");
+});
+
+await test("everything below the first change turns, as the lower wheels of one do", () => {
+  // Including digits that happen to come back to themselves. The hundreds
+  // moving and the units sitting still is not what an odometer looks like.
+  const s = M.reels("10,056", "10,756");
+  assert.equal(turning(s), "...ooo");
+  assert.equal(s[4].from, 5);
+  assert.equal(s[4].to, M.SPINS * 10 + 5, "a full turn back to where it was");
+});
+
+await test("a figure that gained a digit is lined up from the right", () => {
+  // Comparing from the left would call every column changed, because they all
+  // shifted along. From the right, only what really moved moves.
+  const s = M.reels("9,999", "10,001");
+  assert.equal(s.map((x) => x.ch).join(""), "10,001");
+  assert.equal(turning(s), "oo.ooo", "all of it, which is the truth here");
+
+  // And one that shrank is read off its own units, not off its first digit.
+  // Lined up from the left, the hundreds wheel here would start on the 1 of
+  // 1,500 rather than on the 5 that was actually in that column.
+  const back = M.reels("$1,500.00", "$500.00");
+  assert.equal(back.map((x) => x.ch).join(""), "$500.00");
+  assert.equal(back[1].from, 5, "the hundreds wheel starts where the hundreds were");
+  assert.equal(back[2].from, 0);
+  assert.equal(back[3].from, 0);
+  assert.ok(back.every((x) => x.from === undefined || (x.from >= 0 && x.from <= 9)),
+    "every wheel starts on a real digit");
+});
+
+await test("nothing turns when nothing changed", () => {
+  const s = M.reels("$42.00", "$42.00");
+  assert.equal(turning(s), "......");
+  assert.equal(M.rollMs(s), 0, "and a roll of no wheels takes no time");
+});
+
+await test("the roll is over before the line it accompanies is drawn", () => {
+  // The wipe is two seconds. A figure still spinning after its chart has
+  // finished is the chart waiting for the number rather than the other way
+  // round, which is the wrong way round.
+  const many = M.reels("$0.00", "$9,876,543.21");
+  assert.ok(M.rollMs(many) <= 1900, `${M.rollMs(many)}ms`);
+  assert.ok(M.rollMs(many) > 0);
+
+  // Including the figure nobody has, which is what the ceiling is for: each
+  // wheel takes a little longer than the one on its left, and without a
+  // ceiling a long enough figure would still be turning a second after its
+  // chart had settled.
+  const absurd = M.reels("$0.00", "$1,234,567,890,123.45");
+  assert.ok(absurd.filter((x) => x.to !== undefined).length >= 13, "enough wheels to reach it");
+  assert.equal(M.rollMs(absurd), 1900, "capped at the length of the wipe");
+
+  // The leftmost settles first and the units last, so it reads as settling
+  // rather than as everything stopping at once.
+  const n = many.filter((x) => x.to !== undefined).length;
+  assert.ok(M.wheelMs(0, n) < M.wheelMs(n - 1, n));
+  assert.equal(Math.round(M.wheelMs(n - 1, n)), M.rollMs(many), "the last one defines the length");
 });
 
 /* ── choosing a category is the review ─────────────────────────────────── */

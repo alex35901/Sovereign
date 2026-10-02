@@ -8281,6 +8281,75 @@ try {
   }
 
 
+  if (want("rolling")) {
+    // ── the figure rolling in with its chart ──
+    //
+    // The one thing that must survive a flourish: what the figure says. The
+    // wheels are three times through 0 to 9, and if any of that reached the
+    // text then every check in this suite that reads a headline, and every
+    // copy and paste, would get a number nobody has.
+    const rl = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await rl.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
+
+    const read = () => rl.evaluate(() => {
+      const el = document.querySelector(".nw-value");
+      return {
+        text: el?.innerText.trim() ?? "",
+        content: el?.textContent.trim() ?? "",
+        wheels: document.querySelectorAll(".reel.turn").length,
+      };
+    });
+
+    // Sampled while it is still moving, which is the only moment this can go
+    // wrong and the moment a passing test run would read it.
+    await rl.waitForTimeout(500);
+    const mid = await read();
+    check("the figure turns its wheels as the line is drawn",
+      mid.wheels > 0, `${mid.wheels} wheels`);
+    check("and still says the figure while they are turning",
+      /^-?\$[\d,]+\.\d\d$/.test(mid.text) && mid.text === mid.content,
+      `"${mid.text}" / "${mid.content}"`);
+
+    await rl.waitForTimeout(2600);
+    const done = await read();
+    check("which stop, rather than spinning for ever",
+      done.wheels === 0, `${done.wheels} still turning`);
+    check("leaving the same figure they settled on",
+      done.text === mid.text, `${mid.text} -> ${done.text}`);
+
+    // A finger on the chart must not set them going: the figure follows the
+    // scrub, and a wheel per sample would be a fruit machine.
+    const box = await rl.locator(".nw-card svg").first().boundingBox();
+    if (box) {
+      await rl.mouse.move(box.x + box.width * 0.4, box.y + box.height / 2);
+      await rl.waitForTimeout(250);
+      const scrubbed = await read();
+      check("and a finger moving over the chart does not start them again",
+        scrubbed.wheels === 0, `${scrubbed.wheels} wheels under the pointer`);
+      await rl.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
+      await rl.waitForTimeout(250);
+      check("while the figure still follows it",
+        (await read()).text !== "", "");
+    }
+    await rl.close();
+
+    // Asked for less movement: no wheels at all, and the figure simply there.
+    const calm = await browser.newContext({
+      viewport: { width: 1280, height: 900 }, reducedMotion: "reduce",
+    });
+    const cp = await calm.newPage();
+    await cp.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
+    await cp.waitForTimeout(600);
+    const quiet = await cp.evaluate(() => ({
+      wheels: document.querySelectorAll(".reel.turn").length,
+      text: document.querySelector(".nw-value")?.innerText.trim() ?? "",
+    }));
+    check("under reduced motion the figure is simply its figure, at once",
+      quiet.wheels === 0 && /^-?\$[\d,]+\.\d\d$/.test(quiet.text),
+      `${quiet.wheels} wheels, "${quiet.text}"`);
+    await calm.close();
+  }
+
   if (want("review-on-file")) {
     // ── choosing a category is the review ──
     //

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { AreaChart } from "./charts";
+import { AreaChart, revealKey } from "./charts";
+import { Rolling } from "./Rolling";
+import { fmt } from "../lib/money";
 import { Money, cx } from "./ui";
 import { moveBetween } from "../lib/select";
 import type { RangeKey } from "../lib/range";
@@ -173,7 +175,13 @@ export function BalanceChart({ label, above, under, total, series, points, tone,
       {above}
       <div className="nw-head">
         {label ? <span className="tile-label">{label}</span> : null}
-        <div className="nw-value num"><Money value={shown} /></div>
+        {/* Rolled into place while the line under it is wiped in, off the
+            same signal, so the figure and its chart arrive together. The
+            signature stands still under a finger, which is what keeps the
+            wheels out of a scrub. */}
+        <div className="nw-value">
+          <Rolling value={shown} format={fmt} run={revealKey([range, series.length, series[0], series[series.length - 1]])} />
+        </div>
         <Delta move={move} period={window ?? periodOf(range)} />
         {compare?.length ? (
           // Proportions, not money: an index has no dollars, and the whole
