@@ -643,6 +643,21 @@ a.tx-sub-account:hover { color: var(--accent); text-decoration: underline; }
 /* The one being read the wrong way, marked where the eye already is rather
    than only in the sentence underneath. */
 .plaid-accounts li.misread > a { color: var(--accent); font-weight: 600; }
+/* Which old account is which new one: two columns and the arrow between them,
+   because the pairing is the whole content of the row and a stack of six
+   fields would hide it. Fixed middle column so every arrow lines up down the
+   card rather than sitting wherever the name above it ended. */
+.reattach-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr);
+  align-items: center; gap: 10px;
+}
+.reattach-row + .reattach-row { border-top: 1px solid var(--line-soft); padding-top: 10px; }
+@media (max-width: 720px) {
+  /* Stacked, with the arrow turned to point down the page at the thing it
+     points at, rather than across a column that is no longer there. */
+  .reattach-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .reattach-arrow { transform: rotate(90deg); }
+}
 .avatar { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; font-size: 14px; flex: none; background: var(--surface-3); }
 .avatar.sm { width: 24px; height: 24px; border-radius: 7px; font-size: 11px; }
 .avatar.lg { width: 40px; height: 40px; border-radius: 11px; font-size: 17px; }

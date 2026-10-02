@@ -11,7 +11,9 @@ import { diagnoseItem } from "../lib/sync/plaid";
 import { readInstitutionHealth, readItemHealth, verdictOn } from "../lib/sync/health";
 import type { Verdict } from "../lib/sync/health";
 import { Btn, Card, CardHead, cx } from "../components/ui";
+import { feederOf, replacementsFor, strandedIn } from "../lib/sync/reattach";
 import { SwitchToPlaid } from "./SwitchToPlaid";
+import { ReattachCard } from "./Reattach";
 
 /**
  * Where this account's balance comes from, and whether it is still coming.
@@ -57,18 +59,6 @@ const WANTS_TRANSACTIONS = new Set<Account["type"]>([
 ]);
 
 /**
- * The Plaid item feeding this account, by the same rule the status uses.
- *
- * Its own item id when it has one, the institution otherwise: an account
- * connected before the app recorded the id has only the name to go on.
- */
-function itemFor(account: Account, db: DB) {
-  return (db.settings.plaidItems ?? []).find((i) => (
-    account.plaidItemId ? i.itemId === account.plaidItemId : i.institution === account.institution
-  ));
-}
-
-/**
  * Ask Plaid whose fault this is.
  *
  * Deliberately a button rather than something the page does on its own. It is
@@ -81,7 +71,7 @@ function Diagnosis({ account, db }: { account: Account; db: DB }) {
   const [said, setSaid] = useState<Verdict | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [reference, setReference] = useState<string | null>(null);
-  const item = itemFor(account, db);
+  const item = feederOf(account, db.settings.plaidItems ?? []);
   if (!item) return null;
 
   const run = async () => {
@@ -147,9 +137,15 @@ function Diagnosis({ account, db }: { account: Account; db: DB }) {
 export function ConnectionCard({ account }: { account: Account }) {
   const db = useDB();
   const c = connectionOf(account, db);
-  // Said it was fed by Plaid, and nothing is feeding it: the connection it
-  // came in on has been disconnected.
-  const orphaned = account.syncSource === "plaid" && !itemFor(account, db);
+  /**
+   * Said Plaid feeds it, and no connection here does.
+   *
+   * Either the connection it came in on has gone, or one to the same bank
+   * pulled cleanly and walked straight past this account, which is what a bank
+   * reconnected under slightly different account names does. See
+   * lib/sync/reattach.ts: it is read off the clock rather than guessed.
+   */
+  const stranded = strandedIn(db).some((s) => s.account.id === account.id);
 
   return (
     <Card pad={false}>
@@ -187,13 +183,19 @@ export function ConnectionCard({ account }: { account: Account }) {
           that without asking the server, and the link endpoint already answers
           "PLAID_CLIENT_ID and PLAID_SECRET are not set" in words. */}
       {account.syncSource === "plaid" ? <Diagnosis account={account} db={db} /> : null}
-      {/* Offered to an account nothing is feeding, which now includes one
-          left behind by a connection that was disconnected. Those keep saying
-          they are fed by Plaid, because that is what they were, and without
-          this the one path that points an existing account at a connection,
-          keeping its history rather than filing a second copy beside it, was
-          hidden from exactly the accounts that needed it most. */}
-      {account.syncSource !== "plaid" || orphaned ? <SwitchToPlaid account={account} /> : null}
+      {/* The repair for the common case, where the bank has been connected
+          again and handed this account back under a name that did not line
+          up, so there is a new account holding the id and this one holding
+          the history. Renders nothing when there is no such account. */}
+      {stranded && replacementsFor(db, account).length ? <ReattachCard only={account} /> : null}
+      {/* Offered to an account nothing is feeding, which includes one left
+          behind by a connection that was disconnected and one a reconnected
+          bank no longer recognises. Those keep saying they are fed by Plaid,
+          because that is what they were, and without this the one path that
+          points an existing account at a connection, keeping its history
+          rather than filing a second copy beside it, was hidden from exactly
+          the accounts that needed it most. */}
+      {account.syncSource !== "plaid" || stranded ? <SwitchToPlaid account={account} /> : null}
     </Card>
   );
 }

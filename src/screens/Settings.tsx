@@ -7,6 +7,7 @@ import { download, exportJSON, importJSON } from "../lib/storage";
 import { Btn, Card, CardHead, Field, Segmented, TextInput } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
+import { ReattachCard } from "./Reattach";
 import { CloudCard } from "./CloudCard";
 import { HistoryCard } from "./HistoryCard";
 import { EncryptionCard } from "./EncryptionCard";
@@ -100,6 +101,10 @@ export default function Settings() {
         <EncryptionCard />
 
         <PlaidCard />
+        {/* Under the connections, because it is about them: an account a
+            reconnected bank handed back under a new name. Renders nothing
+            unless there is one. */}
+        <ReattachCard />
 
       </div>
     </>

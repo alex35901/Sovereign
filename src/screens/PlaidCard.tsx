@@ -523,7 +523,11 @@ export function PlaidCard() {
     // connections with nothing in the app ever mentioning it again. Nothing
     // waits on it and nothing fails if Plaid refuses.
     void releaseItem(item);
-    notify(`Disconnected ${item.institution}. Its accounts and every transaction stay put, and connecting it again picks them back up by name.`);
+    // Said at the one moment it is worth saying, because "will I lose my
+    // accounts" is the question that stops a household disconnecting a bank
+    // that has to be disconnected, and the answer is no twice over: by name on
+    // the way back in, and by hand underneath if a name has changed.
+    notify(`Disconnected ${item.institution}. Its accounts and every transaction stay put, and connecting it again picks them back up by name. Anything the new connection spells differently is offered below, under Accounts getting nothing.`);
   };
 
   return (

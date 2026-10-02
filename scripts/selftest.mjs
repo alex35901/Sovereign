@@ -95,6 +95,7 @@ await build({
       export { checkEol, majorOf, NODE_EOL, WARN_DAYS } from "./scripts/eol.mjs";
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
+      export * as RA from "./src/lib/sync/reattach.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -5870,6 +5871,379 @@ await test("one login is one connection, however many accounts sit behind it", (
   assert.equal(M.itemFor(items, "El"), undefined);
   assert.equal(M.itemFor(items, ""), undefined);
   assert.equal(M.itemFor([bank("US", "i4")], "US Bank"), undefined);
+});
+
+
+// --- a bank reconnected, and the accounts it handed back under new names ---
+
+/**
+ * One bank, disconnected and connected again.
+ *
+ * `old` is what the household has: two years of transactions, a budget, rules.
+ * `fresh` is what the new login brought in, because the names did not line up
+ * well enough for the merge to recognise them.
+ */
+const strandedFixture = (over = {}) => {
+  const base = M.emptyDB();
+  const acct = (id, name, over2 = {}) => ({
+    id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
+    includeInNetWorth: true, hidden: false, history: [], order: 1,
+    syncSource: "plaid", ...over2,
+  });
+  return {
+    ...base,
+    accounts: [
+      acct("old", "Everyday Checking", {
+        syncId: "pl-dead-1", plaidItemId: "it_gone", lastSyncedAt: "2026-09-01T09:00:00.000Z",
+        balance: 90_00, history: [{ date: "2026-09-01", balance: 90_00 }],
+      }),
+      acct("fresh", "WF Everyday Checking ...4471", {
+        syncId: "pl-live-1", plaidItemId: "it_live", lastSyncedAt: "2026-10-02T09:00:00.000Z",
+        balance: 102_00, history: [{ date: "2026-10-02", balance: 102_00 }],
+      }),
+    ],
+    settings: {
+      ...base.settings,
+      plaidItems: [{
+        itemId: "it_live", institution: "Wells Fargo", kind: "both",
+        accessToken: "x", lastSyncAt: "2026-10-02T09:00:00.000Z",
+      }],
+    },
+    ...over,
+  };
+};
+
+await test("an account the reconnected bank no longer recognises is found", () => {
+  const db = strandedFixture();
+  // The case a household actually hits, and the one worth telling apart. The
+  // bank is connected and working; that login pulled cleanly this morning and
+  // did not touch this account. Which is the whole evidence needed: it is not
+  // one of the accounts behind that login any more, whatever it is called, and
+  // the account that is has all of this one's history to come.
+  assert.deepEqual(M.RA.strandedIn(db).map((s) => [s.account.id, s.why]), [["old", "passed-over"]]);
+  // Read off the clock rather than off the connection it names, because a
+  // connection remade in place keeps the bank and changes the id: without
+  // this, every account at that bank would read as abandoned for the seconds
+  // between the remake and the pull that follows it.
+  const remade = {
+    ...db,
+    accounts: db.accounts.map((a) => (a.id === "old" ? { ...a, plaidItemId: undefined } : a)),
+  };
+  assert.deepEqual(M.RA.strandedIn(remade).map((s) => [s.account.id, s.why]), [["old", "passed-over"]]);
+
+  // No connection to this bank at all is a different repair and says so: there
+  // is nothing to reattach to until the bank is connected again.
+  const nothing = { ...db, accounts: [db.accounts[0]], settings: { ...db.settings, plaidItems: [] } };
+  assert.deepEqual(M.RA.strandedIn(nothing).map((s) => [s.account.id, s.why]), [["old", "gone"]]);
+
+  // An account the pull did bring back is not stranded, however old the rest
+  // of the document is.
+  const fed = {
+    ...remade,
+    accounts: remade.accounts.map((a) => (
+      a.id === "old" ? { ...a, lastSyncedAt: "2026-10-02T09:00:00.000Z" } : a
+    )),
+  };
+  assert.deepEqual(M.RA.strandedIn(fed), []);
+
+  // A pull that failed says nothing at all about which accounts a login holds,
+  // so it is not evidence that this one has gone.
+  const broke = {
+    ...remade,
+    settings: {
+      ...remade.settings,
+      plaidItems: [{ ...remade.settings.plaidItems[0], lastError: { message: "needs a new login", at: "x" } }],
+    },
+  };
+  assert.deepEqual(M.RA.strandedIn(broke), [], "a failed pull is not a verdict");
+
+  // Nor is a connection that has never pulled since it was added.
+  const never = {
+    ...remade,
+    settings: {
+      ...remade.settings,
+      plaidItems: [{ itemId: "it_live", institution: "Wells Fargo", kind: "both", accessToken: "x" }],
+    },
+  };
+  assert.deepEqual(M.RA.strandedIn(never), []);
+
+  // Two accounts with an explanation of their own, which is a different
+  // repair: a closed account is settled on purpose and the merge skips it, and
+  // one carrying a note from the provider has already been told why.
+  const spoken = {
+    ...db,
+    accounts: db.accounts.map((a) => (a.id === "old" ? { ...a, closedAt: "2026-09-30" } : a)),
+  };
+  assert.deepEqual(M.RA.strandedIn(spoken), []);
+  const noted = {
+    ...db,
+    accounts: db.accounts.map((a) => (
+      a.id === "old"
+        ? { ...a, syncNote: { message: "This bank is being upgraded", at: "2026-10-02T09:00:00.000Z" } }
+        : a
+    )),
+  };
+  assert.deepEqual(M.RA.strandedIn(noted), []);
+
+  // But a note from before the pull being weighed is not an explanation of
+  // it, and nothing clears one from an account a later pull did not bring
+  // back. A bank that spent a month failing leaves a note on every account it
+  // fed, which are precisely the accounts this is for: reading those as
+  // explained would hide the repair from everybody who needs it.
+  const stale = {
+    ...db,
+    accounts: db.accounts.map((a) => (
+      a.id === "old"
+        ? { ...a, syncNote: { message: "This bank is being upgraded", at: "2026-08-20T09:00:00.000Z" } }
+        : a
+    )),
+  };
+  assert.deepEqual(M.RA.strandedIn(stale).map((s) => [s.account.id, s.why]), [["old", "passed-over"]]);
+
+  // An account nothing ever fed is not stranded, it is typed in.
+  const manual = {
+    ...db,
+    accounts: db.accounts.map((a) => (a.id === "old" ? { ...a, syncSource: "manual" } : a)),
+  };
+  assert.deepEqual(M.RA.strandedIn(manual), []);
+});
+
+await test("which new account is which old one is only guessed when it is obvious", () => {
+  const db = strandedFixture();
+  assert.deepEqual(M.RA.replacementsFor(db, db.accounts[0]).map((r) => r.account.id), ["fresh"],
+    "the live connection's accounts at the same bank, and nothing else");
+  assert.deepEqual(M.RA.suggestedPairs(db), [{ strandedId: "old", intoId: "fresh" }]);
+
+  // A stranded account is never offered as somewhere to move another stranded
+  // one: both of them are the problem.
+  const twoDead = {
+    ...db,
+    accounts: [
+      db.accounts[0],
+      { ...db.accounts[1], id: "old2", name: "Way2Save", syncId: "pl-dead-2", plaidItemId: "it_gone", lastSyncedAt: "2026-09-01T09:00:00.000Z" },
+    ],
+  };
+  assert.deepEqual(M.RA.replacementsFor(twoDead, twoDead.accounts[0]).map((r) => r.account.id), []);
+  assert.deepEqual(M.RA.suggestedPairs(twoDead), [], "nothing to suggest, rather than each other");
+
+  // A different bank behind a live connection is not a candidate, whatever it
+  // is called.
+  const elsewhere = {
+    ...db,
+    accounts: [db.accounts[0], { ...db.accounts[1], institution: "Chase" }],
+    settings: {
+      ...db.settings,
+      plaidItems: [{ ...db.settings.plaidItems[0], institution: "Chase" }],
+    },
+  };
+  assert.deepEqual(M.RA.replacementsFor(elsewhere, elsewhere.accounts[0]).map((r) => r.account.id), []);
+
+  // Two accounts of the same type with nothing to tell them apart is exactly
+  // the case to leave to the household rather than guess at.
+  const twins = {
+    ...db,
+    accounts: [
+      db.accounts[0],
+      { ...db.accounts[1], name: "Checking One" },
+      { ...db.accounts[1], id: "fresh2", name: "Checking Two", syncId: "pl-live-2" },
+    ],
+  };
+  assert.equal(M.RA.replacementsFor(twins, twins.accounts[0]).length, 2, "both are offered");
+  assert.deepEqual(M.RA.suggestedPairs(twins), [], "and neither is chosen");
+
+  // The last four digits settle it, being the one part of an account's name
+  // that is the account rather than a description of it.
+  const numbered = {
+    ...twins,
+    accounts: [
+      { ...twins.accounts[0], name: "Checking 4471" },
+      twins.accounts[1],
+      { ...twins.accounts[2], name: "Checking Two 4471" },
+    ],
+  };
+  assert.deepEqual(M.RA.suggestedPairs(numbered), [{ strandedId: "old", intoId: "fresh2" }]);
+
+  // One candidate and no reason to think it is the one. A card is not a
+  // chequing account and nothing about the name or the balance says otherwise,
+  // so it is offered and not chosen.
+  const unlike = {
+    ...db,
+    accounts: [db.accounts[0], { ...db.accounts[1], name: "Platinum Card", type: "credit", balance: -500_00 }],
+  };
+  assert.equal(M.RA.replacementsFor(unlike, unlike.accounts[0]).length, 1, "still offered");
+  assert.deepEqual(M.RA.suggestedPairs(unlike), [], "and still not chosen");
+
+  // A chequing account is never a credit card, whatever either is called.
+  assert.ok(
+    M.RA.scoreOf({ ...db.accounts[0], type: "checking" }, { ...db.accounts[1], type: "checking" })
+    > M.RA.scoreOf({ ...db.accounts[0], type: "checking" }, { ...db.accounts[1], type: "credit" }),
+  );
+});
+
+await test("the new account is folded into the old one, which keeps everything", () => {
+  const base = strandedFixture();
+  const db = {
+    ...base,
+    accounts: base.accounts.map((a) => (a.id === "old" ? { ...a, movedFrom: ["sf-7"] } : a)),
+    transactions: [
+      // Two years of the household's own work, under the dead connection's ids.
+      { id: "t1", accountId: "old", date: "2024-06-01", amount: -50_00, merchant: "Shop", categoryId: "c-food", tags: ["x"], importKey: "pl:dead-a", pending: false },
+      // The same real transaction both connections pulled, held here with a
+      // category on it and arriving on the new account with nothing.
+      { id: "t2", accountId: "old", date: "2026-09-30", amount: -12_34, merchant: "Coffee", categoryId: "c-food", tags: [], importKey: "pl:dead-b", pending: false },
+      // Another on the same day for a different figure, which is what stops
+      // this being a match on the date alone: a day holds several rows, and
+      // the two sides do not arrive in the same order, so taking the next one
+      // on the day would hand the rent the coffee's id.
+      { id: "t2b", accountId: "old", date: "2026-09-30", amount: -99_00, merchant: "Rent", categoryId: "c-home", tags: [], importKey: "pl:dead-bb", pending: false },
+      { id: "t3b", accountId: "fresh", date: "2026-09-30", amount: -99_00, merchant: "RENT ACH", categoryId: "uncategorized", tags: [], importKey: "pl:live-bb", pending: false },
+      { id: "t3", accountId: "fresh", date: "2026-09-30", amount: -12_34, merchant: "COFFEE SHOP 441", categoryId: "uncategorized", tags: [], importKey: "pl:live-b", pending: false },
+      // A row on the new account with no provider id at all: typed in rather
+      // than pulled, and the same transaction as one already here. There is
+      // nothing to inherit from it, so it goes rather than standing twice.
+      { id: "t5", accountId: "old", date: "2026-09-29", amount: -7_00, merchant: "Bus", categoryId: "c-travel", tags: [], importKey: "pl:dead-c", pending: false },
+      { id: "t5b", accountId: "fresh", date: "2026-09-29", amount: -7_00, merchant: "Bus", categoryId: "uncategorized", tags: [], pending: false },
+      // And one only the new connection has.
+      { id: "t4", accountId: "fresh", date: "2026-10-01", amount: -9_99, merchant: "Petrol", categoryId: "uncategorized", tags: [], importKey: "pl:live-c", pending: false },
+    ],
+    holdings: [
+      { id: "h1", accountId: "old", ticker: "VTI", name: "Total Market", quantity: 1, costBasis: 100, price: 100, assetClass: "us_equity" },
+      { id: "h2", accountId: "fresh", ticker: "VTI", name: "Total Market", quantity: 2, costBasis: 100, price: 110, assetClass: "us_equity" },
+    ],
+    recurring: [{ id: "r1", merchant: "Netflix", categoryId: "c-fun", accountId: "fresh", amount: -15_00, cadence: "monthly", nextDate: "2026-10-15" }],
+    rules: [{ id: "ru1", name: "Petrol", enabled: true, order: 0, criteria: { accountId: "fresh" }, actions: {} }],
+    goals: [{ id: "g1", name: "Roof", accountIds: ["fresh"], allocations: { fresh: 500_00 }, startingAmount: 0, monthlyContribution: 0, priority: 1, archived: false }],
+    settings: {
+      ...base.settings,
+      // The household deleted the new copy once, which must not be remembered
+      // against the account that now answers to it.
+      deletedAccountKeys: ["sync:pl-live-1", "name:other|thing"],
+    },
+  };
+
+  const out = M.RA.foldInto(db, "old", "fresh");
+  assert.equal(out.moved, 1, "only the row the old account did not already have");
+  assert.equal(out.rekeyed, 2, "and the ones it did, now keyed as the new connection knows them");
+
+  // One account left, and it is the one everything was attached to.
+  assert.deepEqual(out.db.accounts.map((a) => a.id), ["old"]);
+  const kept = out.db.accounts[0];
+  assert.equal(kept.name, "Everyday Checking", "the household's own name for it is not overwritten");
+  assert.equal(kept.syncId, "pl-live-1", "and it answers to the live connection now");
+  assert.equal(kept.plaidItemId, "it_live");
+  assert.equal(kept.lastSyncedAt, "2026-10-02T09:00:00.000Z");
+  assert.equal(kept.balance, 102_00, "the figure from the connection that is still answering");
+  assert.deepEqual(kept.history.map((h) => h.date), ["2026-09-01", "2026-10-02"]);
+  // What it used to answer to, so a connection restored later is recognised
+  // rather than handed back as a second copy of this account.
+  assert.deepEqual([...kept.movedFrom].sort(), ["pl-dead-1", "sf-7"]);
+  assert.ok(!kept.movedFrom.includes("pl-live-1"), "never the id it answers to now");
+
+  // The duplicates are gone and the household's copies of them kept their
+  // categories and took the new connection's ids.
+  assert.deepEqual(out.db.transactions.map((t) => t.id).sort(), ["t1", "t2", "t2b", "t4", "t5"]);
+  assert.ok(out.db.transactions.every((t) => t.accountId === "old"));
+  const row = (id) => out.db.transactions.find((t) => t.id === id);
+  assert.equal(row("t2").importKey, "pl:live-b", "the id the next pull will use");
+  assert.equal(row("t2").categoryId, "c-food", "and everything put on it by hand");
+  assert.equal(row("t2").merchant, "Coffee");
+  // Matched on the figure as well as the day, so the rent is not handed the
+  // coffee's id. Two rows on one day is the ordinary case, not the odd one.
+  assert.equal(row("t2b").importKey, "pl:live-bb");
+  assert.equal(row("t2b").categoryId, "c-home");
+  // Nothing to inherit, so the one already here is left exactly as it was.
+  assert.equal(row("t5").importKey, "pl:dead-c");
+  assert.equal(row("t5").categoryId, "c-travel");
+
+  // Positions are a snapshot, so the live connection's are the whole of it.
+  assert.deepEqual(out.db.holdings.map((h) => [h.id, h.accountId, h.quantity]), [["h2", "old", 2]]);
+  assert.equal(out.holdings, 1);
+
+  // Everything that named the account being dismantled now names the one kept.
+  assert.equal(out.db.recurring[0].accountId, "old");
+  assert.equal(out.db.rules[0].criteria.accountId, "old");
+  assert.deepEqual(out.db.goals[0].accountIds, ["old"]);
+  assert.deepEqual(out.db.goals[0].allocations, { old: 500_00 });
+
+  // A tombstone for what the kept account now answers to would have every
+  // later pull turn it away at the door and say nothing.
+  assert.deepEqual(out.db.settings.deletedAccountKeys, ["name:other|thing"]);
+
+  // Nothing is remembered as deleted, because nothing was deleted: the
+  // account is the one being looked at, reached a different way.
+  assert.ok(!(out.db.settings.deletedAccountKeys ?? []).some((k) => k.includes("pl-dead-1")));
+
+  // And the next pull from the live connection finds it, which is the whole
+  // point of all of the above.
+  const after = M.mergeSync(out.db, {
+    fetchedAt: "2026-10-03T09:00:00.000Z", errors: [],
+    accounts: [{
+      syncId: "pl-live-1", name: "WF Everyday Checking ...4471", institution: "Wells Fargo",
+      type: "checking", balance: 110_00, balanceDate: "2026-10-03", itemId: "it_live",
+    }],
+    transactions: [{
+      syncId: "live-d", accountSyncId: "pl-live-1", date: "2026-10-03",
+      description: "SHOP", payee: "Shop", amount: -5_00, pending: false,
+    }],
+  }, "plaid");
+  assert.equal(after.accountsAdded, 0, "no second copy of the account");
+  assert.equal(after.accountsUpdated, 1);
+  assert.equal(after.transactionsAdded, 1);
+  assert.deepEqual(after.db.accounts.map((a) => a.id), ["old"]);
+  assert.equal(after.db.accounts[0].balance, 110_00);
+});
+
+await test("two accounts claiming one provider account fold into one that still claims it", () => {
+  // The state the merge warns about: one account at the bank, two here
+  // pointing at it, and only the first of them ever fed. Folding them is the
+  // repair, and the account left must not come out declaring it has moved
+  // away from the very id it answers to, or the next pull would read it as
+  // migrated and leave it alone for ever.
+  const base = strandedFixture();
+  const db = {
+    ...base,
+    accounts: base.accounts.map((a) => (a.id === "old" ? { ...a, syncId: "pl-live-1" } : a)),
+  };
+  const out = M.RA.foldInto(db, "old", "fresh");
+  assert.equal(out.db.accounts.length, 1);
+  assert.equal(out.db.accounts[0].syncId, "pl-live-1");
+  assert.deepEqual(out.db.accounts[0].movedFrom, []);
+
+  const after = M.mergeSync(out.db, {
+    fetchedAt: "2026-10-03T09:00:00.000Z", errors: [],
+    accounts: [{
+      syncId: "pl-live-1", name: "WF Everyday Checking ...4471", institution: "Wells Fargo",
+      type: "checking", balance: 110_00, balanceDate: "2026-10-03", itemId: "it_live",
+    }],
+    transactions: [],
+  }, "plaid");
+  assert.deepEqual(after.migrated, [], "not read as an account that has moved elsewhere");
+  assert.equal(after.accountsUpdated, 1);
+  assert.deepEqual(after.sharedIds, [], "and one account claims it now, not two");
+});
+
+await test("folding an account into itself, or into one that is gone, changes nothing", () => {
+  const db = strandedFixture();
+  assert.equal(M.RA.foldInto(db, "old", "old").db, db);
+  assert.equal(M.RA.foldInto(db, "old", "nope").db, db);
+  assert.equal(M.RA.foldInto(db, "nope", "fresh").db, db);
+});
+
+await test("a pending hold folded into the charge it became is not left pending", () => {
+  const base = strandedFixture();
+  const db = {
+    ...base,
+    transactions: [
+      { id: "t1", accountId: "old", date: "2026-09-30", amount: -40_00, merchant: "Fuel", categoryId: "c-car", tags: [], importKey: "pl:dead-a", pending: true, statement: "PENDING FUEL" },
+      { id: "t2", accountId: "fresh", date: "2026-09-30", amount: -40_00, merchant: "FUEL CO", categoryId: "uncategorized", tags: [], importKey: "pl:live-a", pending: false, statement: "FUEL CO 1123" },
+    ],
+  };
+  const out = M.RA.foldInto(db, "old", "fresh");
+  const row = out.db.transactions.find((t) => t.id === "t1");
+  assert.equal(out.db.transactions.length, 1);
+  assert.equal(row.pending, false, "the connection that is answering says it settled");
+  assert.equal(row.statement, "FUEL CO 1123");
+  assert.equal(row.categoryId, "c-car", "and the household's category is still the household's");
 });
 
 await test("a window that came back short is told from a backfill still running", async () => {

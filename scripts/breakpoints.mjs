@@ -8129,6 +8129,182 @@ try {
     await cn.close();
   }
 
+
+  if (want("reattach")) {
+    // ── the bank was connected again, and handed an account back renamed ──
+    //
+    // The state a household lands in after a bank that stopped answering Link
+    // has to be disconnected and connected again. Most accounts come back to
+    // themselves, because the merge looks for them by name when the id it knew
+    // has gone. One did not, so the new login filed it as a new account and
+    // the real one sits beside it holding two years of work and getting
+    // nothing. Nothing is broken, nothing says anything, and the balance on
+    // the account they have always looked at simply stops moving.
+    const rc = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
+    const seed = await rc.newPage();
+    await seed.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await seed.waitForTimeout(1400);
+    await seed.close();
+    await rc.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const cat = db.categories[0].id;
+        const pulled = "2026-10-02T09:00:00.000Z";
+        db.settings.plaidItems = [{
+          accessToken: "a", itemId: "it_live", institution: "Wells Fargo", kind: "both",
+          addedAt: "2026-10-02T08:00:00Z", lastSyncAt: pulled,
+        }];
+        const acct = (id, name, over) => ({
+          id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
+          includeInNetWorth: true, hidden: false, history: [], order: 900,
+          syncSource: "plaid", ...over,
+        });
+        db.accounts = [
+          ...db.accounts,
+          // Theirs: the name they gave it, and everything filed against it.
+          acct("ra_old", "Everyday Checking", {
+            syncId: "pl-dead-1", plaidItemId: "it_dead", lastSyncedAt: "2026-09-01T09:00:00.000Z",
+            balance: 90_00, history: [{ date: "2026-09-01", balance: 90_00 }],
+          }),
+          // What the new login filed, hours old, holding nothing but the id.
+          acct("ra_new", "WF EVERYDAY CHECKING ...4471", {
+            syncId: "pl-live-1", plaidItemId: "it_live", lastSyncedAt: pulled,
+            balance: 102_00, history: [{ date: "2026-10-02", balance: 102_00 }],
+          }),
+        ];
+        const tx = (id, accountId, date, amount, merchant, importKey) => ({
+          id, accountId, date, amount, merchant, categoryId: cat, tags: [], pending: false, importKey,
+        });
+        db.transactions = [
+          ...db.transactions,
+          tx("ra_t1", "ra_old", "2026-08-02", -50_00, "Shop", "pl:dead-a"),
+          tx("ra_t2", "ra_old", "2026-09-30", -12_34, "Coffee", "pl:dead-b"),
+          // The same charge, pulled again by the new connection.
+          tx("ra_t3", "ra_new", "2026-09-30", -12_34, "COFFEE SHOP 441", "pl:live-b"),
+          tx("ra_t4", "ra_new", "2026-10-01", -9_99, "Petrol", "pl:live-c"),
+        ];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* nothing to patch */ }
+    });
+    const ra = await rc.newPage();
+    await ra.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await ra.waitForTimeout(1500);
+
+    const shown = await ra.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /getting nothing/i.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!card) return null;
+      const rows = [...card.querySelectorAll(".reattach-row")];
+      const sel = rows[0]?.querySelector("select");
+      return {
+        rows: rows.length,
+        head: card.querySelector("h2").innerText.trim(),
+        left: rows[0]?.innerText ?? "",
+        options: [...(sel?.options ?? [])].map((o) => o.textContent.trim()),
+        chosen: sel?.selectedOptions[0]?.textContent.trim() ?? "",
+        button: card.querySelector(".card-head .btn")?.innerText.trim() ?? "",
+        disabled: card.querySelector(".card-head .btn")?.disabled,
+      };
+    });
+    check("an account a reconnected bank no longer recognises says so, in settings",
+      shown !== null && shown.rows === 1, JSON.stringify(shown));
+    check("and it is the account holding the history, named the way the household named it",
+      shown !== null && /Everyday Checking/.test(shown.left) && /2 transactions/.test(shown.left),
+      shown?.left.replace(/\n/g, " · "));
+    // The whole point of the card: the pairing is already made, because the
+    // app can see which new account this is and only needs saying yes to.
+    check("the new account it has become is picked out, with the leaving-it-alone option kept",
+      shown !== null && /4471/.test(shown.chosen) && shown.options.some((o) => /Leave it alone/.test(o)),
+      `${shown?.chosen} of ${shown?.options.join(" | ")}`);
+    check("and there is one press to carry it out",
+      shown !== null && /Move it over/.test(shown.button) && shown.disabled === false,
+      `${shown?.button} (disabled: ${shown?.disabled})`);
+
+    // Which old account goes with which new one is the content of the row, so
+    // the two sit side by side with the arrow between them rather than as a
+    // stack of fields. Checked by the geometry, because "side by side" is the
+    // claim and a flex that wrapped would still read correctly in the text.
+    const geom = await ra.evaluate(() => {
+      const row = document.querySelector(".reattach-row");
+      if (!row) return null;
+      const kids = [...row.children].map((c) => c.getBoundingClientRect());
+      return { left: kids[0], arrow: kids[1], right: kids[2] };
+    });
+    check("the old account and the new one sit either side of the arrow",
+      geom !== null && geom.left.right <= geom.arrow.left + 1 && geom.arrow.right <= geom.right.left + 1,
+      geom ? `${Math.round(geom.left.right)} | ${Math.round(geom.arrow.left)}-${Math.round(geom.arrow.right)} | ${Math.round(geom.right.left)}` : "no row");
+
+    if (await tryStep("the pairing is carried out", async () => {
+      await ra.locator(".card", { hasText: "getting nothing" })
+        .getByRole("button", { name: /Move it over/ }).click({ timeout: 8000 });
+      await ra.waitForTimeout(900);
+    })) {
+      const after = await ra.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        // By id rather than by bank: the demo document has a mortgage at this
+        // same bank, which is not part of what is being checked.
+        const mine = db.accounts.filter((a) => a.id.startsWith("ra_"));
+        const rows = db.transactions.filter((t) => t.id.startsWith("ra_t"));
+        return {
+          accounts: mine.map((a) => ({ id: a.id, name: a.name, syncId: a.syncId, item: a.plaidItemId, balance: a.balance })),
+          rows: rows.map((t) => ({ id: t.id, accountId: t.accountId, key: t.importKey })),
+          stillSaying: !![...document.querySelectorAll(".card h2")]
+            .find((h) => /getting nothing/i.test(h.innerText)),
+        };
+      });
+      check("one account is left, and it is the one everything was attached to",
+        after.accounts.length === 1 && after.accounts[0].id === "ra_old"
+        && after.accounts[0].name === "Everyday Checking",
+        JSON.stringify(after.accounts));
+      check("and it answers to the live connection now",
+        after.accounts[0]?.syncId === "pl-live-1" && after.accounts[0]?.item === "it_live"
+        && after.accounts[0]?.balance === 102_00,
+        JSON.stringify(after.accounts[0]));
+      // Three rows, not four. The charge both connections pulled is held once,
+      // by the copy the household categorised, under the id the next pull will
+      // use for it.
+      check("the duplicate charge is folded in rather than left standing twice",
+        after.rows.length === 3 && !after.rows.some((r) => r.id === "ra_t3")
+        && after.rows.find((r) => r.id === "ra_t2")?.key === "pl:live-b",
+        after.rows.map((r) => `${r.id}:${r.key}`).join(" "));
+      check("every transaction is on the account that was kept",
+        after.rows.every((r) => r.accountId === "ra_old"), JSON.stringify(after.rows));
+      check("and the card stops saying anything, because there is nothing left to say",
+        after.stillSaying === false, String(after.stillSaying));
+    }
+    await ra.close();
+
+    // On a phone the two columns cannot sit side by side, so they stack and
+    // the arrow turns to point down the page at the thing it points at.
+    const narrow = await rc.newPage();
+    await narrow.setViewportSize({ width: 390, height: 900 });
+    await narrow.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await narrow.waitForTimeout(1200);
+    const phone = await narrow.evaluate(() => {
+      const row = document.querySelector(".reattach-row");
+      if (!row) return null;
+      const kids = [...row.children].map((c) => c.getBoundingClientRect());
+      const sel = row.querySelector("select")?.getBoundingClientRect();
+      return {
+        stacked: kids[1].top >= kids[0].bottom - 1 && kids[2].top >= kids[1].bottom - 1,
+        turned: getComputedStyle(row.querySelector(".reattach-arrow")).transform,
+        overflow: document.documentElement.scrollWidth,
+        selFits: sel ? sel.right <= window.innerWidth : false,
+      };
+    });
+    check("on a phone the pairing stacks rather than squeezing into two columns",
+      phone !== null && phone.stacked, JSON.stringify(phone));
+    check("with the arrow turned to point at what it points at",
+      phone !== null && phone.turned !== "none", phone?.turned);
+    check("and nothing hanging off the side of the screen",
+      phone !== null && phone.selFits && phone.overflow <= 390,
+      `${phone?.overflow}px wide`);
+    await narrow.close();
+    await rc.close();
+  }
+
   if (want("settings-trim")) {
     // ── settings holds settings, not switches nobody moves ──
     //

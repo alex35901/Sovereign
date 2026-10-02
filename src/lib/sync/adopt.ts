@@ -217,3 +217,26 @@ export function accountsOf(
     misread: carriesHoldings(item.kind) ? (positions.length ? [] : open) : positions,
   };
 }
+
+/**
+ * Whether two names are the same institution.
+ *
+ * The same loose comparison `itemFor` makes, exported because the question
+ * comes up away from connections too: which of the accounts already here is
+ * the one a reconnected bank has just handed back under a new id.
+ */
+export function sameInstitution(a: string, b: string): boolean {
+  const x = core(a ?? "");
+  const y = core(b ?? "");
+  if (x.join("").length < 4 || y.join("").length < 4) return false;
+  return within(x, y) || within(y, x);
+}
+
+/**
+ * A name with its punctuation and casing flattened, and nothing taken out.
+ *
+ * `core` is wrong for an account's own name: the words it strips as generic
+ * are the words that tell one account from another, and "Wells Fargo Savings"
+ * and "Wells Fargo Checking" both reduce to "wells fargo".
+ */
+export const plainName = (s: string): string => norm(s ?? "");
