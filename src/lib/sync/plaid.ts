@@ -4,6 +4,8 @@ import { postJSON } from "../api.js";
 import { FIRST_PULL_DAYS, cleanMerchant } from "./merge.js";
 import type { ItemReach } from "./history.js";
 import { today } from "../date.js";
+import type { ItemKind } from "./kind.js";
+import { carriesHoldings, carriesTransactions, productsFor } from "./kind.js";
 
 /**
  * Plaid. The Trial plan is free for up to 10 institutions and, unlike a bare
@@ -116,15 +118,15 @@ export interface PlaidDiagnosis {
 /** Asks the function what it sees, without any credential leaving the server. */
 export const diagnosePlaid = (): Promise<PlaidDiagnosis> => postJSON<PlaidDiagnosis>(PROXY, { action: "diagnose" });
 
-export async function createLinkToken(kind: "bank" | "investment"): Promise<string> {
-  const products = kind === "investment" ? ["investments"] : ["transactions"];
+export async function createLinkToken(kind: ItemKind): Promise<string> {
+  const products = productsFor(kind);
   const { linkToken } = await postJSON<{ linkToken: string }>(PROXY, {
     action: "link_token", products,
     // How far back Plaid fetches is settled when the item is created, not when
     // it is read. Left unsaid it is ninety days, and no later request can widen
     // it: /transactions/get returns what Plaid holds, and a two-year window
     // over ninety days of history looks exactly like a bank with no past.
-    ...(kind === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+    ...(carriesTransactions(kind) ? { historyDays: FIRST_PULL_DAYS } : {}),
   });
   return linkToken;
 }
@@ -154,7 +156,7 @@ export async function reconnectLinkToken(
   return { linkToken: res.linkToken, dropped: res.dropped ?? [] };
 }
 
-export async function exchangePublicToken(publicToken: string, kind: "bank" | "investment"): Promise<PlaidItem> {
+export async function exchangePublicToken(publicToken: string, kind: ItemKind): Promise<PlaidItem> {
   const res = await postJSON<{
     accessToken: string; itemId: string; institution: string; logo?: string; domain?: string;
   }>(PROXY, { action: "exchange", publicToken });
@@ -265,11 +267,11 @@ export async function fetchItem(item: PlaidItem, since: string): Promise<PlaidPa
     accessToken: item.accessToken,
     startDate: since,
     endDate: today(),
-    withHoldings: item.kind === "investment",
+    withHoldings: carriesHoldings(item.kind),
     // An investment item consented to investments. Asking it for transactions
     // is refused, correctly, and the refusal is not worth reporting because
     // nobody asked for them.
-    withTransactions: item.kind !== "investment",
+    withTransactions: carriesTransactions(item.kind),
   });
   return toPlaidPayload(raw, item);
 }

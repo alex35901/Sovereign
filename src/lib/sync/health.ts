@@ -260,8 +260,9 @@ export function verdictOn(
       headline: "Nothing is asking this bank for transactions.",
       detail: `This connection was set up to share ${said(item.consented)}, not transactions,`
         + " so the bank has never been asked for them. Balances arrive because those were agreed to.",
-      action: "Connect this bank again as a bank rather than as investments."
-        + " The accounts and their history are kept.",
+      action: "In Settings, press the label beside this connection to have it carry"
+        + " transactions as well. It is the same login and the same connection,"
+        + " so nothing is lost and it costs nothing against the plan's ceiling.",
     };
   }
 

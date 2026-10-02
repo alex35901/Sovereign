@@ -8028,10 +8028,14 @@ try {
     check("it carries the schedule that drives the pulls", card !== null && card.schedule === 1,
       `${card?.schedule} schedules`);
     check("and the address a provider asks for", card !== null && card.privacy, String(card?.privacy));
-    // The label is the switch: what a connection is read as, and the way to
-    // read it the other way, are one control.
-    check("each connection says what it is read as, and the label is the switch",
-      card !== null && card.kinds.join(" / ") === "bank / investment" && card.pressable,
+    // The label is the control: what a connection carries, and the way to have
+    // it carry the other thing as well, are one thing. The plus is the whole
+    // point of the change: it adds rather than swaps, because one login at a
+    // bank that does both reaches the current accounts and the brokerage, and
+    // spending a second of the plan's ten on the same login is the cost of
+    // getting that wrong.
+    check("each connection says what it carries, and the label offers the rest",
+      card !== null && card.kinds.join(" / ") === "bank + / investments +" && card.pressable,
       `${card?.kinds.join(" / ")} (buttons: ${card?.pressable})`);
 
     // ── which account came in through which login ──
@@ -8060,8 +8064,14 @@ try {
       behind.flatMap((b) => b.links).join(" "));
     // The whole point of the list: which one is why the holdings are missing.
     check("the account holding positions under a bank connection is the one marked",
-      behind[0].flagged.join(" / ") === "Fidelity 401(k)" && /holdings are never asked for/i.test(behind[0].says),
+      behind[0].flagged.join(" / ") === "Fidelity 401(k)"
+      && /never asked for holdings/i.test(behind[0].says),
       `${behind[0].flagged.join(" / ")} — ${behind[0].says.slice(0, 80)}`);
+    // And the way out of it is the one that keeps the login: carrying both,
+    // not swapping to investments and losing the transactions instead.
+    check("and is told to have the same connection carry investments as well",
+      /carry investments as well, on the same login/i.test(behind[0].says),
+      behind[0].says.slice(0, 120));
     check("and a brokerage read as investments is not complained about",
       behind[1].flagged.length === 0 && behind[1].says === "",
       `${behind[1].flagged.join(" / ")} — ${behind[1].says.slice(0, 60)}`);

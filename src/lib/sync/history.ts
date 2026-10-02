@@ -1,4 +1,6 @@
 import type { DB } from "../../types.js";
+import type { ItemKind } from "./kind.js";
+import { carriesTransactions } from "./kind.js";
 
 /**
  * Waiting for Plaid to finish fetching the years it has just been asked for.
@@ -173,12 +175,14 @@ export function historyAlreadyDeep(
  */
 export function needsRaising(
   db: DB,
-  item: { kind: "bank" | "investment"; institution: string; historyDays?: number },
+  item: { kind: ItemKind; institution: string; historyDays?: number },
   want: number,
   now: number = Date.now(),
 ): boolean {
-  // An investments item has no transactions to reach back through.
-  if (item.kind !== "bank") return false;
+  // A connection carrying no statement has no transactions to reach back
+  // through. One carrying both does, so this is the product question rather
+  // than a test for the word "bank".
+  if (!carriesTransactions(item.kind)) return false;
   // Raised already, and remembered.
   if ((item.historyDays ?? 0) >= want) return false;
   // Raised already, before the app kept a note of it.

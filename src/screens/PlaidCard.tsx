@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Building2, History, KeyRound, LineChart, RefreshCw, RotateCcw, Stethoscope } from "lucide-react";
+import { Building2, History, KeyRound, Landmark, LineChart, RefreshCw, RotateCcw, Stethoscope } from "lucide-react";
 import type { PlaidItemRef } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
@@ -7,6 +7,8 @@ import { CADENCES, DEFAULT_CADENCE, nextSyncAt, syncPlaid, syncPlaidItem, untilL
 import type { SyncCadence } from "../lib/sync";
 import { recordRun } from "../lib/usage";
 import { countHistory, createLinkToken, diagnosePlaid, exchangePublicToken, reconnectLinkToken, refreshItem, releaseItem, reportHistory } from "../lib/sync/plaid";
+import type { ItemKind } from "../lib/sync/kind";
+import { carriesTransactions, kindLabel, missingFrom, withProduct } from "../lib/sync/kind";
 import { FIRST_PULL_DAYS, windowFor } from "../lib/sync/merge";
 import { accountsOf, itemFor } from "../lib/sync/adopt";
 import { describeReach, needsRaising, waitForHistory } from "../lib/sync/history";
@@ -155,7 +157,7 @@ export function PlaidCard() {
 
   const items = db.settings.plaidItems ?? [];
 
-  const connect = async (kind: "bank" | "investment") => {
+  const connect = async (kind: ItemKind) => {
     setBusy(kind);
     setError(null);
     try {
@@ -225,13 +227,19 @@ export function PlaidCard() {
    *
    * It cannot be done here alone. The item consented to one product and Plaid
    * refuses the other with ADDITIONAL_CONSENT_REQUIRED however this app labels
-   * it, so the switch is a trip through the dialog to ask for the missing
-   * consent. The access token survives it, which is what makes it worth doing:
-   * no new token to paste into Vercel, and everything already pulled stays.
+   * it, so this is a trip through the dialog to ask for the missing consent.
+   * The access token survives it, which is what makes it worth doing: no new
+   * token to paste into Vercel, and everything already pulled stays.
+   *
+   * Added rather than swapped. One login at a bank that does both reaches the
+   * current accounts and the brokerage behind it, and a household with
+   * accounts of each kind at one bank should not have to spend a second of
+   * the plan's ten connections on the same login twice.
    */
   const switchKind = async (item: PlaidItemRef) => {
-    const to: PlaidItemRef["kind"] = item.kind === "bank" ? "investment" : "bank";
-    const product = to === "investment" ? "investments" : "transactions";
+    const product = missingFrom(item.kind);
+    if (!product) return;
+    const to = withProduct(item.kind, product);
     setBusy(item.itemId);
     setError(null);
     setNote(null);
@@ -240,25 +248,25 @@ export function PlaidCard() {
         consentTo: [product],
         // A bank item's reach is worth raising while the dialog is open
         // anyway, the same as a reconnect does.
-        ...(to === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+        ...(carriesTransactions(to) ? { historyDays: FIRST_PULL_DAYS } : {}),
       });
       // Only a sign-in that finished granted anything. Relabelling the item
       // after a dialog somebody closed would leave it asking Plaid for a
       // product it still has no permission for, on every pull, for ever.
       if ((await openPlaidLink(linkToken)) === null) {
-        setNote(`${item.institution} is still a ${item.kind} connection: the dialog closed before Plaid was asked for ${product}.`);
+        setNote(`${item.institution} still carries ${kindLabel(item.kind)} only: the dialog closed before Plaid was asked for ${product}.`);
         return;
       }
       const next: PlaidItemRef = {
         ...item,
         kind: to,
         lastError: undefined,
-        ...(to === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+        ...(carriesTransactions(to) ? { historyDays: FIRST_PULL_DAYS } : {}),
       };
       actions.patchSettings({
         plaidItems: items.map((i) => (i.itemId === item.itemId ? next : i)),
       });
-      notify(`${item.institution} is now an ${to} connection. Syncing…`);
+      notify(`${item.institution} now carries ${kindLabel(to)}. Syncing…`);
       await syncItem(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not switch this connection.");
@@ -282,12 +290,12 @@ export function PlaidCard() {
     try {
       // A bank item that was refused transactions needs to be asked for them
       // again, which only update mode can do.
-      const missing = item.kind === "bank" && /ADDITIONAL_CONSENT_REQUIRED|consent/i.test(item.lastError?.message ?? "");
+      const missing = carriesTransactions(item.kind) && /ADDITIONAL_CONSENT_REQUIRED|consent/i.test(item.lastError?.message ?? "");
       const { linkToken } = await reconnectLinkToken(item.accessToken, {
         ...(missing ? { consentTo: ["transactions"] } : {}),
         // Signing in again is also the moment to raise how far back this item
         // reaches, for the ones created before the app asked for two years.
-        ...(item.kind === "bank" ? { historyDays: FIRST_PULL_DAYS } : {}),
+        ...(carriesTransactions(item.kind) ? { historyDays: FIRST_PULL_DAYS } : {}),
       });
       // Update mode has nothing to exchange: the item coming back is the one
       // that was already there, with the same access token. Closing the dialog
@@ -299,7 +307,7 @@ export function PlaidCard() {
       // remember that Plaid is now off fetching the older months, so that the
       // next press waits for them rather than pulling the ninety days that are
       // still all there is.
-      const raised = signedIn && item.kind === "bank";
+      const raised = signedIn && carriesTransactions(item.kind);
       if (raised) stillFetching.current.add(item.itemId);
       actions.patchSettings({
         plaidItems: items.map((i) => (i.itemId === item.itemId
@@ -423,7 +431,7 @@ export function PlaidCard() {
       // Said out loud on every press, because "it stalled at 101" and "this
       // bank only has 101" look identical from the outside and only one of
       // them is worth pressing the button again for.
-      if (item.kind === "bank" && !pulled.errors.length) {
+      if (carriesTransactions(item.kind) && !pulled.errors.length) {
         const said = await reportHistory(item, since).catch(() => null);
         if (said) {
           // What Plaid said last time, read from before this press changed
@@ -532,20 +540,28 @@ export function PlaidCard() {
       />
 
       <div className="row wrap" style={{ gap: 8, marginBottom: 12 }}>
+        {/* Both first, because at a bank that does both it is the right answer
+            and the one nobody would think to ask for: it costs one connection
+            of the plan's ten rather than two. */}
+        <Btn variant="primary" onClick={() => void connect("both")} disabled={busy !== null}>
+          <Landmark size={14} /> {busy === "both" ? "Opening…" : "Connect a bank and its investments"}
+        </Btn>
         <Btn onClick={() => void connect("investment")} disabled={busy !== null}>
-          <LineChart size={14} /> {busy === "investment" ? "Opening…" : "Connect an investment account"}
+          <LineChart size={14} /> {busy === "investment" ? "Opening…" : "Investments only"}
         </Btn>
         <Btn onClick={() => void connect("bank")} disabled={busy !== null}>
-          <Building2 size={14} /> {busy === "bank" ? "Opening…" : "Connect a bank or card"}
+          <Building2 size={14} /> {busy === "bank" ? "Opening…" : "Bank or card only"}
         </Btn>
       </div>
 
       <div className="small muted" style={{ marginBottom: 12 }}>
-        <b>Investment</b> for IRAs, Roth IRAs, 401(k)s and brokerages: positions, cost basis and prices.
-        <b> Bank</b> for chequing, savings and cards: transactions. The two are pulled with different
-        calls, so a 401(k) connected as a bank arrives as a balance and nothing else. Press the label
-        beside a connection below to read it the other way. An institution offering both can be
-        connected twice. The item count against the plan&rsquo;s ceiling is in the integrations table above.
+        Transactions and holdings are pulled with different calls, and a connection is only ever asked
+        for what it was set up to carry: a 401(k) on a bank-only connection arrives as a balance and
+        nothing else, and a chequing account on an investments-only one never hands over a single
+        transaction. One login can carry both, which is what the first button does and what the label
+        beside a connection below adds to one that was made before you knew. Two connections to the
+        same institution are two against the plan&rsquo;s ceiling; carrying both on one is not. The
+        count is in the integrations table above.
       </div>
 
       {items.length ? (
@@ -563,21 +579,29 @@ export function PlaidCard() {
               <div key={item.itemId} className="col plaid-item" style={{ gap: 6 }}>
               <div className="spread plaid-row">
                 <span className="row plaid-who" style={{ gap: 8, minWidth: 0 }}>
-                  {item.kind === "investment" ? <LineChart size={14} className="muted" /> : <Building2 size={14} className="muted" />}
+                  {carriesTransactions(item.kind)
+                    ? <Building2 size={14} className="muted" />
+                    : <LineChart size={14} className="muted" />}
                   <span className="truncate" style={{ fontWeight: 500 }}>{item.institution}</span>
-                  {/* The label is the switch. A fourth button on the row does
-                      not fit a phone, and what this says is exactly what the
-                      thing to change is. */}
-                  <button
-                    className="tag kind-switch"
-                    onClick={() => void switchKind(item)}
-                    disabled={busy !== null}
-                    title={item.kind === "bank"
-                      ? "Read as a bank: transactions, no holdings. Press to read it as investments instead, which pulls positions. Plaid will ask you to sign in again."
-                      : "Read as investments: positions and prices, no transactions. Press to read it as a bank instead. Plaid will ask you to sign in again."}
-                  >
-                    {item.kind}
-                  </button>
+                  {/* The label is the control. A fourth button on the row does
+                      not fit a phone, and what this says is exactly what there
+                      is to change. It adds rather than swaps, so a connection
+                      already carrying both has nothing to offer and says so by
+                      not being a button. */}
+                  {missingFrom(item.kind) ? (
+                    <button
+                      className="tag kind-switch"
+                      onClick={() => void switchKind(item)}
+                      disabled={busy !== null}
+                      title={`Carries ${kindLabel(item.kind)}. Press to have it carry ${missingFrom(item.kind)} as well, on the same login. Plaid will ask you to sign in again.`}
+                    >
+                      {kindLabel(item.kind)} +
+                    </button>
+                  ) : (
+                    <span className="tag" title="Carries both transactions and holdings on one login.">
+                      {kindLabel(item.kind)}
+                    </span>
+                  )}
                 </span>
                 <span className="row plaid-doings" style={{ gap: 10 }}>
                   <span className="tiny faint nowrap">
@@ -646,9 +670,9 @@ export function PlaidCard() {
               ) : null}
               {held.misread.length ? (
                 <div className="tiny warn">
-                  {item.kind === "bank"
-                    ? `${held.misread.map((a) => a.name).join(", ")} ${held.misread.length === 1 ? "holds" : "hold"} positions, and this connection is read as a bank, so its holdings are never asked for. Press the "bank" label above to read it as investments instead.`
-                    : `Nothing under this connection holds positions, and an investment connection is never asked for transactions. Press the "investment" label above to read it as a bank instead.`}
+                  {carriesTransactions(item.kind)
+                    ? `${held.misread.map((a) => a.name).join(", ")} ${held.misread.length === 1 ? "holds" : "hold"} positions, and this connection is never asked for holdings. Press the label above to have it carry investments as well, on the same login.`
+                    : `Nothing under this connection holds positions, and a connection carrying investments only is never asked for transactions. Press the label above to have it carry transactions as well, on the same login.`}
                 </div>
               ) : null}
               </div>
@@ -663,7 +687,7 @@ export function PlaidCard() {
                     fourth button beside the others does not fit a phone, and
                     remaking a connection that reaches back fine is work for
                     nothing. */}
-                {reach.state === "default" && items.some((i) => i.itemId === reach.itemId && i.kind === "bank") ? (
+                {reach.state === "default" && items.some((i) => i.itemId === reach.itemId && carriesTransactions(i.kind)) ? (
                   <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
                     <Btn
                       size="sm"

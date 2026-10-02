@@ -1,5 +1,7 @@
 import type { Account, DB, ISODate } from "../../types.js";
 import { addDays } from "../date.js";
+import type { ItemKind } from "./kind.js";
+import { carriesHoldings } from "./kind.js";
 
 /**
  * Moving an account from one provider to another without losing it.
@@ -109,10 +111,10 @@ const within = (a: readonly string[], b: readonly string[]): boolean => a.every(
  * answer is only ever a suggestion, the accounts behind that login are shown
  * before anything is chosen, and a different login is one press away.
  */
-export function itemFor<T extends { institution: string; kind: "bank" | "investment" }>(
+export function itemFor<T extends { institution: string; kind: ItemKind }>(
   items: readonly T[],
   institution: string,
-  kind: "bank" | "investment" = "bank",
+  kind: ItemKind = "bank",
 ): T | undefined {
   const want = core(institution);
   // Too little to be a name. Matching on it would match everything.
@@ -179,7 +181,7 @@ export interface ItemAccounts {
  */
 export function accountsOf(
   db: DB,
-  item: { institution: string; kind: "bank" | "investment"; itemId?: string },
+  item: { institution: string; kind: ItemKind; itemId?: string },
 ): ItemAccounts {
   const mine = db.accounts.filter((a) => a.syncSource === "plaid");
   // Once any account names this connection, the named set is the answer: a
@@ -201,6 +203,8 @@ export function accountsOf(
   return {
     accounts,
     matched,
-    misread: item.kind === "bank" ? positions : (positions.length ? [] : open),
+    // Positions behind a connection that does not fetch holdings are the
+    // misread ones. A connection carrying both fetches them, so they are not.
+    misread: carriesHoldings(item.kind) ? (positions.length ? [] : open) : positions,
   };
 }

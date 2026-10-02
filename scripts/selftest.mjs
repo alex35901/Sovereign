@@ -47,6 +47,7 @@ await build({
       export { filesIt, UNCATEGORIZED } from "./src/lib/categories.ts";
       export { ease, valueAt, worthRolling, REVEAL_MS } from "./src/components/Rolling.tsx";
       export * as OF from "./src/lib/hopper/offers.ts";
+      export * as KD from "./src/lib/sync/kind.ts";
       export * as HL from "./src/lib/sync/health.ts";
       export * as B from "./src/lib/buckets.ts";
       export * as DF from "./src/lib/date-filter.ts";
@@ -15398,6 +15399,83 @@ await test("an idle day costs a fraction of what it did", () => {
 });
 
 
+// ── one login can carry both ─────────────────────────────────────────────
+
+await test("a connection carrying both is asked for both", () => {
+  // The two questions every "is this a bank" test was really asking. They
+  // stopped being opposites the day a connection could carry both, and a bare
+  // equality check against "bank" is wrong half the time now.
+  assert.deepEqual(
+    ["bank", "investment", "both"].map(M.KD.carriesTransactions),
+    [true, false, true]);
+  assert.deepEqual(
+    ["bank", "investment", "both"].map(M.KD.carriesHoldings),
+    [false, true, true]);
+
+  // Which decides what Plaid is asked for when the login is made. Asking for
+  // a product at link time is the only way to be allowed it afterwards.
+  assert.deepEqual(M.KD.productsFor("bank"), ["transactions"]);
+  assert.deepEqual(M.KD.productsFor("investment"), ["investments"]);
+  assert.deepEqual(M.KD.productsFor("both"), ["transactions", "investments"]);
+});
+
+await test("and adding a product adds it rather than swapping it", () => {
+  // The bug this fixes. Asking a bank connection for investments used to turn
+  // it into an investments connection, which answered half the question and
+  // broke the other half: a household with a cheque account and an IRA at one
+  // bank could have whichever they had asked for last.
+  assert.equal(M.KD.withProduct("bank", "investments"), "both");
+  assert.equal(M.KD.withProduct("investment", "transactions"), "both");
+
+  // Asking for what it already carries changes nothing, so a second press
+  // cannot take anything away.
+  assert.equal(M.KD.withProduct("bank", "transactions"), "bank");
+  assert.equal(M.KD.withProduct("investment", "investments"), "investment");
+  assert.equal(M.KD.withProduct("both", "transactions"), "both");
+  assert.equal(M.KD.withProduct("both", "investments"), "both");
+});
+
+await test("a connection says what it is missing, and says nothing when it is whole", () => {
+  assert.equal(M.KD.missingFrom("bank"), "investments");
+  assert.equal(M.KD.missingFrom("investment"), "transactions");
+  assert.equal(M.KD.missingFrom("both"), null, "nothing left to offer");
+
+  // Said the way somebody would say it, because this goes in a sentence.
+  assert.equal(M.KD.kindLabel("both"), "bank and investments");
+  assert.equal(M.KD.kindLabel("bank"), "bank");
+  assert.equal(M.KD.kindLabel("investment"), "investments");
+});
+
+await test("positions behind a connection that fetches them are not a misreading", () => {
+  // The warning that tells somebody their holdings are never asked for has to
+  // stop once they are. It is keyed on whether this connection fetches them,
+  // which for "both" it does.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{
+      id: "a1", name: "Roth IRA", institution: "Wells Fargo", type: "investment",
+      balance: 100_00, includeInNetWorth: true, hidden: false, history: [], order: 0,
+      syncSource: "plaid", plaidItemId: "i1",
+    }],
+  };
+  const item = { institution: "Wells Fargo", kind: "bank", itemId: "i1" };
+  assert.equal(M.accountsOf(db, item).misread.length, 1, "a bank-only connection never asks");
+  assert.equal(M.accountsOf(db, { ...item, kind: "both" }).misread.length, 0, "one carrying both does");
+  assert.equal(M.accountsOf(db, { ...item, kind: "investment" }).misread.length, 0);
+});
+
+await test("and a connection carrying both reaches back through its transactions", () => {
+  // Raising how far back an item goes is a question about transactions, so it
+  // applies to a connection carrying both and not to one carrying positions
+  // alone. Keyed on the word "bank", "both" would have been refused the reach.
+  const db = M.emptyDB();
+  const at = (kind) => M.HW.needsRaising(db, { kind, institution: "Wells Fargo" }, 730);
+  assert.equal(at("bank"), true);
+  assert.equal(at("both"), true, "it has a statement, so it has a reach");
+  assert.equal(at("investment"), false, "positions have no history to reach back through");
+});
+
 // ── whose fault is it ─────────────────────────────────────────────────────
 //
 // A connection that stops has three causes and, before this, one appearance.
@@ -15496,7 +15574,7 @@ await test("a connection nobody asked for transactions reports itself, not the b
   assert.equal(v.blame, "connection");
   assert.match(v.headline, /Nothing is asking this bank for transactions/);
   assert.match(v.detail, /investments/, "and says what it was set up for instead");
-  assert.match(v.action, /again as a bank/, "with the one thing that fixes it");
+  assert.match(v.action, /carry transactions as well/, "with the one thing that fixes it");
 
   // It outranks a quiet account and a down bank alike: it is true whatever
   // the bank is doing, and waiting will never change it.

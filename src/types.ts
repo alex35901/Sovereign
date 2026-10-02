@@ -546,7 +546,16 @@ export interface PlaidItemRef {
    * Plaid holds no logo for from being asked again on every single sync.
    */
   institutionCheckedAt?: string;
-  kind: "bank" | "investment";
+  /**
+   * What this connection carries: a statement, positions, or both.
+   *
+   * One login at a bank that does both reaches the current accounts and the
+   * brokerage behind it, so this is not a choice between them. See
+   * lib/sync/kind, and ask through the helpers there rather than testing the
+   * value: "bank" and "investment" stopped being opposites when "both"
+   * arrived, and a bare equality check is wrong half the time now.
+   */
+  kind: "bank" | "investment" | "both";
   addedAt: string;
   lastSyncAt?: string;
   /**
