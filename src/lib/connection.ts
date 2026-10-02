@@ -3,6 +3,7 @@ import { cadenceHours, DEFAULT_CADENCE } from "./sync/schedule.js";
 import { meterOf } from "./usage.js";
 import { quietFor } from "./quiet.js";
 import { namesABank, noteFor } from "./sync/notes.js";
+import { feederOf, feeders } from "./sync/reattach.js";
 
 /**
  * Where an account's balance comes from, and whether it is still coming.
@@ -35,6 +36,7 @@ export interface Connection {
 
 const PROVIDER: Record<string, string> = {
   plaid: "Plaid",
+  teller: "Teller",
   csv: "CSV import",
   manual: "Entered by hand",
 };
@@ -119,10 +121,12 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
    * described by the guess below, which reasons from how long things have been
    * quiet. A real answer, from the bank, beats an inference about it.
    */
-  const item = (db.settings.plaidItems ?? []).find((i) => (
-    account.plaidItemId ? i.itemId === account.plaidItemId : i.institution === account.institution
-  ));
-  if (source === "plaid" && item?.lastError) {
+  // Both providers, by the one rule: an account says which one feeds it, so
+  // the connection it is on is the one of that provider that matches. Teller
+  // accounts used to fall straight past this and be described by the guess
+  // below while their own connection was sitting there saying what was wrong.
+  const item = feederOf(account, feeders(db));
+  if ((source === "plaid" || source === "teller") && item?.lastError) {
     return {
       state: "attention", provider, lastAt,
       status: "Needs attention",
@@ -141,7 +145,7 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
    * decided it named nobody, which meant showing it against everybody: the one
    * case this rule exists for was the one case it got wrong.
    */
-  const known = [...db.accounts, ...(db.settings.plaidItems ?? [])];
+  const known = [...db.accounts, ...(db.settings.plaidItems ?? []), ...(db.settings.tellerEnrollments ?? [])];
   const mine = error
     ? Boolean(noteFor(account, [error])) || !namesABank(known, error)
     : false;

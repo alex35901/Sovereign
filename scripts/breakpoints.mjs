@@ -8460,7 +8460,10 @@ try {
     await cfg.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
     await cfg.waitForTimeout(1300);
     if (await tryStep("the configuration check runs", async () => {
-      await cfg.getByRole("button", { name: /Check configuration/ }).click({ timeout: 8000 });
+      // Scoped to the Plaid card: a second provider's card carries the same
+      // button, and its title contains this one's.
+      await cfg.locator(".card", { hasText: "Banks, cards and brokerages" })
+        .getByRole("button", { name: /Check configuration/ }).click({ timeout: 8000 });
       await cfg.waitForTimeout(800);
     })) {
       const shown = await cfg.evaluate(() => {
@@ -8482,6 +8485,194 @@ try {
       `${first.text.split("\n")[0]} | ${first.warned}`);
     await once.close();
     await lt.close();
+  }
+
+
+  if (want("teller")) {
+    // ── the way round a bank Plaid will not open ──
+    //
+    // Plaid refuses the largest banks until the Plaid account asking has been
+    // approved for each of them separately, which is not something a household
+    // can argue its way to. So one bank comes in through a second provider and
+    // everything else stays where it is, and the accounts the first provider
+    // was feeding have to be able to move across without losing their history.
+    const tl = await browser.newContext({ viewport: { width: 1280, height: 1600 } });
+    const seed = await tl.newPage();
+    await seed.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await seed.waitForTimeout(1400);
+    await seed.close();
+    await tl.addInitScript(() => {
+      // The proxy is not running behind a preview build, and a card that
+      // cannot say whether it is configured is a different card.
+      const real = window.fetch;
+      window.fetch = async (input, init) => {
+        const url = String(typeof input === "string" ? input : input.url);
+        if (!url.includes("/api/teller")) return real(input, init);
+        const body = JSON.parse(init?.body ?? "{}");
+        if (body.action === "setup") {
+          return new Response(JSON.stringify({
+            applicationId: "app_test", environment: "production", configured: true,
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (body.action === "diagnose") {
+          return new Response(JSON.stringify({
+            environment: "production", envVarSet: false,
+            appId: { length: 20, looksRight: true },
+            // The one mistake worth catching by name: the two blocks are
+            // downloaded together and look alike.
+            cert: { length: 1200, kind: "CERTIFICATE", repaired: true },
+            key: { length: 1700, kind: "CERTIFICATE", repaired: false },
+            probe: { ok: false, error: "BAD_CERTIFICATE" },
+          }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ error: "no" }), { status: 400 });
+      };
+
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const cat = db.categories[0].id;
+        const pulled = "2026-10-02T09:00:00.000Z";
+        db.settings.plaidItems = [{
+          accessToken: "a", itemId: "it_chase", institution: "Chase", kind: "both",
+          addedAt: "2026-09-01T00:00:00Z", lastSyncAt: pulled,
+        }];
+        db.settings.tellerEnrollments = [{
+          accessToken: "y", enrollmentId: "enr_1", institution: "Wells Fargo",
+          addedAt: "2026-10-02T08:00:00.000Z", lastSyncAt: pulled,
+        }];
+        const acct = (id, name, over) => ({
+          id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
+          includeInNetWorth: true, hidden: false, history: [], order: 900, ...over,
+        });
+        db.accounts = [
+          ...db.accounts,
+          // Theirs, from before Plaid shut the door: the name they gave it and
+          // everything filed against it.
+          acct("tl_old", "Everyday Checking", {
+            syncSource: "plaid", syncId: "pl-dead-1", plaidItemId: "it_gone",
+            lastSyncedAt: "2026-08-20T09:00:00.000Z",
+            balance: 90_00, history: [{ date: "2026-08-20", balance: 90_00 }],
+          }),
+          // What the new provider filed, hours old, holding nothing.
+          acct("tl_new", "Everyday Checking ••4471", {
+            syncSource: "teller", syncId: "acc_tel_1", plaidItemId: "enr_1",
+            lastSyncedAt: pulled,
+            balance: 102_00, history: [{ date: "2026-10-02", balance: 102_00 }],
+          }),
+        ];
+        db.transactions = [
+          ...db.transactions,
+          { id: "tl_t1", accountId: "tl_old", date: "2026-08-02", amount: -50_00, merchant: "Shop", categoryId: cat, tags: [], pending: false, importKey: "pl:dead-a" },
+          { id: "tl_t2", accountId: "tl_new", date: "2026-10-01", amount: -9_99, merchant: "Petrol", categoryId: cat, tags: [], pending: false, importKey: "pl:tel-a" },
+        ];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* nothing to patch */ }
+    });
+    const page = await tl.newPage();
+    await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1600);
+
+    const card = await page.evaluate(() => {
+      const found = [...document.querySelectorAll(".card")]
+        .find((c) => /Teller/.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!found) return null;
+      return {
+        title: found.querySelector("h2").innerText.trim(),
+        text: found.innerText,
+        banks: [...found.querySelectorAll(".plaid-item .plaid-who .truncate")].map((e) => e.textContent.trim()),
+        accounts: [...found.querySelectorAll(".plaid-accounts li a")].map((a) => a.textContent.trim()),
+        links: [...found.querySelectorAll(".plaid-accounts li a")].map((a) => a.getAttribute("href")),
+      };
+    });
+    check("a second provider has its own card, named for what it is for",
+      card !== null && /Teller/.test(card.title), card?.title);
+    check("and it says why it exists rather than reading as an equal choice",
+      card !== null && /Plaid refuses the largest banks/.test(card.text),
+      card?.text.split("\n").find((l) => /Plaid/.test(l)));
+    // Teller has no investments product, so a brokerage connected here would
+    // arrive as a balance with a blank page of positions behind it.
+    check("and says what it does not carry, rather than letting that be found out",
+      card !== null && /investments belong on Plaid/.test(card.text),
+      card?.text.split("\n").find((l) => /investments/.test(l)));
+    check("the bank it feeds and the accounts behind it are listed",
+      card !== null && card.banks.join() === "Wells Fargo"
+      && card.accounts.join() === "Everyday Checking ••4471",
+      `${card?.banks.join(" / ")} | ${card?.accounts.join(" / ")}`);
+    check("and each account links to its own page",
+      card !== null && card.links.every((h) => /^\/accounts\//.test(h ?? "")), card?.links.join(" "));
+
+    // ── the accounts the first provider left behind ──
+    //
+    // The whole point of the migration. The old account holds the history and
+    // the new one holds the id, and nothing in the app could tell them apart
+    // until the person says which is which.
+    const stranded = await page.evaluate(() => {
+      const found = [...document.querySelectorAll(".card")]
+        .find((c) => /getting nothing/i.test(c.querySelector("h2")?.innerText ?? ""));
+      if (!found) return null;
+      const row = found.querySelector(".reattach-row");
+      const sel = row?.querySelector("select");
+      return {
+        left: row?.innerText ?? "",
+        chosen: sel?.selectedOptions[0]?.textContent.trim() ?? "",
+      };
+    });
+    check("an account the first provider left behind is offered the second provider's",
+      stranded !== null && /Everyday Checking/.test(stranded.left) && /4471/.test(stranded.chosen),
+      `${stranded?.left.split("\n").join(" · ")} → ${stranded?.chosen}`);
+
+    if (await tryStep("the pairing is carried out across providers", async () => {
+      await page.locator(".card", { hasText: "getting nothing" })
+        .getByRole("button", { name: /Move it over/ }).click({ timeout: 8000 });
+      await page.waitForTimeout(900);
+    })) {
+      const after = await page.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const mine = db.accounts.filter((a) => a.id.startsWith("tl_"));
+        return {
+          accounts: mine.map((a) => ({ id: a.id, name: a.name, source: a.syncSource, syncId: a.syncId })),
+          rows: db.transactions.filter((t) => t.id.startsWith("tl_t")).map((t) => t.accountId),
+        };
+      });
+      check("one account is left, keeping its name and everything attached to it",
+        after.accounts.length === 1 && after.accounts[0].id === "tl_old"
+        && after.accounts[0].name === "Everyday Checking",
+        JSON.stringify(after.accounts));
+      // Without this nothing would ever look for it on the new provider, and
+      // the next pull would file a second copy beside it all over again.
+      check("and it says the provider that is actually feeding it now",
+        after.accounts[0]?.source === "teller" && after.accounts[0]?.syncId === "acc_tel_1",
+        JSON.stringify(after.accounts[0]));
+      check("with both accounts' transactions on the one that was kept",
+        after.rows.length === 2 && after.rows.every((id) => id === "tl_old"), after.rows.join(" "));
+    }
+
+    // ── the configuration check ──
+    //
+    // The certificate and the private key are downloaded together and look
+    // alike, and swapping them fails with an OpenSSL code rather than a
+    // sentence. Naming what each variable actually holds is what catches it.
+    if (await tryStep("the Teller configuration check runs", async () => {
+      await page.locator(".card", { hasText: "For a bank Plaid will not open" })
+        .getByRole("button", { name: /Check configuration/ }).click({ timeout: 8000 });
+      await page.waitForTimeout(800);
+    })) {
+      const said = await page.evaluate(() => {
+        const found = [...document.querySelectorAll(".card")]
+          .find((c) => /Teller/.test(c.querySelector("h2")?.innerText ?? ""));
+        return found?.innerText ?? "";
+      });
+      check("a private key variable holding a certificate is named as that, not as an OpenSSL code",
+        /TELLER_KEY holds a CERTIFICATE, not a private key/.test(said),
+        said.split("\n").filter((l) => /TELLER_/.test(l)).join(" · "));
+      check("and the line breaks a certificate loses in an environment variable are explained",
+        /turned back into line breaks/.test(said),
+        said.split("\n").find((l) => /line breaks/.test(l)));
+    }
+    await page.close();
+    await tl.close();
   }
 
   if (want("settings-trim")) {

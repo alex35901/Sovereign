@@ -1,7 +1,8 @@
-import type { Account, DB, ID, PlaidItemRef, Transaction } from "../../types.js";
+import type { Account, DB, ID, Transaction } from "../../types.js";
 import { compressPoints } from "../history.js";
 import { accountKeys } from "./merge.js";
 import { itemFor, plainName, sameInstitution } from "./adopt.js";
+import type { ItemKind } from "./kind.js";
 
 /**
  * One connection replaced by another at the same bank.
@@ -26,13 +27,48 @@ import { itemFor, plainName, sameInstitution } from "./adopt.js";
  * untouched; the new connection's ids, so the next pull finds it.
  */
 
+/**
+ * A connection, whichever provider it belongs to.
+ *
+ * The questions asked here are the same for both: which bank is it, when did
+ * it last pull, and did that pull fail. Everything the two providers disagree
+ * about lives in their own files.
+ */
+export interface Feeder {
+  provider: "plaid" | "teller";
+  id: string;
+  institution: string;
+  kind: ItemKind;
+  lastSyncAt?: string;
+  lastError?: { message: string; at: string };
+}
+
+/** Every connection in the document, both providers, in one shape. */
+export function feeders(db: DB): Feeder[] {
+  return [
+    ...(db.settings.plaidItems ?? []).map((i): Feeder => ({
+      provider: "plaid", id: i.itemId, institution: i.institution, kind: i.kind,
+      ...(i.lastSyncAt ? { lastSyncAt: i.lastSyncAt } : {}),
+      ...(i.lastError ? { lastError: i.lastError } : {}),
+    })),
+    ...(db.settings.tellerEnrollments ?? []).map((i): Feeder => ({
+      // Teller has no notion of what a connection was set up to carry, because
+      // a login reaches whatever is behind it. "bank" is what it does.
+      provider: "teller", id: i.enrollmentId, institution: i.institution, kind: "bank",
+      ...(i.lastSyncAt ? { lastSyncAt: i.lastSyncAt } : {}),
+      ...(i.lastError ? { lastError: i.lastError } : {}),
+    })),
+  ];
+}
+
 /** A connection that could be feeding this account, whatever it carries. */
 export function feederOf(
-  account: Pick<Account, "plaidItemId" | "institution">,
-  items: readonly PlaidItemRef[],
-): PlaidItemRef | undefined {
+  account: Pick<Account, "plaidItemId" | "institution" | "syncSource">,
+  all: readonly Feeder[],
+): Feeder | undefined {
+  const mine = all.filter((f) => !account.syncSource || f.provider === account.syncSource);
   if (account.plaidItemId) {
-    const byId = items.find((i) => i.itemId === account.plaidItemId);
+    const byId = mine.find((f) => f.id === account.plaidItemId);
     if (byId) return byId;
   }
   // By name, for two cases that both look like an orphan and are not: an
@@ -43,7 +79,7 @@ export function feederOf(
   // is still here, and an investments-only connection still reports the
   // balance of the chequing account behind it.
   const inst = account.institution ?? "";
-  return itemFor(items, inst, "transactions") ?? itemFor(items, inst, "investments");
+  return itemFor(mine, inst, "transactions") ?? itemFor(mine, inst, "investments");
 }
 
 /**
@@ -57,6 +93,17 @@ export function feederOf(
  *   holds any more, whatever it is called, and the account that is holds the
  *   history this one should have.
  */
+/**
+ * An account a provider is supposed to be feeding.
+ *
+ * Both providers, because the repair below is most useful across them: a bank
+ * Plaid will not open comes in through Teller as new accounts, and the old
+ * ones are left holding the history. Which is the same stranding as any other
+ * and wants the same fix.
+ */
+export const isSynced = (a: Pick<Account, "syncSource">): boolean =>
+  a.syncSource === "plaid" || a.syncSource === "teller";
+
 export type Stranding = "gone" | "passed-over";
 
 export interface Stranded {
@@ -78,11 +125,11 @@ export interface Stranded {
  * login", which is a different repair.
  */
 export function strandedIn(db: DB): Stranded[] {
-  const items = db.settings.plaidItems ?? [];
+  const all = feeders(db);
   const out: Stranded[] = [];
   for (const account of db.accounts) {
-    if (account.syncSource !== "plaid" || account.closedAt) continue;
-    const feeder = feederOf(account, items);
+    if (!isSynced(account) || account.closedAt) continue;
+    const feeder = feederOf(account, all);
     if (!feeder) {
       out.push({ account, why: "gone" });
       continue;
@@ -111,7 +158,7 @@ export function strandedIn(db: DB): Stranded[] {
 export interface Replacement {
   account: Account;
   /** The connection feeding it. */
-  item: PlaidItemRef;
+  item: Feeder;
   /** Transactions already filed against it, which is what would be folded in. */
   rows: number;
   /** How good a guess this is: higher is better, and 0 is no reason at all. */
@@ -127,13 +174,13 @@ export interface Replacement {
  * business deciding this silently when the household knows.
  */
 export function replacementsFor(db: DB, stranded: Account): Replacement[] {
-  const items = db.settings.plaidItems ?? [];
+  const all = feeders(db);
   const strandedIds = new Set(strandedIn(db).map((s) => s.account.id));
   const out: Replacement[] = [];
   for (const account of db.accounts) {
     if (account.id === stranded.id || account.closedAt) continue;
-    if (account.syncSource !== "plaid" || strandedIds.has(account.id)) continue;
-    const item = feederOf(account, items);
+    if (!isSynced(account) || strandedIds.has(account.id)) continue;
+    const item = feederOf(account, all);
     if (!item) continue;
     if (!sameInstitution(account.institution ?? "", stranded.institution ?? "")) continue;
     out.push({
@@ -305,7 +352,10 @@ export function foldInto(db: DB, keepId: ID, dropId: ID): Folded {
     ...keep,
     balance: drop.balance,
     history,
-    syncSource: "plaid",
+    // The provider that is actually feeding it now, which is the whole point
+    // when the fold is across providers: a Plaid account that has moved onto
+    // Teller must stop saying Plaid, or nothing will ever look for it there.
+    syncSource: drop.syncSource ?? keep.syncSource,
     syncId: drop.syncId,
     plaidItemId: drop.plaidItemId,
     lastSyncedAt: drop.lastSyncedAt ?? keep.lastSyncedAt,

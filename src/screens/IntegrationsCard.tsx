@@ -10,7 +10,7 @@ import type { Health, Integration } from "../lib/integrations";
 import { hopperMeter } from "../lib/hopper/loop";
 import type { HopperMeter } from "../lib/hopper/loop";
 import { refreshPrices } from "../lib/prices";
-import { syncPlaid } from "../lib/sync";
+import { syncPlaid, syncTeller } from "../lib/sync";
 import { estimateHomeValue, canValue } from "../lib/property";
 import { reason, recordRun } from "../lib/usage";
 import { Btn, Card, CardHead, TextInput } from "../components/ui";
@@ -67,6 +67,11 @@ export function IntegrationsCard() {
     try {
       if (id === "plaid") {
         const out = await syncPlaid(db, apply);
+        notify(out.summary);
+        if (out.errors.length) setError(out.errors.join(" · "));
+      }
+      if (id === "teller") {
+        const out = await syncTeller(db, apply);
         notify(out.summary);
         if (out.errors.length) setError(out.errors.join(" · "));
       }

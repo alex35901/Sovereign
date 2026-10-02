@@ -1,6 +1,7 @@
-import type { DB, PlaidItemRef } from "../../types";
+import type { DB, PlaidItemRef, TellerEnrollmentRef } from "../../types";
 import { mergeSync, skipNotes, windowFor } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
+import { fetchEnrollment } from "./teller";
 import { reason, recordRun } from "../usage";
 import { syncDue } from "./schedule";
 import type { SyncCadence } from "./schedule";
@@ -175,6 +176,121 @@ async function runItems(
   // succeed would clear the expired login of the first and the table would
   // call the whole thing healthy.
   recordRun(apply, "plaid", "ever", { error: errors[0] });
+
+  return { summary: summaries.join(" · ") || "Nothing came back.", errors, changed, notes };
+}
+
+/* ── teller ───────────────────────────────────────────────────────────── */
+
+/**
+ * One Teller enrollment, merged in.
+ *
+ * Deliberately a near-copy of the Plaid path rather than an abstraction over
+ * it. The two providers agree about almost nothing except the shape of the
+ * payload: Teller has no products, no update mode, no holdings, no notion of
+ * how far back a connection reaches, and no item that can be asked how it is
+ * doing. A shared runner would be a run of conditionals on which provider it
+ * was, which is the same code with the differences hidden in the middle of it.
+ */
+export async function syncTellerEnrollment(
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  item: TellerEnrollmentRef,
+  opts: { fullHistory?: boolean } = {},
+): Promise<SyncOutcome> {
+  let payload;
+  try {
+    // This enrollment's own clock, not the document's, for the same reason the
+    // Plaid path uses the item's: the document's belongs to whichever
+    // connection last ran.
+    payload = await fetchEnrollment(item, windowFor(opts.fullHistory ? undefined : item.lastSyncAt));
+  } catch (err) {
+    const message = reason(err, "the sync failed");
+    recordRun(apply, "teller", "ever", { error: `${item.institution}: ${message}` });
+    apply((cur) => ({
+      ...cur,
+      settings: {
+        ...cur.settings,
+        tellerEnrollments: (cur.settings.tellerEnrollments ?? []).map((i) =>
+          (i.enrollmentId === item.enrollmentId
+            ? { ...i, lastError: { message, at: new Date().toISOString() } }
+            : i)),
+      },
+    }));
+    throw err;
+  }
+
+  let summary = "";
+  let changed = false;
+  let notes: string[] = [];
+  apply((cur) => {
+    const res = mergeSync(cur, payload, "teller");
+    notes = skipNotes(res);
+    const accounts = res.accountsAdded + res.accountsUpdated;
+    summary =
+      `${item.institution}: ${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}`
+      + `, ${accounts} account${accounts === 1 ? "" : "s"}`;
+    changed = res.transactionsAdded > 0 || res.accountsAdded > 0;
+    const stamped = (cur.settings.tellerEnrollments ?? []).map((i) =>
+      (i.enrollmentId === item.enrollmentId
+        ? {
+          ...i,
+          lastSyncAt: payload!.fetchedAt,
+          lastError: undefined,
+          lastNotes: notes.length ? { notes, at: payload!.fetchedAt } : undefined,
+        }
+        : i));
+    return { ...res.db, settings: { ...res.db.settings, tellerEnrollments: stamped } };
+  }, `sync ${item.institution}`);
+
+  return { summary, errors: payload.errors, changed, notes };
+}
+
+/** Every connected Teller enrollment, one after another. */
+export async function syncTeller(
+  db: DB,
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+): Promise<SyncOutcome> {
+  const items = db.settings.tellerEnrollments ?? [];
+  if (!items.length) throw new Error("No Teller connections are set up.");
+  return runEnrollments(apply, items);
+}
+
+/** The same thing on a schedule, for the enrollments whose turn has come. */
+export async function syncTellerDue(
+  db: DB,
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  cadence: SyncCadence,
+  now: number,
+  sessionStart: number,
+): Promise<SyncOutcome | null> {
+  const due = (db.settings.tellerEnrollments ?? [])
+    .filter((i) => syncDue(cadence, i.lastSyncAt, now, sessionStart));
+  if (!due.length) return null;
+  return runEnrollments(apply, due);
+}
+
+async function runEnrollments(
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  items: readonly TellerEnrollmentRef[],
+): Promise<SyncOutcome> {
+  const summaries: string[] = [];
+  const errors: string[] = [];
+  const notes: string[] = [];
+  let changed = false;
+
+  for (const item of items) {
+    try {
+      const out = await syncTellerEnrollment(apply, item);
+      summaries.push(out.summary);
+      errors.push(...out.errors);
+      notes.push(...out.notes);
+      changed = changed || out.changed;
+    } catch (err) {
+      errors.push(`${item.institution}: ${reason(err, "the sync failed")}`);
+    }
+  }
+
+  recordRun(apply, "teller", "ever", { error: errors[0] });
 
   return { summary: summaries.join(" · ") || "Nothing came back.", errors, changed, notes };
 }

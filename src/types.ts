@@ -101,7 +101,7 @@ export interface Account {
     beneficiary?: string;
     note?: string;
   };
-  syncSource?: "manual" | "csv" | "plaid";
+  syncSource?: "manual" | "csv" | "plaid" | "teller";
   syncId?: string;
   /**
    * The Plaid connection this account comes in through.
@@ -525,6 +525,11 @@ export interface Settings {
    */
   deletedAccountKeys?: string[];
   /**
+   * Connected Teller enrollments. The certificate that authenticates the app
+   * to Teller lives server-side; only the per-enrollment token is here.
+   */
+  tellerEnrollments?: TellerEnrollmentRef[];
+  /**
    * Link attempts that ended in an error, newest first.
    *
    * A reconnect can write what went wrong onto the item it was about. A new
@@ -608,6 +613,34 @@ export interface PlaidItemRef {
    * apart and nothing else does, so the first one is kept.
    */
   historyTotal?: number;
+}
+
+/**
+ * One Teller enrollment: a login, and every account behind it.
+ *
+ * Deliberately not a PlaidItemRef. A Teller enrollment carries no notion of
+ * what it was set up to fetch, because Teller does not have one: a login
+ * reaches whatever is behind it and transactions are not a separate
+ * permission. So there is no kind here, and nothing that reads one should be
+ * pointed at these.
+ */
+export interface TellerEnrollmentRef {
+  /** Issued by Teller Connect. The only credential this document holds. */
+  accessToken: string;
+  enrollmentId: string;
+  institution: string;
+  /** Teller's own id for the bank, which is stable where the name is not. */
+  institutionId?: string;
+  addedAt: string;
+  lastSyncAt?: string;
+  /**
+   * What went wrong the last time this enrollment was pulled, cleared by the
+   * next pull that works. Per enrollment rather than per provider, so the bank
+   * asking for a new login is the one offered the button.
+   */
+  lastError?: { message: string; at: string };
+  /** What the last pull worked but declined to file, and when, in plain words. */
+  lastNotes?: { notes: string[]; at: string };
 }
 
 import type { ForecastPlan } from "./lib/forecast.js";

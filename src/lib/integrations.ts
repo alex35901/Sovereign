@@ -115,7 +115,7 @@ export function staleSince(i: Integration, now: number = Date.now()): string | u
  */
 export function quietSince(
   db: DB,
-  source: "plaid",
+  source: "plaid" | "teller",
   now: number = Date.now(),
 ): Quiet | undefined {
   const ids = new Set(
@@ -157,12 +157,17 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   const s = db.settings;
   const usage = s.usage;
 
-  const plaidItems = s.plaidItems ?? [];
-  const plaidLast = plaidItems
+  /** The newest of a set of connections' last pulls, for the table's clock. */
+  const newestSync = (items: readonly { lastSyncAt?: string }[]): string | undefined => items
     .map((i) => i.lastSyncAt ?? "")
     .filter(Boolean)
     .sort()
     .at(-1);
+
+  const plaidItems = s.plaidItems ?? [];
+  const plaidLast = newestSync(plaidItems);
+  const tellerItems = s.tellerEnrollments ?? [];
+  const tellerLast = newestSync(tellerItems);
 
   const properties = db.accounts.filter((a) => canValue(a.type) && !a.hidden && !a.closedAt);
   const addressless = properties.filter((a) => !a.address?.trim()).length;
@@ -177,6 +182,7 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   // allowance in gigabytes means nothing until you know the unit it is spent in.
   const perSave = documentMB(db);
   const plaid = meterOf(usage, "plaid", "ever", now);
+  const teller = meterOf(usage, "teller", "ever", now);
   const tiingo = meterOf(usage, "tiingo", "month", now);
   const rentcast = meterOf(usage, "rentcast", "month", now);
 
@@ -199,6 +205,26 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       staleAfterHours: 72,
       quiet: quietSince(db, "plaid", now),
       error: plaid.error,
+    },
+    {
+      id: "teller",
+      // The way round a bank Plaid will not open. Teller has no investments
+      // product, so this row is the bank half only and the brokerages stay
+      // on the row above.
+      process: "Bank sync, where Plaid is refused",
+      provider: "Teller",
+      credential: { kind: "server", vars: "TELLER_APP_ID / TELLER_CERT / TELLER_KEY" },
+      set: tellerItems.length > 0,
+      used: tellerItems.length,
+      // Teller's developer tier, which is free up to this many live
+      // connections and is the whole reason this provider is here.
+      ceiling: 100,
+      unit: "connections",
+      period: "ever",
+      lastAt: tellerLast,
+      staleAfterHours: 72,
+      quiet: quietSince(db, "teller", now),
+      error: teller.error,
     },
     {
       id: "tiingo",

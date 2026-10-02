@@ -11,7 +11,7 @@ import { diagnoseItem } from "../lib/sync/plaid";
 import { readInstitutionHealth, readItemHealth, verdictOn } from "../lib/sync/health";
 import type { Verdict } from "../lib/sync/health";
 import { Btn, Card, CardHead, cx } from "../components/ui";
-import { feederOf, replacementsFor, strandedIn } from "../lib/sync/reattach";
+import { feederOf, feeders, replacementsFor, strandedIn } from "../lib/sync/reattach";
 import { SwitchToPlaid } from "./SwitchToPlaid";
 import { ReattachCard } from "./Reattach";
 
@@ -71,7 +71,14 @@ function Diagnosis({ account, db }: { account: Account; db: DB }) {
   const [said, setSaid] = useState<Verdict | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [reference, setReference] = useState<string | null>(null);
-  const item = feederOf(account, db.settings.plaidItems ?? []);
+  // The Plaid item itself, because diagnosing one needs its access token and a
+  // Feeder deliberately does not carry credentials. Found through the same
+  // rule the rest of the page uses, so the two cannot disagree about which
+  // connection this account is on.
+  const found = feederOf(account, feeders(db));
+  const item = found?.provider === "plaid"
+    ? (db.settings.plaidItems ?? []).find((i) => i.itemId === found.id)
+    : undefined;
   if (!item) return null;
 
   const run = async () => {

@@ -8,6 +8,15 @@ import { applyRules } from "../rules.js";
 import { added, record } from "../activity.js";
 import { compressPoints } from "../history.js";
 
+/**
+ * Who sent this payload.
+ *
+ * It decides which stored accounts a pull may claim, so widening it is not a
+ * formality: a Teller pull must never adopt an account Plaid is feeding by
+ * matching its name, or the two providers take turns rewriting each other.
+ */
+export type Provider = "plaid" | "teller";
+
 
 export interface MergeResult {
   db: DB;
@@ -72,7 +81,7 @@ export interface MergeResult {
 export function mergeSync(
   db: DB,
   payload: SyncPayload & { holdings?: RemoteHolding[] },
-  source: "plaid",
+  source: Provider,
 ): MergeResult {
   const accounts = [...db.accounts];
   let accountsAdded = 0;

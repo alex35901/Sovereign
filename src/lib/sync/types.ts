@@ -62,7 +62,7 @@ export interface SyncPayload {
  * queue can still be holding one sealed by an older job, and the only other
  * thing that ever wrote to it was a bridge whose pulls must never land.
  */
-export type QueuedPayload = SyncPayload & { source?: "plaid" };
+export type QueuedPayload = SyncPayload & { source?: "plaid" | "teller" };
 
 export interface SyncAdapter {
   id: "plaid" | "teller";

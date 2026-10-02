@@ -14,6 +14,7 @@ export const ADAPTERS: SyncAdapter[] = [];
 export const getAdapter = (id: string): SyncAdapter | undefined => ADAPTERS.find((a) => a.id === id);
 export { mergeSync, syncWindowStart, cleanMerchant } from "./merge";
 export { syncPlaid, syncPlaidDue, syncPlaidItem } from "./run";
+export { syncTeller, syncTellerDue, syncTellerEnrollment } from "./run";
 export { CADENCES, DEFAULT_CADENCE, cadenceLabel, nextSyncAt, syncDue, untilLabel } from "./schedule";
 export type { SyncCadence } from "./schedule";
 export type { SyncPayload, SyncAdapter } from "./types";

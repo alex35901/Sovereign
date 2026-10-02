@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
-import { DEFAULT_CADENCE, syncPlaidDue } from "../lib/sync";
+import { DEFAULT_CADENCE, syncPlaidDue, syncTellerDue } from "../lib/sync";
 import { pricesDue, refreshPrices } from "../lib/prices";
 
 /** How often to look at the clock. The cadence decides whether anything happens. */
@@ -38,6 +38,8 @@ export function AutoSync() {
   const tick = useRef<() => Promise<void>>(async () => {});
   /** After a failed Plaid pull, when it is allowed to try again. */
   const holdPlaid = useRef(0);
+  /** The same for Teller, kept apart: one provider down is not both. */
+  const holdTeller = useRef(0);
   const sessionStart = useRef(Date.now());
 
   useEffect(() => {
@@ -60,10 +62,14 @@ export function AutoSync() {
       const plaidDue = (cur.settings.plaidItems?.length ?? 0) > 0 && now >= holdPlaid.current;
       // Prices keep their own clock, so holdings stay priced on a day when
       // no bank had anything new to send.
+      // Teller on the same cadence and its own backoff. One provider refusing
+      // must not hold up the other: the whole reason there are two is that one
+      // of them will not open a bank the other will.
+      const tellerDue = (cur.settings.tellerEnrollments?.length ?? 0) > 0 && now >= holdTeller.current;
       const priceDue = true
         && Boolean(cur.settings.tiingoApiKey?.trim())
         && pricesDue(cur.settings.lastPricesAt, now);
-      if (!plaidDue && !priceDue) return;
+      if (!plaidDue && !tellerDue && !priceDue) return;
 
       running.current = true;
       try {
@@ -76,6 +82,15 @@ export function AutoSync() {
         }
       } catch {
         holdPlaid.current = Date.now() + BACKOFF_MS;
+      }
+
+      try {
+        if (tellerDue) {
+          const out = await syncTellerDue(latest.current, act.current.apply, cadence, now, sessionStart.current);
+          if (out?.changed) act.current.notify(out.summary);
+        }
+      } catch {
+        holdTeller.current = Date.now() + BACKOFF_MS;
       }
 
       try {

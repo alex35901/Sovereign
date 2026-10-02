@@ -97,6 +97,7 @@ await build({
       export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export * as RA from "./src/lib/sync/reattach.ts";
       export * as LL from "./src/lib/sync/link-log.ts";
+      export * as TE from "./api/_teller.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
@@ -712,7 +713,7 @@ const rowsOf = (db, hopper = null, now = SEP) =>
 await test("every provider is a row, and an unconfigured one reads as off", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["plaid", "teller", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   for (const r of Object.values(rows)) {
     assert.equal(r.set, false, `${r.id} should not look configured`);
     assert.equal(M.healthOf(r).state, "off", r.id);
@@ -864,7 +865,7 @@ await test("a response is measured from its header, and from a clone when there 
 await test("Neon and Vercel are rows too, and read as off before anything has run", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["plaid", "teller", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   assert.equal(rows.neon.set, false, "no traffic yet means nothing to report");
   assert.equal(rows.vercel.set, false);
 });
@@ -6386,6 +6387,368 @@ await test("and what it says then is the thing waiting will not fix", () => {
     at: `2026-09-${String(d).padStart(2, "0")}T0${i}:00:00.000Z`,
   }));
   assert.match(M.LL.escalationAdvice(M.LL.escalation(short)), /since yesterday/);
+});
+
+
+// --- the way round a bank Plaid will not open ------------------------------
+
+await test("a certificate that has been through an environment variable is repaired", () => {
+  const cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----";
+  // An environment variable is one line and a certificate is several, so the
+  // line breaks arrive written out about as often as they arrive as breaks.
+  assert.equal(M.TE.readPem(cert.replace(/\n/g, "\\n")), `${cert}\n`);
+  assert.equal(M.TE.readPem(cert), `${cert}\n`);
+  // Pasted with the quotes is pasted with the quotes.
+  assert.equal(M.TE.readPem(`"${cert}"`), `${cert}\n`);
+  assert.equal(M.TE.readPem(`'${cert}'`), `${cert}\n`);
+  // Windows line endings, which is what a file opened in Notepad hands over.
+  assert.equal(M.TE.readPem(cert.replace(/\n/g, "\r\n")), `${cert}\n`);
+  assert.equal(M.TE.readPem("   "), "");
+  assert.equal(M.TE.readPem(""), "");
+
+  // The single most likely mistake: the two blocks are downloaded together,
+  // look alike, and swapping them fails with an OpenSSL code rather than a
+  // sentence. Naming what each one holds is what catches it.
+  assert.equal(M.TE.pemKind(M.TE.readPem(cert)), "CERTIFICATE");
+  assert.equal(M.TE.pemKind("-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----"), "RSA PRIVATE KEY");
+  assert.equal(M.TE.pemKind("-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----"), "PRIVATE KEY");
+  assert.equal(M.TE.pemKind("not a pem at all"), null);
+});
+
+await test("Teller's dollars become this app's cents, and what is owed is negative", () => {
+  assert.equal(M.TE.toCents("12.34"), 1234);
+  assert.equal(M.TE.toCents("-12.34"), -1234);
+  assert.equal(M.TE.toCents("0.1"), 10);
+  assert.equal(M.TE.toCents("1000"), 100000);
+  // A float that does not land on a cent is rounded rather than truncated:
+  // 0.145 is fourteen and a half pennies and the half belongs somewhere.
+  assert.equal(M.TE.toCents("0.145"), 15);
+  assert.equal(M.TE.toCents(" 5.00 "), 500);
+  assert.equal(M.TE.toCents(null), 0);
+  assert.equal(M.TE.toCents("not money"), 0);
+  assert.equal(M.TE.toCents(""), 0);
+
+  const account = (over = {}) => ({
+    id: "acc_1", name: "Platinum Card", type: "credit", subtype: "credit_card",
+    currency: "USD", last_four: "4471", enrollment_id: "enr_1",
+    institution: { name: "Wells Fargo", id: "wells_fargo" }, ...over,
+  });
+
+  // Whichever sign Teller puts on a card's balance, what is owed is negative
+  // here, which is this app's one unbreakable rule about liabilities.
+  assert.equal(M.TE.toRemoteAccount(account(), 123_45, "2026-10-02").balance, -123_45);
+  assert.equal(M.TE.toRemoteAccount(account(), -123_45, "2026-10-02").balance, -123_45);
+  // Read off the type rather than off the figure, or a card that happens to be
+  // paid off would be filed as an asset.
+  assert.equal(M.TE.toRemoteAccount(account(), 0, "2026-10-02").balance, -0);
+  // And a current account is left exactly as it comes.
+  const bank = M.TE.toRemoteAccount(account({ type: "depository", subtype: "checking" }), 500_00, "2026-10-02");
+  assert.equal(bank.balance, 500_00);
+  assert.equal(bank.type, "checking");
+
+  assert.equal(M.TE.mapAccountType("credit", "credit_card"), "credit");
+  assert.equal(M.TE.mapAccountType("depository", "checking"), "checking");
+  // Everything depository that is not a current account is near enough savings.
+  for (const s of ["savings", "money_market", "certificate_of_deposit", "treasury", "sweep"]) {
+    assert.equal(M.TE.mapAccountType("depository", s), "savings", s);
+  }
+  assert.equal(M.TE.mapAccountType("something_new", "x"), "other_asset", "an unknown kind is not guessed at");
+
+  // Teller names the product, not the account, so two current accounts arrive
+  // called Checking with nothing to tell them apart. The last four digits are
+  // the part that is the account rather than a description of it.
+  assert.equal(M.TE.accountName(account({ name: "Checking", last_four: "1234" })), "Checking ••1234");
+  assert.equal(M.TE.accountName(account({ name: "Checking", last_four: "" })), "Checking");
+  assert.equal(M.TE.accountName({ }), "Account");
+
+  const full = M.TE.toRemoteAccount(account(), 100, "2026-10-02");
+  assert.equal(full.syncId, "acc_1");
+  assert.equal(full.institution, "Wells Fargo");
+  assert.equal(full.itemId, "enr_1", "the enrollment, so a disconnected one's pulls can be dropped");
+  assert.equal(full.currency, "USD");
+  assert.equal(full.balanceDate, "2026-10-02");
+  assert.equal(M.TE.toRemoteAccount(account({ institution: null }), 0, "2026-10-02").institution, "Bank");
+});
+
+await test("a Teller transaction keeps its sign, its hold and the bank's own tidying", () => {
+  const row = {
+    id: "txn_1", account_id: "acc_1", date: "2026-10-01", amount: "-12.34",
+    description: "SQ *BLUE BOTTLE 0012", status: "posted",
+    details: { counterparty: { name: "Blue Bottle Coffee", type: "organization" } },
+  };
+  const t = M.TE.toRemoteTransaction(row);
+  // Money leaving is negative, which is both Teller's convention and this
+  // app's, so nothing is flipped on the way through.
+  assert.equal(t.amount, -1234);
+  assert.equal(t.syncId, "txn_1");
+  assert.equal(t.accountSyncId, "acc_1");
+  assert.equal(t.date, "2026-10-01");
+  assert.equal(t.pending, false);
+  // The raw line is what the rules read; the counterparty is the bank's own
+  // tidying of it and makes a better merchant than anything that can be got
+  // out of the line.
+  assert.equal(t.description, "SQ *BLUE BOTTLE 0012");
+  assert.equal(t.payee, "Blue Bottle Coffee");
+
+  assert.equal(M.TE.toRemoteTransaction({ ...row, status: "pending" }).pending, true);
+  assert.equal(M.TE.toRemoteTransaction({ ...row, amount: "250.00" }).amount, 250_00, "and money arriving is positive");
+
+  // No counterparty at all, which is most of them until the enrichment lands.
+  const bare = M.TE.toRemoteTransaction({ ...row, details: null });
+  assert.equal(bare.payee, undefined, "rather than an empty string nothing can use");
+  assert.equal(bare.description, "SQ *BLUE BOTTLE 0012");
+  // And no description either: the counterparty stands in, and failing that
+  // the row still has to say something.
+  assert.equal(M.TE.toRemoteTransaction({ ...row, description: "" }).description, "Blue Bottle Coffee");
+  assert.equal(M.TE.toRemoteTransaction({ id: "t", account_id: "a", date: "2026-10-01" }).description, "Transaction");
+});
+
+await test("the window is narrowed here as well as asked for", async () => {
+  // Teller returns the newest first and pages backwards from an id. Three
+  // things have to stop the loop, because any one of them alone has a way of
+  // not happening.
+  const row = (n, date) => ({
+    id: `txn_${n}`, account_id: "acc_1", date, amount: "-1.00",
+    description: "Shop", status: "posted",
+  });
+  /** @param perDay how fast the fixture walks back through the month. */
+  const feed = (total, perDay) => {
+    const all = [];
+    for (let n = 0; n < total; n++) {
+      const day = Math.max(30 - Math.floor(n / perDay), 1);
+      all.push(row(n, `2026-09-${String(day).padStart(2, "0")}`));
+    }
+    const asked = [];
+    const get = async (path) => {
+      asked.push(path);
+      const qs = new URLSearchParams(path.split("?")[1] ?? "");
+      const from = qs.get("from_id");
+      const start = from ? all.findIndex((r) => r.id === from) + 1 : 0;
+      return all.slice(start, start + Number(qs.get("count")));
+    };
+    return { get, asked };
+  };
+
+  // Five hundred rows across five days, all inside the window: it has to page
+  // to the end rather than stopping at whatever one request returns.
+  const many = feed(500, 100);
+  const out = await M.TE.collectTransactions(many.get, "acc_1", "2026-09-25");
+  assert.ok(many.asked.length >= 3, `it pages, took ${many.asked.length}`);
+  assert.equal(out.length, 500, "and every row in the window comes back");
+  assert.equal([...new Set(out.map((t) => t.syncId))].length, out.length, "and nothing is counted twice");
+  assert.ok(many.asked.slice(1).every((p) => p.includes("from_id=")), "each page asks for the next");
+
+  // The same feed walking back much faster leaves the window on the first
+  // page, and the rest is not fetched: a window is a window whether or not the
+  // API narrowed it.
+  const steep = feed(500, 10);
+  const short = await M.TE.collectTransactions(steep.get, "acc_1", "2026-09-25");
+  assert.equal(steep.asked.length, 1, "it stops once it is past the window");
+  assert.ok(short.every((t) => t.date >= "2026-09-25"),
+    "and nothing older than the window is kept, whether or not the API narrowed it");
+  assert.equal(short.length, 60, "six days of ten, and not one row older");
+
+  // An API that quietly ignores the cursor hands back the same page for ever.
+  // Without the stall guard this is an endless loop inside a function with a
+  // deadline, which fails as a timeout with no clue what caused it.
+  let calls = 0;
+  const stuck = async () => {
+    calls += 1;
+    return [row(1, "2026-09-30")];
+  };
+  const stalled = await M.TE.collectTransactions(stuck, "acc_1", "2026-01-01");
+  assert.equal(calls, 1, "a short page ends it");
+  assert.equal(stalled.length, 1);
+
+  // A full page that keeps answering with the same last id ends it too.
+  let full = 0;
+  const repeating = async () => {
+    full += 1;
+    return Array.from({ length: 200 }, (_, i) => row(i, "2026-09-30"));
+  };
+  await M.TE.collectTransactions(repeating, "acc_1", "2026-01-01");
+  assert.ok(full <= 2, `a repeated cursor stops it, took ${full} pages`);
+
+  // Nothing at all is nothing at all, not a crash.
+  assert.deepEqual(await M.TE.collectTransactions(async () => [], "acc_1", "2026-01-01"), []);
+  assert.deepEqual(await M.TE.collectTransactions(async () => ({ error: "nope" }), "acc_1", "2026-01-01"), []);
+});
+
+await test("one account refusing does not cost the household the other three", async () => {
+  const accounts = [
+    { id: "acc_1", name: "Everyday Checking", type: "depository", subtype: "checking", last_four: "4471", enrollment_id: "enr_1", institution: { name: "Wells Fargo" }, currency: "USD" },
+    { id: "acc_2", name: "Way2Save", type: "depository", subtype: "savings", last_four: "9921", enrollment_id: "enr_1", institution: { name: "Wells Fargo" }, currency: "USD" },
+    { id: "acc_3", name: "Active Cash", type: "credit", subtype: "credit_card", last_four: "0001", enrollment_id: "enr_1", institution: { name: "Wells Fargo" }, currency: "USD" },
+  ];
+  const get = async (path) => {
+    if (path === "/accounts") return accounts;
+    if (path.startsWith("/accounts/acc_1/balances")) return { ledger: "1200.00", available: "1100.00" };
+    if (path.startsWith("/accounts/acc_2/balances")) throw new Error("that account is being upgraded");
+    if (path.startsWith("/accounts/acc_3/balances")) return { ledger: "431.09" };
+    if (path.startsWith("/accounts/acc_1/transactions")) {
+      return [{ id: "txn_1", account_id: "acc_1", date: "2026-10-01", amount: "-12.34", description: "Shop", status: "posted" }];
+    }
+    if (path.startsWith("/accounts/acc_2/transactions")) throw new Error("that account is being upgraded");
+    return [];
+  };
+
+  const out = await M.TE.collectEnrollment(get, "2026-09-01", { now: () => "2026-10-02T09:00:00.000Z" });
+  assert.equal(out.accounts.length, 3, "every account comes back, including the one that complained");
+  assert.equal(out.accounts[0].balance, 1200_00, "the ledger, not the available: a hold is not a payment");
+  assert.equal(out.accounts[1].balance, 0, "a balance that could not be read is nought, not a guess");
+  assert.equal(out.accounts[2].balance, -431_09, "and the card is owed");
+  assert.equal(out.transactions.length, 1);
+  // Said out loud rather than swallowed: an account that quietly brings back
+  // nothing is the failure that hides for weeks.
+  assert.equal(out.errors.length, 2);
+  assert.ok(out.errors.every((e) => e.includes("Way2Save")), out.errors.join(" | "));
+  assert.equal(out.fetchedAt, "2026-10-02T09:00:00.000Z");
+
+  // The question "what does this login hold" is not the question "what has
+  // happened on it", and asking the second costs a call per account.
+  const paths = [];
+  const counted = async (path) => { paths.push(path); return path === "/accounts" ? accounts : { ledger: "1.00" }; };
+  const quick = await M.TE.collectEnrollment(counted, "2026-10-02", { withTransactions: false });
+  assert.equal(quick.transactions.length, 0);
+  assert.ok(!paths.some((p) => p.includes("/transactions")), paths.join(" "));
+  assert.equal(quick.accounts.length, 3);
+
+  // A login that answers with something that is not a list of accounts is a
+  // failure, not an empty bank.
+  await assert.rejects(() => M.TE.collectEnrollment(async () => ({ error: "nope" }), "2026-09-01"));
+});
+
+await test("Teller's refusals are read down to what a household can act on", () => {
+  assert.match(M.TE.describe({ error: { code: "enrollment.disconnected", message: "x" } }, 401),
+    /needs signing into again/);
+  assert.match(M.TE.describe({ error: { code: "enrollment.disconnected.user_action.mfa_required" } }, 401),
+    /security code/);
+  assert.match(M.TE.describe({ error: { code: "enrollment.disconnected.account_locked" } }, 401),
+    /bank's own site/);
+  assert.match(M.TE.describe({}, 429), /rate-limiting/);
+  // Anything Teller says in a sentence is passed through with its code, which
+  // is what its support is indexed by.
+  assert.equal(M.TE.describe({ error: { code: "x.y", message: "Something specific." } }, 400),
+    "Something specific. (x.y)");
+  assert.match(M.TE.describe({}, 500), /Teller rejected the request \(500\)/);
+});
+
+
+await test("an account stranded on one provider folds into the one that replaced it on another", () => {
+  // The migration this whole thing is for. Plaid refused a bank outright, so
+  // the bank came in through Teller as new accounts, and the real ones are
+  // left holding two years of work and getting nothing. Across providers is
+  // the ordinary case here, not the odd one.
+  const base = M.emptyDB();
+  const acct = (id, name, over) => ({
+    id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
+    includeInNetWorth: true, hidden: false, history: [], order: 1, ...over,
+  });
+  const db = {
+    ...base,
+    accounts: [
+      acct("old", "Everyday Checking", {
+        syncSource: "plaid", syncId: "pl-dead-1", plaidItemId: "it_gone",
+        lastSyncedAt: "2026-08-20T09:00:00.000Z",
+        balance: 90_00, history: [{ date: "2026-08-20", balance: 90_00 }],
+      }),
+      acct("new", "Everyday Checking ••4471", {
+        syncSource: "teller", syncId: "acc_tel_1", plaidItemId: "enr_1",
+        lastSyncedAt: "2026-10-02T09:00:00.000Z",
+        balance: 102_00, history: [{ date: "2026-10-02", balance: 102_00 }],
+      }),
+    ],
+    transactions: [
+      { id: "t1", accountId: "old", date: "2024-06-01", amount: -50_00, merchant: "Shop", categoryId: "c-food", tags: [], importKey: "pl:dead-a", pending: false },
+      { id: "t2", accountId: "new", date: "2026-10-01", amount: -9_99, merchant: "Petrol", categoryId: "uncategorized", tags: [], importKey: "pl:tel-a", pending: false },
+    ],
+    settings: {
+      ...base.settings,
+      // Plaid still has other banks; it is this one it would not open.
+      plaidItems: [{ itemId: "it_chase", institution: "Chase", kind: "both", accessToken: "x", lastSyncAt: "2026-10-02T09:00:00.000Z" }],
+      tellerEnrollments: [{
+        accessToken: "y", enrollmentId: "enr_1", institution: "Wells Fargo",
+        addedAt: "2026-10-02T08:00:00.000Z", lastSyncAt: "2026-10-02T09:00:00.000Z",
+      }],
+    },
+  };
+
+  // Both providers are connections, read the same way.
+  assert.deepEqual(M.RA.feeders(db).map((f) => [f.provider, f.id]),
+    [["plaid", "it_chase"], ["teller", "enr_1"]]);
+  // And an account is only ever fed by its own provider's connections: a
+  // Plaid account at a bank Teller is connected to is not being fed by it.
+  assert.equal(M.RA.feederOf(db.accounts[0], M.RA.feeders(db)), undefined);
+  assert.equal(M.RA.feederOf(db.accounts[1], M.RA.feeders(db))?.provider, "teller");
+
+  assert.deepEqual(M.RA.strandedIn(db).map((s) => [s.account.id, s.why]), [["old", "gone"]]);
+  assert.deepEqual(M.RA.replacementsFor(db, db.accounts[0]).map((r) => r.account.id), ["new"],
+    "the account the other provider is feeding, at the same bank");
+  assert.deepEqual(M.RA.suggestedPairs(db), [{ strandedId: "old", intoId: "new" }]);
+
+  const out = M.RA.foldInto(db, "old", "new");
+  assert.deepEqual(out.db.accounts.map((a) => a.id), ["old"]);
+  const kept = out.db.accounts[0];
+  assert.equal(kept.name, "Everyday Checking", "the household's own name for it");
+  // The provider that is actually feeding it now. Without this nothing would
+  // ever look for it on Teller, and the next pull would make a second copy.
+  assert.equal(kept.syncSource, "teller");
+  assert.equal(kept.syncId, "acc_tel_1");
+  assert.equal(kept.plaidItemId, "enr_1");
+  assert.equal(kept.balance, 102_00);
+  assert.deepEqual([...kept.movedFrom].sort(), ["pl-dead-1"]);
+  assert.deepEqual(out.db.transactions.map((t) => t.accountId), ["old", "old"]);
+
+  // And the next Teller pull finds it rather than filing a second copy.
+  const after = M.mergeSync(out.db, {
+    fetchedAt: "2026-10-03T09:00:00.000Z", errors: [],
+    accounts: [{
+      syncId: "acc_tel_1", name: "Everyday Checking ••4471", institution: "Wells Fargo",
+      type: "checking", balance: 110_00, balanceDate: "2026-10-03", itemId: "enr_1",
+    }],
+    transactions: [{
+      syncId: "txn_new", accountSyncId: "acc_tel_1", date: "2026-10-03",
+      description: "SHOP", payee: "Shop", amount: -5_00, pending: false,
+    }],
+  }, "teller");
+  assert.equal(after.accountsAdded, 0, "no second copy of the account");
+  assert.equal(after.accountsUpdated, 1);
+  assert.equal(after.transactionsAdded, 1);
+  assert.deepEqual(after.db.accounts.map((a) => a.id), ["old"]);
+  assert.equal(after.db.accounts[0].syncSource, "teller");
+});
+
+await test("one provider's pull never claims the other provider's account", () => {
+  // The rule that keeps two providers from taking turns rewriting each other.
+  // A Teller pull that cannot find an account by id falls back to the name,
+  // and the name is exactly what two providers at one bank agree about.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{
+      id: "a1", name: "Everyday Checking", institution: "Wells Fargo", type: "checking",
+      balance: 90_00, includeInNetWorth: true, hidden: false, history: [], order: 1,
+      syncSource: "plaid", syncId: "pl-1", lastSyncedAt: "2026-10-02T09:00:00.000Z",
+    }],
+  };
+  const pull = {
+    fetchedAt: "2026-10-02T10:00:00.000Z", errors: [],
+    accounts: [{
+      syncId: "acc_tel_1", name: "Everyday Checking", institution: "Wells Fargo",
+      type: "checking", balance: 102_00, balanceDate: "2026-10-02", itemId: "enr_1",
+    }],
+    transactions: [],
+  };
+  const out = M.mergeSync(db, pull, "teller");
+  assert.equal(out.accountsAdded, 1, "a second account, because the first is Plaid's");
+  assert.equal(out.accountsUpdated, 0);
+  assert.equal(out.db.accounts.find((a) => a.id === "a1").syncId, "pl-1", "and Plaid's is untouched");
+  // Which is the state the reattach card exists for: two accounts, one bank,
+  // and a person who knows which is which.
+  const settled = { ...out.db, settings: { ...out.db.settings,
+    tellerEnrollments: [{ accessToken: "y", enrollmentId: "enr_1", institution: "Wells Fargo", addedAt: "x", lastSyncAt: "2026-10-02T10:00:00.000Z" }] } };
+  assert.deepEqual(M.RA.strandedIn(settled).map((s) => s.account.id), ["a1"]);
+  assert.equal(M.RA.replacementsFor(settled, settled.accounts[0]).length, 1);
 });
 
 await test("a window that came back short is told from a backfill still running", async () => {
