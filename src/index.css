@@ -1059,21 +1059,11 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 /* On a narrow card the five labels are longer than the room beside a heading,
    so the chooser takes a line of its own rather than crushing the heading. */
 .spend-card .card-head { flex-wrap: wrap; row-gap: 8px; }
-/* The one figure on the dashboard that answers a question about today, so it
-   is sized like a headline rather than like a row in a table. */
-.runway-free { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
-/* The arithmetic in the open, on one line where there is room and stacked
-   where there is not: a single figure nobody can check is a figure nobody
-   believes the second it surprises them. */
-.runway-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 /* Under the net worth chart, in the chart's own gutter so it reads as a
    footnote to the figure above rather than as a second row of content. */
 .worth-split {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
   padding: 0 16px 14px; margin-top: -4px; position: relative; z-index: 2;
-}
-@media (max-width: 560px) {
-  .runway-free { font-size: 26px; }
 }
 
 .dash-card-head { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }

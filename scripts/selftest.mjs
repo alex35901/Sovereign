@@ -60,7 +60,6 @@ await build({
       export { digest, SYSTEM } from "./src/lib/hopper/digest.ts";
       export * as EX from "./src/lib/hopper/explain.ts";
       export * as NT from "./src/lib/notifications.ts";
-      export * as RW from "./src/lib/runway.ts";
       export * as PO from "./src/lib/payoff.ts";
       export * as TX from "./src/lib/tax.ts";
       export * as PW from "./src/lib/price-watch.ts";
@@ -8261,108 +8260,6 @@ await test("the debts come off the document with the forecast's own terms", () =
   assert.equal(out[1].apr, 22);
 });
 
-/* ── does the current account get you to payday ────────────────────────── */
-
-const rwAcct = (id, name, type, balance, over = {}) =>
-  ({ id, name, type, balance, institution: "Acme", includeInNetWorth: true, hidden: false, history: [], order: 0, ...over });
-const rwRec = (id, merchant, amount, nextDate, kind = "bill", over = {}) =>
-  ({ id, merchant, categoryId: "c", accountId: "chk", amount, cadence: "monthly", nextDate, kind, detected: false, ...over });
-
-const rwDB = (over = {}) => ({
-  ...M.emptyDB(),
-  accounts: [
-    rwAcct("chk", "Everyday", "checking", 3_200_00),
-    rwAcct("sav", "Savings", "savings", 40_000_00),
-  ],
-  recurring: [
-    rwRec("pay", "Payroll", 5_000_00, "2026-10-01", "income"),
-    rwRec("rent", "Mortgage", -2_100_00, "2026-09-25"),
-    rwRec("net", "Netflix", -15_99, "2026-09-22", "subscription"),
-    // Past the next payday, so outside the window.
-    rwRec("gym", "Equinox", -210_00, "2026-10-05"),
-  ],
-  ...over,
-});
-
-await test("the runway is checking, the bills before payday, and what is left", () => {
-  const r = M.RW.runway(rwDB(), "2026-09-17");
-  assert.equal(r.cash, 3_200_00, "checking only: savings is money already set aside");
-  assert.equal(r.nextIncome.date, "2026-10-01");
-  assert.equal(r.nextIncome.merchant, "Payroll");
-  assert.equal(r.until, "2026-10-01");
-  assert.equal(r.days, 14);
-  assert.deepEqual(r.bills.map((b) => b.merchant), ["Netflix", "Mortgage"], "soonest first");
-  assert.equal(r.billsTotal, 2_100_00 + 15_99);
-  assert.equal(r.free, 3_200_00 - 2_115_99);
-  assert.equal(r.perDay, Math.floor(r.free / 14));
-  assert.equal(r.guessed, false);
-});
-
-await test("a bill already paid this cycle is not counted twice", () => {
-  const db = rwDB();
-  const paid = {
-    ...db,
-    transactions: [{
-      id: "t1", accountId: "chk", date: "2026-09-22", merchant: "Netflix", amount: -15_99,
-      categoryId: "c", tags: [], pending: false, reviewed: true, hideFromReports: false,
-      createdAt: "2026-09-22",
-    }],
-  };
-  const before = M.RW.runway(db, "2026-09-17");
-  const after = M.RW.runway(paid, "2026-09-17");
-  assert.deepEqual(after.bills.map((b) => b.merchant), ["Mortgage"]);
-  assert.equal(after.billsTotal, before.billsTotal - 15_99);
-  assert.ok(after.free > before.free);
-});
-
-await test("with no pay in sight the window is a guess, and says so", () => {
-  const db = rwDB({ recurring: [rwRec("rent", "Mortgage", -2_100_00, "2026-09-25")] });
-  const r = M.RW.runway(db, "2026-09-17");
-  assert.equal(r.guessed, true);
-  assert.equal(r.nextIncome, null);
-  assert.equal(r.days, M.RW.DEFAULT_HORIZON_DAYS);
-  assert.equal(r.until, "2026-10-01", "a fortnight out");
-  assert.deepEqual(r.bills.map((b) => b.merchant), ["Mortgage"]);
-});
-
-await test("being short before payday is said plainly rather than rounded away", () => {
-  const db = rwDB({
-    accounts: [rwAcct("chk", "Everyday", "checking", 1_700_00)],
-  });
-  const r = M.RW.runway(db, "2026-09-17");
-  assert.ok(r.free < 0, `${r.free}`);
-  assert.equal(r.free, 1_700_00 - 2_115_99);
-  // Floored, not rounded: a per-day figure that rounds up runs out a day early.
-  assert.equal(r.perDay, Math.floor(r.free / 14));
-  assert.ok(r.perDay < 0);
-});
-
-await test("payday today leaves no days to divide by", () => {
-  const db = rwDB({ recurring: [rwRec("pay", "Payroll", 5_000_00, "2026-09-18", "income")] });
-  const r = M.RW.runway(db, "2026-09-17");
-  assert.equal(r.days, 1);
-  const same = M.RW.runway(rwDB({ recurring: [] }), "2026-09-17");
-  assert.equal(same.days, M.RW.DEFAULT_HORIZON_DAYS);
-  // Nothing recurring at all: the whole balance is free over the fortnight.
-  assert.equal(same.billsTotal, 0);
-  assert.equal(same.free, 3_200_00);
-});
-
-await test("accounts that are not spendable are not counted as spendable", () => {
-  const only = (accounts) => M.RW.runway(rwDB({ accounts }), "2026-09-17").cash;
-  assert.equal(only([rwAcct("chk", "Everyday", "checking", 3_200_00)]), 3_200_00);
-  assert.equal(only([rwAcct("s", "Savings", "savings", 40_000_00)]), 0);
-  assert.equal(only([rwAcct("b", "Brokerage", "investment", 90_000_00)]), 0);
-  assert.equal(only([rwAcct("c", "Card", "credit", -2_000_00)]), 0, "a card is not cash");
-  assert.equal(only([rwAcct("chk", "Everyday", "checking", 3_200_00, { hidden: true })]), 0);
-  assert.equal(only([rwAcct("chk", "Everyday", "checking", 3_200_00, { closedAt: "2026-01-01" })]), 0);
-  // Two current accounts add up.
-  assert.equal(only([
-    rwAcct("a", "One", "checking", 1_000_00),
-    rwAcct("b", "Two", "checking", 500_00),
-  ]), 1_500_00);
-});
-
 /* ── a balance that did not so much move as vanish ─────────────────────── */
 
 const swingAcct = (over = {}) => ({
@@ -13346,11 +13243,6 @@ await test("the things built since Hopper was written are reachable from his too
   assert.ok(port.lookThrough.byAssetClass.length, "the portfolio opens up into what it is made of");
   assert.equal(port.lookThrough.openedUp, Math.round(M.FD.lookThrough(db.holdings).seen) / 100);
 
-  // And what is safe to spend does not cost a tool call at all.
-  const over = M.HT.runTool(db, "overview", {});
-  const rw = M.RW.runway(db);
-  assert.equal(over.safeToSpend.free, Math.round(rw.free) / 100);
-  assert.equal(over.safeToSpend.until, rw.until);
 });
 
 await test("the two sets of books can be asked about separately", () => {

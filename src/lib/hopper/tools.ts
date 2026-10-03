@@ -13,7 +13,6 @@ import {
 import { benefitAt, firstClaimAge, hasBenefit } from "../social-security.js";
 import { blankSurvivorship, coverNeeded, estateSummary, lifeCover, runSurvivor } from "../estate.js";
 import { compareOrders, debtsFrom } from "../payoff.js";
-import { runway } from "../runway.js";
 import { priceChanges, yearlyImpact } from "../price-watch.js";
 import { SALT_CAP, taxSummary, taxYears } from "../tax.js";
 import { notices } from "../notifications.js";
@@ -140,7 +139,6 @@ export const TOOLS: ToolSpec[] = [
       const nw = netWorthNow(db);
       const flow = cashFlowSeries(db, [month])[0] ?? { income: 0, expense: 0 };
       const saved = flow.income - flow.expense;
-      const rw = runway(db);
       return {
         today: today(),
         month,
@@ -151,19 +149,6 @@ export const TOOLS: ToolSpec[] = [
         spending: money(flow.expense),
         saved: money(saved),
         savingsRatePct: flow.income > 0 ? Math.round((saved / flow.income) * 100) : null,
-        // "Can I afford this?" is the commonest question there is, and it is
-        // about today rather than about the month. Riding along here saves a
-        // second round trip on most of them.
-        safeToSpend: {
-          inChecking: money(rw.cash),
-          nextIncome: rw.nextIncome ? { merchant: rw.nextIncome.merchant, date: rw.nextIncome.date, amount: money(rw.nextIncome.amount) } : null,
-          until: rw.until,
-          daysUntil: rw.days,
-          billsBefore: money(rw.billsTotal),
-          free: money(rw.free),
-          perDay: rw.perDay === null ? null : money(rw.perDay),
-          nextIncomeIsAGuess: rw.guessed,
-        },
       };
     },
   },

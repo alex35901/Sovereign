@@ -3601,9 +3601,9 @@ try {
         c.querySelector(".nw-head") ? "net worth" : (c.querySelector("h2")?.innerText ?? "").trim()));
     // Lower-cased on both sides: this is about which cards are there rather
     // than about how any of them is typeset.
-    check("the dashboard is the seven cards, in that order",
+    check("the dashboard is the six cards, in that order",
       cards.join(" / ").toLowerCase()
-        === "net worth / safe to spend / spending / budget / recurring / goals / investments",
+        === "net worth / spending / budget / recurring / goals / investments",
       cards.join(" / "));
     const body = await dash.evaluate(() => document.body.innerText);
     check("and recent transactions is not one of them", !/recent transactions/i.test(body));
@@ -3963,12 +3963,11 @@ try {
     // makes a shift here readable rather than a run of wrong destinations.
     for (const [name, i, sel, want] of [
       ["net worth", 0, ".nw-value", "/accounts"],
-      ["safe to spend", 1, "h2", "/recurring"],
-      ["spending", 2, "h2", "/reports"],
-      ["budget", 3, "h2", "/budget"],
-      ["recurring", 4, "h2", "/recurring"],
-      ["goals", 5, "h2", "/goals"],
-      ["investments", 6, "h2", "/investments"],
+      ["spending", 1, "h2", "/reports"],
+      ["budget", 2, "h2", "/budget"],
+      ["recurring", 3, "h2", "/recurring"],
+      ["goals", 4, "h2", "/goals"],
+      ["investments", 5, "h2", "/investments"],
     ]) {
       const at = await opens(i, sel);
       check(`clicking the ${name} widget anywhere opens ${want}`, at === want, at);
@@ -3981,10 +3980,10 @@ try {
     // The spending chart is scrubbed rather than clicked, so like the net
     // worth one it answers for itself and stays where it is. Everything else
     // on the card still opens reports, which the run above checks.
-    const onChart = await opens(2, ".chart-wrap");
+    const onChart = await opens(1, ".chart-wrap");
     check("dragging across the spending chart reads it out rather than opening reports",
       onChart === "/dashboard", onChart);
-    const onBar = await opens(3, ".bar");
+    const onBar = await opens(2, ".bar");
     check("and the budget's own bar opens the budget", onBar === "/budget", onBar);
 
     // A row inside a list goes to that row's own page, not the card's.
@@ -3997,14 +3996,14 @@ try {
       }
     };
     const recName = await row(async () =>
-      (await dash.locator(".page > .card").nth(4).locator(".list-row .truncate").first().innerText()).trim());
-    const recPath = await row(() => pressAt(dash.locator(".page > .card").nth(4).locator(".list-row").first()));
+      (await dash.locator(".page > .card").nth(3).locator(".list-row .truncate").first().innerText()).trim());
+    const recPath = await row(() => pressAt(dash.locator(".page > .card").nth(3).locator(".list-row").first()));
     check("a recurring row opens that merchant, the way the recurring page's rows do",
       recPath === `/merchants/${recName}`, `${recPath} for ${recName}`);
 
     await dash.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await dash.waitForTimeout(700);
-    const goalPath = await row(() => pressAt(dash.locator(".page > .card").nth(5).locator(".goal-row").first()));
+    const goalPath = await row(() => pressAt(dash.locator(".page > .card").nth(4).locator(".goal-row").first()));
     check("a goal row opens that goal rather than the goals list",
       /^\/goals\/.+/.test(goalPath), goalPath);
 
@@ -8754,46 +8753,16 @@ try {
   }
 
 
-  if (want("runway")) {
-    // ── between now and payday ──
+  if (want("worth-split")) {
+    // ── how much of that was you ──
     //
-    // The question people actually open a budgeting app to ask, which was
-    // worked out in lib/runway and reachable only by asking the assistant.
-    const rw = await browser.newContext({ viewport: { width: 1280, height: 1600 } });
-    const page = await rw.newPage();
+    // A month where everything rose reads the same whether the household saved
+    // four thousand or the market did, and they are not the same month.
+    const ws = await browser.newContext({ viewport: { width: 1280, height: 1600 } });
+    const page = await ws.newPage();
     await page.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await page.waitForTimeout(1800);
 
-    const card = await page.evaluate(() => {
-      const found = [...document.querySelectorAll(".card")]
-        .find((c) => /Safe to spend/.test(c.querySelector("h2")?.innerText ?? ""));
-      if (!found) return null;
-      const free = found.querySelector(".runway-free");
-      return {
-        text: found.innerText,
-        free: free?.textContent ?? "",
-        freeSize: free ? Number(getComputedStyle(free).fontSize.replace("px", "")) : 0,
-        sum: found.querySelector(".runway-sum")?.innerText.replace(/\n/g, " ") ?? "",
-        // The card is its own link, the same as every other card here.
-        href: found.querySelector(".dash-sheet")?.getAttribute("href") ?? "",
-      };
-    });
-    check("the dashboard says what is safe to spend before payday",
-      card !== null && /^\$[\d,]+$/.test(card.free), JSON.stringify(card?.free));
-    check("sized like a headline, because it is the answer and not a row in a table",
-      card !== null && card.freeSize >= 24, `${card?.freeSize}px`);
-    // A single figure nobody can check is a figure nobody believes the second
-    // it surprises them.
-    check("with the arithmetic behind it in the open",
-      card !== null && /in current accounts/.test(card.sum) && /of bills/.test(card.sum), card?.sum);
-    check("and says which payday it is counting to",
-      card !== null && /until .+ on \w/.test(card.text), card?.text.split("\n")[1]);
-    check("the bills it is counting are named, soonest first",
-      card !== null && (card.text.match(/In \d+ days?|Today|Tomorrow/g) ?? []).length >= 2,
-      (card?.text.match(/In \d+ days?|Today|Tomorrow/g) ?? []).join(" "));
-    check("and it opens the page those bills live on", card?.href === "/recurring", card?.href);
-
-    // ── how much of that was you ──
     const split = await page.evaluate(() => {
       const el = document.querySelector(".worth-split");
       return el ? { text: el.innerText.replace(/\n/g, " "), bottom: el.getBoundingClientRect().bottom,
@@ -8809,30 +8778,27 @@ try {
       split !== null && /record(s)? nothing going into|records what goes into/.test(split.text), split?.text);
     await page.close();
 
-    // Nothing to be conservative about: a document with no current account has
-    // no safe-to-spend at all, and nought would read as broke.
-    await rw.addInitScript(() => {
+    // Nothing to split, and nothing said. A document whose net worth moves for
+    // one reason does not need a line under the chart saying all of it was the
+    // household: the chart already says the figure.
+    await ws.addInitScript(() => {
       try {
         const raw = localStorage.getItem("sovereign.db.v1");
         if (!raw) return;
         const db = JSON.parse(raw);
-        db.accounts = db.accounts.map((a) => (a.type === "checking" ? { ...a, type: "savings" } : a));
+        const alone = new Set(["investment", "retirement", "crypto", "real_estate", "vehicle"]);
+        db.accounts = db.accounts.filter((a) => !alone.has(a.type));
         localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
       } catch { /* nothing to patch */ }
     });
-    const bare = await rw.newPage();
-    await bare.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
-    await bare.waitForTimeout(1600);
-    check("a household with no current account is told why, not shown a nought",
-      /No current account/.test(await bare.evaluate(() => {
-        const found = [...document.querySelectorAll(".card")]
-          .find((c) => /Safe to spend/.test(c.querySelector("h2")?.innerText ?? ""));
-        return found?.innerText ?? "";
-      })));
-    await bare.close();
+    const plain = await ws.newPage();
+    await plain.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await plain.waitForTimeout(1700);
+    check("and says nothing at all where there is nothing to split",
+      await plain.evaluate(() => document.querySelectorAll(".worth-split").length) === 0);
+    await plain.close();
 
-    // On a phone the headline and the per-day line stack rather than squeezing.
-    const phone = await rw.newPage();
+    const phone = await ws.newPage();
     await phone.setViewportSize({ width: 390, height: 1200 });
     await phone.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
     await phone.waitForTimeout(1600);
@@ -8840,7 +8806,7 @@ try {
       await phone.evaluate(() => document.documentElement.scrollWidth) <= 390,
       String(await phone.evaluate(() => document.documentElement.scrollWidth)));
     await phone.close();
-    await rw.close();
+    await ws.close();
   }
 
   if (want("alerts")) {
