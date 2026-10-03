@@ -76,18 +76,75 @@ let writeTimer: ReturnType<typeof setTimeout> | undefined;
 let lastWriteOk = true;
 export const cacheHealthy = (): boolean => lastWriteOk;
 
+/**
+ * What this browser is holding that is not the budget, least precious first.
+ *
+ * Everything here can be thrown away without losing anything the household
+ * typed: the benchmark cache is prices that can be fetched again, and the
+ * change log is the undo history, which is a convenience and not a record of
+ * anything that is not already in the document.
+ *
+ * Two things are deliberately absent. The document itself, obviously. And the
+ * conflict copy, which looks like an ordinary cache and is the opposite of
+ * one: it is work that lost a race to another device and exists nowhere else.
+ * Freeing room by deleting the one thing here that cannot be got back again
+ * would be the same failure in a new coat.
+ */
+const SPARE_KEYS = ["sovereign.benchmarks.v1", "sovereign.changelog.v1"];
+
+/**
+ * Room made by giving up something that can be got again.
+ *
+ * @returns whether anything was actually freed, so the caller knows whether
+ * trying again could possibly go any better.
+ */
+function freeRoom(): boolean {
+  for (const key of SPARE_KEYS) {
+    try {
+      if (localStorage.getItem(key) === null) continue;
+      localStorage.removeItem(key);
+      return true;
+    } catch { /* if even reading throws, there is nothing to be done here */ }
+  }
+  return false;
+}
+
 function write(db: DB, at: number): boolean {
-  try {
+  const once = (): boolean => {
     localStorage.setItem(KEY, JSON.stringify(db));
     // Only now, and only because the line above did not throw.
     localStorage.setItem(AT_KEY, String(at));
+    return true;
+  };
+
+  try {
+    once();
     lastWriteOk = true;
     return true;
   } catch (err) {
-    // Not swallowed into the console this time. Running out of room here is
-    // how a household lost months of work, quietly, over and over. The stamp
-    // goes rather than staying to vouch for a document that may not have been
-    // written, which is the failure this whole arrangement exists to stop.
+    /**
+     * Out of room, which until now was the end of it.
+     *
+     * A browser that cannot write its copy down stays that way: every save
+     * after this one fails for the same reason, the cache goes stale, and the
+     * household finds out weeks later. It is how one of them lost months of
+     * work. But the thing filling the room is often not the budget at all,
+     * and the app is holding a megabyte of undo history and a cache of share
+     * prices beside it, either of which can be given up without losing
+     * anything. So give one up and try again, rather than reporting a
+     * condition nobody can act on from inside the app.
+     */
+    while (freeRoom()) {
+      try {
+        once();
+        lastWriteOk = true;
+        return true;
+      } catch { /* still too big: give up something else and try again */ }
+    }
+
+    // Nothing left to give up. The stamp goes rather than staying to vouch for
+    // a document that may not have been written, which is the failure this
+    // whole arrangement exists to stop.
     try { localStorage.removeItem(AT_KEY); } catch { /* nothing left to do */ }
     console.error("Could not cache the budget in this browser.", err);
     lastWriteOk = false;

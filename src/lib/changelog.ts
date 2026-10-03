@@ -131,8 +131,87 @@ export interface LoggedAction {
 /** A table read as plain rows; every one of them is a record with an id. */
 const rowsOf = (db: DB, table: TableName): Row[] => (db[table] ?? []) as unknown as Row[];
 
+/**
+ * What differs between two versions of one row, or null if nothing does.
+ *
+ * Shared by both paths below on purpose: two copies of this would be two
+ * answers to "what changed", and the one the history records would depend on
+ * how the edit happened to be shaped.
+ */
+function fieldChanges(old: Row, row: Row): { before: Record<string, unknown>; after: Record<string, unknown> } | null {
+  const b: Record<string, unknown> = {};
+  const a: Record<string, unknown> = {};
+  for (const key of new Set([...Object.keys(old), ...Object.keys(row)])) {
+    if (NOT_REVERTED.has(key) || same(old[key], row[key])) continue;
+    b[key] = stored(old[key]);
+    a[key] = stored(row[key]);
+  }
+  return Object.keys(a).length ? { before: b, after: a } : null;
+}
+
+/**
+ * How many rows may differ before the lockstep walk gives up on itself.
+ *
+ * A cost, not a rule: the walk is correct for any number of changed rows, and
+ * raising or removing this changes no answer anywhere. It is here because the
+ * walk's whole advantage is that it allocates nothing, and a few dozen hits in
+ * is where building the index would have been the cheaper way round.
+ */
+const WALK_LIMIT = 64;
+
+/**
+ * The rows that differ, found without indexing the ones that do not.
+ *
+ * An edit arrives as a new array built by `.map()` over the old one, so every
+ * row the edit did not touch is the same object at the same index. Walking the
+ * two arrays in lockstep and comparing pointers answers the whole question for
+ * an ordinary edit without allocating anything at all.
+ *
+ * It gives up the moment the shape stops matching - a different length, an id
+ * out of place, or more differences than a single edit could plausibly make -
+ * and the caller falls back to the map, which handles those correctly. Null
+ * means "ask the map".
+ *
+ * Worth the two code paths because of where this runs. The reducer fires on
+ * every keystroke in an edit form, and this is the expensive thing it does: on
+ * a document of nine thousand transactions the map costs about four and a half
+ * milliseconds per keystroke and the walk costs about three hundredths of one.
+ * That is the difference between a phone typing smoothly and a phone dropping
+ * frames while somebody renames a merchant.
+ */
+function walkRows(before: Row[], after: Row[]): [Row, Row][] | null {
+  if (before.length !== after.length) return null;
+  const moved: [Row, Row][] = [];
+  for (let i = 0; i < after.length; i++) {
+    const was = before[i]!;
+    const now = after[i]!;
+    if (was === now) continue;
+    if (was.id !== now.id) return null;
+    // Paired here, where the index is in hand. Looking the old row up by id
+    // afterwards would mean indexing every row to find the one already held,
+    // which is the allocation this whole path exists to avoid.
+    moved.push([was, now]);
+    if (moved.length > WALK_LIMIT) return null;
+  }
+  return moved;
+}
+
 function diffTable(table: TableName, before: Row[], after: Row[]): TableDiff | null {
   if (before === after) return null;
+
+  // The ordinary edit: same rows, same order, one of them replaced. Nothing is
+  // added and nothing is removed, so the only question is what changed on the
+  // handful of rows that are not the objects they were.
+  const walked = walkRows(before, after);
+  if (walked) {
+    const changed: RowChange[] = [];
+    for (const [old, row] of walked) {
+      const c = fieldChanges(old, row);
+      if (c) changed.push({ id: row.id, ...c });
+    }
+    return changed.length ? { table, added: [], removed: [], changed } : null;
+  }
+
   const was = new Map(before.map((r) => [r.id, r]));
   const added: ID[] = [];
   const changed: RowChange[] = [];
@@ -142,14 +221,8 @@ function diffTable(table: TableName, before: Row[], after: Row[]): TableDiff | n
     const old = was.get(row.id);
     if (!old) { added.push(row.id); continue; }
     if (old === row) continue;
-    const b: Record<string, unknown> = {};
-    const a: Record<string, unknown> = {};
-    for (const key of new Set([...Object.keys(old), ...Object.keys(row)])) {
-      if (NOT_REVERTED.has(key) || same(old[key], row[key])) continue;
-      b[key] = stored(old[key]);
-      a[key] = stored(row[key]);
-    }
-    if (Object.keys(a).length) changed.push({ id: row.id, before: b, after: a });
+    const c = fieldChanges(old, row);
+    if (c) changed.push({ id: row.id, ...c });
   }
   const removed = before.filter((r) => !seen.has(r.id));
   if (!added.length && !removed.length && !changed.length) return null;

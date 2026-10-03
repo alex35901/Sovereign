@@ -56,7 +56,6 @@ await build({
       export { buildDemoDB, emptyDB } from "./src/lib/seed.ts";
       export { migrate } from "./src/lib/storage.ts";
       export { loadDB, saveNow, cacheHealthy, clearDB } from "./src/lib/storage.ts";
-      export { ADAPTERS } from "./src/lib/sync/index.ts";
       export * as HT from "./src/lib/hopper/tools.ts";
       export { digest, SYSTEM } from "./src/lib/hopper/digest.ts";
       export * as EX from "./src/lib/hopper/explain.ts";
@@ -317,8 +316,83 @@ await test("a cache that will not write does not leave a version number behind",
 });
 
 await test("nothing in the app can pull from the retired bridge", () => {
-  assert.equal(M.ADAPTERS.length, 0, "no adapter may offer the bridge");
+  // Stronger than the registry being empty, which is what this used to check:
+  // there is no registry. It held nothing, nothing was ever registered in it,
+  // and an empty list with a lookup nobody called was a promise the code was
+  // not keeping. The providers have their own paths in run.ts.
+  assert.equal("ADAPTERS" in M, false, "no registry for a provider to be offered through");
+  assert.equal("getAdapter" in M, false);
   assert.equal("syncSimplefin" in M, false, "the pull itself must not exist");
+});
+
+
+await test("a browser that has run out of room gives up a cache before it gives up the budget", () => {
+  const real = globalThis.localStorage;
+  /** Room enough for the document and not much else. */
+  let budget = Infinity;
+  const used = () => [...store.keys()].reduce((n, k) => n + k.length + String(store.get(k)).length, 0);
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => {
+      const next = new Map(store);
+      next.set(k, String(v));
+      const size = [...next.keys()].reduce((n, key) => n + key.length + String(next.get(key)).length, 0);
+      if (size > budget) { const e = new Error("QuotaExceededError"); e.name = "QuotaExceededError"; throw e; }
+      store.set(k, String(v));
+    },
+    removeItem: (k) => store.delete(k),
+    clear: () => store.clear(),
+  };
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    const db = M.emptyDB();
+    assert.equal(M.saveNow(db, 1), true);
+
+    // The two things a browser holds beside the budget, both of which can be
+    // fetched or rebuilt: a cache of share prices and the undo history.
+    const filler = "x".repeat(40_000);
+    localStorage.setItem("sovereign.benchmarks.v1", filler);
+    localStorage.setItem("sovereign.changelog.v1", filler);
+    const roomy = used();
+
+    // Now the phone is full, with a document that would fit if those were not
+    // sitting there. This used to be the end of it: every save from here on
+    // failed for the same reason, the cache went stale, and the household
+    // found out weeks later.
+    const bigger = { ...db, settings: { ...db.settings, householdName: "the evening's work" } };
+    budget = roomy - 20_000;
+    assert.equal(M.saveNow(bigger, 2), true, "the budget is written");
+    assert.equal(M.cacheHealthy(), true);
+    assert.equal(M.loadDB().at, 2, "stamped, because it really did land");
+    assert.equal(M.loadDB().db.settings.householdName, "the evening's work");
+    // One was enough, so the other is still there: this gives up as little as
+    // it can, not everything it is allowed to.
+    assert.equal(localStorage.getItem("sovereign.benchmarks.v1"), null, "the prices went");
+    assert.equal(localStorage.getItem("sovereign.changelog.v1"), filler, "the history did not have to");
+
+    // Tighter still, and both go.
+    budget = used() - 20_000;
+    const bigger2 = { ...db, settings: { ...db.settings, householdName: "a later evening" } };
+    assert.equal(M.saveNow(bigger2, 3), true);
+    assert.equal(localStorage.getItem("sovereign.changelog.v1"), null, "the history went too");
+
+    // What is never given up to make room: work that lost a race to another
+    // device and exists nowhere else. Freeing room by deleting the one thing
+    // here that cannot be got back would be the same failure in a new coat.
+    budget = Infinity;
+    localStorage.setItem("sovereign.db.conflict.v1", filler);
+    budget = used() - 20_000;
+    const bigger3 = { ...db, settings: { ...db.settings, householdName: "a third evening" } };
+    assert.equal(M.saveNow(bigger3, 4), false, "nothing left that may be given up");
+    assert.equal(M.cacheHealthy(), false, "and it says so rather than pretending");
+    assert.equal(localStorage.getItem("sovereign.db.conflict.v1"), filler, "and the unsaved work is still there");
+    assert.equal(M.loadDB().at, null, "with no stamp vouching for a document that was not written");
+  } finally {
+    console.error = quiet;
+    globalThis.localStorage = real;
+  }
 });
 
 await test("a stored access URL is dropped on load, so a restored backup is safe", () => {
@@ -6845,7 +6919,6 @@ await test("a connection remade does not file a second copy of everything", asyn
 
   const first = M.mergeSync(M.emptyDB(), pull([account], [txn(), txn({ syncId: "old-2", date: "2026-08-02", amount: -500 })]), "plaid");
   assert.equal(first.transactionsAdded, 2);
-  console.log("DBG txns", JSON.stringify(first.db.transactions.map((t) => [t.accountId, t.date, t.amount, t.importKey])));
 
   // The household files it away: a category, a note, a tag. None of that comes
   // from the bank and none of it may be lost to a reconnection.
@@ -6865,7 +6938,6 @@ await test("a connection remade does not file a second copy of everything", asyn
     ],
   ), "plaid");
 
-  console.log("DBG2 txns", JSON.stringify(again.db.transactions.map((t) => [t.accountId, t.date, t.amount, t.importKey])));
   assert.equal(again.transactionsAdded, 1, "only the month that was actually new");
   assert.equal(again.db.transactions.length, 3);
   assert.equal(again.db.accounts.length, 1, "and one account, not two");
@@ -14646,6 +14718,89 @@ const recat = (db, ids, categoryId) => ({
 });
 
 const AT = "2026-09-18T10:00:00.000Z";
+
+
+await test("the quick path and the thorough one never disagree", () => {
+  // The reducer fires on every keystroke, and the thing it does on each one is
+  // this diff. The quick path reads an ordinary edit off the array shape
+  // without indexing anything; the thorough one indexes every row by id and
+  // handles everything else. Two paths means two answers unless something
+  // checks, and the answer here drives undo, which puts money rows back.
+  const rows = 200;
+  const before = {
+    ...clDB(),
+    transactions: Array.from({ length: rows }, (_, i) => ({
+      id: `t${i}`, accountId: "a1", date: "2026-09-01", merchant: `Shop ${i}`,
+      amount: -(i + 1) * 100, categoryId: "c1", tags: [], pending: false,
+      reviewed: false, hideFromReports: false, createdAt: "2026-09-01T00:00:00.000Z",
+    })),
+  };
+
+  /** Same rows, different order: the quick path cannot take this and says so. */
+  const shuffled = (list, seed) => {
+    const out = [...list];
+    let r = seed;
+    for (let i = out.length - 1; i > 0; i--) {
+      r = (r * 1103515245 + 12345) % 2147483648;
+      const j = r % (i + 1);
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  };
+  const sorted = (d) => ({
+    added: [...d.added].sort(),
+    removed: [...d.removed].map((r) => r.id).sort(),
+    changed: [...d.changed].sort((a, b) => a.id.localeCompare(b.id)),
+  });
+  const tableOf = (entry) => entry?.tables.find((t) => t.table === "transactions") ?? null;
+
+  const edits = [
+    ["one field on one row", (db) => ({ ...db, transactions: db.transactions.map((t, i) => (i === 7 ? { ...t, merchant: "Renamed" } : t)) })],
+    ["two fields on one row", (db) => ({ ...db, transactions: db.transactions.map((t, i) => (i === 0 ? { ...t, merchant: "X", categoryId: "c2" } : t)) })],
+    ["the first and the last", (db) => ({ ...db, transactions: db.transactions.map((t, i) => (i === 0 || i === rows - 1 ? { ...t, reviewed: true } : t)) })],
+    ["a field taken off", (db) => ({ ...db, transactions: db.transactions.map((t, i) => { if (i !== 3) return t; const { createdAt, ...rest } = t; return rest; }) })],
+    ["a field added", (db) => ({ ...db, transactions: db.transactions.map((t, i) => (i === 4 ? { ...t, notes: "hello" } : t)) })],
+    ["a row replaced by an identical copy", (db) => ({ ...db, transactions: db.transactions.map((t, i) => (i === 9 ? { ...t } : t)) })],
+    ["more rows than the walk will take", (db) => ({ ...db, transactions: db.transactions.map((t, i) => (i < 100 ? { ...t, reviewed: true } : t)) })],
+    ["every row at once", (db) => ({ ...db, transactions: db.transactions.map((t) => ({ ...t, categoryId: "c3" })) })],
+    ["nothing at all", (db) => ({ ...db, transactions: db.transactions.map((t) => t) })],
+  ];
+
+  for (const [what, edit] of edits) {
+    const after = edit(before);
+    const quick = tableOf(M.CL.diffAction(before, after, "edit", AT));
+    // The same edit with the rows handed over in a different order, which the
+    // quick path refuses and the thorough one does not care about.
+    const slow = tableOf(M.CL.diffAction(before, { ...after, transactions: shuffled(after.transactions, 7) }, "edit", AT));
+    if (quick === null || slow === null) {
+      assert.equal(quick, slow, `${what}: one path found a change and the other did not`);
+      continue;
+    }
+    assert.deepEqual(sorted(quick), sorted(slow), what);
+  }
+});
+
+await test("and the quick path hands back anything it cannot answer for", () => {
+  const before = clDB();
+  // Added, removed and reordered are all shapes the walk refuses, and all
+  // shapes an ordinary afternoon produces.
+  const added = { ...before, transactions: [...before.transactions, { id: "t3", accountId: "a1", date: "2026-09-03", merchant: "New", amount: -1_00, categoryId: "c1", tags: [], pending: false }] };
+  const gone = { ...before, transactions: before.transactions.slice(1) };
+  const reordered = { ...before, transactions: [...before.transactions].reverse() };
+
+  assert.deepEqual(M.CL.diffAction(before, added, "added", AT).tables[0].added, ["t3"]);
+  assert.deepEqual(M.CL.diffAction(before, gone, "deleted", AT).tables[0].removed.map((r) => r.id), ["t1"]);
+  // Order is not a change: the rows are the same rows.
+  assert.equal(M.CL.diffAction(before, reordered, "reordered", AT), null);
+
+  // A row that moved AND changed is both of those, and the walk cannot see it.
+  const both = { ...before, transactions: [{ ...before.transactions[1], merchant: "Moved" }, before.transactions[0]] };
+  const diff = M.CL.diffAction(before, both, "both", AT).tables[0];
+  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff.removed, []);
+  assert.deepEqual(diff.changed.map((c) => c.id), ["t2"]);
+  assert.deepEqual(Object.keys(diff.changed[0].after), ["merchant"]);
+});
 
 await test("an action records only the rows and fields it moved", () => {
   const before = clDB();

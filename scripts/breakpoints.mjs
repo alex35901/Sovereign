@@ -62,12 +62,30 @@ const ONLY = (process.argv.slice(2).find((a) => a.startsWith("--only=")) ?? "").
  * throw two of the answers away".
  */
 const WANTED = ONLY.split(",").map((s) => s.trim()).filter(Boolean);
+/**
+ * Name the sections exactly, rather than by anything they contain.
+ *
+ * Substring matching is right at a keyboard, where "--only=budget" meaning
+ * every budget section is the useful answer. It is wrong for a runner handing
+ * one section to each worker: "budget" would drag "budget-actual" along with
+ * it, and whichever worker was given that one would run it a second time.
+ */
+const EXACT = process.argv.includes("--exact");
 const skipped = [];
 const want = (name) => {
-  if (!WANTED.length || WANTED.some((w) => name.includes(w))) return true;
+  const matched = EXACT ? WANTED.includes(name) : WANTED.some((w) => name.includes(w));
+  if (!WANTED.length || matched) return true;
   skipped.push(name);
   return false;
 };
+
+/** Every section this file defines, for a runner that wants to split them up. */
+if (process.argv.includes("--list")) {
+  const src = await (await import("node:fs/promises")).readFile(new URL(import.meta.url), "utf8");
+  const names = [...src.matchAll(/\bwant\("([^"]+)"\)/g)].map((m) => m[1]);
+  console.log([...new Set(names)].join("\n"));
+  process.exit(0);
+}
 
 try {
   ({ chromium } = await import("playwright"));
@@ -6654,7 +6672,11 @@ try {
       ["/reports", "the cash flow chart"],
     ]) {
       await others.goto(BASE + path, { waitUntil: "domcontentloaded" });
-      await others.waitForTimeout(240);
+      // Waited for rather than counted after a fixed pause. These two screens
+      // are fetched on demand now, so the time between asking for the page and
+      // the chart existing includes a round trip, and a fixed 240ms was timing
+      // the download rather than the drawing.
+      await others.waitForSelector(".chart-reveal", { timeout: 8000 }).catch(() => {});
       const n = await others.evaluate(() => document.querySelectorAll(".chart-reveal").length);
       check(`${what} draws itself in too`, n > 0, `${n} on ${path}`);
     }
@@ -7971,6 +7993,12 @@ try {
         const raw = localStorage.getItem("sovereign.db.v1");
         if (!raw) return;
         const db = JSON.parse(raw);
+        // Nothing on a schedule. These two were last pulled weeks ago on
+        // purpose, which also makes them overdue, and an overdue connection
+        // behind a preview build gets pulled, fails for want of a function to
+        // pull from, and leaves an error on itself that this section never
+        // asked about. See the reattach section for where that cost a day.
+        db.settings.syncCadence = "off";
         db.settings.plaidItems = [
           { accessToken: "a", itemId: "it_1", institution: "Fidelity", kind: "bank", addedAt: "2026-09-01T00:00:00Z", lastSyncAt: "2026-09-24T09:00:00Z" },
           { accessToken: "b", itemId: "it_2", institution: "Vanguard", kind: "investment", addedAt: "2026-08-01T00:00:00Z", lastSyncAt: "2026-09-25T09:00:00Z" },
@@ -8151,10 +8179,24 @@ try {
         if (!raw) return;
         const db = JSON.parse(raw);
         const cat = db.categories[0].id;
-        const pulled = "2026-10-02T09:00:00.000Z";
+        /**
+         * Just now, rather than a date that was "just now" when this was
+         * written.
+         *
+         * Pinned to an absolute day this passed until the clock rolled past
+         * it, and then stopped: the connection became due for a pull, the pull
+         * failed because no function serves /api/plaid behind a preview build,
+         * and the failure landed on the item as lastError. Which is a correct
+         * reading - a pull that failed says nothing about which accounts a
+         * login holds, so nothing is called stranded on the strength of it -
+         * and it quietly took the whole section with it.
+         */
+        const pulled = new Date().toISOString();
+        // And nothing on a schedule, so no section is at the mercy of one.
+        db.settings.syncCadence = "off";
         db.settings.plaidItems = [{
           accessToken: "a", itemId: "it_live", institution: "Wells Fargo", kind: "both",
-          addedAt: "2026-10-02T08:00:00Z", lastSyncAt: pulled,
+          addedAt: new Date(Date.now() - 3_600_000).toISOString(), lastSyncAt: pulled,
         }];
         const acct = (id, name, over) => ({
           id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
@@ -8165,7 +8207,8 @@ try {
           ...db.accounts,
           // Theirs: the name they gave it, and everything filed against it.
           acct("ra_old", "Everyday Checking", {
-            syncId: "pl-dead-1", plaidItemId: "it_dead", lastSyncedAt: "2026-09-01T09:00:00.000Z",
+            syncId: "pl-dead-1", plaidItemId: "it_dead",
+            lastSyncedAt: new Date(Date.now() - 31 * 86_400_000).toISOString(),
             balance: 90_00, history: [{ date: "2026-09-01", balance: 90_00 }],
           }),
           // What the new login filed, hours old, holding nothing but the id.
@@ -8533,14 +8576,18 @@ try {
         if (!raw) return;
         const db = JSON.parse(raw);
         const cat = db.categories[0].id;
-        const pulled = "2026-10-02T09:00:00.000Z";
+        // Just now, and nothing on a schedule: see the reattach section, where
+        // an absolute date here cost a whole section the day the clock passed
+        // it.
+        const pulled = new Date().toISOString();
+        db.settings.syncCadence = "off";
         db.settings.plaidItems = [{
           accessToken: "a", itemId: "it_chase", institution: "Chase", kind: "both",
-          addedAt: "2026-09-01T00:00:00Z", lastSyncAt: pulled,
+          addedAt: new Date(Date.now() - 86_400_000).toISOString(), lastSyncAt: pulled,
         }];
         db.settings.tellerEnrollments = [{
           accessToken: "y", enrollmentId: "enr_1", institution: "Wells Fargo",
-          addedAt: "2026-10-02T08:00:00.000Z", lastSyncAt: pulled,
+          addedAt: new Date(Date.now() - 3_600_000).toISOString(), lastSyncAt: pulled,
         }];
         const acct = (id, name, over) => ({
           id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
@@ -8552,7 +8599,7 @@ try {
           // everything filed against it.
           acct("tl_old", "Everyday Checking", {
             syncSource: "plaid", syncId: "pl-dead-1", plaidItemId: "it_gone",
-            lastSyncedAt: "2026-08-20T09:00:00.000Z",
+            lastSyncedAt: new Date(Date.now() - 44 * 86_400_000).toISOString(),
             balance: 90_00, history: [{ date: "2026-08-20", balance: 90_00 }],
           }),
           // What the new provider filed, hours old, holding nothing.

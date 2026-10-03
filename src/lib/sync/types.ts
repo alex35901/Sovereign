@@ -64,19 +64,6 @@ export interface SyncPayload {
  */
 export type QueuedPayload = SyncPayload & { source?: "plaid" | "teller" };
 
-export interface SyncAdapter {
-  id: "plaid" | "teller";
-  label: string;
-  /** One-line cost note shown in Settings. */
-  cost: string;
-  /** True when the user has finished connecting this provider. */
-  isConnected: (settings: Record<string, unknown>) => boolean;
-  /** Exchange a one-time setup token for durable credentials. */
-  connect: (token: string) => Promise<{ accessUrl: string }>;
-  /** Pull accounts + transactions since `since` (ISO date). */
-  fetch: (accessUrl: string, since: string) => Promise<SyncPayload>;
-}
-
 /** A source that reports no account type leaves the name to infer one from. */
 export function guessAccountType(name: string, balance: number): AccountType {
   const n = name.toLowerCase();
