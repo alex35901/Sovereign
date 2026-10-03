@@ -862,7 +862,30 @@ export function detectRecurring(db: DB): Recurring[] {
 }
 
 /** Detected items merged with the user's manual edits and dismissals. */
+/**
+ * The merged list, worked out once per document.
+ *
+ * Merging means detecting, and detecting means walking every transaction there
+ * is. Half a dozen callers ask for this and several of them ask twice over -
+ * the bell asks, and two of the things the bell asks also ask - so one write
+ * was costing five or six passes over the ledger for one answer that could not
+ * differ between them.
+ *
+ * Keyed on the document, the same as the schedule cache below it and for the
+ * same reason: a document is replaced whole on every write, so a cached answer
+ * cannot outlive what it was worked out from.
+ */
+const listCache = new WeakMap<DB, Recurring[]>();
+
 export function recurringList(db: DB): Recurring[] {
+  const hit = listCache.get(db);
+  if (hit) return hit;
+  const out = buildRecurringList(db);
+  listCache.set(db, out);
+  return out;
+}
+
+function buildRecurringList(db: DB): Recurring[] {
   const manual = new Map(db.recurring.map((r) => [r.id, r]));
   const merged: Recurring[] = [];
   for (const d of detectRecurring(db)) {

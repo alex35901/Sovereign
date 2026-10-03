@@ -408,7 +408,34 @@ function listed(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/**
+ * Worked out once per document per day.
+ *
+ * Nothing here is written down when it happens; every notice is read off the
+ * document as it stands. Which is the right arrangement and an expensive one:
+ * it walks the ledger several times over, and the bell asks for it on every
+ * write, so a household renaming a merchant was paying for the whole list on
+ * every keystroke. Worse, the open panel asks a second time for the same
+ * answer the count was just worked out from.
+ *
+ * Keyed on the document and the day, because both are what it is a function
+ * of. A document is replaced whole on every write, so a cached list cannot
+ * outlive the figures behind it, and the day is in the key because half of
+ * these are "how long has this been quiet".
+ */
+const noticeCache = new WeakMap<DB, Map<ISODate, Notice[]>>();
+
 export function notices(db: DB, now: ISODate = today()): Notice[] {
+  const byDay = noticeCache.get(db);
+  const hit = byDay?.get(now);
+  if (hit) return hit;
+  const out = buildNotices(db, now);
+  if (byDay) byDay.set(now, out);
+  else noticeCache.set(db, new Map([[now, out]]));
+  return out;
+}
+
+function buildNotices(db: DB, now: ISODate): Notice[] {
   const out: Notice[] = [];
 
   // ── a synced balance that nearly vanished ──

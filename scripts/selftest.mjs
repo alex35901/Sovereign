@@ -94,6 +94,7 @@ await build({
       export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export * as RA from "./src/lib/sync/reattach.ts";
       export * as WS from "./src/lib/worth-split.ts";
+      export { documentMB } from "./src/lib/transfer.ts";
       export * as LL from "./src/lib/sync/link-log.ts";
       export * as TE from "./api/_teller.ts";
       export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
@@ -7836,6 +7837,63 @@ await test("nothing recurring is nothing spent, and no division by it", () => {
 
 /* ── what the app would tell you if you had not been looking ───────────── */
 
+
+
+await test("the same document asked twice is worked out once", () => {
+  // Three derivations the bell leans on, each of which walks the whole ledger,
+  // and each of which was being walked several times over for one answer that
+  // could not differ between them. Keyed on the document, which is replaced
+  // whole on every write, so a cached answer cannot outlive what it came from.
+  const db = M.buildDemoDB();
+
+  assert.equal(M.NT.notices(db), M.NT.notices(db), "the same list, not an equal one");
+  assert.equal(M.recurringList(db), M.recurringList(db));
+  assert.equal(M.documentMB(db), M.documentMB(db));
+  // Keyed on identity, which is the contract: a document is replaced whole on
+  // every write and never edited in place, so an answer belongs to the object
+  // it was worked out from. Changing one underneath is not something the app
+  // does, and is the only way to see that the second ask cost nothing.
+  const sized = { ...db, transactions: [...db.transactions] };
+  const first = M.documentMB(sized);
+  sized.transactions.push(...Array.from({ length: 4000 }, (_, i) => ({
+    id: `pad${i}`, accountId: db.accounts[0].id, date: "2026-01-01", amount: -1_00,
+    merchant: "Padding for the measurement", categoryId: db.categories[0].id, tags: [], pending: false,
+  })));
+  assert.equal(M.documentMB(sized), first, "the same object, so the same answer, without measuring again");
+  assert.ok(M.documentMB({ ...sized }) > first, "and a new object is measured afresh");
+
+  // A different document is a different answer, which is the whole point of
+  // keying on the document rather than on nothing.
+  const changed = { ...db, transactions: db.transactions.slice(1) };
+  assert.notEqual(M.NT.notices(changed), M.NT.notices(db));
+  assert.notEqual(M.recurringList(changed), M.recurringList(db));
+
+  // And the cached list is the list, not a stale shape: an edit that creates a
+  // notice is in the next answer.
+  const month = M.thisMonth();
+  // From an expense group: the overspend notice is built from the expense side
+  // of the budget, so an income category would prove nothing.
+  const spends = new Set(db.groups.filter((g) => g.kind === "expense").map((g) => g.id));
+  const cat = db.categories.find((c) => !c.excludeFromBudget && spends.has(c.groupId));
+  const over = {
+    ...db,
+    budgets: { ...db.budgets, [month]: { ...(db.budgets?.[month] ?? {}), [cat.id]: 1_00 } },
+    transactions: [...db.transactions, {
+      id: "cache_over", accountId: db.accounts.find((a) => a.type === "checking").id,
+      date: `${month}-02`, amount: -500_00,
+      merchant: "Shop", categoryId: cat.id, tags: [], pending: false,
+    }],
+  };
+  assert.ok(M.NT.notices(over).some((n) => n.kind === "budget" && n.id.includes(cat.id)),
+    "a document that has just gone over says so, cache or no cache");
+
+  // Half of these are "how long has this been quiet", so the day is in the key
+  // as well as the document.
+  const a = M.NT.notices(db, "2026-10-03");
+  const b = M.NT.notices(db, "2026-10-04");
+  assert.notEqual(a, b, "a different day is a different answer");
+  assert.equal(M.NT.notices(db, "2026-10-03"), a, "and each day keeps its own");
+});
 
 await test("the day a budget went over is read off the month, not guessed at", () => {
   // It used to be filed under the first of the month and read "September so

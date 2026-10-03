@@ -107,9 +107,32 @@ export const MONTHLY_ORIGIN_TRANSFER = 10 * 1024 * 1024 * 1024;
  * are actually spent in — and the number that says whether the answer is
  * "save less often" or "carry less around".
  */
+/**
+ * Measured once per document.
+ *
+ * The only way to know what a save costs is to make the thing that gets saved,
+ * and on a document of ten thousand transactions that is megabytes of string.
+ * The integrations table asks for it, lib/notifications asks the integrations
+ * table, and the bell asks lib/notifications on every write - so a figure
+ * nobody reads between keystrokes was being built from scratch on every one of
+ * them.
+ *
+ * Keyed on the document itself, which is replaced whole on every write, so an
+ * answer cannot outlive the figures it was worked out from and nothing has to
+ * remember to clear it. The same arrangement as the schedule cache in
+ * lib/select.
+ */
+const sizeCache = new WeakMap<object, number>();
+
 export function documentMB(db: unknown): number {
+  if (db !== null && typeof db === "object") {
+    const hit = sizeCache.get(db);
+    if (hit !== undefined) return hit;
+  }
   try {
-    return asMB(JSON.stringify(db).length);
+    const mb = asMB(JSON.stringify(db).length);
+    if (db !== null && typeof db === "object") sizeCache.set(db, mb);
+    return mb;
   } catch {
     return 0;
   }

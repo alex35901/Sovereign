@@ -1,5 +1,5 @@
 import { ArrowLeft, Bell, RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
@@ -90,11 +90,27 @@ export function TopBar({ title, back, actions, primary }: {
 function Notifications() {
   const { db, apply } = useStore();
   const navigate = useNavigate();
-  // Only worked out while the list is open; the count below is what the bell
-  // needs the rest of the time.
   const [open, setOpen] = useState(false);
-  const all = useMemo(() => (open ? notices(db) : []), [db, open]);
-  const unreadCount = useMemo(() => unread(db).length, [db]);
+
+  /**
+   * The bell, one step behind the typing.
+   *
+   * Working out what is worth telling somebody means reading the whole
+   * document several times over, and the reducer makes a new document on every
+   * keystroke in every edit form, so this was the most expensive thing the app
+   * did between one letter and the next - for a number nobody is reading while
+   * they type. Deferring it lets the letter land first and the bell catch up
+   * when there is a moment, which is the whole difference on a phone.
+   *
+   * The list behind it is deferred too, and by the same value, so the count
+   * and the panel are always a reading of one document rather than of two.
+   */
+  const settled = useDeferredValue(db);
+  // Only worked out while the list is open; the count below is what the bell
+  // needs the rest of the time. Both read the same document, and lib's own
+  // cache means the second of them is free.
+  const all = useMemo(() => (open ? notices(settled) : []), [settled, open]);
+  const unreadCount = useMemo(() => unread(settled).length, [settled]);
 
   return (
     <Popover
