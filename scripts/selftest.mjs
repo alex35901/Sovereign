@@ -6692,6 +6692,49 @@ await test("one account refusing does not cost the household the other three", a
   await assert.rejects(() => M.TE.collectEnrollment(async () => ({ error: "nope" }), "2026-09-01"));
 });
 
+
+await test("an id this app will not put in a URL is not put in a URL", () => {
+  // Checked rather than merely escaped, which is the rule everywhere an id
+  // reaches an outbound path here. encodeURIComponent is not that check: it
+  // encodes a slash and leaves a dot alone, so ".." survives it whole.
+  assert.equal(M.TE.isTellerId("acc_oiin624kqjrg2mp2ea000"), true);
+  assert.equal(M.TE.isTellerId("A-b_1"), true);
+  assert.equal(M.TE.isTellerId(".."), false, "the shape that makes a path nobody asked for");
+  assert.equal(M.TE.isTellerId("a/b"), false);
+  assert.equal(M.TE.isTellerId("a?b=1"), false);
+  assert.equal(M.TE.isTellerId("a b"), false);
+  assert.equal(M.TE.isTellerId("a.b"), false);
+  assert.equal(M.TE.isTellerId("%2e%2e"), false);
+  assert.equal(M.TE.isTellerId(""), false);
+  assert.equal(M.TE.isTellerId("x".repeat(65)), false, "and nothing unbounded");
+});
+
+await test("an account Teller names oddly is skipped, and said out loud", async () => {
+  const asked = [];
+  const accounts = [
+    { id: "acc_fine", name: "Everyday", type: "depository", subtype: "checking", enrollment_id: "enr_1", institution: { name: "Wells Fargo" }, currency: "USD" },
+    { id: "../../admin", name: "Odd", type: "depository", subtype: "checking", enrollment_id: "enr_1", institution: { name: "Wells Fargo" }, currency: "USD" },
+  ];
+  const get = async (path) => {
+    asked.push(path);
+    if (path === "/accounts") return accounts;
+    if (path.startsWith("/accounts/acc_fine/balances")) return { ledger: "10.00" };
+    return [];
+  };
+  const out = await M.TE.collectEnrollment(get, "2026-09-01");
+  assert.deepEqual(out.accounts.map((a) => a.syncId), ["acc_fine"], "only the one it can ask about");
+  assert.ok(asked.every((p) => !p.includes("..")), asked.join(" "));
+  // Not swallowed: an account that quietly never arrives is the failure that
+  // hides for weeks.
+  assert.equal(out.errors.length, 1);
+  assert.match(out.errors[0], /will not put in a request/);
+
+  // And the same at the transactions call, which takes an id of its own.
+  const none = [];
+  assert.deepEqual(await M.TE.collectTransactions(async (p) => { none.push(p); return []; }, "../x", "2026-09-01"), []);
+  assert.deepEqual(none, [], "nothing was asked at all");
+});
+
 await test("Teller's refusals are read down to what a household can act on", () => {
   assert.match(M.TE.describe({ error: { code: "enrollment.disconnected", message: "x" } }, 401),
     /needs signing into again/);

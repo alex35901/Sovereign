@@ -338,6 +338,21 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  * id as the last one, which is what an API that has quietly ignored the cursor
  * looks like from here.
  */
+/**
+ * Whether a string can be a Teller account id.
+ *
+ * Checked rather than merely escaped, which is the rule everywhere an id
+ * reaches an outbound path here: see isSymbol in lib/symbol, which decides
+ * what may go in a Tiingo URL. encodeURIComponent is not that check. It
+ * encodes a slash and leaves a dot alone, so an id of ".." comes out of it
+ * unchanged and makes a path that is not the path this code meant to ask for.
+ *
+ * These ids come from Teller's own answer rather than from anybody typing, so
+ * this is not a hole somebody can reach through today. The point of the rule
+ * is not to have to work that out per call site.
+ */
+export const isTellerId = (id: string): boolean => /^[A-Za-z0-9_-]{1,64}$/.test(id);
+
 export type TellerGet = (path: string) => Promise<unknown>;
 
 export async function collectTransactions(
@@ -345,12 +360,16 @@ export async function collectTransactions(
   accountId: string,
   from: string,
 ): Promise<RemoteTransaction[]> {
+  // Nothing that is not shaped like an id is asked about at all.
+  if (!isTellerId(accountId)) return [];
   const out: RemoteTransaction[] = [];
   let cursor: string | null = null;
   let last: string | null = null;
   for (let page = 0; page < MAX_PAGES; page++) {
     const qs = new URLSearchParams({ count: String(PAGE_SIZE) });
-    if (cursor) qs.set("from_id", cursor);
+    // The cursor rides in the query string, where URLSearchParams encodes it,
+    // but it is an id like any other and is held to the same shape.
+    if (cursor && isTellerId(cursor)) qs.set("from_id", cursor);
     const body = await get(`/accounts/${encodeURIComponent(accountId)}/transactions?${qs}`);
     if (!Array.isArray(body) || body.length === 0) break;
     let oldest = "";
@@ -397,7 +416,12 @@ export async function collectEnrollment(
   for (const row of listed) {
     if (!isObject(row)) continue;
     const id = String(row.id ?? "");
-    if (!id) continue;
+    // An account Teller names in a shape this cannot ask about is skipped
+    // rather than put in a URL and hoped for.
+    if (!isTellerId(id)) {
+      if (id) errors.push(`${accountName(row as RawAccount)}: Teller gave an account id this app will not put in a request.`);
+      continue;
+    }
     let cents = 0;
     try {
       const balances = await get(`/accounts/${encodeURIComponent(id)}/balances`);

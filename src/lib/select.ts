@@ -875,13 +875,21 @@ export function detectRecurring(db: DB): Recurring[] {
  * same reason: a document is replaced whole on every write, so a cached answer
  * cannot outlive what it was worked out from.
  */
-const listCache = new WeakMap<DB, Recurring[]>();
+const listCache = new WeakMap<DB, Map<ISODate, Recurring[]>>();
 
 export function recurringList(db: DB): Recurring[] {
-  const hit = listCache.get(db);
+  // The day as well as the document, because detectRecurring reads the clock:
+  // its window is the last four hundred days, and a schedule rolls its next
+  // date forward past today. A document sitting open across midnight would
+  // otherwise keep yesterday's answer, which is the kind of staleness nobody
+  // thinks to look for because nothing was edited.
+  const on = today();
+  const byDay = listCache.get(db);
+  const hit = byDay?.get(on);
   if (hit) return hit;
   const out = buildRecurringList(db);
-  listCache.set(db, out);
+  if (byDay) byDay.set(on, out);
+  else listCache.set(db, new Map([[on, out]]));
   return out;
 }
 
