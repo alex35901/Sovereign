@@ -7,6 +7,7 @@ import { download, exportJSON, importJSON } from "../lib/storage";
 import { Btn, Card, CardHead, Field, Segmented, TextInput } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
+import { AlertsCard } from "./AlertsCard";
 import { TellerCard } from "./TellerCard";
 import { ReattachCard } from "./Reattach";
 import { CloudCard } from "./CloudCard";
@@ -94,6 +95,11 @@ export default function Settings() {
             </div>
           </Card>
         </div>
+
+        {/* Beside the other preferences rather than down with the providers:
+            these are choices about what the app says, not about where its
+            figures come from. */}
+        <AlertsCard />
 
         <IntegrationsCard />
 

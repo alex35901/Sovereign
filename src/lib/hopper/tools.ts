@@ -16,7 +16,6 @@ import { compareOrders, debtsFrom } from "../payoff.js";
 import { runway } from "../runway.js";
 import { priceChanges, yearlyImpact } from "../price-watch.js";
 import { SALT_CAP, taxSummary, taxYears } from "../tax.js";
-import { reviewYears, yearReview } from "../year-review.js";
 import { notices } from "../notifications.js";
 import { lookThrough } from "../funds.js";
 import type { Scope } from "../select.js";
@@ -595,52 +594,6 @@ export const TOOLS: ToolSpec[] = [
           expensesByCategory: b.breakdown.map((r) => ({ name: r.name, total: money(r.total) })),
         })),
         caveat: "Adds up what was recorded. It does not decide what is deductible and it is not advice.",
-      };
-    },
-  },
-  {
-    name: "year_review",
-    description:
-      "A whole year against the one before it, measured over the same stretch of the calendar: what "
-      + "came in, what went out, what was kept, net worth, debt paid, the months, the biggest "
-      + "categories and where the money went.",
-    input_schema: {
-      type: "object",
-      properties: { year: { type: "number", description: "Four-digit year. Defaults to the current one." } },
-      additionalProperties: false,
-    },
-    run: (db, input) => {
-      const r = yearReview(db, yearOf(input));
-      const totals = (t: typeof r.totals | null) => (t ? {
-        income: money(t.income), spending: money(t.spending), saved: money(t.saved), savingsRatePct: t.rate,
-      } : null);
-      return {
-        year: r.year,
-        through: r.through,
-        yearIsOver: r.complete,
-        daysCounted: r.days,
-        yearsAvailable: reviewYears(db),
-        thisYear: totals(r.totals),
-        // Not the whole of last year: in September, twelve months against nine
-        // would say spending fell every single time.
-        sameStretchLastYear: totals(r.last),
-        spendingPerDay: money(r.perDay),
-        transactions: r.count,
-        netWorth: { start: money(r.netWorth.start), now: money(r.netWorth.end), change: money(r.netWorth.change) },
-        debtPaidDown: money(r.debt.paid),
-        bestMonth: r.best ? { month: r.best.month, saved: money(r.best.net) } : null,
-        leanestMonth: r.worst ? { month: r.worst.month, saved: money(r.worst.net) } : null,
-        months: r.months.map((m) => ({ month: m.month, income: money(m.income), spending: money(m.spending) })),
-        biggestCategories: r.categories.map((c) => ({
-          name: c.name, total: money(c.total), sharePct: c.share,
-          lastYear: c.last === null ? null : money(c.last),
-          change: c.delta === null ? null : money(c.delta),
-        })),
-        biggestMerchants: r.merchants.map((m) => ({ name: m.name, total: money(m.total), times: m.count })),
-        // Capped: a household's first year in the app can have four hundred of
-        // these, and four hundred merchant names is not an answer to anything.
-        firstTimeMerchantCount: r.firstTime.length,
-        firstTimeMerchants: r.firstTime.slice(0, 30),
       };
     },
   },

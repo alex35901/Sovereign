@@ -8,6 +8,8 @@ import {
   accountSlices, aggregateSeries, budgetSummary, earliestHistoryDate, portfolioSummary, trendTone,
 } from "../lib/select";
 import { dueSoon, goalMoves, monthProgress, overPace } from "../lib/dashboard";
+import { runway } from "../lib/runway";
+import { worthSplit } from "../lib/worth-split";
 import { COMPARE_MODES, DEFAULT_MODE, compareSpending, readMode } from "../lib/spend-compare";
 import type { CompareMode } from "../lib/spend-compare";
 import { CompareChart } from "../components/charts";
@@ -47,6 +49,7 @@ export default function Dashboard() {
       <TopBar title="Dashboard" />
       <div className="page stack">
         <NetWorthCard range={range} onRange={setRange} />
+        <RunwayCard />
         <SpendingCard />
         <BudgetCard month={month} />
         <RecurringCard />
@@ -118,7 +121,50 @@ function NetWorthCard({ range, onRange }: { range: RangeKey; onRange: (r: RangeK
         tone={trendTone(current.series)} range={range} onRange={onRange}
         above={<ScopeBar slices={slices} value={current.key} onChange={setScope} />}
       />
+      <WorthSplitLine from={start} />
     </DashCard>
+  );
+}
+
+/**
+ * How much of that was you.
+ *
+ * A month where everything rose reads the same whether the household saved
+ * four thousand or the market did, and they are not the same month: one can be
+ * repeated on purpose and the other happens to you. See lib/worth-split for
+ * the arithmetic, which is exact on the half it can measure and leaves the
+ * rest to the household's side.
+ *
+ * Shown only when there is something to split. A document with no brokerage,
+ * no pension and no house has a net worth that moves for one reason, and
+ * saying "all of it was you" under a chart that already says the figure is a
+ * line that costs a line and tells nobody anything.
+ */
+function WorthSplitLine({ from }: { from: string }) {
+  const db = useDB();
+  const split = useMemo(() => worthSplit(db, from, today()), [db, from]);
+  if (!split.market || !split.change) return null;
+
+  return (
+    <div className="worth-split tiny muted">
+      <span>
+        <Money value={split.saved} cents={false} sign className="bold" /> you
+      </span>
+      <span className="faint">·</span>
+      <span>
+        <Money value={split.market} cents={false} sign className="bold" /> the market
+      </span>
+      {/* The one place this can mislead, said rather than folded in. A
+          brokerage that arrives as a balance and a list of holdings cannot
+          tell a contribution from a good week. */}
+      {split.unattributed.length ? (
+        <span className="faint">
+          ({split.unattributed.length === 1
+            ? `nothing records what goes into ${split.unattributed[0]!.name}, so its whole move counts as market`
+            : `${split.unattributed.length} accounts record nothing going into them, so their whole move counts as market`})
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -251,6 +297,106 @@ function BudgetCard({ month }: { month: string }) {
         </div>
       ) : (
         <Empty title="No budget set for this month" action={<Link to="/budget" className="dash-through"><Btn>Set one up</Btn></Link>} />
+      )}
+    </DashCard>
+  );
+}
+
+/* ── between now and payday ───────────────────────────────────────────── */
+
+/**
+ * Whether the card will go through on Thursday.
+ *
+ * The forecast answers what happens in 2056 and the budget answers how the
+ * month is going. This answers the question people actually open a budgeting
+ * app to ask, and every figure in it was already being worked out in
+ * lib/runway, where the conservatism lives: current accounts only, because
+ * savings is money somebody has decided not to spend; every bill due before
+ * payday whether or not it has come out; and the per-day figure rounded down,
+ * because one that rounds up runs out a day early.
+ *
+ * The headline is what is left rather than what is in the account. A balance
+ * is a fact anybody can read off their bank; what it is after the bills is the
+ * part that takes work, and it is the part that decides Thursday.
+ */
+function RunwayCard() {
+  const db = useDB();
+  const r = useMemo(() => runway(db), [db]);
+  const short = r.free < 0;
+
+  // Nothing to be conservative about. A document with no current account has
+  // no "safe to spend" at all, and a figure of nought would read as broke
+  // rather than as unanswerable.
+  const none = !db.accounts.some((a) => a.type === "checking" && !a.hidden && !a.closedAt);
+
+  return (
+    <DashCard to="/recurring" label="Safe to spend">
+      <CardHead
+        title="Safe to spend"
+        sub={none ? undefined : r.nextIncome
+          ? `until ${r.nextIncome.merchant} on ${dateLabel(r.until)}`
+          : `over the next ${r.days} days, with no payday in sight`}
+      />
+      {none ? (
+        <Empty
+          title="No current account"
+          body="This counts what is in your current accounts against the bills due before payday. Nothing here is marked as one."
+        />
+      ) : (
+        <div className="col" style={{ gap: 14 }}>
+          <div className="row wrap" style={{ gap: 18, alignItems: "baseline" }}>
+            <Money value={r.free} cents={false} className={cx("runway-free", short && "neg")} />
+            {r.perDay !== null ? (
+              <span className="small muted">
+                {short
+                  ? <>short by <Money value={Math.abs(r.free)} cents={false} className="bold" /> before then</>
+                  : <><Money value={r.perDay} cents={false} className="bold" /> a day for {r.days} {r.days === 1 ? "day" : "days"}</>}
+              </span>
+            ) : (
+              <span className="small muted">Payday is today.</span>
+            )}
+          </div>
+
+          {/* The arithmetic, in the open. A single figure nobody can check is a
+              figure nobody believes the second it surprises them. */}
+          <div className="runway-sum small muted">
+            <span><Money value={r.cash} cents={false} /> in current accounts</span>
+            <span className="faint">less</span>
+            <span>
+              <Money value={r.billsTotal} cents={false} /> of bills
+              {r.bills.length ? ` (${r.bills.length})` : ""}
+            </span>
+          </div>
+
+          {r.bills.length ? (
+            <div className="col" style={{ gap: 2 }}>
+              {r.bills.slice(0, 4).map((b) => (
+                <div key={`${b.merchant}:${b.date}`} className="spread tiny">
+                  <span className="truncate muted">{b.merchant}</span>
+                  <span className="row" style={{ gap: 10 }}>
+                    <span className="faint nowrap">{relativeDay(b.date)}</span>
+                    <Money value={b.amount} cents={false} className="nowrap" />
+                  </span>
+                </div>
+              ))}
+              {r.bills.length > 4 ? (
+                <span className="tiny faint">and {r.bills.length - 4} more before then</span>
+              ) : null}
+            </div>
+          ) : (
+            <span className="tiny faint">Nothing recurring falls due before then.</span>
+          )}
+
+          {/* Said out loud, because a window that is a guess and a window that
+              is payday are the same card otherwise, and only one of them is
+              worth planning against. */}
+          {r.guessed ? (
+            <span className="tiny faint">
+              Nothing recurring says when you are next paid, so this is the next {r.days} days rather than
+              a pay cycle.
+            </span>
+          ) : null}
+        </div>
       )}
     </DashCard>
   );

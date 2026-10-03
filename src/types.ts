@@ -530,6 +530,19 @@ export interface Settings {
    */
   tellerEnrollments?: TellerEnrollmentRef[];
   /**
+   * Thresholds the household has set for itself.
+   *
+   * Everything else in lib/notifications fires on rungs this app chose. These
+   * two are the household's own, and absent means off: an alert nobody asked
+   * for is one more thing to dismiss.
+   */
+  alerts?: {
+    /** Say something at this share of a category's plan, before it is over. */
+    budgetAt?: number;
+    /** Say something when a current account falls below this, in cents. */
+    balanceFloor?: number;
+  };
+  /**
    * Link attempts that ended in an error, newest first.
    *
    * A reconnect can write what went wrong onto the item it was about. A new
