@@ -620,6 +620,37 @@ export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
 }
 
 /**
+ * What one category had spent, day by day, through a month.
+ *
+ * The same rule as `actualsFor` and deliberately next to it: the same muted
+ * accounts, the same household scope, the same split lines, the same absolute
+ * amounts. The last total this returns is exactly the figure that function
+ * gives for the category, and anything that drifts between the two would be a
+ * date that disagrees with the number printed beside it.
+ *
+ * One entry per day that had any spending in it, in order, each carrying the
+ * running total at the end of that day. Days are the finest grain a
+ * transaction has: nothing in the document says which of two charges on a
+ * Tuesday came first, so saying so would be inventing it.
+ */
+export function spendRun(db: DB, month: MonthKey, categoryId: string): { date: ISODate; total: number }[] {
+  const muted = mutedAccountIds(db);
+  const household = householdOnly(db);
+  const byDay = new Map<ISODate, number>();
+  for (const t of db.transactions) {
+    if (!counts(t, muted, household) || monthOf(t.date) !== month) continue;
+    for (const l of lines(t)) {
+      if (l.categoryId !== categoryId) continue;
+      byDay.set(t.date, (byDay.get(t.date) ?? 0) + Math.abs(l.amount));
+    }
+  }
+  let running = 0;
+  return [...byDay.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([date, spent]) => ({ date, total: (running += spent) }));
+}
+
+/**
  * Accumulated under/overspend carried into `month`, for categories with rollover on.
  * Walks forward from the first budgeted month so a long history stays consistent.
  *

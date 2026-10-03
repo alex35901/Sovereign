@@ -1,5 +1,5 @@
 import type { Account, DB, ID, ISODate } from "../types.js";
-import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recurringList } from "./select.js";
+import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recurringList, spendRun } from "./select.js";
 import { integrations, healthOf, staleSince } from "./integrations.js";
 import { connectionOf } from "./connection.js";
 import type { Connection } from "./connection.js";
@@ -92,6 +92,55 @@ export function overspendTier(planned: number, actual: number): "over" | "over25
   if (share >= 0.5) return "over50";
   if (share >= 0.25) return "over25";
   return "over";
+}
+
+/** The rungs in order, so "reached this one or further" is a comparison. */
+const TIER_RANK: Record<"over" | "over25" | "over50", number> = { over: 1, over25: 2, over50: 3 };
+
+/**
+ * The day a category's spending reached a rung, within its month.
+ *
+ * This used to be dated to the first of the month and read "September so far",
+ * on the reasoning that the document does not say which transaction crossed
+ * the line. It does. Walking the month's spending in order and asking
+ * `overspendTier` after each day says exactly which day the answer changed,
+ * and asking the same function the notice itself is built from is what keeps
+ * the date and the rung from ever disagreeing.
+ *
+ * The *last* crossing rather than the first. A category can go past its plan,
+ * be pulled back under by a refund, and go past it again, and the notice is a
+ * statement about how things stand now. Dating that to a crossing which was
+ * subsequently undone would date a current fact to a day it stopped being
+ * true. Where nothing was refunded the two are the same day.
+ *
+ * Null when the walk cannot find a crossing at all, which should not happen
+ * while this and the figures beside it read the same transactions, and which
+ * the caller treats as "the month" rather than inventing a day.
+ */
+export function tierReachedOn(
+  run: readonly { date: ISODate; total: number }[],
+  planned: number,
+  tier: "over" | "over25" | "over50",
+): ISODate | null {
+  /** Nought for a category still inside its plan, and the rung otherwise. */
+  const rankOf = (total: number): number => {
+    const reached = overspendTier(planned, total);
+    return reached ? TIER_RANK[reached] : 0;
+  };
+
+  const want = TIER_RANK[tier];
+  let crossed: ISODate | null = null;
+  let was = 0;
+  for (const point of run) {
+    const rank = rankOf(point.total);
+    // Up through the rung starts a streak; back down through it ends one. So
+    // what is left at the end is the day the streak still running began, or
+    // nothing at all if the month finished back inside the plan.
+    if (rank >= want && was < want) crossed = point.date;
+    else if (rank < want && was >= want) crossed = null;
+    was = rank;
+  }
+  return crossed;
 }
 
 /**
@@ -366,17 +415,30 @@ export function notices(db: DB, now: ISODate = today()): Notice[] {
     for (const row of group.rows) {
       const tier = overspendTier(row.planned, row.actual);
       if (!tier) continue;
+      // The day it actually went past, worked out from the month's spending
+      // rather than filed under the month as a whole. Dated to the first and
+      // read as "September so far", this sat at the bottom of a list ordered
+      // newest first while being the most current thing in it.
+      const went = tierReachedOn(spendRun(db, month, row.category.id), row.planned, tier);
+      // Never ahead of today. A transaction dated into next week counts
+      // towards the figure, so it can be the one that carries a category past
+      // its plan, and dating the notice to it would read "in 4 days" and sit
+      // at the top of a newest-first list until the day arrived. As far as
+      // anyone using the app is concerned, it is over now.
+      const crossed = went && went > now ? now : went;
       out.push({
         id: `budget:${month}:${row.category.id}:${tier}`,
         kind: "budget",
         title: `${row.category.name} is ${TIER_WORDS[tier]}`,
         body: `${fmt0(row.actual)} spent of ${fmt0(row.planned)} planned. `
           + `${fmt0(row.actual - row.planned)} past it.`,
-        // Dated to the month rather than to a day: the document does not say
-        // which transaction crossed the line, and guessing at one would put a
-        // date on this that nothing else agrees with.
-        at: `${month}-01`,
-        when: `${monthLabel(month)} so far`,
+        at: crossed ?? `${month}-01`,
+        when: crossed
+          ? sinceLabel(`${crossed}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`))
+          // Only when the walk found no crossing at all, which means the
+          // figures and the days behind them have stopped agreeing. Saying
+          // "the month" is honest about that; a made-up day would not be.
+          : `${monthLabel(month)} so far`,
         to: "/budget",
         tone: "neg",
       });

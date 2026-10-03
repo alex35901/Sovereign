@@ -37,7 +37,7 @@ await build({
     contents: `
       export { mergeSync, cleanMerchant, syncWindowStart, windowFor, FIRST_PULL_DAYS, accountKeys, skipNotes } from "./src/lib/sync/merge.ts";
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
-      export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, SCOPES } from "./src/lib/select.ts";
+      export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, spendRun, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum } from "./src/lib/select.ts";
       export { occurrences, recurringSpend, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
@@ -7837,6 +7837,184 @@ await test("nothing recurring is nothing spent, and no division by it", () => {
 
 /* ── what the app would tell you if you had not been looking ───────────── */
 
+
+await test("the day a budget went over is read off the month, not guessed at", () => {
+  // It used to be filed under the first of the month and read "September so
+  // far", which put the most current thing in the list at the bottom of one
+  // ordered newest first.
+  const db = {
+    ...M.emptyDB(),
+    accounts: [{
+      id: "a1", name: "Everyday", institution: "Bank", type: "checking", balance: 0,
+      includeInNetWorth: true, hidden: false, history: [], order: 0,
+    }],
+    categories: [
+      { id: "c_food", groupId: "g1", name: "Groceries", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+    ],
+    groups: [{ id: "g1", name: "Everyday", kind: "expense", order: 0 }],
+    transactions: [
+      ["2026-09-02", -30_00], ["2026-09-08", -30_00], ["2026-09-14", -30_00],
+      ["2026-09-21", -30_00], ["2026-09-27", -30_00],
+    ].map(([date, amount], i) => ({
+      id: `t${i}`, accountId: "a1", date, amount, merchant: "Shop",
+      categoryId: "c_food", tags: [], pending: false,
+    })),
+    budgets: { "2026-09": { c_food: 100_00 } },
+  };
+
+  const run = M.spendRun(db, "2026-09", "c_food");
+  assert.deepEqual(run.map((p) => [p.date, p.total]), [
+    ["2026-09-02", 30_00], ["2026-09-08", 60_00], ["2026-09-14", 90_00],
+    ["2026-09-21", 120_00], ["2026-09-27", 150_00],
+  ], "a running total, in order, one entry per day that had any spending");
+
+  // 100 planned. Past it on the 21st, at 120, which is a fifth over and so the
+  // first rung and no further. The 27th takes it to 150, which is half over,
+  // and passes the quarter and the half on the same day.
+  assert.equal(M.NT.tierReachedOn(run, 100_00, "over"), "2026-09-21");
+  assert.equal(M.NT.tierReachedOn(run, 100_00, "over25"), "2026-09-27");
+  assert.equal(M.NT.tierReachedOn(run, 100_00, "over50"), "2026-09-27");
+  // A rung it never reached has no day, rather than the nearest one.
+  assert.equal(M.NT.tierReachedOn(run, 200_00, "over"), null);
+  assert.equal(M.NT.tierReachedOn([], 100_00, "over"), null);
+
+  // Two charges on one Tuesday are one day: nothing in the document says which
+  // of them came first, so neither does this.
+  const sameDay = {
+    ...db,
+    transactions: db.transactions.map((t) => ({ ...t, date: t.date === "2026-09-21" ? "2026-09-14" : t.date })),
+  };
+  const packed = M.spendRun(sameDay, "2026-09", "c_food");
+  assert.deepEqual(packed.map((p) => [p.date, p.total]),
+    [["2026-09-02", 30_00], ["2026-09-08", 60_00], ["2026-09-14", 120_00], ["2026-09-27", 150_00]]);
+  assert.equal(M.NT.tierReachedOn(packed, 100_00, "over"), "2026-09-14");
+});
+
+await test("a refund that pulls a category back under moves the date to when it went over again", () => {
+  // The notice is a statement about how things stand now, so dating it to a
+  // crossing that was later undone would date a current fact to a day it
+  // stopped being true.
+  const run = [
+    { date: "2026-09-05", total: 110_00 },
+    { date: "2026-09-10", total: 80_00 },
+    { date: "2026-09-20", total: 130_00 },
+  ];
+  assert.equal(M.NT.tierReachedOn(run, 100_00, "over"), "2026-09-20");
+  // Where nothing was refunded the last crossing is the first one.
+  assert.equal(
+    M.NT.tierReachedOn([{ date: "2026-09-05", total: 110_00 }, { date: "2026-09-20", total: 130_00 }], 100_00, "over"),
+    "2026-09-05",
+  );
+  // And a category that went over, came back under and stayed there has no
+  // current crossing at all.
+  assert.equal(M.NT.tierReachedOn([
+    { date: "2026-09-05", total: 110_00 },
+    { date: "2026-09-10", total: 80_00 },
+  ], 100_00, "over"), null);
+});
+
+
+await test("the overspend notice carries the day it happened, and says so", () => {
+  // Deliberately out of order in the document, because nothing guarantees
+  // transactions are stored by date and a running total read in storage order
+  // would put the crossing on whichever row happened to be last.
+  const rows = [
+    ["2026-09-27", -30_00], ["2026-09-02", -30_00], ["2026-09-21", -30_00],
+    ["2026-09-08", -30_00], ["2026-09-14", -30_00],
+  ];
+  const db = {
+    ...M.emptyDB(),
+    accounts: [{
+      id: "a1", name: "Everyday", institution: "Bank", type: "checking", balance: 0,
+      includeInNetWorth: true, hidden: false, history: [], order: 0,
+    }],
+    categories: [
+      { id: "c_food", groupId: "g1", name: "Groceries", icon: "x", color: "--c1", excludeFromBudget: false, rollover: false, order: 0 },
+    ],
+    groups: [{ id: "g1", name: "Everyday", kind: "expense", order: 0 }],
+    transactions: rows.map(([date, amount], i) => ({
+      id: `t${i}`, accountId: "a1", date, amount, merchant: "Shop",
+      categoryId: "c_food", tags: [], pending: false, reviewed: true,
+    })),
+    budgets: { "2026-09": { c_food: 100_00 } },
+  };
+
+  assert.deepEqual(M.spendRun(db, "2026-09", "c_food").map((p) => p.date),
+    ["2026-09-02", "2026-09-08", "2026-09-14", "2026-09-21", "2026-09-27"],
+    "in date order, whatever order they are stored in");
+
+  const month = new Date().toISOString().slice(0, 7);
+  // The notice is built for the month in progress, so the fixture is moved to
+  // it rather than the clock being argued with.
+  const live = {
+    ...db,
+    transactions: db.transactions.map((t) => ({ ...t, date: `${month}-${t.date.slice(8)}` })),
+    budgets: { [month]: { c_food: 100_00 } },
+  };
+  const at = `${month}-28`;
+  // Four charges of thirty against a hundred planned: past it on the 21st, by
+  // a fifth, which is the first rung and no further.
+  const firstRung = { ...live, transactions: live.transactions.filter((t) => !t.date.endsWith("-27")) };
+  const budget = M.NT.notices(firstRung, `${month}-23`).filter((n) => n.kind === "budget");
+  assert.equal(budget.length, 1, JSON.stringify(budget.map((n) => n.id)));
+  assert.equal(budget[0].at, `${month}-21`, "the day it went over, not the first of the month");
+  // Read like every other thing that happened on a day, rather than like a
+  // standing description of the month.
+  assert.equal(budget[0].when, "2d ago", `read as ${budget[0].when}`);
+  assert.ok(!/so far/.test(budget[0].when), budget[0].when);
+  // And a week on it reads as the date, the same as every other notice does.
+  // Matched on the shape rather than on the month's name, which would be a
+  // test that passes in October and fails in November.
+  assert.match(M.NT.notices(firstRung, at).filter((n) => n.kind === "budget")[0].when, /^[A-Z][a-z]{2} 21$/);
+
+  // The fifth charge takes it to half over, which is a different fact and a
+  // different day: the rung the notice reports and the day it carries are
+  // decided by the same walk, so they cannot drift apart.
+  const half = M.NT.notices(live, at).filter((n) => n.kind === "budget");
+  assert.equal(half.length, 1);
+  assert.match(half[0].id, /:over50$/, half[0].id);
+  assert.equal(half[0].at, `${month}-27`);
+
+  // A charge dated into next week counts towards the figure, so it can be the
+  // one that carries a category past its plan. The notice is still today's: it
+  // is over now, and "in 4 days" at the top of a newest-first list would stay
+  // there until the day came.
+  const ahead = M.NT.notices(firstRung, `${month}-15`).filter((n) => n.kind === "budget");
+  assert.equal(ahead.length, 1);
+  assert.equal(ahead[0].at, `${month}-15`, "clamped to today rather than dated forward");
+  assert.equal(ahead[0].when, "just now");
+
+  // And it sorts by that date like everything else, rather than sinking to the
+  // bottom of a list ordered newest first.
+  const withOlder = {
+    ...live,
+    accounts: [...live.accounts, {
+      id: "a2", name: "Savings", institution: "Bank", type: "savings", balance: 100,
+      includeInNetWorth: true, hidden: false, history: [], order: 1,
+      syncSource: "plaid", syncId: "s1", lastSyncedAt: `${month}-02T09:00:00.000Z`,
+    }],
+  };
+  const list = M.NT.notices({ ...withOlder, transactions: withOlder.transactions.filter((t) => !t.date.endsWith("-27")) }, at);
+  for (let i = 1; i < list.length; i++) assert.ok(list[i - 1].at >= list[i].at, `${list[i - 1].at} then ${list[i].at}`);
+  const where = list.findIndex((n) => n.kind === "budget");
+  assert.ok(where >= 0, "the budget notice is in the list");
+  assert.ok(list.slice(0, where).every((n) => n.at >= `${month}-21`), "with nothing older above it");
+});
+
+await test("notifications arrive newest first", () => {
+  const db = M.buildDemoDB();
+  const list = M.NT.notices(db);
+  assert.ok(list.length > 1, `${list.length} notices to order`);
+  for (let i = 1; i < list.length; i++) {
+    assert.ok(list[i - 1].at >= list[i].at,
+      `${list[i - 1].at} (${list[i - 1].id}) came before ${list[i].at} (${list[i].id})`);
+  }
+  // Nothing is dated into the future: a notice about something that has not
+  // happened yet would sit above today's news for ever.
+  const now = new Date().toISOString().slice(0, 10);
+  for (const n of list) assert.ok(n.at <= now, `${n.id} is dated ${n.at}, which is ahead of ${now}`);
+});
+
 await test("a category creeping past its plan says so once, then only when it matters", () => {
   // Three rungs, not a percentage: reporting the number itself would raise a
   // fresh notice on every transaction for the rest of the month.
@@ -9635,6 +9813,28 @@ await test("a budget is the household's, so other books stay out of it", () => {
   };
   assert.equal(M.hasBuckets(plain), false);
   assert.equal(M.actualsFor(plain, "2030-03").get("c_food"), 100_00 + 300_00 + 60_00);
+});
+
+await test("the running total and the figure printed beside it are the same number", () => {
+  // The date and the amount are worked out by two functions, and the day they
+  // stop agreeing is the day a notice says a household went over on a date
+  // when, by the figures, it had not.
+  const db = booksDB();
+  const run = M.spendRun(db, "2030-03", "c_food");
+  assert.equal(run.at(-1).total, M.actualsFor(db, "2030-03").get("c_food"),
+    "the same muted accounts, the same household scope, the same split lines");
+
+  // Including the case that makes the point: a business card and a client
+  // lunch are in the document and out of the household's budget.
+  const plain = {
+    ...booksDB(),
+    accounts: [bkAcct("personal", "Everyday"), bkAcct("biz", "Card", { type: "credit" }), bkAcct("rent", "Other")],
+    transactions: booksDB().transactions.map((t) => ({ ...t, bucket: undefined })),
+  };
+  assert.equal(M.spendRun(plain, "2030-03", "c_food").at(-1).total,
+    M.actualsFor(plain, "2030-03").get("c_food"));
+  assert.notEqual(run.at(-1).total, M.spendRun(plain, "2030-03", "c_food").at(-1).total,
+    "and the two documents really do differ, or this proves nothing");
 });
 
 await test("a row marked on its own is kept out of the budget too", () => {
