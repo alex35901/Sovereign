@@ -26,6 +26,9 @@ import { Btn, Card, CardHead, Empty, Progress, Tile, cx } from "../components/ui
  * points stay beside the card that earns them.
  */
 
+/** What the button beside the moves asks, said once. */
+const ASK_REDEEM = "Ask Hopper what your points are worth on a good redemption";
+
 /** Points, with the thousands separated, because they run to six figures. */
 const POINTS = (n: number): string => n.toLocaleString();
 
@@ -42,21 +45,44 @@ export function RewardsTab({ report, onEdit, onAsk }: {
   /**
    * The open-ended half of the question, which this page cannot answer.
    *
-   * Everything above is arithmetic on what happened. "What else could I be
-   * doing" is not arithmetic: it is about transfer partners, portal rates and
-   * which program is worth more than its cash value, none of which Sovereign
-   * holds. Hopper is told what the wallet is and what it earned, and nothing
-   * about where the money went.
+   * Everything above is arithmetic on what happened: which card to reach for,
+   * what a cap has left, what a habit on the wrong card costs. What a point is
+   * worth once it leaves the account is not arithmetic. It is transfer
+   * partners, portal rates and which program pays more than its cash value,
+   * and Sovereign holds none of that.
+   *
+   * So the question leads with redemption and says the routing half is already
+   * answered. Asked as "how do I get more out of these cards" it came back as
+   * advice to use them properly, which is the one thing this page already
+   * does, in numbers, off the household's own purchases.
    */
   const ask = () => {
-    const wallet = summary.cards
-      .map((c) => `${c.name} (${c.pointCents === 1 ? "cash back" : `points worth about ${c.pointCents} cents each`}${c.annualFee ? `, ${fmt0(c.annualFee)} a year` : ""})`)
+    // A card nobody has entered terms for sits on the placeholder of one point
+    // a dollar worth a cent, which is not a fact about the card. Describing it
+    // to Hopper as cash back invents a product: it has to be named as unknown,
+    // or half a wallet gets answered about as something it is not.
+    const described = summary.cards.filter((c) => c.confirmed);
+    const unknown = summary.cards.filter((c) => !c.confirmed);
+    const wallet = described
+      .map((c) => `${c.name} (${c.pointCents === 1 ? "cash back" : `points I value at about ${c.pointCents} cents each`}${c.annualFee ? `, ${fmt0(c.annualFee)} a year` : ""})`)
       .join("; ");
+
     onAsk(
-      `I carry these credit cards: ${wallet}. Over the last year they earned about ${fmt0(summary.value)} in rewards. `
-      + "What are the best ways to get more out of this particular set of cards? Cover redeeming for more than a cent a point, "
-      + "transfer partners where they apply, and any rotating or quarterly bonus worth registering for. "
-      + "Say plainly where my own cards simply do not offer something.",
+      "I want to know how to redeem what my credit cards earn for more than a cent a point. "
+      + (wallet
+        ? `The cards whose terms I have confirmed are: ${wallet}. `
+        : "I have not confirmed the terms of any of my cards yet. ")
+      + (unknown.length
+        ? `I also hold ${unknown.map((c) => c.name).join(", ")}, and I have not told my app what ${unknown.length === 1 ? "it pays" : "they pay"}, so treat ${unknown.length === 1 ? "it" : "them"} as unknown rather than assuming anything about ${unknown.length === 1 ? "it" : "them"}. `
+        : "")
+      + (summary.banked.cards
+        ? `I have points sitting unspent that I value at roughly ${fmt0(summary.banked.worth)}. `
+        : "")
+      + "For each program I actually hold: what are its transfer partners, what is a realistic cents per point on a good redemption, "
+      + "what is the worst way to redeem, and is there a portal or shopping gateway worth going through. "
+      + "Say plainly where one of my cards has no transfer partners and cash back is the whole story. "
+      + "Do not tell me to put different spending on different cards. My app already works that out from my own purchases, "
+      + "and I am asking about the other half: what to do with the points once they are earned.",
     );
   };
 
@@ -139,8 +165,12 @@ export function RewardsTab({ report, onEdit, onAsk }: {
       <Card pad={false}>
         <CardHead
           flush title="Ways to get more out of them"
-          sub="Worked out from where your money actually went. Biggest first, except for anything with a deadline on it."
-          right={<Btn size="sm" onClick={ask}><Sparkles size={13} /> Ask Hopper</Btn>}
+          sub="Worked out from where your money actually went. Biggest first, except for anything with a deadline on it. What a point is worth once you spend it is the one thing here Sovereign cannot see, so that question has a button of its own."
+          right={(
+            <Btn size="sm" onClick={ask} title={ASK_REDEEM}>
+              <Sparkles size={13} /> Redeeming
+            </Btn>
+          )}
         />
         {/* Keyed by position, because one card can raise two of the same
             kind of move: two capped rates with room in both are two cap

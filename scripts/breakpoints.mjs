@@ -8158,17 +8158,29 @@ try {
         priced.map((m) => `${m.figure} ${m.rate}`).join(" | ") || "nothing carried a figure");
       check("the open-ended half of the question going to Hopper instead",
         await rw.evaluate(() => [...document.querySelectorAll(".card-head button")]
-          .some((b) => /Ask Hopper/.test(b.innerText))), "");
+          .some((b) => /Redeeming/.test(b.innerText))), "");
 
       if (await tryStep("and pressing that hands it over with the wallet in it", async () => {
-        await rw.locator(".card-head button", { hasText: "Ask Hopper" }).click({ timeout: 8000 });
+        await rw.locator(".card-head button", { hasText: "Redeeming" }).click({ timeout: 8000 });
         await rw.waitForTimeout(700);
       })) {
         const asked = decodeURIComponent(rw.url());
-        check("naming the cards and what they earned, so the answer is about this wallet",
-          /\/hopper\?/.test(asked) && /I carry these credit cards/.test(asked)
-          && /more than a cent a point/.test(asked),
-          asked.slice(-140));
+        // Asked the other way round it came back as advice to use the cards
+        // properly, which is what the list above already says in numbers. So
+        // the redemption question leads, and the routing one is ruled out.
+        check("leading with redemption rather than with which card to reach for",
+          /\/hopper\?/.test(asked)
+          && /^[^?]*\?ask=I want to know how to redeem/.test(asked)
+          && /more than a cent a point/.test(asked)
+          && /transfer partners/.test(asked)
+          && /Do not tell me to put different spending on different cards/.test(asked),
+          asked.slice(0, 150));
+        // The placeholder is one point a dollar worth a cent. Passing that off
+        // as a cash-back card is inventing a product, and with half a wallet
+        // unfilled it is half the question answered about the wrong cards.
+        check("and naming a card nobody has entered the terms of as unknown, not as cash back",
+          /have not told my app what/.test(asked) && /as unknown rather than assuming/.test(asked),
+          asked.slice(-200));
         await rw.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
         await rw.waitForTimeout(1500);
         await rw.locator(".seg button", { hasText: "Rewards" }).click({ timeout: 8000 });
