@@ -448,6 +448,57 @@ export function goalOutlook(db: DB, goalId: ID, now: string = thisMonthKey()): G
   return { saved, target, remaining, monthly, growth, monthsNeeded, projected, targetMonth, slack, needed, status };
 }
 
+/**
+ * What this goal held on each day its funding could have moved it.
+ *
+ * The same arithmetic as `goalSavedAt`, walked once rather than once per day.
+ * A balance only changes where its own history says it does, so those dates
+ * are the whole series: between two of them the figure is flat, and asking
+ * about a day in between would walk every history again to get the same
+ * answer. One pass over the days and one pointer per account instead, because
+ * the caller is dating a crossing and wants every day there is.
+ *
+ * Carries `goalSavedAt`'s caveat with it: allocations are current rather than
+ * historical, so this is "what this goal would have been worth then, split the
+ * way it is split today". For dating a crossing that is the honest reading.
+ * The alternative is inventing a history of allocations the document has never
+ * kept, which would put a date on something that never happened.
+ */
+export function goalSavedSeries(db: DB, goalId: ID, to: ISODate): { date: ISODate; saved: number }[] {
+  const goal = db.goals.find((g) => g.id === goalId);
+  if (!goal) return [];
+  const accounts = goalAccounts(db);
+  const days = [...new Set(accounts.flatMap((a) => a.history.map((h) => h.date)))]
+    .filter((d) => d <= to)
+    .sort();
+  if (!days.length) return [];
+
+  const at = accounts.map(() => 0);
+  // An account with no history of its own answers with its live balance on
+  // every day, which is what balanceAt does. Starting it at zero instead would
+  // have the series disagree with goalSavedAt about the same document.
+  const held = accounts.map((a) => (a.history.length ? 0 : a.balance));
+
+  return days.map((date) => {
+    let total = goal.startingAmount;
+    for (let i = 0; i < accounts.length; i++) {
+      const account = accounts[i]!;
+      const history = account.history;
+      while (at[i]! < history.length && history[at[i]!]!.date <= date) {
+        held[i] = history[at[i]!]!.balance;
+        at[i]! += 1;
+      }
+      const balance = Math.max(0, held[i]!);
+      const claims = backedClaims(db, account.id, balance);
+      total += claims.get(goalId) ?? 0;
+      if (account.autoGoalId === goalId) {
+        total += balance - [...claims.values()].reduce((s, v) => s + v, 0);
+      }
+    }
+    return { date, saved: total };
+  });
+}
+
 export interface ProjectedMonth {
   month: string;
   value: number;

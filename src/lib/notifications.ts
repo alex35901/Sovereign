@@ -3,7 +3,7 @@ import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recu
 import { integrations, healthOf, staleSince } from "./integrations.js";
 import { connectionOf } from "./connection.js";
 import type { Connection } from "./connection.js";
-import { goalOutlook } from "./goal-funding.js";
+import { goalSavedSeries } from "./goal-funding.js";
 import { addDays, monthLabel, sinceLabel, thisMonth, today } from "./date.js";
 import { priceChanges } from "./price-watch.js";
 import { fmt0 } from "./money.js";
@@ -216,6 +216,49 @@ export function goalTier(saved: number, target: number): "half" | "most" | "reac
   if (share >= 0.75) return "most";
   if (share >= 0.5) return "half";
   return null;
+}
+
+const GOAL_RANK = { half: 1, most: 2, reached: 3 } as const;
+
+/**
+ * The day a goal last crossed a mark and has stayed above it since.
+ *
+ * Last, not first, so a goal that passed three quarters, was raided for
+ * something else and climbed back reports the day it climbed back. That is the
+ * thing that happened, and it is why the day goes in the notice's id as well:
+ * crossing again is news, and news nobody has read yet.
+ *
+ * Null when the document cannot date it. A figure typed in by hand that has
+ * never moved did not cross anything, and a notice is a report of something
+ * happening on a day rather than a statement of how things stand.
+ */
+export function crossedOnIn(
+  series: readonly { date: ISODate; saved: number }[],
+  target: number,
+  want: "half" | "most" | "reached",
+): ISODate | null {
+  const rank = GOAL_RANK[want];
+  let crossed: ISODate | null = null;
+  let was = false;
+  for (const point of series) {
+    const tier = goalTier(point.saved, target);
+    const there = !!tier && GOAL_RANK[tier] >= rank;
+    if (there && !was) crossed = point.date;
+    else if (!there && was) crossed = null;
+    was = there;
+  }
+  // Null when the last day is below the mark, which the loop has already done:
+  // a fall clears the day it crossed, so there is nothing left to return.
+  return crossed;
+}
+
+/** The same question asked of a goal, for anywhere that has no series in hand. */
+export function goalReachedOn(
+  db: DB, goalId: string, want: "half" | "most" | "reached", now: ISODate,
+): ISODate | null {
+  const goal = db.goals.find((g) => g.id === goalId);
+  if (!goal) return null;
+  return crossedOnIn(goalSavedSeries(db, goalId, now), goal.targetAmount, want);
 }
 
 /**
@@ -636,23 +679,49 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
   }
 
   // ── a goal passing a mark somebody would recognise ──
+  //
+  // Read off the dated series rather than off the live figure, because the
+  // whole of the news is the day it got there. Taken from today's balance this
+  // said "now" every morning for as long as the goal stayed funded, which put
+  // a thing that happened in March at the top of the list in October.
   for (const goal of db.goals) {
     if (goal.archived) continue;
-    const outlook = goalOutlook(db, goal.id);
-    const tier = goalTier(outlook.saved, outlook.target);
+    const series = goalSavedSeries(db, goal.id, now);
+    const latest = series[series.length - 1];
+    if (!latest) continue;
+    const tier = goalTier(latest.saved, goal.targetAmount);
     if (!tier) continue;
-    const share = Math.round((outlook.saved / outlook.target) * 100);
+    // Against the series already in hand: asking goalReachedOn would walk
+    // every history a second time for every goal, on a path that runs on
+    // every write.
+    const at = crossedOnIn(series, goal.targetAmount, tier);
+    // Nothing in the document dates the crossing, which means nothing crossed:
+    // a balance that has been where it is for as long as there are records is
+    // a state, and states belong on the goal's own page.
+    if (!at) continue;
+    // The figures as they stood on the day, because that is the day the notice
+    // is dated to. Pairing March's date with October's balance would be two
+    // facts that cannot both be about the same moment.
+    const was = series.find((p) => p.date === at) ?? latest;
+    const left = Math.max(0, goal.targetAmount - was.saved);
     out.push({
-      id: `goal:${goal.id}:${tier}`,
+      // The day is in the id, so a goal that drops back and climbs again is a
+      // second piece of news rather than one somebody has already read.
+      id: `goal:${goal.id}:${tier}:${at}`,
       kind: "goal",
+      // Named by the rung rather than by a percentage. A percentage read off
+      // the day it was crossed goes stale as the goal grows past it; "three
+      // quarters funded" stays true.
       title: tier === "reached"
         ? `${goal.name} is fully funded. Nice work.`
-        : `${goal.name} is ${share}% funded`,
+        : tier === "most"
+          ? `${goal.name} is three quarters funded`
+          : `${goal.name} is halfway there`,
       body: tier === "reached"
-        ? `${fmt0(outlook.saved)} of ${fmt0(outlook.target)}, all of it saved.`
-        : `${fmt0(outlook.saved)} of ${fmt0(outlook.target)}. ${fmt0(outlook.remaining)} to go.`,
-      at: now,
-      when: "now",
+        ? `${fmt0(was.saved)} of ${fmt0(goal.targetAmount)}, all of it saved.`
+        : `${fmt0(was.saved)} of ${fmt0(goal.targetAmount)} when it got there. ${fmt0(left)} to go.`,
+      at,
+      when: sinceLabel(`${at}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
       to: `/goals/${goal.id}`,
       tone: "pos",
     });
@@ -693,16 +762,25 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
   }
 
   // ── a pile of transactions nobody has looked at ──
-  const unreviewed = db.transactions.filter((t) => !t.reviewed).length;
-  const rung = reviewTier(unreviewed);
-  if (rung) {
+  //
+  // Dated to the day the pile reached this size, which is the day the rung-th
+  // oldest of them arrived. By when it arrived rather than when it is dated: a
+  // statement imported in October can be full of July, and the pile grew in
+  // October.
+  const waiting = db.transactions
+    .filter((t) => !t.reviewed)
+    .map((t) => (t.createdAt ?? "").slice(0, 10) || t.date)
+    .sort();
+  const rung = reviewTier(waiting.length);
+  const grewOn = rung ? waiting[rung - 1] : undefined;
+  if (rung && grewOn) {
     out.push({
       id: `review:${rung}`,
       kind: "review",
-      title: `${unreviewed} transactions need a category`,
+      title: `${waiting.length} transactions need a category`,
       body: "Categorising them is what makes the budget and the reports mean anything.",
-      at: now,
-      when: "now",
+      at: grewOn,
+      when: sinceLabel(`${grewOn}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
       to: "/transactions",
       tone: "warn",
     });
@@ -712,9 +790,14 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
   const at = Date.parse(now) || Date.now();
   for (const row of integrations(db, null, at)) {
     if (!row.set) continue;
+    // The day it was last called, which is the day this went wrong or the day
+    // it stopped. A row with no such day has nothing that happened on one, and
+    // the Settings table is where state belongs.
+    const ran = row.lastAt?.slice(0, 10);
     if (row.error) {
       const health = healthOf(row, at);
       if (health.state !== "down") continue;
+      if (!ran) continue;
       out.push({
         // Keyed on the message: a different failure is different news, and the
         // same one going on being true is not.
@@ -722,8 +805,8 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
         kind: "integration",
         title: `${row.provider} is failing`,
         body: `${row.process}. ${row.error}`,
-        at: now,
-        when: "now",
+        at: ran,
+        when: sinceLabel(`${ran}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
         to: "/settings",
         tone: "neg",
       });
@@ -735,7 +818,10 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
     // on the week so it comes back if it goes on being true, and does not
     // arrive every morning in between.
     const resting = staleSince(row, at);
-    if (resting) {
+    // A provider that has never run at all has no day to report. It is wrong
+    // rather than newly wrong, and the Settings table says so in red without
+    // claiming it happened today.
+    if (resting && ran) {
       out.push({
         // Keyed on the message, which names the day it last ran, so it is one
         // piece of news rather than the same one every morning.
@@ -743,8 +829,8 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
         kind: "integration",
         title: `${row.provider}: ${resting.toLowerCase()}`,
         body: `${row.process}. Nothing has failed, which is what makes this worth saying: it has simply stopped happening.`,
-        at: now,
-        when: "now",
+        at: ran,
+        when: sinceLabel(`${ran}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
         to: "/settings",
         tone: "warn",
       });
@@ -760,8 +846,9 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
       body: `${row.process}. It is still running and still reporting no trouble, so nothing else will tell you. `
         + `${row.quiet.days} days with nothing, against a usual gap of ${row.quiet.usual}. `
         + "A login that needs renewing at the bank looks exactly like this.",
-      at: now,
-      when: "now",
+      // The day the last thing came back, which is the day the silence began.
+      at: row.quiet.since,
+      when: sinceLabel(`${row.quiet.since}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
       to: "/settings",
       tone: "warn",
     });

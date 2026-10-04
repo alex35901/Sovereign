@@ -8678,13 +8678,17 @@ await test("a goal that has got there says so, once", () => {
   const base = M.emptyDB();
   const db = {
     ...base,
-    accounts: [{ id: "sav", name: "Savings", type: "savings", balance: 5_000_00, history: [], includeInNetWorth: true, hidden: false, goalAccount: true }],
+    // A dated history, because the news is the day it got there and a balance
+    // with no history behind it cannot say which day that was.
+    accounts: [{ id: "sav", name: "Savings", type: "savings", balance: 5_000_00,
+      history: [{ date: "2026-01-10", balance: 1_000_00 }, { date: "2026-02-10", balance: 5_000_00 }],
+      includeInNetWorth: true, hidden: false, goalAccount: true }],
     goals: [{
       id: "g1", name: "Laptop", emoji: "*", targetAmount: 3_000_00, accountIds: [],
       allocations: { sav: 3_000_00 }, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
     }],
   };
-  const reached = M.NT.notices(db).filter((n) => n.kind === "goal");
+  const reached = M.NT.notices(db, "2026-03-01").filter((n) => n.kind === "goal");
   assert.equal(reached.length, 1);
   assert.match(reached[0].title, /Laptop/);
   assert.equal(reached[0].tone, "pos");
@@ -8692,10 +8696,10 @@ await test("a goal that has got there says so, once", () => {
 
   // Short of it, nothing.
   const short = { ...db, goals: [{ ...db.goals[0], targetAmount: 9_000_00 }] };
-  assert.deepEqual(M.NT.notices(short).filter((n) => n.kind === "goal"), []);
+  assert.deepEqual(M.NT.notices(short, "2026-03-01").filter((n) => n.kind === "goal"), []);
   // Archived goals are not goals.
   const gone = { ...db, goals: [{ ...db.goals[0], archived: true }] };
-  assert.deepEqual(M.NT.notices(gone).filter((n) => n.kind === "goal"), []);
+  assert.deepEqual(M.NT.notices(gone, "2026-03-01").filter((n) => n.kind === "goal"), []);
 });
 
 await test("every notice says where to go and when it was true", () => {
@@ -8708,6 +8712,231 @@ await test("every notice says where to go and when it was true", () => {
   }
 });
 
+
+/* ── a notice is something that happened on a day ───────────────────────── */
+
+const goalHistory = (points, target = 10_000_00) => {
+  const base = M.emptyDB();
+  return {
+    ...base,
+    accounts: [{
+      id: "sav", name: "Savings", type: "savings",
+      balance: points[points.length - 1][1],
+      history: points.map(([date, balance]) => ({ date, balance })),
+      includeInNetWorth: true, hidden: false, goalAccount: true, autoGoalId: "g1",
+    }],
+    goals: [{
+      id: "g1", name: "Emergency Fund", emoji: "*", targetAmount: target, accountIds: [],
+      startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
+    }],
+  };
+};
+
+await test("a goal is dated to the day it crossed the mark, not to today", () => {
+  // The whole of the complaint. Read off today's balance this said "now" every
+  // morning for as long as the goal stayed funded, so a thing that happened in
+  // February sat above everything else in October.
+  const db = goalHistory([
+    ["2026-01-05", 2_000_00],
+    ["2026-02-11", 7_600_00],
+    ["2026-03-09", 7_700_00],
+  ]);
+  const [goal] = M.NT.notices(db, "2026-10-01").filter((n) => n.kind === "goal");
+  assert.equal(goal.at, "2026-02-11", "the day it passed three quarters");
+  assert.notEqual(goal.when, "now");
+  assert.match(goal.when, /ago|[A-Z][a-z]{2} \d+/);
+  assert.match(goal.title, /three quarters funded/);
+});
+
+await test("and sorts down the list with everything else rather than staying on top", () => {
+  const db = goalHistory([["2026-01-05", 2_000_00], ["2026-02-11", 7_600_00]]);
+  const all = M.NT.notices(db, "2026-10-01");
+  assert.ok(all.length >= 1);
+  // Newest first is the rule for the whole list, and a goal is not exempt.
+  const dates = all.map((n) => n.at);
+  assert.ok(dates.every((d, i) => i === 0 || dates[i - 1] >= d), dates.join(" "));
+});
+
+await test("crossing again after falling back is a second piece of news", () => {
+  // Asked for in exactly these words: if it goes below and hits it again, that
+  // is another notification. Which means a different id, or the first one
+  // having been read would swallow the second.
+  const once = goalHistory([["2026-01-05", 2_000_00], ["2026-02-11", 7_600_00]]);
+  const again = goalHistory([
+    ["2026-01-05", 2_000_00],
+    ["2026-02-11", 7_600_00],
+    ["2026-04-02", 3_000_00],
+    ["2026-06-20", 7_900_00],
+  ]);
+  const [first] = M.NT.notices(once, "2026-10-01").filter((n) => n.kind === "goal");
+  const [second] = M.NT.notices(again, "2026-10-01").filter((n) => n.kind === "goal");
+  assert.equal(first.at, "2026-02-11");
+  assert.equal(second.at, "2026-06-20", "the day it got back there, not the day it first arrived");
+  assert.notEqual(first.id, second.id);
+  // And the one that was read does not mark the new one read.
+  const read = M.NT.markRead(again, [first.id]);
+  assert.ok(M.NT.unread(read, "2026-10-01").some((n) => n.id === second.id));
+});
+
+await test("a goal below the mark today says nothing, whatever it once did", () => {
+  const db = goalHistory([
+    ["2026-01-05", 8_000_00],
+    ["2026-05-01", 1_000_00],
+  ]);
+  assert.deepEqual(M.NT.notices(db, "2026-10-01").filter((n) => n.kind === "goal"), []);
+  // Asked directly, which is the only way to reach this: a fall has to wipe
+  // the day it crossed, or a goal raided in May would still be reporting the
+  // morning in January when it got there.
+  assert.equal(M.NT.goalReachedOn(db, "g1", "most", "2026-10-01"), null);
+  assert.equal(M.NT.goalReachedOn(db, "g1", "half", "2026-10-01"), null);
+  // And a fall that is only part of the way down leaves the lower rung alone.
+  const dipped = goalHistory([
+    ["2026-01-05", 8_000_00],
+    ["2026-05-01", 6_000_00],
+  ]);
+  assert.equal(M.NT.goalReachedOn(dipped, "g1", "most", "2026-10-01"), null, "no longer three quarters");
+  assert.equal(M.NT.goalReachedOn(dipped, "g1", "half", "2026-10-01"), "2026-01-05", "but still halfway, since January");
+});
+
+await test("the rung is read on the day it was crossed, and so are the figures", () => {
+  const db = goalHistory([["2026-01-05", 2_000_00], ["2026-02-11", 7_600_00], ["2026-09-01", 9_900_00]]);
+  const [goal] = M.NT.notices(db, "2026-10-01").filter((n) => n.kind === "goal");
+  // Still three quarters funded, which stays true as it climbs. A percentage
+  // read off February would be wrong by September.
+  assert.match(goal.title, /three quarters/);
+  assert.match(goal.body, /\$7,600 of \$10,000/, goal.body);
+  assert.match(goal.body, /\$2,400 to go/, goal.body);
+});
+
+await test("a goal nothing can date is a state rather than a notice", () => {
+  // A figure typed in by hand that has never moved did not cross anything.
+  // Saying it did, today, every day, is the bug this replaces.
+  const base = M.emptyDB();
+  const manual = {
+    ...base,
+    goals: [{
+      id: "g1", name: "Rainy Day", emoji: "*", targetAmount: 10_000_00, accountIds: [],
+      startingAmount: 8_000_00, monthlyContribution: 0, priority: 0, archived: false,
+    }],
+  };
+  assert.deepEqual(M.NT.notices(manual, "2026-10-01").filter((n) => n.kind === "goal"), []);
+});
+
+await test("a goal already over the mark on the first day there is any record of it", () => {
+  // As far back as the document goes, it was already there. That first day is
+  // the earliest thing anybody can defend, and it is a date.
+  const db = goalHistory([["2026-01-05", 9_000_00], ["2026-06-05", 9_500_00]]);
+  const [goal] = M.NT.notices(db, "2026-10-01").filter((n) => n.kind === "goal");
+  assert.equal(goal.at, "2026-01-05");
+});
+
+await test("the crossing is found against balances as they stood, not against today's", () => {
+  const db = goalHistory([["2026-01-05", 2_000_00], ["2026-02-11", 7_600_00]]);
+  assert.equal(M.NT.goalReachedOn(db, "g1", "most", "2026-10-01"), "2026-02-11");
+  assert.equal(M.NT.goalReachedOn(db, "g1", "half", "2026-10-01"), "2026-02-11");
+  assert.equal(M.NT.goalReachedOn(db, "g1", "reached", "2026-10-01"), null, "it never got all the way");
+  // Asked about a day before the crossing, there is nothing to report.
+  assert.equal(M.NT.goalReachedOn(db, "g1", "most", "2026-02-01"), null);
+});
+
+await test("the dated series agrees with asking for one day at a time", () => {
+  // Two ways of doing the same arithmetic, which is the risk of having both.
+  // Loaded on purpose with everything the two could disagree about: money
+  // typed in before any account existed, an account that has never kept a
+  // history and answers with its live balance on every day, and a day the
+  // account was overdrawn, which takes a goal to nothing rather than below it.
+  const base = goalHistory([
+    ["2026-01-05", 2_000_00],
+    ["2026-02-11", 7_600_00],
+    ["2026-02-20", -40_00],
+    ["2026-03-09", 7_700_00],
+  ]);
+  const db = {
+    ...base,
+    accounts: [
+      ...base.accounts,
+      { id: "cash", name: "Cash Tin", type: "savings", balance: 300_00, history: [],
+        includeInNetWorth: true, hidden: false, goalAccount: true, autoGoalId: "g1" },
+    ],
+    goals: [{ ...base.goals[0], startingAmount: 150_00 }],
+  };
+  const series = M.GF.goalSavedSeries(db, "g1", "2026-10-01");
+  assert.equal(series.length, 4);
+  for (const point of series) {
+    assert.equal(point.saved, M.GF.goalSavedAt(db, "g1", point.date), point.date);
+  }
+  // Not merely equal to each other: equal to something worked out by hand, or
+  // both could be wrong the same way.
+  assert.equal(series[0].saved, 150_00 + 2_000_00 + 300_00);
+  assert.equal(series[2].saved, 150_00 + 0 + 300_00, "an overdrawn account holds none of it, not minus some of it");
+});
+
+await test("nothing in the list is dated to the moment it was looked at", () => {
+  // The rule, asserted over a document carrying as many kinds of notice as
+  // one fixture can hold. A notice dated now is one that will be dated now
+  // again tomorrow, which is a notice that never moves down the list.
+  const db = goalHistory([["2026-01-05", 2_000_00], ["2026-02-11", 7_600_00]]);
+  const on = "2026-10-01";
+  const seen = M.NT.notices({
+    ...db,
+    transactions: Array.from({ length: 30 }, (_, i) => ({
+      id: `t${i}`, accountId: "sav", date: `2026-0${(i % 9) + 1}-01`, merchant: "Shop",
+      amount: -10_00, categoryId: "", tags: [], pending: false, reviewed: false,
+      hideFromReports: false, createdAt: `2026-0${(i % 9) + 1}-01T00:00:00.000Z`,
+    })),
+  }, on);
+  assert.ok(seen.length >= 2, `${seen.length} notices`);
+  for (const n of seen) {
+    assert.notEqual(n.when, "now", `${n.id} is stuck on now`);
+    assert.notEqual(n.at, on, `${n.id} is dated to the day it was looked at`);
+  }
+});
+
+await test("a connection that has gone quiet is dated to the day it went quiet", () => {
+  // The silent failure: still running, still reporting no trouble, bringing
+  // nothing back. Dated to the last day something arrived, because that is the
+  // day the silence started. Dated to today it would say the connection broke
+  // this morning, every morning, for as long as it stayed broken.
+  const base = M.emptyDB();
+  // Weekly, which makes the usual gap seven days and six weeks of nothing
+  // three times past it.
+  const arrivals = ["2026-05-02", "2026-05-09", "2026-05-16", "2026-05-23", "2026-05-30", "2026-06-06", "2026-06-13"];
+  const db = {
+    ...base,
+    settings: {
+      ...base.settings,
+      plaidItems: [{ itemId: "i1", institution: "Bank", kind: "bank", lastSyncAt: "2026-07-20T09:00:00.000Z" }],
+    },
+    accounts: [{ id: "chk", name: "Everyday", type: "checking", balance: 1_000_00, history: [],
+      includeInNetWorth: true, hidden: false, syncSource: "plaid", syncId: "p1", plaidItemId: "i1" }],
+    transactions: arrivals.map((date, i) => ({
+      id: `t${i}`, accountId: "chk", date, merchant: "Shop", amount: -10_00,
+      categoryId: "", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: `${date}T09:00:00.000Z`,
+    })),
+  };
+  const [gone] = M.NT.notices(db, "2026-07-21").filter((n) => n.kind === "integration" && /brought nothing back/.test(n.title));
+  assert.ok(gone, "the quiet connection is reported at all");
+  assert.equal(gone.at, "2026-06-13", "the day the last thing arrived");
+  assert.notEqual(gone.when, "now");
+});
+
+await test("a pile of transactions is dated to the day it reached that size", () => {
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    transactions: Array.from({ length: 30 }, (_, i) => ({
+      id: `t${i}`, accountId: "a", date: "2026-01-01", merchant: "Shop",
+      amount: -10_00, categoryId: "", tags: [], pending: false, reviewed: false,
+      hideFromReports: false,
+      // One a day, so the twenty-fifth is the day the pile passed twenty-five.
+      createdAt: `2026-03-${String(i + 1).padStart(2, "0")}T09:00:00.000Z`,
+    })),
+  };
+  const [pile] = M.NT.notices(db, "2026-10-01").filter((n) => n.kind === "review");
+  assert.equal(pile.at, "2026-03-25", "the day the twenty-fifth arrived");
+  assert.match(pile.title, /30 transactions/);
+});
 
 await test("a goal speaks at half, at three quarters, and when it gets there", () => {
   assert.equal(M.NT.goalTier(0, 1000), null);
@@ -8726,24 +8955,27 @@ await test("reaching a goal congratulates rather than telling you what to do wit
     const base = M.emptyDB();
     return {
       ...base,
-      accounts: [{ id: "sav", name: "Savings", type: "savings", balance: saved, history: [], includeInNetWorth: true, hidden: false, goalAccount: true }],
+      accounts: [{ id: "sav", name: "Savings", type: "savings", balance: saved,
+        history: [{ date: "2026-01-10", balance: 0 }, { date: "2026-02-10", balance: saved }],
+        includeInNetWorth: true, hidden: false, goalAccount: true }],
       goals: [{
         id: "g1", name: "Laptop", emoji: "*", targetAmount: target, accountIds: [],
         allocations: { sav: saved }, startingAmount: 0, monthlyContribution: 0, priority: 0, archived: false,
       }],
     };
   };
-  const [done] = M.NT.notices(goalAt(3_000_00, 3_000_00)).filter((n) => n.kind === "goal");
+  const on = "2026-03-01";
+  const [done] = M.NT.notices(goalAt(3_000_00, 3_000_00), on).filter((n) => n.kind === "goal");
   assert.match(done.title, /Nice work/);
   assert.equal(/spend/i.test(done.title + done.body), false, "no advice about what to do with it");
-  assert.match(done.id, /:reached$/);
+  assert.match(done.id, /:reached:2026-02-10$/);
 
-  const [half] = M.NT.notices(goalAt(1_500_00, 3_000_00)).filter((n) => n.kind === "goal");
-  assert.match(half.title, /50% funded/);
+  const [half] = M.NT.notices(goalAt(1_500_00, 3_000_00), on).filter((n) => n.kind === "goal");
+  assert.match(half.title, /halfway there/);
   assert.match(half.body, /to go/);
-  assert.match(half.id, /:half$/);
+  assert.match(half.id, /:half:2026-02-10$/);
   // The rung is in the id, so passing the next one is new news.
-  const [most] = M.NT.notices(goalAt(2_400_00, 3_000_00)).filter((n) => n.kind === "goal");
+  const [most] = M.NT.notices(goalAt(2_400_00, 3_000_00), on).filter((n) => n.kind === "goal");
   assert.notEqual(most.id, half.id);
 });
 
