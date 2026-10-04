@@ -1024,6 +1024,50 @@ export function recurringSpend(
   return { spent, total, left: total - spent, upcoming };
 }
 
+export interface RecurringCharge {
+  item: Recurring;
+  /** The day this one falls on, which is not the schedule's next date. */
+  date: ISODate;
+  /** Whether the bank shows a charge for it. */
+  paid: boolean;
+}
+
+/**
+ * A month's recurring charges, split at the day being asked about.
+ *
+ * One schedule can land more than once in a month, so this is a list of
+ * charges rather than of schedules: a weekly subscription is four rows in
+ * March and one of them has not happened yet. Counted off the same walk the
+ * calendar draws and the totals above it use, so the three cannot disagree
+ * about what a month holds.
+ *
+ * Split by date rather than by whether the bank shows the money gone. A bill
+ * that fell due on the first and never arrived belongs behind you with the
+ * others, flagged as unpaid, rather than sitting in next week's list for ever.
+ */
+export function recurringMonth(
+  db: DB,
+  list: readonly Recurring[],
+  from: ISODate,
+  to: ISODate,
+  asOf: ISODate = today(),
+): { past: RecurringCharge[]; upcoming: RecurringCharge[] } {
+  const past: RecurringCharge[] = [];
+  const upcoming: RecurringCharge[] = [];
+  for (const item of list) {
+    const settled = paidOccurrences(db, item, from, to);
+    for (const date of occurrences(item, from, to)) {
+      (date <= asOf ? past : upcoming).push({ item, date, paid: settled.has(date) });
+    }
+  }
+  // Both orders are "nearest to now first", which is what each list is read
+  // for: what just went out, and what goes out next.
+  const byName = (a: RecurringCharge, b: RecurringCharge) => a.item.merchant.localeCompare(b.item.merchant);
+  past.sort((a, b) => (a.date === b.date ? byName(a, b) : a.date < b.date ? 1 : -1));
+  upcoming.sort((a, b) => (a.date === b.date ? byName(a, b) : a.date < b.date ? -1 : 1));
+  return { past, upcoming };
+}
+
 /**
  * How far either side of a scheduled date a real charge still counts as it.
  *

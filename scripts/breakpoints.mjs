@@ -1811,13 +1811,18 @@ try {
       sub: r.querySelector(".tiny.faint")?.textContent.trim() ?? "",
       buttons: [...r.querySelectorAll("button")].map((b) => b.getAttribute("title") ?? ""),
     })));
-    check("a row's schedule line ends at the next date, with no bracket after it",
-      line.length > 3 && line.every((r) => /·\s*next\s+\S/.test(r.sub) && !/[()]/.test(r.sub)),
+    // A row is one charge rather than one schedule now, so the line names the
+    // day that charge falls on. Behind you it may also say whether the bank
+    // has shown it; nothing else belongs on it.
+    check("a row's schedule line names its own day, with no bracket after it",
+      line.length > 3
+      && line.every((r) => /^[^·]+·\s*\S/.test(r.sub) && !/[()]/.test(r.sub))
+      && line.every((r) => !/·[^·]*·(?!\s*(paid|not seen yet))/.test(r.sub)),
       line.map((r) => r.sub).join(" | "));
-    // The month keeps its capital when the phrase loses one: "next sep 17" is
-    // what lowercasing the whole label gives, and it is not a date.
+    // The month keeps its capital when the phrase loses one: "sep 17" is what
+    // lowercasing the whole label gives, and it is not a date.
     check("and a month in it is still a month",
-      line.every((r) => !/next [a-z]{3} \d/.test(r.sub)),
+      line.every((r) => !/·\s*[a-z]{3} \d/.test(r.sub)),
       line.map((r) => r.sub).join(" | "));
     const cased = await wide.evaluate(() => {
       const el = document.querySelector(".rec-row .rec-when");
@@ -1864,7 +1869,9 @@ try {
       // left to say something is not recurring. It has to still work.
       const named = await wide.evaluate(() =>
         document.querySelector(".modal .field input")?.value ?? "");
-      const before = await wide.evaluate(() => document.querySelectorAll(".rec-row").length);
+      // Every row that schedule put on the month, which for anything more
+      // often than monthly is several.
+      const before = await wide.evaluate(() => [...document.querySelectorAll(".rec-row")].map((r) => r.innerText));
       check("and the switch in it starts on, for something that is recurring",
         await wide.evaluate(() => !!document.querySelector(".rec-switch .switch.on")));
       if (await tryStep("which can be turned off to say it is not recurring", async () => {
@@ -1874,9 +1881,11 @@ try {
         await wide.waitForTimeout(700);
       })) {
         const after = await wide.evaluate(() => [...document.querySelectorAll(".rec-row")].map((r) => r.innerText));
-        check("and that takes it off the page",
-          after.length === before - 1 && !after.some((t) => named && t.includes(named)),
-          `${before} -> ${after.length}, looking for ${named}`);
+        const mine = before.filter((t) => named && t.includes(named)).length;
+        check("and that takes every charge it put on the month off the page",
+          mine > 0 && after.length === before.length - mine
+          && !after.some((t) => named && t.includes(named)),
+          `${before.length} -> ${after.length}, ${mine} of them ${named}`);
       }
     }
     await wide.close();
@@ -1959,11 +1968,23 @@ try {
     await back.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
     await back.waitForTimeout(1000);
 
-    const readMonth = (page) => page.evaluate(() => ({
-      month: document.querySelector(".topbar .month-nav-label")?.innerText.trim() ?? "",
-      heads: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
-      marks: [...document.querySelectorAll(".cal-name-text")].map((n) => n.textContent.trim()),
-    }));
+    const readMonth = (page) => page.evaluate(() => {
+      const card = (title) => [...document.querySelectorAll(".card")]
+        .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === title);
+      const rowsOf = (title) => {
+        const c = card(title);
+        return c ? [...c.querySelectorAll(".rec-row")].map((r) => r.innerText.replace(/\n/g, " | ")) : null;
+      };
+      return {
+        month: document.querySelector(".topbar .month-nav-label")?.innerText.trim() ?? "",
+        heads: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
+        marks: [...document.querySelectorAll(".cal-name-text")].map((n) => n.textContent.trim()),
+        past: rowsOf("Past"),
+        upcoming: rowsOf("Upcoming"),
+        pastSub: card("Past")?.querySelector(".card-head .small")?.innerText.trim() ?? "",
+        empties: [...document.querySelectorAll(".empty")].map((e) => e.innerText.replace(/\n/g, " | ")),
+      };
+    });
 
     const nowOn = await readMonth(back);
     check("the recurring page carries a month in its bar, with a way either side",
@@ -1973,6 +1994,28 @@ try {
       `${nowOn.month || "no month"}`);
     check("and this month's calendar holds something that started this month",
       nowOn.marks.includes("Brand New Thing"), `${nowOn.marks.length} marks`);
+
+    // ── the month reads down the page in the order it happens ──
+    //
+    // Past between the calendar and Upcoming, so a month is read as what has
+    // gone, then what is still to come.
+    check("the page is the calendar, then what has gone, then what is still to come",
+      nowOn.heads.join(" | ").includes("Past | Upcoming")
+      && nowOn.past !== null && nowOn.upcoming !== null,
+      nowOn.heads.join(" | "));
+    check("and the two tables between them hold the whole month",
+      (nowOn.past.length + nowOn.upcoming.length) === nowOn.marks.length,
+      `${nowOn.past.length} behind + ${nowOn.upcoming.length} ahead against ${nowOn.marks.length} on the calendar`);
+    // The question the table answers that the calendar cannot: a bill that
+    // fell due and never arrived.
+    // Read case-insensitively: the schedule line is title-cased in CSS, so
+    // what the page reports is not what the source says.
+    check("a charge behind you says whether the bank has shown it",
+      nowOn.past.length === 0 || nowOn.past.every((r) => /paid|not seen yet/i.test(r)),
+      nowOn.past.find((r) => !/paid|not seen yet/i.test(r))?.slice(0, 140) ?? (nowOn.past[0] ?? "none").slice(0, 140));
+    check("and one still ahead does not, because the question has no answer yet",
+      nowOn.upcoming.every((r) => !/paid|not seen yet/i.test(r)),
+      nowOn.upcoming.find((r) => /paid|not seen yet/i.test(r))?.slice(0, 140) ?? "none say it");
 
     if (await tryStep("the arrow walks the page back through the months", async () => {
       for (let i = 0; i < 3; i++) {
@@ -1993,6 +2036,36 @@ try {
       // is testing a start date rather than an empty calendar.
       check("while the bills that were already running are still drawn",
         then.marks.length > 0, `${then.marks.length} marks`);
+
+      // The ask, in its own words: on a previous month nothing is still to
+      // come, and everything that month committed to is behind you.
+      check("a month already over has nothing left in its upcoming table",
+        then.upcoming !== null && then.upcoming.length === 0,
+        `${then.upcoming?.length} rows still to come in a month that is over`);
+      check("saying the month is over rather than showing an empty table",
+        then.empties.some((e) => /is over/.test(e)), then.empties.join(" // ").slice(0, 160));
+      check("and everything it held is in the table above it",
+        then.past !== null && then.past.length === then.marks.length,
+        `${then.past?.length} behind against ${then.marks.length} on the calendar`);
+      check("named for the month on screen rather than for today",
+        then.pastSub.includes(then.month), `${then.pastSub} against ${then.month}`);
+    }
+
+    // Forward of today the other way round: nothing has happened yet.
+    if (await tryStep("and forward past this month", async () => {
+      for (let i = 0; i < 5; i++) {
+        await back.locator(".topbar button[aria-label='Next month']").click({ timeout: 5000 });
+        await back.waitForTimeout(300);
+      }
+    })) {
+      const ahead = await readMonth(back);
+      check("a month still ahead has nothing behind it",
+        ahead.past !== null && ahead.past.length === 0, `${ahead.past?.length} already out of a month not yet begun`);
+      check("and says so rather than showing an empty table",
+        ahead.empties.some((e) => /has not started/.test(e)), ahead.empties.join(" // ").slice(0, 160));
+      check("with everything that month holds still to come",
+        ahead.upcoming !== null && ahead.upcoming.length === ahead.marks.length,
+        `${ahead.upcoming?.length} ahead against ${ahead.marks.length} on the calendar`);
     }
     await back.close();
   }

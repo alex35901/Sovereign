@@ -5,7 +5,9 @@ import type { Recurring as RecurringItem } from "../types";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
 import { dateLabel, longDate, monthEnd, monthLabel, monthStart, parseISO, relativeDayMid, thisMonth, today } from "../lib/date";
-import { occurrences, paidOccurrences, recurringList, recurringSpend } from "../lib/select";
+import type { RecurringCharge } from "../lib/select";
+import { recurringList, recurringMonth, recurringSpend } from "../lib/select";
+import { fmt0 } from "../lib/money";
 import { priceChanges, yearlyImpact } from "../lib/price-watch";
 import { isNewRecurring, isSeen } from "../lib/notifications";
 import { UNCATEGORIZED } from "../lib/categories";
@@ -81,29 +83,40 @@ export default function Recurring() {
   );
 
   const [y, m] = month.split("-").map(Number);
+
+  /**
+   * The month's charges, behind and ahead, from one walk.
+   *
+   * The schedule says what is due; the bank says what went. Both are needed:
+   * a date in the past is not a payment, and a payment two days early is
+   * still this month's. The calendar and the two tables under it read the
+   * same answer, so they cannot disagree about what the month holds.
+   */
+  const charges = useMemo(
+    () => recurringMonth(db, list, monthStart(month), monthEnd(month), today()),
+    [db, list, month],
+  );
+
   const marks = useMemo(() => {
     const out: Record<number, { tone: string; amount: number; label: string; to: string; paid: boolean }[]> = {};
-    for (const r of list) {
-      // The schedule says what is due; the bank says what went. Both are
-      // needed here: a date in the past is not a payment, and a payment two
-      // days early is still this month's.
-      const settled = paidOccurrences(db, r, monthStart(month), monthEnd(month));
-      // Every occurrence in the visible month, walked the same way the totals
-      // above are — days already paid included, since they are what the month
-      // has spent.
-      for (const date of occurrences(r, monthStart(month), monthEnd(month))) {
-        const day = parseISO(date).getDate();
-        (out[day] ??= []).push({
-          tone: r.amount > 0 ? "--pos" : "--bill", amount: r.amount, label: r.merchant,
-          // The same place the row below the calendar goes: one merchant, one
-          // page, however you arrived at it.
-          to: `/merchants/${encodeURIComponent(r.merchant)}`,
-          paid: settled.has(date),
-        });
-      }
+    for (const c of [...charges.past, ...charges.upcoming]) {
+      const day = parseISO(c.date).getDate();
+      (out[day] ??= []).push({
+        tone: c.item.amount > 0 ? "--pos" : "--bill", amount: c.item.amount, label: c.item.merchant,
+        // The same place the row below the calendar goes: one merchant, one
+        // page, however you arrived at it.
+        to: `/merchants/${encodeURIComponent(c.item.merchant)}`,
+        paid: c.paid,
+      });
     }
     return out;
-  }, [db, list, month]);
+  }, [charges]);
+
+  /** What a set of these comes to, counting only money going out. */
+  const outflow = (cs: readonly RecurringCharge[]) =>
+    cs.reduce((n, c) => n + (c.item.amount < 0 ? -c.item.amount : 0), 0);
+  /** Named for the month on screen rather than for today. */
+  const inMonth = past || future ? `in ${monthLabel(month)}` : "this month";
 
   const nav = <MonthNav month={month} onChange={setMonth} heading={phone} />;
 
@@ -168,44 +181,48 @@ export default function Recurring() {
           </div>
         </Card>
 
+        {/* What has already gone, between the calendar and what is still to
+            come, so the month reads down the page in the order it happens. */}
         <Card pad={false}>
-            <CardHead flush title="Upcoming" sub="Detected from your transaction history, plus anything you've added" />
-            {list.map((r) => (
-              // The row is the merchant, so it goes where every other merchant
-              // on this app goes. Editing the schedule is the rarer thing and
-              // gets a button rather than the whole row.
-              <Link
-                key={r.id} to={`/merchants/${encodeURIComponent(r.merchant)}`}
-                className="list-row click rec-row"
-              >
-                <MerchantAvatar name={r.merchant} size={30} />
-                <div className="grow col" style={{ gap: 1 }}>
-                  <span className="row" style={{ gap: 6 }}>
-                    <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
-                    {isNewRecurring(r) && !isSeen(db, `recurring:${r.id}`)
-                      ? <span className="tag rec-new">New</span>
-                      : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
-                  </span>
-                  <span className="tiny faint truncate rec-when">
-                    {cadenceLabel(r.cadence)} · next {relativeDayMid(r.nextDate)}
-                  </span>
-                </div>
-                <span className="rec-category"><CategoryTag categoryId={r.categoryId} /></span>
-                <span className="num bold" style={{ width: 96, textAlign: "right" }}>
-                  <Money value={r.amount} colored={r.amount > 0} />
-                </span>
-                <button
-                  className="btn btn-ghost btn-icon" title="Edit schedule" aria-label={`Edit ${r.merchant}'s schedule`}
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditing({ item: r, exists: true }); }}
-                >
-                  <Pencil size={14} />
-                </button>
-              </Link>
+          <CardHead
+            flush title="Past"
+            sub={charges.past.length
+              ? `${fmt0(outflow(charges.past))} already out ${inMonth}, across ${charges.past.length} ${charges.past.length === 1 ? "charge" : "charges"}.`
+              : undefined}
+          />
+          {charges.past.map((c) => (
+            <ChargeRow key={`${c.item.id}:${c.date}`} charge={c} onEdit={setEditing} showPaid />
+          ))}
+          {!charges.past.length ? (
+            <Empty
+              title={future ? `${monthLabel(month)} has not started` : "Nothing out yet"}
+              body={future
+                ? "Nothing has come out of a month that is still ahead."
+                : `No recurring charge has fallen due ${inMonth} yet.`}
+            />
+          ) : null}
+        </Card>
+
+        <Card pad={false}>
+            <CardHead
+              flush title="Upcoming"
+              sub={charges.upcoming.length
+                ? `${fmt0(outflow(charges.upcoming))} still to come ${inMonth}, across ${charges.upcoming.length} ${charges.upcoming.length === 1 ? "charge" : "charges"}. Detected from your transaction history, plus anything you've added.`
+                : undefined}
+            />
+            {charges.upcoming.map((c) => (
+              <ChargeRow key={`${c.item.id}:${c.date}`} charge={c} onEdit={setEditing} />
             ))}
-            {!list.length ? (
+            {!charges.upcoming.length ? (
               <Empty
-                title="Nothing recurring found yet"
-                body="Three or more charges from the same merchant on a steady interval will show up here automatically."
+                title={!list.length
+                  ? "Nothing recurring found yet"
+                  : past ? `${monthLabel(month)} is over` : "Nothing else due"}
+                body={!list.length
+                  ? "Three or more charges from the same merchant on a steady interval will show up here automatically."
+                  : past
+                    ? "Everything that month committed to has already happened. The table above has it."
+                    : `Nothing further is due ${inMonth}.`}
               />
             ) : null}
         </Card>
@@ -214,6 +231,60 @@ export default function Recurring() {
         <RecurringEditor item={editing.item} exists={editing.exists} startOn onClose={() => setEditing(null)} />
       ) : null}
     </>
+  );
+}
+
+/**
+ * One charge, in either table.
+ *
+ * The row is the merchant, so it goes where every other merchant in this app
+ * goes. Editing the schedule is the rarer thing and gets a button rather than
+ * the whole row.
+ */
+function ChargeRow({ charge, onEdit, showPaid }: {
+  charge: RecurringCharge;
+  onEdit: (e: { item: RecurringItem; exists: boolean }) => void;
+  /**
+   * Whether to say if the bank has shown this one going out.
+   *
+   * Only behind you, where the question has an answer. Ahead of today every
+   * row would read "not paid", which is not news about anything.
+   */
+  showPaid?: boolean;
+}) {
+  const db = useDB();
+  const r = charge.item;
+  return (
+    <Link
+      to={`/merchants/${encodeURIComponent(r.merchant)}`}
+      className="list-row click rec-row"
+    >
+      <MerchantAvatar name={r.merchant} size={30} />
+      <div className="grow col" style={{ gap: 1 }}>
+        <span className="row" style={{ gap: 6 }}>
+          <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
+          {isNewRecurring(r) && !isSeen(db, `recurring:${r.id}`)
+            ? <span className="tag rec-new">New</span>
+            : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}
+        </span>
+        <span className="tiny faint truncate rec-when">
+          {cadenceLabel(r.cadence)} · {relativeDayMid(charge.date)}
+          {/* A bill that fell due and never arrived is the one thing this
+              table knows that the calendar can only show as a missing tick. */}
+          {showPaid ? (charge.paid ? " · paid" : " · not seen yet") : ""}
+        </span>
+      </div>
+      <span className="rec-category"><CategoryTag categoryId={r.categoryId} /></span>
+      <span className="num bold" style={{ width: 96, textAlign: "right" }}>
+        <Money value={r.amount} colored={r.amount > 0} />
+      </span>
+      <button
+        className="btn btn-ghost btn-icon" title="Edit schedule" aria-label={`Edit ${r.merchant}'s schedule`}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onEdit({ item: r, exists: true }); }}
+      >
+        <Pencil size={14} />
+      </button>
+    </Link>
   );
 }
 

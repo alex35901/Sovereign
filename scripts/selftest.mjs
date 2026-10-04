@@ -40,7 +40,7 @@ await build({
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, spendRun, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum } from "./src/lib/select.ts";
-      export { occurrences, recurringSpend, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
+      export { occurrences, recurringSpend, recurringMonth, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
       export { merchantActivity, merchantCategories, merchantIndex, merchantKey, merchantLifetime, merchantRows } from "./src/lib/select.ts";
@@ -7717,6 +7717,118 @@ const rec = (over = {}) => ({
   id: "r1", merchant: "Wells Fargo Home Mortgage", amount: -2_846_12,
   cadence: "monthly", nextDate: "2026-09-01", categoryId: "c_mortgage",
   detected: true, ...over,
+});
+
+/* ── a month read as what has happened and what has not ─────────────────── */
+
+const monthDB = (items, txns = []) => {
+  const base = M.emptyDB();
+  return {
+    ...base,
+    accounts: [{ id: "a1", name: "Checking", institution: "Bank", type: "checking", balance: 0,
+      includeInNetWorth: true, hidden: false, history: [], order: 0 }],
+    categories: [{ id: "c1", groupId: "g1", name: "Subscriptions", icon: "x", color: "--c1",
+      excludeFromBudget: false, rollover: false, order: 0 }],
+    groups: [{ id: "g1", name: "Bills", kind: "expense", order: 0 }],
+    recurring: items,
+    transactions: txns.map((t, i) => ({
+      id: `t${i}`, accountId: "a1", date: t.date, merchant: t.merchant, amount: t.amount,
+      categoryId: "c1", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: `${t.date}T00:00:00.000Z`,
+    })),
+  };
+};
+
+const sub = (merchant, day, amount = -14_99) => ({
+  id: `r_${merchant}`, merchant, amount, cadence: "monthly",
+  nextDate: `2026-06-${day}`, categoryId: "c1", detected: false,
+});
+
+await test("a month splits into what has already gone out and what has not", () => {
+  const items = [sub("Netflix", "05"), sub("Spotify", "12"), sub("Hulu", "25")];
+  const db = monthDB(items);
+  const { past, upcoming } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.deepEqual(past.map((c) => c.item.merchant), ["Spotify", "Netflix"], "nearest first behind you");
+  assert.deepEqual(upcoming.map((c) => c.item.merchant), ["Hulu"], "soonest first ahead");
+  assert.equal(past[0].date, "2026-06-12");
+  assert.equal(upcoming[0].date, "2026-06-25");
+});
+
+await test("a month already over has nothing still to come", () => {
+  // Asked for in those words: on a previous month the upcoming table is blank
+  // and everything the month committed to is behind you.
+  const items = [sub("Netflix", "05"), sub("Hulu", "25")];
+  const db = monthDB(items);
+  const { past, upcoming } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-10-04");
+  assert.equal(upcoming.length, 0);
+  assert.deepEqual(past.map((c) => c.item.merchant), ["Hulu", "Netflix"]);
+});
+
+await test("and a month still ahead has nothing behind it", () => {
+  const items = [sub("Netflix", "05"), sub("Hulu", "25")];
+  const db = monthDB(items);
+  const { past, upcoming } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-04-01");
+  assert.equal(past.length, 0);
+  assert.equal(upcoming.length, 2);
+});
+
+await test("a day falling exactly on the day being asked about has already happened", () => {
+  const items = [sub("Netflix", "15")];
+  const db = monthDB(items);
+  const { past, upcoming } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.equal(past.length, 1, "today's bill is today's, not tomorrow's");
+  assert.equal(upcoming.length, 0);
+});
+
+await test("one schedule landing twice in a month is two rows, not one", () => {
+  // A list of charges rather than a list of schedules, which is the whole
+  // reason the upcoming table could not simply be filtered.
+  const weekly = [{ ...sub("Gym", "03", -9_99), cadence: "weekly", nextDate: "2026-06-03" }];
+  const db = monthDB(weekly);
+  const { past, upcoming } = M.recurringMonth(db, weekly, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.deepEqual(past.map((c) => c.date), ["2026-06-10", "2026-06-03"]);
+  assert.deepEqual(upcoming.map((c) => c.date), ["2026-06-17", "2026-06-24"]);
+});
+
+await test("a charge the bank has shown is marked paid, and one it has not is not", () => {
+  const items = [sub("Netflix", "05"), sub("Spotify", "12")];
+  // Netflix went out a day late, which is still Netflix. Spotify never landed.
+  const db = monthDB(items, [{ date: "2026-06-06", merchant: "Netflix", amount: -14_99 }]);
+  const { past } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-15");
+  const byName = Object.fromEntries(past.map((c) => [c.item.merchant, c.paid]));
+  assert.equal(byName.Netflix, true);
+  assert.equal(byName.Spotify, false, "due and never arrived is behind you and unpaid, not still upcoming");
+});
+
+await test("a bill that never arrived stays behind you rather than moving to upcoming", () => {
+  // The rule the split uses, said as its own case: the date decides which
+  // table a charge is in, and the bank decides what the row says about it.
+  const items = [sub("Spotify", "02")];
+  const db = monthDB(items);
+  const { past, upcoming } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-28");
+  assert.equal(upcoming.length, 0);
+  assert.equal(past.length, 1);
+  assert.equal(past[0].paid, false);
+});
+
+await test("income shows up in the split as well as bills", () => {
+  const pay = [{ ...sub("Employer", "01", 3_000_00) }];
+  const db = monthDB(pay);
+  const { past } = M.recurringMonth(db, pay, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.equal(past.length, 1);
+  assert.equal(past[0].item.amount, 3_000_00);
+});
+
+await test("the split and the month's totals count the same charges", () => {
+  // Two readings of one month, which is the risk of having both on a page.
+  const items = [sub("Netflix", "05"), sub("Spotify", "12"), sub("Hulu", "25")];
+  const db = monthDB(items);
+  const { past, upcoming } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-15");
+  const spend = M.recurringSpend(items, "2026-06-01", "2026-06-30", "2026-06-15");
+  const out = (cs) => cs.reduce((n, c) => n + (c.item.amount < 0 ? -c.item.amount : 0), 0);
+  assert.equal(out(past), spend.spent);
+  assert.equal(out(upcoming), spend.left);
+  assert.equal(upcoming.length, spend.upcoming);
 });
 
 await test("a monthly bill lands twelve times a year, not thirteen", () => {
