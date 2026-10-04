@@ -237,6 +237,16 @@ export interface CardRewards {
    * nobody has looked at must not be presented as one that has been.
    */
   confirmedAt?: string;
+  /**
+   * The balance sitting with the issuer, typed in by hand.
+   *
+   * Nothing can fetch this. A bank feed carries accounts, balances and
+   * transactions; no provider this app can reach exposes a rewards balance,
+   * so the points already banked are the one figure here that cannot be
+   * worked out from the ledger. Dated because a number typed in March is not
+   * a fact about today and should not be presented as one.
+   */
+  balance?: { points: number; at: ISODate };
 }
 
 export type GroupKind = "income" | "expense" | "transfer";

@@ -16497,6 +16497,357 @@ await test("a bonus is read over its own window, not the page's", () => {
   assert.equal(r.cards[0].bonus.met, true, "but the bonus was met all the same");
 });
 
+/* ── the points themselves, and what to do about them ──────────────────── */
+
+await test("points are counted in the card's own currency, and money separately", () => {
+  // The two figures a rewards page has to keep apart. A card paying three
+  // points a dollar on points worth two cents each pays six percent, and
+  // saying "300" where the household expects "6.00" is the kind of wrong
+  // nobody catches twice.
+  const card = { pointCents: 2, base: 3, rules: [] };
+  const d = M.CD.earnDetail(card, [buy("2026-05-01", "food", 100)]);
+  assert.equal(d.points, 300, "three points a dollar on a hundred dollars");
+  assert.equal(d.total, 6_00, "worth two cents each, which is six percent");
+});
+
+await test("a cash-back card's points are its cents, which is what makes them addable", () => {
+  const d = M.CD.earnDetail(cash(2), [buy("2026-05-01", "food", 100)]);
+  assert.equal(d.points, 200);
+  assert.equal(d.total, 200, "a point worth a cent is a cent");
+});
+
+await test("a cap says how much room is left in the bucket we are standing in", () => {
+  const card = cash(1, [earnRule("r", 5, ["food"], { cap: 1_500_00, period: "quarter", label: "5x groceries" })]);
+  const d = M.CD.earnDetail(card, [buy("2026-05-01", "food", 1_000)]);
+  const [room] = M.CD.capRoom(card, d.used, "2026-05-15");
+  assert.equal(room.used, 1_000_00);
+  assert.equal(room.left, 500_00);
+  assert.equal(room.until, "2026-06-30", "the last day of the quarter it is counting in");
+  // Only the part the base rate does not already pay: that money was going to
+  // earn one percent wherever it went.
+  assert.equal(room.worth, 20_00, "five hundred dollars at four points of difference");
+  assert.equal(room.label, "5x groceries");
+});
+
+await test("and a cap spent in a bucket we have left is empty again", () => {
+  // The whole reason the bucket is read against today rather than across the
+  // window. A quarterly cap filled in May has its whole fifteen hundred back
+  // in July, and a page saying otherwise would talk somebody out of using it.
+  const card = cash(1, [earnRule("r", 5, ["food"], { cap: 1_500_00, period: "quarter" })]);
+  const d = M.CD.earnDetail(card, [buy("2026-05-01", "food", 1_000)]);
+  assert.equal(M.CD.capRoom(card, d.used, "2026-08-15")[0].left, 1_500_00);
+  assert.equal(M.CD.capRoom(card, d.used, "2026-08-15")[0].used, 0);
+  assert.equal(M.CD.capRoom(card, d.used, "2026-08-15")[0].until, "2026-09-30");
+});
+
+await test("a cap's room is worth what the card's own points are worth", () => {
+  // The same room on a card whose points are worth two cents each is worth
+  // twice as much. Dropping the valuation would price every points card as if
+  // it were a cash-back one.
+  const card = { pointCents: 2, base: 1, rules: [earnRule("r", 5, ["food"], { cap: 1_000_00 })] };
+  const [room] = M.CD.capRoom(card, new Map(), "2026-05-15");
+  assert.equal(room.left, 1_000_00);
+  assert.equal(room.worth, 80_00, "a thousand dollars at four points of difference, each worth two cents");
+});
+
+await test("a cap handed more spending than it holds still reports itself as full", () => {
+  // capRoom is given a map rather than reading one, and the walk that fills
+  // the map is not the only thing that can hand it one. A bar drawn past its
+  // own end, or a negative figure left to collect, is a bar nobody trusts.
+  const card = cash(1, [earnRule("r", 5, ["food"], { cap: 100_00, period: "month" })]);
+  const [room] = M.CD.capRoom(card, new Map([["r:2026-05", 500_00]]), "2026-05-20");
+  assert.equal(room.used, 100_00);
+  assert.equal(room.left, 0);
+  assert.equal(room.worth, 0);
+});
+
+await test("a monthly cap counts in this month, and resets at the end of it", () => {
+  const card = cash(1, [earnRule("r", 5, ["food"], { cap: 100_00, period: "month" })]);
+  const d = M.CD.earnDetail(card, [buy("2026-05-10", "food", 60)]);
+  const inMay = M.CD.capRoom(card, d.used, "2026-05-20")[0];
+  assert.equal(inMay.used, 60_00);
+  assert.equal(inMay.until, "2026-05-31", "the last day of the month it is counting in");
+  assert.equal(M.CD.capRoom(card, d.used, "2026-06-01")[0].used, 0, "June starts again");
+  assert.equal(M.CD.capRoom(card, d.used, "2026-06-01")[0].until, "2026-06-30");
+  // February, because a month's end is not twenty-eight days after its start.
+  const feb = cash(1, [earnRule("f", 5, ["food"], { cap: 100_00, period: "month" })]);
+  assert.equal(M.CD.capRoom(feb, new Map(), "2026-02-10")[0].until, "2026-02-28");
+});
+
+await test("a cap paying no more than the base rate has nothing left on it to collect", () => {
+  const card = cash(3, [earnRule("r", 2, ["food"], { cap: 100_00 })]);
+  const [room] = M.CD.capRoom(card, new Map(), "2026-05-15");
+  assert.equal(room.left, 100_00, "the room is still room");
+  assert.equal(room.worth, 0, "it is just not worth anything to go and use it");
+  assert.equal(room.until, undefined, "a cap with no period never resets");
+});
+
+await test("a cap cannot report more spent against it than it holds", () => {
+  // Two purchases can split across the limit, and the second one's overflow
+  // is charged at base. A bar drawn past its own end is a bar nobody trusts.
+  const card = cash(1, [earnRule("r", 5, ["food"], { cap: 100_00, period: "month" })]);
+  const d = M.CD.earnDetail(card, [buy("2026-05-01", "food", 80), buy("2026-05-02", "food", 80)]);
+  const [room] = M.CD.capRoom(card, d.used, "2026-05-20");
+  assert.equal(room.used, 100_00);
+  assert.equal(room.left, 0);
+  assert.equal(d.total, 5_00 + 60, "a hundred at 5% and the sixty dollars over at 1%");
+});
+
+const CARD_NOW = "2026-05-15";
+const sumOf = (db, now = CARD_NOW) => M.CD.rewardsSummary(db, M.CD.cardReport(db, ...YEAR, now), now);
+
+await test("the rewards tab and the cards tab cannot disagree about what was earned", () => {
+  // One walk, read twice. Two walks would be two sets of caps filling up, and
+  // two headline figures that drift apart on exactly the cards with caps.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 1_000 }],
+  );
+  const report = M.CD.cardReport(db, ...YEAR, CARD_NOW);
+  const s = M.CD.rewardsSummary(db, report, CARD_NOW);
+  assert.equal(s.value, report.totals.earned);
+  assert.equal(s.best, report.totals.best);
+  assert.equal(s.gap, report.totals.gap);
+  assert.equal(s.spend, report.totals.spend);
+  assert.equal(s.from, report.from);
+  assert.equal(s.cards[0].points, report.cards[0].points);
+});
+
+await test("a balance nothing can fetch is added up in money, never in points", () => {
+  // The fact that sets the shape of the page. A hundred thousand of one
+  // program beside a hundred thousand of another is not two hundred thousand
+  // of anything: the only thing the two have in common is what each is worth.
+  const db = walletDB(
+    [
+      { id: "a", name: "Ultra", rewards: { pointCents: 2, base: 1, rules: [], balance: { points: 100_000, at: "2026-05-01" } } },
+      { id: "b", name: "Everyday", rewards: { pointCents: 1, base: 2, rules: [], balance: { points: 5_000, at: "2026-05-01" } } },
+    ],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 10 }],
+  );
+  const s = sumOf(db);
+  assert.equal(s.banked.cards, 2);
+  assert.equal(s.banked.worth, 2_000_00 + 50_00, "each at its own valuation, then added");
+  assert.equal(s.banked.stale, false);
+  assert.equal(s.cards.find((c) => c.accountId === "a").balance.worth, 2_000_00);
+});
+
+await test("and a balance typed in last spring says so rather than passing as today's", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Ultra", rewards: { pointCents: 2, base: 1, rules: [], balance: { points: 100_000, at: "2026-01-01" } } }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 10 }],
+  );
+  const s = sumOf(db);
+  assert.equal(s.cards[0].balance.stale, true, "more than ninety days old");
+  assert.equal(s.banked.stale, true);
+  assert.ok(s.moves.some((m) => m.kind === "stale"), "and asks for it to be checked");
+  // The day it stops being news, exactly.
+  assert.equal(sumOf(db, "2026-04-01").cards[0].balance.stale, false);
+  assert.equal(sumOf(db, "2026-04-02").cards[0].balance.stale, true);
+});
+
+await test("a card whose terms nobody entered is the first thing the page says", () => {
+  // Everything else on the page is arithmetic on those rates. A card still on
+  // the placeholder one percent makes every figure wrong, so it outranks the
+  // biggest number on the list.
+  const db = walletDB(
+    [
+      { id: "a", name: "Unknown" },
+      { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) },
+    ],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 5_000 }],
+  );
+  const s = sumOf(db);
+  assert.equal(s.unset, 1);
+  assert.equal(s.moves[0].kind, "unset");
+  assert.equal(s.moves[0].accountId, "a", "and names which card it is");
+  assert.equal(s.moves[0].worth, 0, "a wrong rate is not money, it is a reason to distrust the money");
+  assert.ok(s.moves.some((m) => m.kind === "merchant" && m.worth > 100_00), "the big number is still there, under it");
+});
+
+await test("a deadline outranks a bigger number with no date on it", () => {
+  const db = walletDB(
+    [
+      {
+        id: "a", name: "Flat One",
+        rewards: { ...cash(1), bonus: { requirement: 4_000_00, from: "2026-04-01", by: "2026-07-01", reward: "60,000 points" } },
+      },
+      { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) },
+    ],
+    [{ on: "a", date: "2026-05-01", cat: "food", dollars: 2_000 }],
+  );
+  const s = sumOf(db);
+  assert.equal(s.moves[0].kind, "bonus", "the bonus expires; the misrouting does not");
+  assert.match(s.moves[0].detail, /60,000 points/);
+  assert.match(s.moves[0].title, /2,000/, "what is still to spend, not what has been");
+  assert.equal(s.moves[1].kind, "merchant");
+  assert.ok(s.moves[1].worth > 0);
+});
+
+await test("and a bonus already earned is not a thing left to do", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat One", rewards: { ...cash(1), bonus: { requirement: 1_000_00, from: "2026-04-01", by: "2026-07-01" } } }],
+    [{ on: "a", date: "2026-05-01", cat: "food", dollars: 2_000 }],
+  );
+  assert.equal(sumOf(db).moves.some((m) => m.kind === "bonus"), false);
+  // Nor is one whose window has closed. That is a regret, not a move.
+  assert.equal(sumOf(db, "2026-09-01").moves.some((m) => m.kind === "bonus"), false);
+});
+
+await test("a shop already named is not said over again as a category", () => {
+  // The two tables overlap on purpose, and a list read top down and acted on
+  // must not bill the same dollars twice.
+  const db = walletDB(
+    [
+      { id: "a", name: "Flat One", rewards: cash(1) },
+      { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) },
+    ],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 1_000, extra: { merchant: "Kroger" } }],
+  );
+  const s = sumOf(db);
+  assert.deepEqual(s.moves.map((m) => m.kind), ["merchant"]);
+  assert.equal(s.moves[0].merchant, "kroger");
+  assert.match(s.moves[0].title, /Kroger/);
+  assert.match(s.moves[0].title, /Grocery Four/, "and which card to put it on");
+});
+
+await test("but a habit spread thin across shops is only visible as a category", () => {
+  // No single shop is worth a line; the category is. This is the case the
+  // category table exists for, and suppressing it with the shops would lose
+  // it entirely.
+  const db = walletDB(
+    [
+      { id: "a", name: "Flat One", rewards: cash(1) },
+      { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) },
+    ],
+    ["Aldi", "Lidl", "Publix", "Meijer", "Costco"].map((merchant, i) => (
+      { on: "a", date: `2026-03-0${i + 1}`, cat: "food", dollars: 8, extra: { merchant } }
+    )),
+  );
+  const s = sumOf(db);
+  assert.deepEqual(s.moves.map((m) => m.kind), ["category"]);
+  assert.equal(s.moves[0].categoryId, "food");
+  assert.equal(s.moves[0].worth, 1_20, "three points of difference on forty dollars");
+});
+
+await test("and a shop worth naming inside a habit does not swallow the habit", () => {
+  // The middle case, and the one the threshold is for. One shop is worth a
+  // line of its own and is nowhere near the whole of the category: suppressing
+  // the category on the strength of it would hide three quarters of the miss
+  // behind a quarter of it.
+  const db = walletDB(
+    [
+      { id: "a", name: "Flat One", rewards: cash(1) },
+      { id: "b", name: "Grocery Four", rewards: cash(1, [earnRule("r", 4, ["food"])]) },
+    ],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 100, extra: { merchant: "Kroger" } },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        on: "a", date: "2026-03-02", cat: "food", dollars: 30, extra: { merchant: `Corner ${i}` },
+      })),
+    ],
+  );
+  const s = sumOf(db);
+  const shop = s.moves.find((m) => m.kind === "merchant");
+  const habit = s.moves.find((m) => m.kind === "category");
+  assert.equal(shop?.merchant, "kroger", "the one shop big enough to name");
+  assert.equal(shop.worth, 3_00);
+  assert.ok(habit, "and the habit it is a quarter of, said in its own right");
+  assert.equal(habit.worth, 12_00);
+  assert.equal(s.moves[0].kind, "category", "biggest first, which is the habit");
+});
+
+await test("a fee that outruns what the card earned is money going the other way", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Premium", rewards: { ...cash(2), annualFee: 95_00, confirmedAt: "2026-01-01T00:00:00.000Z" } }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 500 }],
+  );
+  const s = sumOf(db);
+  const fee = s.moves.find((m) => m.kind === "fee");
+  assert.ok(fee, "a card costing more than it pays is worth saying");
+  assert.equal(fee.worth, 95_00 - 10_00);
+  assert.equal(fee.accountId, "a");
+  // And a card that clears its fee is not on the list at all.
+  const paying = walletDB(
+    [{ id: "a", name: "Premium", rewards: { ...cash(2), annualFee: 95_00, confirmedAt: "2026-01-01T00:00:00.000Z" } }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 10_000 }],
+  );
+  assert.equal(sumOf(paying).moves.some((m) => m.kind === "fee"), false);
+});
+
+await test("but not on terms nobody has checked, which would be convicting it on a guess", () => {
+  // A draft Hopper filled in holds a rate and a fee and has never been read
+  // off the card. Telling somebody their card is losing money, on arithmetic
+  // done against a half-remembered rate, is the one thing this page must not
+  // do. The page says the terms are unchecked, at the top, and stops there.
+  const drafted = { ...cash(2), annualFee: 95_00 };
+  const db = walletDB(
+    [{ id: "a", name: "Premium", rewards: drafted }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 500 }],
+  );
+  assert.equal(sumOf(db).moves.some((m) => m.kind === "fee"), false);
+  assert.equal(sumOf(db).cards[0].confirmed, false);
+
+  // And once somebody has said yes, the same card gets the same verdict.
+  const checked = walletDB(
+    [{ id: "a", name: "Premium", rewards: { ...drafted, confirmedAt: "2026-01-01T00:00:00.000Z" } }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 500 }],
+  );
+  assert.equal(sumOf(checked).moves.some((m) => m.kind === "fee"), true);
+  // A card with no terms at all has no fee to fail to cover either.
+  const bare = walletDB([{ id: "a", name: "Mystery" }], [{ on: "a", date: "2026-03-01", cat: "food", dollars: 500 }]);
+  assert.equal(sumOf(bare).moves.some((m) => m.kind === "fee"), false);
+});
+
+await test("spending that never touched a card is said without a number against it", () => {
+  // Most of what goes out another way is rent, a mortgage or a tax bill that
+  // no card will take. Ranking it by what it would have earned would put the
+  // one unreachable figure on the page at the top of a list of things to do.
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: cash(2) }],
+    [
+      { on: "a", date: "2026-03-01", cat: "food", dollars: 100 },
+      { on: "chk", date: "2026-03-02", cat: "food", dollars: 20_000 },
+    ],
+  );
+  const s = sumOf(db);
+  const off = s.moves.find((m) => m.kind === "offcard");
+  assert.ok(off);
+  assert.equal(off.worth, 0, "no money on it, because most of it cannot be charged");
+  assert.match(off.detail, /cannot be charged/);
+  assert.equal(s.moves.at(-1).kind, "offcard", "and last, whatever the figure in the sentence");
+  assert.equal(s.spend, 100_00, "the headline is only what a card touched");
+});
+
+await test("a wallet with nothing to fix says nothing rather than reaching", () => {
+  const db = walletDB(
+    [{ id: "a", name: "Flat Two", rewards: { ...cash(2), confirmedAt: "2026-01-01T00:00:00.000Z" } }],
+    [{ on: "a", date: "2026-03-01", cat: "food", dollars: 100 }],
+  );
+  const s = sumOf(db);
+  assert.deepEqual(s.moves, []);
+  assert.equal(s.gap, 0);
+  assert.equal(s.banked.cards, 0);
+});
+
+await test("the cap with the most left on it is the one the page leads with", () => {
+  const card = cash(1, [
+    earnRule("small", 5, ["gas"], { cap: 50_00, period: "month" }),
+    earnRule("big", 5, ["food"], { cap: 1_500_00, period: "quarter" }),
+  ]);
+  const rooms = M.CD.capRoom(card, new Map(), "2026-05-15");
+  assert.deepEqual(rooms.map((r) => r.ruleId), ["big", "small"]);
+  const db = walletDB([{ id: "a", name: "Rotator", rewards: card }], [
+    { on: "a", date: "2026-05-01", cat: "food", dollars: 1_400 },
+  ]);
+  const s = sumOf(db);
+  const caps = s.moves.filter((m) => m.kind === "cap");
+  assert.equal(caps.length, 2, "both still have room worth collecting");
+  assert.match(caps[0].title, /Rotator/);
+  assert.ok(caps[0].worth > caps[1].worth, "biggest first, like everything else that is money");
+  const food = s.cards[0].caps.find((c) => c.ruleId === "big");
+  assert.equal(food.left, 100_00, "fourteen hundred of the fifteen gone");
+});
+
 /* ── the save path must not drag the document across the wire ──────────── */
 
 await test("taking the write lock does not read the document out of the database", () => {

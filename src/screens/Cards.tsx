@@ -19,8 +19,9 @@ import { cloudEnabled } from "../lib/cloud";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
 import { SortHead, sortRows, useSort } from "../components/sort";
-import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, SelectInput, Tile, cx } from "../components/ui";
+import { Btn, Card, CardHead, Empty, Field, Modal, MoneyInput, PercentInput, SelectInput, Segmented, Tile, cx } from "../components/ui";
 import { MerchantAvatar } from "./Transactions";
+import { RewardsTab } from "./CardRewards";
 
 /**
  * Which card to reach for, worked out from what was actually bought.
@@ -63,6 +64,21 @@ interface ReachRow {
   bestAccountId?: ID;
 }
 
+/**
+ * The two halves of the question a wallet raises.
+ *
+ * Which card to reach for next is a question about the future and is answered
+ * by comparing cards against each other. What the cards have already paid, and
+ * what is sitting unspent, is a question about the past and is answered one
+ * card at a time. They want different tables, so they get different tabs.
+ */
+const TABS = [
+  { value: "cards", label: "Cards" },
+  { value: "rewards", label: "Rewards" },
+] as const;
+
+type Tab = (typeof TABS)[number]["value"];
+
 const PERIODS = [
   { value: "month", label: "a month" },
   { value: "quarter", label: "a quarter" },
@@ -77,6 +93,7 @@ export default function Cards() {
   const cards = useMemo(() => cardAccounts(db), [db]);
   const [editing, setEditing] = useState<Account | null>(null);
   const [weighing, setWeighing] = useState<CandidateCard | "new" | null>(null);
+  const [tab, setTab] = useState<Tab>("cards");
   const to = today();
   const from = rangeStart("1y");
   const report = useMemo(() => cardReport(db, from, to), [db, from, to]);
@@ -150,160 +167,168 @@ export default function Cards() {
     <>
       <TopBar title="Cards" />
       <div className="page stack">
-        <Card>
-          <div className="fc-head">
-            <span className="small muted">Put on the right card, the last year would have paid</span>
-            <span className="nw-total num">{fmt0(report.totals.best)}</span>
-            <span className="small faint">
-              You earned {fmt0(report.totals.earned)} on {fmt0(report.totals.spend)} of spending.
-              {report.totals.gap > 0
-                ? ` ${fmt0(report.totals.gap)} of it went to the wrong card.`
-                : " Nothing went to the wrong card."}
+        <Segmented value={tab} options={TABS.map((t) => ({ ...t }))} onChange={setTab} spread />
+
+        {tab === "rewards" ? (
+          <RewardsTab report={report} onEdit={setEditing} onAsk={askHopper} />
+        ) : (
+          <>
+            <Card>
+              <div className="fc-head">
+                <span className="small muted">Put on the right card, the last year would have paid</span>
+                <span className="nw-total num">{fmt0(report.totals.best)}</span>
+                <span className="small faint">
+                  You earned {fmt0(report.totals.earned)} on {fmt0(report.totals.spend)} of spending.
+                  {report.totals.gap > 0
+                    ? ` ${fmt0(report.totals.gap)} of it went to the wrong card.`
+                    : " Nothing went to the wrong card."}
+                </span>
+              </div>
+              <div className="grid g3" style={{ padding: "4px 16px 16px" }}>
+                <Tile label="Earned" value={fmt0(report.totals.earned)} sub="on the cards you used" />
+                <Tile
+                  label="Left on the table" value={fmt0(report.totals.gap)}
+                  tone={report.totals.gap > 0 ? "neg" : undefined}
+                  sub="by reaching for the wrong one"
+                />
+                <Tile
+                  label="Daily driver" value={report.driver ? report.driver.name : "None"}
+                  sub={report.driver ? `${report.driver.rate}% on anything with no bonus` : "No card has terms yet"}
+                  action={
+                    <button
+                      type="button"
+                      className="ask-spark"
+                      title={ASK_DRIVER}
+                      aria-label={ASK_DRIVER}
+                      onClick={() => askHopper(
+                        report.driver
+                          ? `Which credit cards pay the most on everything, with no categories to track and no rotating bonuses? The best flat rate in my wallet is ${report.driver.rate}% on anything with no bonus, from my ${report.driver.name}. Name a few that beat it, say what each one pays and what it costs a year, and say plainly if nothing beats what I already carry.`
+                          : "Which credit cards pay the most on everything, with no categories to track and no rotating bonuses? Name a few, and say what each one pays and what it costs a year.",
+                      )}
+                    >
+                      <Sparkles size={13} />
+                    </button>
+                  }
+                />
+              </div>
+            </Card>
+
+            {unconfirmed.length ? (
+              <Card>
+                <CardHead
+                  title="Nobody has checked these yet"
+                  sub={`${unconfirmed.map((a) => a.name).join(", ")} ${unconfirmed.length === 1 ? "is" : "are"} earning at the default 1% on everything. Every figure above is only as right as what each card is said to pay.`}
+                />
+              </Card>
+            ) : null}
+
+            <Card pad={false}>
+              <CardHead flush title="Your wallet" sub="What each one pays, and what it paid." />
+              {report.cards.map((c) => {
+                const account = byId.get(c.accountId);
+                const r = account ? rewardsOf(account) : DEFAULT_REWARDS;
+                return (
+                  <button key={c.accountId} className="card-row" onClick={() => account && setEditing(account)}>
+                    {account ? <InstitutionLogo account={account} size={30} /> : null}
+                    <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
+                      <span className="row" style={{ gap: 6 }}>
+                        <span className="bold truncate">{c.name}</span>
+                        {/* Driven by whether a person has confirmed the terms,
+                            not by whether the document holds any. Saving a draft
+                            fills the second in and leaves the first alone, and a
+                            badge that cleared on a draft would disagree with the
+                            warning above it. */}
+                        {c.confirmedAt ? null : <span className="tag card-unset">not checked</span>}
+                      </span>
+                      <span className="tiny faint truncate">
+                        {c.base}% on everything{r.rules.length ? `, ${r.rules.length} bonus rate${r.rules.length === 1 ? "" : "s"}` : ""}
+                        {c.annualFee ? ` · ${fmt0(c.annualFee)} a year` : ""}
+                      </span>
+                      {c.annualFee > 0 ? (
+                        <span className={cx("tiny", c.earned >= c.annualFee ? "pos" : "neg")}>
+                          {c.earned >= c.annualFee
+                            ? `Clears its fee, with ${fmt0(c.earned - c.annualFee)} over`
+                            : `${fmt0(c.annualFee - c.earned)} short of its fee`}
+                        </span>
+                      ) : null}
+                      {/* The counterweight. A card earning two percent while
+                          charging twenty-two is a losing card, and a rewards page
+                          that never says so is lying by omission. */}
+                      {c.interest > 0 ? (
+                        <span className="tiny neg">
+                          Charged {fmt0(c.interest)} of interest, against {fmt0(c.earned)} earned
+                          {c.interest > c.earned ? ". This card cost more than it paid." : "."}
+                        </span>
+                      ) : null}
+                      {c.bonus ? <BonusLine b={c.bonus} /> : null}
+                    </span>
+                    <span className="col" style={{ gap: 1, textAlign: "right" }}>
+                      <span className="num bold">{fmt0(c.earned)}</span>
+                      <span className="tiny faint">on {fmt0(c.spend)}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </Card>
+
+            <Offers />
+
+            <ReachTable
+              title="Where to put each purchase"
+              sub="The last year, biggest miss first, or click a heading to reorder it. The best card is the one to reach for at the till, given what the caps had already taken."
+              head="Category"
+              rows={catRows}
+              byId={byId}
+              onAsk={(r) => askHopper(
+                `Which credit cards would be good for my ${r.name} spending? Look at what I spent on ${r.name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`,
+              )}
+              askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
+              noun="categories"
+            />
+
+            {/* The same question asked of shops rather than of kinds of spending.
+                Cards are not sold by category: one that pays five percent at a
+                single chain is a slice of "Shopping" in the table above, sitting
+                beside forty other shops, and the whole line here. */}
+            <ReachTable
+              title="Where to put each shop"
+              sub="The last year at each place you paid, biggest first. Every shop a card touched is here, not only the ones above: a card aimed at one chain is invisible in a table of categories and obvious in this one."
+              head="Merchant"
+              rows={shopRows}
+              byId={byId}
+              onAsk={(r) => askHopper(
+                `Which credit cards would be good for my spending at ${r.name}? Look at what I spent there over the last year and what my cards earn on it now, then say whether any card aimed at ${r.name} is worth it, and what it pays.`,
+              )}
+              askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
+              empty="Nothing has gone on a card yet."
+              noun="shops"
+            />
+
+            <Card pad={false}>
+              <CardHead
+                flush title="Cards you are weighing up"
+                sub="Type the rates off an offer and see what it would have been worth against the year you actually had."
+                right={<Btn size="sm" onClick={() => setWeighing("new")}><Plus size={13} /> Add</Btn>}
+              />
+              {(db.candidates ?? []).length ? (db.candidates ?? []).map((c) => (
+                <Candidate key={c.id} card={c} from={from} to={to} onEdit={() => setWeighing(c)} />
+              )) : (
+                <div style={{ padding: "4px 16px 16px" }}>
+                  <span className="small faint">
+                    Nothing yet. Sovereign holds no list of card products, so the rates come off the offer in front of you
+                    and the answer comes off your own spending.
+                  </span>
+                </div>
+              )}
+            </Card>
+
+            <span className="tiny faint" style={{ padding: "0 2px" }}>
+              Worked out from your own purchases over the last year, and from what you have said each card pays.
+              Sovereign itself holds no list of card products. The spark beside a row asks Hopper, who answers
+              from what he was trained on rather than from any live offer, so check the terms of anything he names.
             </span>
-          </div>
-          <div className="grid g3" style={{ padding: "4px 16px 16px" }}>
-            <Tile label="Earned" value={fmt0(report.totals.earned)} sub="on the cards you used" />
-            <Tile
-              label="Left on the table" value={fmt0(report.totals.gap)}
-              tone={report.totals.gap > 0 ? "neg" : undefined}
-              sub="by reaching for the wrong one"
-            />
-            <Tile
-              label="Daily driver" value={report.driver ? report.driver.name : "None"}
-              sub={report.driver ? `${report.driver.rate}% on anything with no bonus` : "No card has terms yet"}
-              action={
-                <button
-                  type="button"
-                  className="ask-spark"
-                  title={ASK_DRIVER}
-                  aria-label={ASK_DRIVER}
-                  onClick={() => askHopper(
-                    report.driver
-                      ? `Which credit cards pay the most on everything, with no categories to track and no rotating bonuses? The best flat rate in my wallet is ${report.driver.rate}% on anything with no bonus, from my ${report.driver.name}. Name a few that beat it, say what each one pays and what it costs a year, and say plainly if nothing beats what I already carry.`
-                      : "Which credit cards pay the most on everything, with no categories to track and no rotating bonuses? Name a few, and say what each one pays and what it costs a year.",
-                  )}
-                >
-                  <Sparkles size={13} />
-                </button>
-              }
-            />
-          </div>
-        </Card>
-
-        {unconfirmed.length ? (
-          <Card>
-            <CardHead
-              title="Nobody has checked these yet"
-              sub={`${unconfirmed.map((a) => a.name).join(", ")} ${unconfirmed.length === 1 ? "is" : "are"} earning at the default 1% on everything. Every figure above is only as right as what each card is said to pay.`}
-            />
-          </Card>
-        ) : null}
-
-        <Card pad={false}>
-          <CardHead flush title="Your wallet" sub="What each one pays, and what it paid." />
-          {report.cards.map((c) => {
-            const account = byId.get(c.accountId);
-            const r = account ? rewardsOf(account) : DEFAULT_REWARDS;
-            return (
-              <button key={c.accountId} className="card-row" onClick={() => account && setEditing(account)}>
-                {account ? <InstitutionLogo account={account} size={30} /> : null}
-                <span className="col grow" style={{ gap: 1, minWidth: 0 }}>
-                  <span className="row" style={{ gap: 6 }}>
-                    <span className="bold truncate">{c.name}</span>
-                    {/* Driven by whether a person has confirmed the terms,
-                        not by whether the document holds any. Saving a draft
-                        fills the second in and leaves the first alone, and a
-                        badge that cleared on a draft would disagree with the
-                        warning above it. */}
-                    {c.confirmedAt ? null : <span className="tag card-unset">not checked</span>}
-                  </span>
-                  <span className="tiny faint truncate">
-                    {c.base}% on everything{r.rules.length ? `, ${r.rules.length} bonus rate${r.rules.length === 1 ? "" : "s"}` : ""}
-                    {c.annualFee ? ` · ${fmt0(c.annualFee)} a year` : ""}
-                  </span>
-                  {c.annualFee > 0 ? (
-                    <span className={cx("tiny", c.earned >= c.annualFee ? "pos" : "neg")}>
-                      {c.earned >= c.annualFee
-                        ? `Clears its fee, with ${fmt0(c.earned - c.annualFee)} over`
-                        : `${fmt0(c.annualFee - c.earned)} short of its fee`}
-                    </span>
-                  ) : null}
-                  {/* The counterweight. A card earning two percent while
-                      charging twenty-two is a losing card, and a rewards page
-                      that never says so is lying by omission. */}
-                  {c.interest > 0 ? (
-                    <span className="tiny neg">
-                      Charged {fmt0(c.interest)} of interest, against {fmt0(c.earned)} earned
-                      {c.interest > c.earned ? ". This card cost more than it paid." : "."}
-                    </span>
-                  ) : null}
-                  {c.bonus ? <BonusLine b={c.bonus} /> : null}
-                </span>
-                <span className="col" style={{ gap: 1, textAlign: "right" }}>
-                  <span className="num bold">{fmt0(c.earned)}</span>
-                  <span className="tiny faint">on {fmt0(c.spend)}</span>
-                </span>
-              </button>
-            );
-          })}
-        </Card>
-
-        <Offers />
-
-        <ReachTable
-          title="Where to put each purchase"
-          sub="The last year, biggest miss first, or click a heading to reorder it. The best card is the one to reach for at the till, given what the caps had already taken."
-          head="Category"
-          rows={catRows}
-          byId={byId}
-          onAsk={(r) => askHopper(
-            `Which credit cards would be good for my ${r.name} spending? Look at what I spent on ${r.name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`,
-          )}
-          askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
-          noun="categories"
-        />
-
-        {/* The same question asked of shops rather than of kinds of spending.
-            Cards are not sold by category: one that pays five percent at a
-            single chain is a slice of "Shopping" in the table above, sitting
-            beside forty other shops, and the whole line here. */}
-        <ReachTable
-          title="Where to put each shop"
-          sub="The last year at each place you paid, biggest first. Every shop a card touched is here, not only the ones above: a card aimed at one chain is invisible in a table of categories and obvious in this one."
-          head="Merchant"
-          rows={shopRows}
-          byId={byId}
-          onAsk={(r) => askHopper(
-            `Which credit cards would be good for my spending at ${r.name}? Look at what I spent there over the last year and what my cards earn on it now, then say whether any card aimed at ${r.name} is worth it, and what it pays.`,
-          )}
-          askTitle={(r) => `Ask Hopper which cards suit ${r.name}`}
-          empty="Nothing has gone on a card yet."
-          noun="shops"
-        />
-
-        <Card pad={false}>
-          <CardHead
-            flush title="Cards you are weighing up"
-            sub="Type the rates off an offer and see what it would have been worth against the year you actually had."
-            right={<Btn size="sm" onClick={() => setWeighing("new")}><Plus size={13} /> Add</Btn>}
-          />
-          {(db.candidates ?? []).length ? (db.candidates ?? []).map((c) => (
-            <Candidate key={c.id} card={c} from={from} to={to} onEdit={() => setWeighing(c)} />
-          )) : (
-            <div style={{ padding: "4px 16px 16px" }}>
-              <span className="small faint">
-                Nothing yet. Sovereign holds no list of card products, so the rates come off the offer in front of you
-                and the answer comes off your own spending.
-              </span>
-            </div>
-          )}
-        </Card>
-
-        <span className="tiny faint" style={{ padding: "0 2px" }}>
-          Worked out from your own purchases over the last year, and from what you have said each card pays.
-          Sovereign itself holds no list of card products. The spark beside a row asks Hopper, who answers
-          from what he was trained on rather than from any live offer, so check the terms of anything he names.
-        </span>
+          </>
+        )}
       </div>
       {editing ? (
         <RewardsModal
@@ -615,6 +640,7 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
   const [pointCents, setPointCents] = useState(start.pointCents);
   const [base, setBase] = useState(start.base);
   const [annualFee, setFee] = useState(start.annualFee ?? 0);
+  const [balance, setBalance] = useState(start.balance?.points ?? 0);
   const [rules, setRules] = useState<EarnRule[]>(start.rules);
   const [requirement, setRequirement] = useState(start.bonus?.requirement ?? 0);
   const [bonusFrom, setBonusFrom] = useState(start.bonus?.from ?? today());
@@ -658,6 +684,15 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
       // would have let somebody type one in and watch it vanish.
       rules: rules.filter((r) => r.categoryIds.length || (r.merchants ?? []).length),
       bonus: requirement > 0 ? { requirement, from: bonusFrom, by: bonusBy } : undefined,
+      // Dated the day it was typed, and only re-dated when the figure itself
+      // moves: opening this dialog to change a rate must not make a balance
+      // from March look like one from today.
+      balance: balance > 0
+        ? {
+          points: balance,
+          at: balance === (start.balance?.points ?? 0) ? start.balance?.at ?? today() : today(),
+        }
+        : undefined,
       // Stamped only when a person says the terms are right. Saving a draft
       // keeps whatever the last confirmation was, so a half-finished edit
       // cannot quietly promote a guess.
@@ -710,6 +745,28 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
         </Field>
       </div>
       <Field label="Annual fee"><MoneyInput value={annualFee} onChange={setFee} /></Field>
+
+      {/* Only for a card actually held. A card being weighed up has no
+          balance to hold, and nothing can fetch this one: no bank feed
+          carries a rewards balance, so it is read off the statement and
+          typed in. Dated, so the rewards tab can say how old it is instead
+          of presenting last spring's figure as today's. */}
+      {nameLocked ? (
+        <Field
+          label={pointCents === 1 ? "Cash back waiting" : "Points waiting"}
+          hint={balanceHint(start.balance?.at, pointCents)}
+        >
+          {pointCents === 1
+            ? <MoneyInput value={balance} onChange={setBalance} />
+            : (
+              <input
+                className="input" type="number" min={0} step={1} inputMode="numeric"
+                value={balance || ""} placeholder="0"
+                onChange={(e) => setBalance(Math.max(0, Math.round(Number(e.target.value) || 0)))}
+              />
+            )}
+        </Field>
+      ) : null}
 
       <div className="col" style={{ gap: 10 }}>
         <div className="spread">
@@ -819,6 +876,14 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
       </span>
     </Modal>
   );
+}
+
+/** What to say under the balance field, which depends on whether one is held. */
+function balanceHint(at: string | undefined, pointCents: number): string {
+  const what = pointCents === 1 ? "What the issuer says is there to redeem" : "What the issuer says your balance is";
+  return at
+    ? `${what}. Last entered ${dateLabel(at, { year: true })}; today's date is stamped on when the figure changes.`
+    : `${what}. Nothing can fetch this, so it is read off the statement and typed in.`;
 }
 
 /** How far along a sign-up bonus is, in one line. */

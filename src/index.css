@@ -1518,6 +1518,9 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .card-row:last-child { border-bottom: 0; }
 .card-row:hover { background: var(--surface-2); }
 .card-unset { background: var(--accent-soft); color: var(--accent); }
+/* A row that states something rather than opening it. The wallet's shape, less
+   the hand cursor and the hover tint, which between them promise a press. */
+.move-row, .move-row:hover { cursor: default; background: none; }
 /* This month's offers. The same shape as the reach-for tables above it, with
    its own widths: three figures rather than four, and a name that has a line
    of terms under it. */

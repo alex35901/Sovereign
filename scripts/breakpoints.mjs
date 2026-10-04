@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
-* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, settings-trim, not-saved.
+* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, rewards, settings-trim, not-saved.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -8001,6 +8001,210 @@ try {
       await wl.waitForTimeout(400);
     }
     await wl.close();
+  }
+
+  if (want("rewards")) {
+    // ── what the cards have already paid, and what is sitting unspent ──
+    //
+    // The tab exists because of one fact about the outside world: no bank feed
+    // carries a rewards balance. Plaid and Teller both answer about accounts,
+    // balances and transactions and neither has a field for the points with an
+    // issuer. So what is checked here is that the page is honest about that -
+    // it says nothing is pulled, it offers somewhere to type the one figure it
+    // cannot know, and it never adds two programs' points into one number.
+    const rw = await browser.newPage({ viewport: { width: 1280, height: 1400 } });
+    await rw.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+    await rw.waitForTimeout(1500);
+
+    const tabs = await rw.evaluate(() =>
+      [...document.querySelectorAll(".seg button")].map((b) => b.innerText.trim()));
+    check("the cards page is two tabs, and the one it already was is still called Cards",
+      tabs.join(" / ") === "Cards / Rewards", tabs.join(" / "));
+    check("and it opens on that one, not on the new one",
+      await rw.evaluate(() => /Your wallet/.test(document.body.innerText)), "");
+
+    const read = () => rw.evaluate(() => {
+      const named = (re) => [...document.querySelectorAll(".card")]
+        .find((c) => re.test(c.querySelector(".card-head")?.innerText ?? ""));
+      const rowsOf = (card) => (card
+        ? [...card.querySelectorAll(".card-row")].map((r) => r.innerText.replace(/\n/g, " | "))
+        : null);
+      return {
+        headline: document.querySelector(".nw-total")?.innerText ?? "",
+        tiles: [...document.querySelectorAll(".tile-top")].map((t) => ({
+          label: (t.querySelector(".tile-label")?.innerText ?? "").toLowerCase(),
+          value: t.querySelector(".tile-value")?.innerText.trim() ?? "",
+          sub: t.querySelector(".small.muted")?.innerText ?? "",
+        })),
+        held: rowsOf(named(/What each card holds/)),
+        // The figure read off its own element rather than out of the
+        // sentence: a move with a deadline has dollars in its text and
+        // nothing in its column, which is the distinction being checked.
+        moves: (() => {
+          const ways = named(/Ways to get more out of them/);
+          if (!ways) return null;
+          return [...ways.querySelectorAll(".card-row")].map((r) => ({
+            text: r.innerText.replace(/\n/g, " | "),
+            figure: r.querySelector(".num")?.innerText.trim() ?? "",
+            rate: r.querySelector(".num + .tiny")?.innerText.trim() ?? "",
+          }));
+        })(),
+        bars: document.querySelectorAll(".card-row .bar").length,
+        wallet: /Your wallet/.test(document.body.innerText),
+        text: document.body.innerText,
+      };
+    });
+
+    if (await tryStep("the Rewards tab opens", async () => {
+      await rw.locator(".seg button", { hasText: "Rewards" }).click({ timeout: 8000 });
+      await rw.waitForTimeout(700);
+    })) {
+      const open = await read();
+      // One at a time. Both tabs at once would be the longest page in the app
+      // and two headline figures arguing with each other.
+      check("and the tab it replaces is put away rather than left underneath",
+        open.wallet === false && open.held !== null,
+        `wallet ${open.wallet}, ${open.held?.length ?? "no"} cards`);
+      check("with a row for every card in the wallet",
+        (open.held?.length ?? 0) >= 2, `${open.held?.length} rows`);
+      check("under three figures: what was earned, what is banked, what was missed",
+        open.tiles.length === 3
+        && /earned/.test(open.tiles[0].label)
+        && /waiting with the issuers/.test(open.tiles[1].label)
+        && /left on the table/.test(open.tiles[2].label),
+        open.tiles.map((t) => t.label).join(" / "));
+      // The honest default. Nothing has been typed in, so the figure is not a
+      // zero that could be read as "you have no points".
+      check("and a balance nobody has typed in reads as untracked, not as nothing",
+        open.tiles[1].value === "Not tracked" && /No feed carries this/.test(open.tiles[1].sub),
+        `${open.tiles[1].value} // ${open.tiles[1].sub}`);
+      check("each card saying there is no balance yet and where to put one",
+        (open.held ?? []).every((r) => /No balance typed in/.test(r)),
+        (open.held ?? [])[0]?.slice(0, 120) ?? "");
+      check("and the page saying plainly that none of this came from a bank",
+        /No bank feed carries a rewards balance/.test(open.text)
+        && /nothing on this page is pulled from your banks/.test(open.text), "");
+      // The reason the headline is money. Two programs are two currencies.
+      check("and that points are never added across cards",
+        /never added across cards/.test(open.text), "");
+
+      // ── the one figure nobody can fetch ──
+      //
+      // Typed in, dated, and valued at whatever that card's points are worth.
+      // The editor is the same one the Cards tab uses, reached from here, which
+      // is the other half of this check.
+      if (await tryStep("a card opens its own terms from this tab", async () => {
+        await rw.locator(".card-row").first().click({ timeout: 8000 });
+        await rw.locator(".modal").waitFor({ timeout: 5000 });
+      })) {
+        const labels = await rw.evaluate(() =>
+          [...document.querySelectorAll(".modal .field label")].map((l) => l.innerText.trim()));
+        check("holding somewhere to put what the issuer says is there",
+          labels.some((l) => /waiting$/i.test(l)), labels.join(" / "));
+        // A cash-back card's balance is money and a points card's is points.
+        // Asking for "points" against a card that pays dollars is asking
+        // somebody to convert in their head, badly.
+        check("asked for in whatever that card actually pays in",
+          labels.includes("Cash back waiting"), labels.join(" / "));
+
+        if (await tryStep("saying a point is worth more than a cent turns it into points", async () => {
+          await rw.locator('.modal .field:has(label:text-is("A point is worth")) input')
+            .fill("2", { timeout: 8000 });
+          await rw.waitForTimeout(300);
+        })) {
+          check("which is what the field then asks for",
+            await rw.evaluate(() => [...document.querySelectorAll(".modal .field label")]
+              .some((l) => l.innerText.trim() === "Points waiting")), "");
+          check("and says the figure cannot be fetched, so it has to be read off a statement",
+            /Nothing can fetch this/.test(await rw.evaluate(() =>
+              document.querySelector(".modal")?.innerText ?? "")), "");
+        }
+
+        if (await tryStep("a balance can be typed in", async () => {
+          await rw.locator('.modal .field:has(label:text-is("Points waiting")) input')
+            .fill("100000", { timeout: 8000 });
+          await rw.locator('.modal .field:has(label:text-is("On everything")) input')
+            .fill("1", { timeout: 8000 });
+          await rw.locator(".modal-foot button", { hasText: "Save and confirm" }).click({ timeout: 8000 });
+          await rw.waitForTimeout(900);
+        })) {
+          const typed = await read();
+          const first = (typed.held ?? [])[0] ?? "";
+          check("and the card says how many, what they are worth, and when that was true",
+            /100,000 points waiting/.test(first) && /worth \$2,000/.test(first)
+            && /as of [A-Z][a-z]{2,4} \d+, \d{4}/.test(first),
+            first.slice(0, 180));
+          // Points in, money out. The only thing two programs have in common
+          // is what the household thinks each is worth.
+          check("with the total across the wallet counted in money",
+            typed.tiles[1].value === "$2,000", typed.tiles[1].value);
+          check("and counted against the cards that have one, not against all of them",
+            /1 card with a balance typed in/.test(typed.tiles[1].sub), typed.tiles[1].sub);
+        }
+      }
+
+      // ── the ways to maximise, which are this household's own misrouting ──
+      const moved = await read();
+      check("the page lists things to actually do, rather than general advice",
+        (moved.moves?.length ?? 0) > 0, `${moved.moves?.length} moves`);
+      check("each with what kind of thing it is",
+        (moved.moves ?? []).every((m) => /\b(terms|deadline|cap|shop|habit|fee|off card|check)\b/.test(m.text)),
+        (moved.moves ?? [])[0]?.text.slice(0, 140) ?? "");
+      // A figure with no period on it is a figure nobody can act on: forty
+      // dollars a year and forty dollars a month are different decisions.
+      const priced = (moved.moves ?? []).filter((m) => m.figure);
+      check("and a figure, where it has one, said as a rate rather than as a lump",
+        priced.length > 0 && priced.every((m) => /^\$/.test(m.figure) && m.rate === "a year"),
+        priced.map((m) => `${m.figure} ${m.rate}`).join(" | ") || "nothing carried a figure");
+      check("the open-ended half of the question going to Hopper instead",
+        await rw.evaluate(() => [...document.querySelectorAll(".card-head button")]
+          .some((b) => /Ask Hopper/.test(b.innerText))), "");
+
+      if (await tryStep("and pressing that hands it over with the wallet in it", async () => {
+        await rw.locator(".card-head button", { hasText: "Ask Hopper" }).click({ timeout: 8000 });
+        await rw.waitForTimeout(700);
+      })) {
+        const asked = decodeURIComponent(rw.url());
+        check("naming the cards and what they earned, so the answer is about this wallet",
+          /\/hopper\?/.test(asked) && /I carry these credit cards/.test(asked)
+          && /more than a cent a point/.test(asked),
+          asked.slice(-140));
+        await rw.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+        await rw.waitForTimeout(1500);
+        await rw.locator(".seg button", { hasText: "Rewards" }).click({ timeout: 8000 });
+        await rw.waitForTimeout(700);
+      }
+
+      // Back, and the tab it came from is as it was. A tab that loses the page
+      // under it is a tab nobody presses twice.
+      if (await tryStep("the Cards tab comes back", async () => {
+        await rw.locator(".seg button", { hasText: "Cards" }).click({ timeout: 8000 });
+        await rw.waitForTimeout(600);
+      })) {
+        const back = await read();
+        check("with the wallet and its tables where they were",
+          back.wallet === true && back.held === null, `wallet ${back.wallet}`);
+      }
+
+      // The long sentences on this tab are its own risk: a row that states a
+      // thing has more words in it than a row that shows a figure.
+      await rw.locator(".seg button", { hasText: "Rewards" }).click({ timeout: 8000 });
+      await rw.waitForTimeout(600);
+      for (const width of [1280, 834, 390]) {
+        await rw.setViewportSize({ width, height: 1400 });
+        await rw.waitForTimeout(400);
+        const over = await rw.evaluate(() => ({
+          doc: document.documentElement.scrollWidth,
+          win: window.innerWidth,
+          widest: [...document.querySelectorAll(".card-row")]
+            .reduce((n, r) => Math.max(n, r.scrollWidth - r.clientWidth), 0),
+        }));
+        check(`nothing runs off the edge at ${width}`,
+          over.doc <= over.win + 1 && over.widest <= 1,
+          `page ${over.doc} in ${over.win}, worst row over by ${over.widest}`);
+      }
+    }
+    await rw.close();
   }
 
 
