@@ -9344,6 +9344,11 @@ try {
         ratios: [...card.querySelectorAll(".deal-row:not(.head)")].map((r) => Number(cell(r, 2))),
         spends: [...card.querySelectorAll(".deal-row:not(.head)")]
           .map((r) => Number(cell(r, 0).replace(/[^\d.]/g, ""))),
+        rewards: [...card.querySelectorAll(".deal-row:not(.head)")]
+          .map((r) => Number(cell(r, 1).replace(/[^\d.]/g, ""))),
+        views: [...card.querySelectorAll(".seg button")].map((b) => b.innerText.trim()),
+        on: card.querySelector(".seg button.on")?.innerText.trim() ?? "",
+        sub: card.querySelector(".card-head")?.innerText.replace(/\n/g, " | ") ?? "",
         foot: card.innerText.replace(/\n/g, " | "),
       };
     });
@@ -9368,6 +9373,53 @@ try {
       t?.foot.slice(-120) ?? "");
 
     const head = (n) => op.locator('.card:has(h2:text("Worth opening this month")) .deal-row.head .sort-head').nth(n);
+
+    // ── the same list read the other way ──
+    //
+    // Two different questions, not one sort. The biggest bonus is usually on
+    // a card whose spend requirement drags its ratio down, so ranking one way
+    // and keeping five used to throw the other answer away rather than
+    // reorder it. Here: $900 on $6,000 is the biggest bonus and the worst
+    // ratio on the list, and both readings have to be reachable.
+    check("the list says there are two ways to read it",
+      t !== null && t.views.join(" / ") === "Best per $1 / Biggest bonus",
+      t?.views.join(" / ") ?? "no switch");
+    check("and opens on the one it is ranked by",
+      t !== null && t.on === "Best per $1", t?.on ?? "");
+
+    const view = (label) => op.locator(`.card:has(h2:text("Worth opening this month")) .seg button`, { hasText: label });
+    if (await tryStep("the other reading can be switched to", async () => {
+      await view("Biggest bonus").click({ timeout: 8000 });
+      await op.waitForTimeout(400);
+    })) {
+      const big = await table();
+      check("which leads with the biggest bonus, not the best ratio",
+        big !== null && big.names[0] === "Zzz Big Bonus"
+        && big.rewards.every((v, i) => i === 0 || big.rewards[i - 1] >= v),
+        `${big?.names.join(", ")} at ${big?.rewards.join(", ")}`);
+      // The card said it was ranked by what the bonus pays against what it
+      // takes. Leaving that sentence up while showing the other ranking would
+      // be the page quietly saying the wrong thing about itself.
+      check("and says what it is now showing instead of what it was",
+        big !== null && /biggest bonuses/i.test(big.sub) && !/against what it takes/i.test(big.sub),
+        big?.sub.slice(0, 150) ?? "");
+      check("with the heading for that column marked as the one in use",
+        /high to low|low to high/.test(
+          await head(2).getAttribute("title") ?? "",
+        ), await head(2).getAttribute("title") ?? "");
+
+      if (await tryStep("and switched back again", async () => {
+        await view("Best per $1").click({ timeout: 8000 });
+        await op.waitForTimeout(400);
+      })) {
+        const back = await table();
+        check("putting the best value for the money back on top",
+          back !== null && back.names[0] === "Aaa Best Ratio"
+          && back.ratios.every((v, i) => i === 0 || back.ratios[i - 1] >= v),
+          `${back?.names.join(", ")} at ${back?.ratios.join(", ")}`);
+      }
+    }
+
     if (await tryStep("another column can be sorted on", async () => {
       await head(1).click({ timeout: 8000 });
       await op.waitForTimeout(350);

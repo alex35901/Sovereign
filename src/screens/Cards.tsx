@@ -14,7 +14,8 @@ import { merchantIndex } from "../lib/select";
 import type { BonusProgress } from "../lib/cards";
 import { candidateValue, cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
 import { draftRewards, toRules } from "../lib/hopper/rewards";
-import { MIN_REWARD, fetchOffers, ratioOf } from "../lib/hopper/offers";
+import type { DealView } from "../lib/hopper/offers";
+import { MIN_REWARD, fetchOffers, ratioOf, topBy } from "../lib/hopper/offers";
 import { cloudEnabled } from "../lib/cloud";
 import { InstitutionLogo } from "../components/InstitutionLogo";
 import { CategoryPicker, CategoryTag } from "../components/pickers";
@@ -78,6 +79,18 @@ const TABS = [
 ] as const;
 
 type Tab = (typeof TABS)[number]["value"];
+
+/**
+ * The two ways a list of sign-up offers is worth reading.
+ *
+ * Per dollar finds the card worth opening for an ordinary year of spending.
+ * Biggest bonus finds the one worth stretching for, which is usually a card
+ * whose spend requirement keeps it out of the other list entirely.
+ */
+const VIEWS = [
+  { value: "ratio", label: "Best per $1" },
+  { value: "reward", label: "Biggest bonus" },
+] as const;
 
 const PERIODS = [
   { value: "month", label: "a month" },
@@ -482,7 +495,8 @@ function Offers() {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const asked = useRef(false);
-  const { sort, toggle: onSort } = useSort<DealField>({ key: "ratio", dir: "desc" });
+  const { sort, toggle: onSort, setSort } = useSort<DealField>({ key: "ratio", dir: "desc" });
+  const [view, setView] = useState<DealView>("ratio");
 
   const held = db.cardOffers;
   const month = thisMonth();
@@ -510,7 +524,15 @@ function Offers() {
     void run();
   }, [stale, run]);
 
-  const rows = sortRows(held?.deals ?? [], sort, (d, key) => {
+  /**
+   * Which question is being asked, before anything is sorted.
+   *
+   * Not a sort: the two rankings pick different cards, and the biggest bonus
+   * is usually on a card whose ratio keeps it out of the top five. So the
+   * choice cuts the list first and the column headings order what is left.
+   */
+  const shown = topBy(held?.deals ?? [], view);
+  const rows = sortRows(shown, sort, (d, key) => {
     if (key === "spend") return d.spend;
     if (key === "reward") return d.reward;
     if (key === "ratio") return ratioOf(d);
@@ -521,13 +543,28 @@ function Offers() {
     <Card pad={false}>
       <CardHead
         flush title="Worth opening this month"
-        sub={`The best of what Hopper remembers being on offer, by what the bonus pays against what it takes to earn it. Nothing beneath ${fmt0(MIN_REWARD)} of reward, because a small enough bonus makes a ratio that means nothing.`}
+        sub={view === "ratio"
+          ? `The best of what Hopper remembers being on offer, by what the bonus pays against what it takes to earn it. Nothing beneath ${fmt0(MIN_REWARD)} of reward, because a small enough bonus makes a ratio that means nothing.`
+          : "The biggest bonuses Hopper remembers, whatever they take to earn. A big bonus usually comes with a big spend requirement, which is why these are not the same cards as the best per dollar, so read the spend column before the reward one."}
         right={
           <Btn size="sm" onClick={() => void run()} disabled={busy}>
             <Sparkles size={13} /> {busy ? "Asking" : "Refresh"}
           </Btn>
         }
       />
+      {(held?.deals.length ?? 0) > 0 ? (
+        <div style={{ padding: "0 16px 12px" }}>
+          {/* The heading changes with it, because "best" means two different
+              things here and a table that silently swapped which cards were
+              in it would be the page lying quietly. */}
+          <Segmented
+            value={view}
+            options={VIEWS.map((v) => ({ ...v }))}
+            onChange={(v) => { setView(v); setSort({ key: v, dir: "desc" }); }}
+            spread
+          />
+        </div>
+      ) : null}
       {rows.length ? (
         <>
           <div className="deal-row head">

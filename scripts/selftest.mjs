@@ -16044,12 +16044,65 @@ await test("the same card twice does not take two of the five places", () => {
   assert.equal(deals[0].card, "Sapphire Preferred", "the first spelling, kept as written");
 });
 
-await test("no more than five survive onto the card", () => {
+await test("no more than five survive onto the card, where both rankings agree", () => {
+  // Every spend the same, so the biggest bonus is also the best per dollar
+  // and the two rankings pick the same five.
   const many = Array.from({ length: 30 }, (_, i) => deal(`Card ${i}`, 1_000, 100 + i));
   const { deals } = offers({ deals: many });
   assert.equal(deals.length, M.OF.KEEP);
   assert.equal(deals.length, 5);
   assert.equal(deals[0].card, "Card 29", "and they are the best five, not the first five");
+});
+
+await test("the biggest bonus is kept even when its spend keeps it out of the best per dollar", () => {
+  // The bug this replaces. Ranked by ratio and cut to five, a large bonus on
+  // a large spend never reached the document, so sorting the reward column
+  // could only reorder the survivors of a ranking that had already dropped
+  // it. The question the column asks has to be answerable from what is kept.
+  const { deals } = offers({ deals: [
+    deal("Thin One", 1_000, 300),
+    deal("Thin Two", 1_000, 290),
+    deal("Thin Three", 1_000, 280),
+    deal("Thin Four", 1_000, 270),
+    deal("Thin Five", 1_000, 260),
+    deal("Whale", 15_000, 1_500),
+  ] });
+  assert.ok(deals.some((d) => d.card === "Whale"), deals.map((d) => d.card).join(", "));
+  assert.equal(M.OF.topBy(deals, "reward")[0].card, "Whale", "and it leads when the list is read that way");
+  assert.equal(M.OF.topBy(deals, "ratio")[0].card, "Thin One", "while the other reading is unchanged");
+});
+
+await test("each reading shows five, and the document holds enough for both", () => {
+  // Five by ratio and five by reward, overlapping. Ten distinct cards where
+  // the two rankings are exact opposites, fewer where they agree.
+  const opposed = Array.from({ length: 20 }, (_, i) => deal(`Card ${i}`, (i + 1) * 1_000, 100 + i * 20));
+  const { deals } = offers({ deals: opposed });
+  assert.equal(deals.length, 10, deals.map((d) => d.card).join(", "));
+  assert.equal(M.OF.topBy(deals, "ratio").length, 5);
+  assert.equal(M.OF.topBy(deals, "reward").length, 5);
+  // Ordered by ratio as stored, so a document read by anything that does not
+  // know about the two views still leads with the best value.
+  const ratios = deals.map((d) => M.OF.ratioOf(d));
+  assert.ok(ratios.every((r, i) => i === 0 || ratios[i - 1] >= r), ratios.join(" "));
+});
+
+await test("a card in both rankings takes one place, not two", () => {
+  const { deals } = offers({ deals: [
+    deal("Best At Both", 1_000, 900),
+    deal("Other", 2_000, 200),
+  ] });
+  assert.equal(deals.length, 2);
+  assert.equal(deals.filter((d) => d.card === "Best At Both").length, 1);
+});
+
+await test("reading by reward breaks its ties on the ratio, and the other way round", () => {
+  // Fed in the wrong order on purpose. A sort is stable, so a tie-breaker
+  // that was quietly dropped would leave whichever arrived first on top and
+  // the test would pass without the tie-breaker doing anything.
+  const same = [deal("Loose", 5_000, 500), deal("Tight", 1_000, 500)];
+  assert.equal(M.OF.topBy(same, "reward")[0].card, "Tight", "same bonus, less to spend for it");
+  const equal = [deal("Small", 1_000, 200), deal("Large", 5_000, 1_000)];
+  assert.equal(M.OF.topBy(equal, "ratio")[0].card, "Large", "same ratio, bigger bonus");
 });
 
 await test("the terms beside a deal are bounded, not believed", () => {

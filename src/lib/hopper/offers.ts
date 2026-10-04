@@ -39,10 +39,12 @@ Rules:
 - Dollars, never points and never cents. A points bonus is converted to what
   it is worth and the conversion is said in that deal's note.
 - Leave out anything paying less than $100.
-- Leave out anything with no minimum spend. The list is ranked by reward
+- Leave out anything with no minimum spend. One of the two rankings is reward
   against spend, and there is nothing to rank without a spend.
-- At most ten, best value first. Only cards you are reasonably confident are
-  current.
+- At most ten. The list is read two ways, by what a bonus pays per dollar of
+  spend and by the size of the bonus itself, so include both the best value
+  for the money and the biggest bonuses even where those take a large spend.
+  Only cards you are reasonably confident are current.
 - Do not invent a card, an amount or a deadline. If you are not confident of
   any, return an empty list and say so in the note.
 - Say in the note when your knowledge of these ends, because somebody is about
@@ -61,8 +63,19 @@ export type { CardDeal, CardOffers } from "../../types.js";
  */
 export const MIN_REWARD = 100_00;
 
-/** How many survive onto the card. */
+/** How many of each ranking survive onto the card. */
 export const KEEP = 5;
+
+/**
+ * The two questions a list of sign-up offers answers.
+ *
+ * Not the same question twice. "Which pays most for the money" finds the card
+ * worth opening for an ordinary year of spending; "which bonus is biggest"
+ * finds the one worth stretching for, and the biggest bonuses are usually the
+ * ones with a spend that drags their ratio down. Ranked one way and cut to
+ * five, the other answer is not reordered, it is gone.
+ */
+export type DealView = "ratio" | "reward";
 
 /** Past these a figure is a misread rather than an offer. */
 const MAX_SPEND = 100_000_00;
@@ -129,11 +142,32 @@ export function readOffers(raw: string): { deals: CardDeal[]; note: string } {
   return { deals: rank(deals), note: text(got.note, 300) };
 }
 
-/** Best value first, and only as many as the card shows. */
+/** Every deal in order for one of the two questions, ties broken by the other. */
+export const order = (deals: readonly CardDeal[], view: DealView): CardDeal[] =>
+  [...deals].sort(view === "ratio"
+    ? (a, b) => ratioOf(b) - ratioOf(a) || b.reward - a.reward
+    : (a, b) => b.reward - a.reward || ratioOf(b) - ratioOf(a));
+
+/** The best few by one measure, which is what the card shows at a time. */
+export const topBy = (deals: readonly CardDeal[], view: DealView): CardDeal[] =>
+  order(deals, view).slice(0, KEEP);
+
+/**
+ * What is worth keeping: enough that either question has a real answer.
+ *
+ * The best five by ratio and the best five by reward, which overlap and
+ * usually come to seven or eight rather than ten. Keeping only one ranking's
+ * five was the bug this replaces: a fifteen hundred dollar bonus on a fifteen
+ * thousand dollar spend never made the stored list, so sorting the column by
+ * reward could only reorder the survivors of a ranking that had already
+ * thrown it away.
+ */
 export function rank(deals: readonly CardDeal[]): CardDeal[] {
-  return [...deals]
-    .sort((a, b) => ratioOf(b) - ratioOf(a) || b.reward - a.reward)
-    .slice(0, KEEP);
+  const keep = new Map<string, CardDeal>();
+  for (const d of [...topBy(deals, "ratio"), ...topBy(deals, "reward")]) {
+    keep.set(d.card.toLowerCase(), d);
+  }
+  return order([...keep.values()], "ratio");
 }
 
 /** Ask for this month's list. Throws whatever the endpoint threw. */
