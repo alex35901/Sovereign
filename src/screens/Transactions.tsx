@@ -10,7 +10,7 @@ import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
 import { logoFor } from "../lib/merchant-domain";
 import { toCSV } from "../lib/csv";
-import { accountOptions, budgetedCategoryIds, budgetedSum, recurringByMerchant } from "../lib/select";
+import { accountOptions, budgetedCategoryIds, budgetedSum, mutedAccountIds, recurringByMerchant } from "../lib/select";
 import { cadenceLabel, recurringIdFor } from "../lib/recurring";
 import type { BudgetedSum } from "../lib/select";
 import { fmt } from "../lib/money";
@@ -202,10 +202,27 @@ export default function Transactions() {
   const typed = useMemo(() => typedAmount(q), [q]);
   const range = useMemo(() => ({ min: minAmount, max: maxAmount }), [minAmount, maxAmount]);
 
+  /**
+   * Accounts told to keep their transactions out of the figures.
+   *
+   * Every other surface asks this question through counts(), so a muted
+   * account is out of cash flow, the budget, the reports, the cards page and
+   * net worth. This page built its own filter straight off db.transactions
+   * and never asked, which left the one list in the app that still showed
+   * them, and left the total at the top of this page disagreeing with the
+   * budget about the same month.
+   */
+  const muted = useMemo(() => mutedAccountIds(db), [db.accounts]);
+
   const filtered = useMemo(() => {
     const needle = q.toLowerCase().trim();
     return db.transactions.filter((t) => {
       if (accountId && t.accountId !== accountId) return false;
+      // Out of the ledger as well, with two ways back to them: ask for the
+      // account by name, which is what the account's own page links to and
+      // where an empty list would be the wrong answer, or ask for what is
+      // being kept out, which is what the Hidden preset is.
+      if (!accountId && preset !== "hidden" && muted.has(t.accountId)) return false;
       if (categoryId && t.categoryId !== categoryId && !t.splits?.some((s) => s.categoryId === categoryId)) return false;
       if (span && (t.date < span.from || t.date > span.to)) return false;
       if (tagId && !t.tags.includes(tagId)) return false;
@@ -213,7 +230,7 @@ export default function Transactions() {
       if (preset === "uncategorized" && t.categoryId !== "c_uncategorized") return false;
       if (preset === "income" && t.amount <= 0) return false;
       if (preset === "expense" && t.amount >= 0) return false;
-      if (preset === "hidden" && !t.hideFromReports) return false;
+      if (preset === "hidden" && !t.hideFromReports && !muted.has(t.accountId)) return false;
       if (!inAmountRange(t.amount, range)) return false;
       if (needle) {
         const hay = `${t.merchant} ${t.statement ?? ""} ${t.notes ?? ""}`.toLowerCase();
@@ -224,7 +241,7 @@ export default function Transactions() {
       }
       return true;
     });
-  }, [db.transactions, q, typed, accountId, categoryId, span, tagId, preset, range]);
+  }, [db.transactions, q, typed, accountId, categoryId, span, tagId, preset, range, muted]);
 
   const shown = filtered.slice(0, limit);
   const more = filtered.length > shown.length;

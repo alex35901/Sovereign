@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
-* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, rewards, simplefin, settings-trim, not-saved.
+* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-muted, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, rewards, simplefin, settings-trim, not-saved.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -3574,6 +3574,79 @@ try {
       }
     }
     await fp.close();
+  }
+
+  if (want("tx-muted")) {
+    // ── an account told to keep its transactions out of the figures ──
+    //
+    // The toggle says it keeps them out of cash flow, budgets and reports, and
+    // everywhere that asks the question through counts() it does. This page
+    // built its own filter straight off the document and never asked, so the
+    // one list in the app that still showed them was the ledger, and the total
+    // at the top of this page disagreed with the budget about the same month.
+    const mp = await browser.newContext({ viewport: { width: 1280, height: 1200 } });
+    const warm = await mp.newPage();
+    await warm.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(1400);
+    await warm.close();
+
+    await mp.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const day = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+        const cat = db.categories[0].id;
+        db.accounts = [...db.accounts, {
+          id: "muted_acct", name: "Reimbursed Card", institution: "Side Bank", type: "credit",
+          balance: -50_00, includeInNetWorth: true, hidden: false, history: [], order: 95,
+          hideTransactions: true,
+        }];
+        db.transactions = [
+          { id: "muted_t1", accountId: "muted_acct", date: day, merchant: "Zzz Muted Purchase",
+            amount: -4242, categoryId: cat, tags: [], pending: false, reviewed: true,
+            hideFromReports: false, createdAt: `${day}T09:00:00.000Z` },
+          ...db.transactions,
+        ];
+        db.settings.syncCadence = "off";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const mt = await mp.newPage();
+    await mt.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await mt.waitForTimeout(1200);
+
+    const listed = () => mt.evaluate(() => document.body.innerText.includes("Zzz Muted Purchase"));
+
+    check("a muted account's transactions are out of the ledger as well",
+      (await listed()) === false, "the row is still listed");
+
+    // The two ways back to them. An account's own page links here with the
+    // account named, and an empty list would be the wrong answer to "show me
+    // this account".
+    if (await tryStep("asking for that account by name brings them back", async () => {
+      await mt.goto(`${BASE}/transactions?account=muted_acct`, { waitUntil: "networkidle" });
+      await mt.waitForTimeout(900);
+    })) {
+      check("because showing nothing is the wrong answer to a question about it",
+        (await listed()) === true, "the account's own page is empty");
+    }
+
+    if (await tryStep("and so does asking for what is being kept out", async () => {
+      await mt.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+      await mt.waitForTimeout(900);
+      await mt.locator(".filter-toggle").click({ timeout: 5000 });
+      await mt.locator('.filter-panel .field:has(label:text-is("Show")) select')
+        .selectOption("hidden", { timeout: 5000 });
+      await mt.waitForTimeout(700);
+    })) {
+      check("which is what the Hidden from reports view is for",
+        (await listed()) === true, "not listed under the view that exists to show them");
+    }
+
+    await mt.close();
+    await mp.close();
   }
 
   if (want("dashboard")) {
