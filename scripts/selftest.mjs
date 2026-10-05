@@ -10548,6 +10548,82 @@ await test("only what is missing is asked for", () => {
   assert.equal(needsFetch(hist([["2020-01-01", 1], ["2026-09-04", 2]], fresh), "2020-01-01", "2026-09-10", now), null);
 });
 
+await test("a symbol the provider has nothing for is not asked about again on every visit", () => {
+  // The leak that starved the comparison lines. The hold-off guarded one case
+  // out of three, and the two it did not guard are the two that never settle:
+  // a symbol with no data holds an empty history for ever, so it took the
+  // early return and was asked for again on every single page load.
+  const { needsFetch, HISTORY_MIN_GAP_HOURS } = M.BM;
+  const now = Date.parse("2026-09-10T18:00:00.000Z");
+  const fresh = new Date(now - (HISTORY_MIN_GAP_HOURS - 1) * 3_600_000).toISOString();
+  const stale = new Date(now - (HISTORY_MIN_GAP_HOURS + 1) * 3_600_000).toISOString();
+
+  assert.equal(needsFetch(hist([], fresh), "2020-01-01", "2026-09-10", now), null, "asked an hour ago, and the answer was nothing");
+  assert.deepEqual(
+    needsFetch(hist([], stale), "2020-01-01", "2026-09-10", now),
+    { from: "2020-01-01", to: "2026-09-10" },
+    "but a day later it is worth asking again",
+  );
+  // Never asked at all is not the same as asked and told nothing.
+  assert.deepEqual(
+    needsFetch(M.BM.emptyHistory("NEW"), "2020-01-01", "2026-09-10", now),
+    { from: "2020-01-01", to: "2026-09-10" },
+  );
+});
+
+await test("and nor is one whose listing is younger than the window", () => {
+  // The other unguarded case: a fund that listed two years ago can never hold
+  // a history reaching six years back, so "starts after the window" is true
+  // for ever and the whole window was refetched on every visit.
+  const { needsFetch, HISTORY_MIN_GAP_HOURS } = M.BM;
+  const now = Date.parse("2026-09-10T18:00:00.000Z");
+  const fresh = new Date(now - (HISTORY_MIN_GAP_HOURS - 1) * 3_600_000).toISOString();
+  const stale = new Date(now - (HISTORY_MIN_GAP_HOURS + 1) * 3_600_000).toISOString();
+  const young = [["2025-01-02", 1], ["2026-09-10", 2]];
+
+  assert.equal(needsFetch(hist(young, fresh), "2020-01-01", "2026-09-10", now), null);
+  assert.deepEqual(
+    needsFetch(hist(young, stale), "2020-01-01", "2026-09-10", now),
+    { from: "2020-01-01", to: "2026-09-10" },
+  );
+});
+
+await test("a stamp from the future is not a hold-off", () => {
+  // A clock that jumped would otherwise freeze every symbol out of being
+  // asked about until the stamp came back round.
+  const { needsFetch } = M.BM;
+  const now = Date.parse("2026-09-10T18:00:00.000Z");
+  const ahead = new Date(now + 86_400_000).toISOString();
+  assert.deepEqual(
+    needsFetch(hist([], ahead), "2020-01-01", "2026-09-10", now),
+    { from: "2020-01-01", to: "2026-09-10" },
+  );
+  assert.deepEqual(
+    needsFetch(hist([["2020-01-01", 1], ["2026-09-04", 2]], ahead), "2020-01-01", "2026-09-10", now),
+    { from: "2026-09-05", to: "2026-09-10" },
+  );
+});
+
+await test("a day's worth of visits costs one pass, not one pass each", () => {
+  // The whole point, counted. Forty positions against a free tier of fifty
+  // requests an hour: the first visit asks about each one, and the visits
+  // after it ask about none of them until the answers are a day old.
+  const { needsFetch } = M.BM;
+  const now = Date.parse("2026-09-10T18:00:00.000Z");
+  const held = {};
+  const symbols = Array.from({ length: 40 }, (_, i) => `T${i}`);
+  // Half have data, half are the kind a 401(k) is full of and the provider
+  // has never heard of.
+  const after = (t, i) => (i % 2
+    ? hist([["2020-01-01", 1], ["2026-09-10", 2]], new Date(now).toISOString())
+    : hist([], new Date(now).toISOString()));
+  const first = symbols.filter((t) => needsFetch(held[t], "2020-01-01", "2026-09-10", now));
+  assert.equal(first.length, 40, "the first visit asks about all of them");
+  for (const [i, t] of symbols.entries()) held[t] = after(t, i);
+  const second = symbols.filter((t) => needsFetch(held[t], "2020-01-01", "2026-09-10", now + 60_000));
+  assert.equal(second.length, 0, "and a minute later, about none of them");
+});
+
 await test("the provider's history is read for dividends, not for today's price", async () => {
   const { fetchHistoryDirect } = M;
   let seen = "";

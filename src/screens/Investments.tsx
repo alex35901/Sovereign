@@ -124,8 +124,13 @@ export default function Investments() {
    * over the period. Asked for together so the fetch below can batch them.
    */
   const wanted = useMemo(() => {
-    const out = new Set(holdingTickers(db, MAX_TICKERS));
-    for (const t of picked) out.add(t);
+    // The lines a reader has chosen lead the queue. The provider's free tier
+    // allows fifty requests an hour and a portfolio of forty positions is
+    // forty of them, so whatever is last in this list is what goes without.
+    // It used to be the comparison lines, which are the subject of this card
+    // rather than a column in the table under it.
+    const out = new Set(picked);
+    for (const t of holdingTickers(db, MAX_TICKERS)) out.add(t);
     return [...out];
   }, [db, picked]);
 
@@ -198,7 +203,7 @@ export default function Investments() {
               total={p.accountsValue} series={values} points={shownPoints}
               tone={trendTone(values)} range={range} onRange={setRange}
               compare={compare.length ? compare : undefined}
-              under={<Against picked={picked} onToggle={toggle} state={market.state} />}
+              under={<Against picked={picked} onToggle={toggle} state={market.state} reason={market.reason} />}
             />
           ) : (
             <Allocation p={p} />
@@ -372,8 +377,10 @@ function holdingField(
 }
 
 /** The market lines on offer, none of them on by default. */
-function Against({ picked, onToggle, state }: {
+function Against({ picked, onToggle, state, reason }: {
   picked: readonly string[]; onToggle: (ticker: string, label: string) => void; state: FetchState;
+  /** What the provider said, where it said anything worth passing on. */
+  reason?: string | null;
 }) {
   return (
     <div className="against">
@@ -400,7 +407,10 @@ function Against({ picked, onToggle, state }: {
         <span className="tiny faint against-note">
           {state === "loading" ? "Fetching closing prices…"
             : state === "nokey" ? <>Add a Tiingo token under <Link to="/settings" className="link">Settings &rarr; Integrations</Link> to compare against the market.</>
-            : "Some closing prices could not be fetched. The lines that did arrive are unchanged."}
+            // A spent allowance clears itself within the hour and a rejected
+            // token never will. Both are worth saying in the provider's own
+            // words rather than as the same three about something going wrong.
+            : reason ?? "Some closing prices could not be fetched. The lines that did arrive are unchanged."}
         </span>
       ) : null}
     </div>

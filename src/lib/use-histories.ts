@@ -18,6 +18,16 @@ export type FetchState = "idle" | "loading" | "error" | "nokey";
 export function useHistories(tickers: readonly string[], apiKey: string) {
   const [data, setData] = useState<Record<string, PriceHistory>>({});
   const [state, setState] = useState<FetchState>("idle");
+  /**
+   * What went wrong, where the provider said.
+   *
+   * A spent allowance and a rejected token are the two failures a reader can
+   * do something about, and both arrive here as a sentence from the server.
+   * Collapsing them into a flag threw the sentence away and left the page
+   * saying "some closing prices could not be fetched" about a rate limit that
+   * clears itself in an hour.
+   */
+  const [reason, setReason] = useState<string | null>(null);
   // Which symbols are already in flight, so a second render does not spend a
   // second request on an answer that is already on its way.
   const busy = useRef<Set<string>>(new Set());
@@ -31,7 +41,7 @@ export function useHistories(tickers: readonly string[], apiKey: string) {
     setData((cur) => ({ ...cur, ...cached }));
 
     const short = symbols.filter((t) => needsFetch(cached[t], historyFloor(), today()));
-    if (!short.length) { setState("idle"); return; }
+    if (!short.length) { setState("idle"); setReason(null); return; }
     if (!apiKey.trim()) { setState("nokey"); return; }
 
     const fresh = short.filter((t) => !busy.current.has(t));
@@ -53,8 +63,14 @@ export function useHistories(tickers: readonly string[], apiKey: string) {
       byWindow.set(key, bucket);
     }
 
-    let failed = false;
+    let empty = false;
+    let stopped: string | null = null;
     for (const { from, to, tickers: batch } of byWindow.values()) {
+      // A request that failed outright failed for a reason that is about the
+      // key or the allowance, not about one symbol, so the windows behind it
+      // would fail the same way. Grinding through them spends what is left of
+      // a limited hour on answers nobody will get.
+      if (stopped) { for (const t of batch) busy.current.delete(t); continue; }
       try {
         const rows = await fetchHistories(apiKey, batch, from, to);
         const at = new Date().toISOString();
@@ -64,23 +80,26 @@ export function useHistories(tickers: readonly string[], apiKey: string) {
           // Stamped even when the provider had nothing new, or a quiet market
           // puts the page into a request loop.
           saveHistory(next);
-          if (!next.dates.length) failed = true;
+          if (!next.dates.length) empty = true;
           merged[t] = next;
         }
         setData((cur) => ({ ...cur, ...merged }));
-      } catch {
-        failed = true;
+      } catch (err) {
+        stopped = err instanceof Error && err.message
+          ? err.message
+          : "Closing prices could not be fetched.";
       } finally {
         for (const t of batch) busy.current.delete(t);
       }
     }
-    setState(failed ? "error" : "idle");
+    setReason(stopped);
+    setState(stopped || empty ? "error" : "idle");
   }, [apiKey]);
 
   useEffect(() => {
     void load(key ? key.split(",") : []);
   }, [key, load]);
 
-  return { data, state };
+  return { data, state, reason };
 }
 

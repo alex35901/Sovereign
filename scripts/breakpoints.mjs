@@ -4573,6 +4573,10 @@ try {
         alone.pressed === 0 && alone.legend === 0 && alone.lines === 2,
         `${alone.pressed} pressed, ${alone.legend} named, ${alone.lines} lines`);
 
+      // What the page spent opening, kept before the slate is wiped: the
+      // batching is a fact about a load that needs many symbols, and pressing
+      // a pill afterwards should need exactly one.
+      const onLoad = [...asked];
       asked = [];
       const picked = await tryStep("a benchmark can be chosen", async () => {
         await bench.locator('.against-pill:has-text("S&P 500")').click({ timeout: 5000 });
@@ -4591,8 +4595,23 @@ try {
         // Batched rather than one connection per symbol: a page that opens
         // with a table full of positions would otherwise fan out.
         check("and asks for several symbols per request rather than one each",
-          asked.every((a) => a.tickers.length <= 4) && asked.some((a) => a.tickers.length > 1),
-          asked.map((a) => a.tickers.length).join(", "));
+          [...onLoad, ...asked].every((a) => a.tickers.length <= 4)
+          && onLoad.some((a) => a.tickers.length > 1),
+          `${onLoad.map((a) => a.tickers.length).join(",")} opening, ${asked.map((a) => a.tickers.length).join(",")} after`);
+        // What the symbols already answered for cost the second time, which
+        // is nothing. Asking again for every position on every visit is what
+        // spent a free tier's hour before the chosen line reached the front.
+        check("and the table's own positions are not asked for a second time",
+          asked.length === 1 && asked[0].tickers.length === 1,
+          `${asked.length} requests, ${asked.map((a) => a.tickers.join("+")).join(" then ")}`);
+        // The order the queue goes out in, which is what decides who goes
+        // without. The free tier allows fifty requests an hour and the table
+        // asks about every position it lists, so a line at the back of that
+        // queue is the one that comes back empty. The chart is the subject of
+        // this card; the table's figures are a column under it.
+        check("putting the line just chosen at the front of the queue, not behind the table",
+          asked[0].tickers.includes("SPY"),
+          asked.map((a) => a.tickers.join("+")).join(" then "));
 
         // A line with nothing behind it has to say which nothing. "No reading"
         // is the same three words for a provider nobody has given a token to,

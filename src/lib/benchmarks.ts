@@ -177,16 +177,40 @@ export function needsFetch(
   to: ISODate,
   now: number = Date.now(),
 ): { from: ISODate; to: ISODate } | null {
-  if (!h || !h.dates.length) return { from, to };
-  if (h.dates[0] > from) return { from, to };
+  if (!h) return { from, to };
+
+  /**
+   * Whether this symbol was asked about recently, whatever came back.
+   *
+   * The hold-off used to guard one case out of three, and the two it did not
+   * guard are the two that never settle. A symbol the provider has nothing for
+   * holds an empty history for ever, and one whose listing is younger than the
+   * window holds a history that starts after the window for ever; both took
+   * the early return above the hold-off and so were asked for again on every
+   * single visit. On a page that fetches forty positions against a free tier
+   * of fifty requests an hour, that is the whole allowance spent on answers
+   * already known, and what goes without is whatever is last in the queue.
+   *
+   * A request that actually failed saves nothing, so it leaves no stamp and is
+   * retried on the next visit as it always was.
+   */
+  const at = Date.parse(h.fetchedAt);
+  const asked = Number.isFinite(at) && at <= now && now - at < HISTORY_MIN_GAP_HOURS * 3_600_000;
+
+  // Nothing came back last time. Asking again inside the hold-off spends a
+  // request to be told the same thing.
+  if (!h.dates.length) return asked ? null : { from, to };
+
+  // A history that starts after the window wanted cannot be extended backwards
+  // a day at a time, and a request costs the same either way.
+  if (h.dates[0] > from) return asked ? null : { from, to };
 
   const last = h.dates[h.dates.length - 1];
   if (last >= to) return null;
 
-  // Held off until the current answer is stale, or a weekend spends a request
-  // every visit learning that Friday is still the most recent close.
-  const at = Date.parse(h.fetchedAt);
-  if (Number.isFinite(at) && at <= now && now - at < HISTORY_MIN_GAP_HOURS * 3_600_000) return null;
+  // The tail is behind today and will stay behind it all weekend, so a fresh
+  // answer is left alone rather than asked for on every visit.
+  if (asked) return null;
 
   return { from: addDays(last, 1), to };
 }
