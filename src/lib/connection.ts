@@ -36,6 +36,7 @@ export interface Connection {
 
 const PROVIDER: Record<string, string> = {
   plaid: "Plaid",
+  simplefin: "SimpleFIN",
   csv: "CSV import",
   manual: "Entered by hand",
 };
@@ -125,7 +126,7 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
   // described by the guess below while its own connection sits there saying
   // what is actually wrong.
   const item = feederOf(account, feeders(db));
-  if (source === "plaid" && item?.lastError) {
+  if ((source === "plaid" || source === "simplefin") && item?.lastError) {
     return {
       state: "attention", provider, lastAt,
       status: "Needs attention",

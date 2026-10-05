@@ -2,6 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DB } from "../../src/types.js";
 import { mergeSync, windowFor } from "../../src/lib/sync/merge.js";
 import { fetchItemRaw, identifyItem, plaidCreds } from "../_plaid.js";
+import { fetchAccounts } from "../_simplefin.js";
+import { toPayload } from "../../src/lib/sync/simplefin.js";
 import type { QueuedPayload } from "../../src/lib/sync/types.js";
 import { toPlaidPayload } from "../../src/lib/sync/plaid.js";
 import type { SyncResponse } from "../../src/lib/sync/plaid.js";
@@ -176,14 +178,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // difference — so the run stamps itself whether or not it finds anything.
     let next = meter(db, "vercel", "month", {});
 
-    // SimpleFIN is deliberately absent here too. This path used to read the
-    // access URL straight out of the document, so taking the credential out of
-    // the Vercel environment stopped the sealed branch above and left this one
-    // pulling every night. Nothing reaches that bridge from this job now.
-
     // Plaid, item by item, into the merge.
     const plaid = await refreshPlaid(next, deadline);
     next = plaid.db;
+
+    // The bridge, for the banks Plaid will not open. Its own pass, so one
+    // provider being down leaves the other's accounts updated.
+    const bridge = await refreshSimplefin(next);
+    next = bridge.db;
 
     // Prices ride along with the balances, so a morning glance at the app has
     // both moved together rather than one of them a day behind the other.
@@ -193,7 +195,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // What actually happened, and separately whether the document moved at all:
     // a run that only recorded a failed provider still has something to save,
     // and is still a run that did nothing worth reporting as success.
-    const ran = plaid.ran || priced.ran;
+    const ran = plaid.ran || bridge.ran || priced.ran;
 
     /**
      * Guarded by the version this run started from.
@@ -226,12 +228,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       ran,
       reason: ran
         ? undefined
-        : (priced.error ?? plaid.errors[0]
+        : (priced.error ?? plaid.errors[0] ?? bridge.errors[0]
           ?? "No bank is connected and there was nothing to price."),
       version: write?.stored?.version,
-      transactionsAdded: plaid.transactions,
-      accountsUpdated: plaid.accountsUpdated,
-      accountsAdded: plaid.accountsAdded,
+      transactionsAdded: plaid.transactions + bridge.transactions,
+      accountsUpdated: plaid.accountsUpdated + bridge.accountsUpdated,
+      accountsAdded: plaid.accountsAdded + bridge.accountsAdded,
       plaid: plaid.items || plaid.errors.length
         ? {
           items: plaid.items,
@@ -246,7 +248,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       pricesUpdated: priced.updated,
       pricesMissed: priced.misses,
       priceError: priced.error,
-      errors: [...plaid.errors],
+      errors: [...plaid.errors, ...bridge.errors],
     });
   } catch (err) {
     return send(502, { ran: false, error: err instanceof Error ? err.message : "The scheduled sync failed." });
@@ -352,6 +354,61 @@ export async function refreshPlaid(db: DB, deadline: number): Promise<{
   // succeed would clear the expired login of the first and the integrations
   // table would call the whole thing healthy.
   out.db = meter(out.db, "plaid", "ever", { error: out.errors[0] });
+  return out;
+}
+
+/**
+ * The bridge's half of the scheduled run.
+ *
+ * One connection rather than a loop, and no credential of this deployment's:
+ * the access URL is the household's and lives in the document, so an encrypted
+ * document simply has no bridge to pull from here. That is the sealed branch's
+ * problem and it does not pretend otherwise.
+ */
+export async function refreshSimplefin(db: DB): Promise<{
+  db: DB;
+  ran: boolean;
+  transactions: number;
+  accountsAdded: number;
+  accountsUpdated: number;
+  errors: string[];
+}> {
+  const idle = { db, ran: false, transactions: 0, accountsAdded: 0, accountsUpdated: 0, errors: [] as string[] };
+  const ref = db.settings?.simplefin;
+  if (!ref?.accessUrl) return idle;
+
+  const raw = await fetchAccounts(
+    ref.accessUrl,
+    new Date(`${windowFor(ref.lastSyncAt)}T00:00:00.000Z`),
+    new Date(),
+  );
+  if ("error" in raw) {
+    return {
+      ...idle,
+      db: meter(db, "simplefin", "ever", { error: raw.error }),
+      errors: [raw.error],
+    };
+  }
+
+  const payload = toPayload(raw, new Date().toISOString());
+  const merged = mergeSync(db, payload, "simplefin");
+  const out = {
+    db: merged.db.settings.simplefin
+      ? {
+        ...merged.db,
+        settings: {
+          ...merged.db.settings,
+          simplefin: { ...merged.db.settings.simplefin, lastSyncAt: payload.fetchedAt, lastError: undefined },
+        },
+      }
+      : merged.db,
+    ran: merged.transactionsAdded > 0 || merged.accountsAdded > 0,
+    transactions: merged.transactionsAdded,
+    accountsAdded: merged.accountsAdded,
+    accountsUpdated: merged.accountsUpdated,
+    errors: payload.errors,
+  };
+  out.db = meter(out.db, "simplefin", "ever", { error: payload.errors[0] });
   return out;
 }
 

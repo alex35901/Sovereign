@@ -11,13 +11,13 @@ import { compressPoints } from "../history.js";
 /**
  * Who sent this payload.
  *
- * One provider today, and still a named type rather than a literal: it decides
- * which stored accounts a pull may claim, so widening it is not a formality.
- * While there were two, a pull from one adopting an account the other was
- * feeding had the pair taking turns rewriting each other, and the next
- * provider added here would have the same question to answer.
+ * It decides which stored accounts a pull may claim, so widening it is not a
+ * formality: a bridge pull must never adopt an account Plaid is feeding by
+ * matching its name, or the two take turns rewriting each other. Which is the
+ * ordinary state here rather than the odd one, because the reason for a second
+ * provider is a bank the first will not open, and both end up knowing it.
  */
-export type Provider = "plaid";
+export type Provider = "plaid" | "simplefin";
 
 
 export interface MergeResult {

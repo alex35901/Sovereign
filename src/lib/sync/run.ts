@@ -1,6 +1,7 @@
 import type { DB, PlaidItemRef } from "../../types";
 import { mergeSync, skipNotes, windowFor } from "./merge";
 import { fetchInstitution, fetchItem, needsInstitution } from "./plaid";
+import { fetchBridge } from "./simplefin";
 import { reason, recordRun } from "../usage";
 import { syncDue } from "./schedule";
 import type { SyncCadence } from "./schedule";
@@ -18,15 +19,6 @@ export interface SyncOutcome {
   changed: boolean;
 }
 
-/*
- * The SimpleFIN pull used to live here, shared by the Sync now button and the
- * scheduler. It is gone. An access URL sitting in a saved document was enough
- * to make it run, so a bridge nobody had used for months could refill the app
- * with the accounts it once fed, on a timer, over the top of what was there.
- * Gating it on the credential was not enough, because restoring a backup from
- * before the credential was removed brings the credential back with it. See
- * src/components/AutoSync.tsx and api/cron/sync.ts.
- */
 
 /* ── plaid ────────────────────────────────────────────────────────────── */
 
@@ -177,4 +169,96 @@ async function runItems(
   recordRun(apply, "plaid", "ever", { error: errors[0] });
 
   return { summary: summaries.join(" · ") || "Nothing came back.", errors, changed, notes };
+}
+
+/* ── the bridge ───────────────────────────────────────────────────────── */
+
+/**
+ * The SimpleFIN bridge, merged in.
+ *
+ * One connection holding every bank the household authorised, so unlike Plaid
+ * there is nothing to loop over: one pull, one window, one clock.
+ *
+ * The pull that used to live here was removed for a reason worth keeping in
+ * view. It ran on the strength of an access URL sitting in the document, which
+ * meant a bridge nobody had used for months could refill the app with the
+ * accounts it once fed, unattended, over the top of what was there, and
+ * restoring a backup from before the credential was removed brought the
+ * credential back with it. What changed is that disconnecting now takes the
+ * whole connection out rather than blanking a string, and nothing here reads
+ * anything else: no connection, no pull. A backup holding a live connection
+ * pulls again, which is what a backup holding a live Plaid item does too.
+ */
+export async function syncSimplefin(
+  db: DB,
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  opts: { fullHistory?: boolean } = {},
+): Promise<SyncOutcome> {
+  const ref = db.settings.simplefin;
+  if (!ref) throw new Error("No SimpleFIN bridge is connected.");
+
+  let payload;
+  try {
+    payload = await fetchBridge(
+      ref,
+      windowFor(opts.fullHistory ? undefined : ref.lastSyncAt),
+      new Date().toISOString().slice(0, 10),
+    );
+  } catch (err) {
+    const message = reason(err, "the sync failed");
+    recordRun(apply, "simplefin", "ever", { error: message });
+    // Kept on the connection as well as in the meter, so the card for the
+    // bridge can say what happened and offer the one repair there is.
+    apply((cur) => (cur.settings.simplefin
+      ? {
+        ...cur,
+        settings: {
+          ...cur.settings,
+          simplefin: { ...cur.settings.simplefin!, lastError: { message, at: new Date().toISOString() } },
+        },
+      }
+      : cur));
+    throw err;
+  }
+
+  let summary = "";
+  let changed = false;
+  let notes: string[] = [];
+  apply((cur) => {
+    const res = mergeSync(cur, payload, "simplefin");
+    notes = skipNotes(res);
+    const accounts = res.accountsAdded + res.accountsUpdated;
+    summary = `${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}`
+      + `, ${accounts} account${accounts === 1 ? "" : "s"}`;
+    changed = res.transactionsAdded > 0 || res.accountsAdded > 0;
+    return res.db.settings.simplefin
+      ? {
+        ...res.db,
+        settings: {
+          ...res.db.settings,
+          simplefin: {
+            ...res.db.settings.simplefin!,
+            lastSyncAt: payload!.fetchedAt,
+            lastError: undefined,
+          },
+        },
+      }
+      : res.db;
+  }, "sync SimpleFIN");
+
+  recordRun(apply, "simplefin", "ever", { error: payload.errors[0] });
+  return { summary, errors: payload.errors, changed, notes };
+}
+
+/** The same thing on a schedule, when its turn has come. */
+export async function syncSimplefinDue(
+  db: DB,
+  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  cadence: SyncCadence,
+  now: number,
+  sessionStart: number,
+): Promise<SyncOutcome | null> {
+  const ref = db.settings.simplefin;
+  if (!ref || !syncDue(cadence, ref.lastSyncAt, now, sessionStart)) return null;
+  return syncSimplefin(db, apply);
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
-import { DEFAULT_CADENCE, syncPlaidDue } from "../lib/sync";
+import { DEFAULT_CADENCE, syncPlaidDue, syncSimplefinDue } from "../lib/sync";
 import { pricesDue, refreshPrices } from "../lib/prices";
 
 /** How often to look at the clock. The cadence decides whether anything happens. */
@@ -38,6 +38,8 @@ export function AutoSync() {
   const tick = useRef<() => Promise<void>>(async () => {});
   /** After a failed Plaid pull, when it is allowed to try again. */
   const holdPlaid = useRef(0);
+  /** The same for the bridge, kept apart: one provider down is not both. */
+  const holdBridge = useRef(0);
   const sessionStart = useRef(Date.now());
 
   useEffect(() => {
@@ -47,23 +49,24 @@ export function AutoSync() {
       if (running.current) return;
 
       const cadence = cur.settings.syncCadence ?? DEFAULT_CADENCE;
-      // SimpleFIN is deliberately absent. It used to pull here on the strength
-      // of an access URL sitting in the document, which meant a bridge nobody
-      // had used for months could still refill the app with the accounts it
-      // once fed, on a schedule, unattended, over the top of what was there.
-      // Removing the credential from the server did not stop it, because this
-      // path never read the server's copy. Nothing pulls from that bridge now:
-      // not on a timer, not on the overnight job. See api/cron/sync.ts.
-      //
       // Plaid on the cadence. Whether anything is actually due is worked out
       // inside, per item.
       const plaidDue = (cur.settings.plaidItems?.length ?? 0) > 0 && now >= holdPlaid.current;
       // Prices keep their own clock, so holdings stay priced on a day when
       // no bank had anything new to send.
+      // The bridge on the same cadence and its own backoff. One provider
+      // refusing must not hold up the other: the reason there are two is that
+      // one of them will not open a bank the other will.
+      //
+      // Gated on the connection rather than on a credential, which is the
+      // lesson from the first time this existed. A bare access URL in a
+      // restored backup was enough to start pulling unattended; disconnecting
+      // now removes the connection itself, and no connection is no pull.
+      const bridgeDue = Boolean(cur.settings.simplefin) && now >= holdBridge.current;
       const priceDue = true
         && Boolean(cur.settings.tiingoApiKey?.trim())
         && pricesDue(cur.settings.lastPricesAt, now);
-      if (!plaidDue && !priceDue) return;
+      if (!plaidDue && !bridgeDue && !priceDue) return;
 
       running.current = true;
       try {
@@ -76,6 +79,15 @@ export function AutoSync() {
         }
       } catch {
         holdPlaid.current = Date.now() + BACKOFF_MS;
+      }
+
+      try {
+        if (bridgeDue) {
+          const out = await syncSimplefinDue(latest.current, act.current.apply, cadence, now, sessionStart.current);
+          if (out?.changed) act.current.notify(out.summary);
+        }
+      } catch {
+        holdBridge.current = Date.now() + BACKOFF_MS;
       }
 
       try {
@@ -103,10 +115,12 @@ export function AutoSync() {
   // so the round it calls has been handed over by the time this runs.
   const hasPrices = Boolean(db.settings.tiingoApiKey?.trim());
   const plaidCount = db.settings.plaidItems?.length ?? 0;
+  // Claiming a setup token should do something too, for the same reason.
+  const hasBridge = Boolean(db.settings.simplefin);
   useEffect(() => {
     const id = window.setTimeout(() => void tick.current(), SETTLE_MS);
     return () => window.clearTimeout(id);
-  }, [hasPrices, plaidCount]);
+  }, [hasPrices, plaidCount, hasBridge]);
 
   return null;
 }

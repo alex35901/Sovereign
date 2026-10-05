@@ -74,6 +74,8 @@ await build({
       export * as CD from "./src/lib/cards.ts";
       export { readDraft, toRules } from "./src/lib/hopper/rewards.ts";
       export { default as propertyHandler } from "./api/property.ts";
+      export { default as simplefinHandler } from "./api/simplefin.ts";
+      export * as SFS from "./api/_simplefin.ts";
       export { default as plaidHandler } from "./api/plaid.ts";
       export { default as dbHandler } from "./api/db.ts";
       export { default as cronHandler, refreshPlaid } from "./api/cron/sync.ts";
@@ -93,6 +95,7 @@ await build({
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export * as RA from "./src/lib/sync/reattach.ts";
+      export * as SF from "./src/lib/sync/simplefin.ts";
       export * as WS from "./src/lib/worth-split.ts";
       export { documentMB } from "./src/lib/transfer.ts";
       export * as LL from "./src/lib/sync/link-log.ts";
@@ -178,6 +181,7 @@ const invokeOn = (handler, body, method = "POST") =>
 const invokeProperty = (body, method = "POST") => invokeOn(M.propertyHandler, body, method);
 const invokePlaid = (body, method = "POST") => invokeOn(M.plaidHandler, body, method);
 const invokePrices = (body, method = "POST") => invokeOn(M.pricesHandler, body, method);
+const invokeSimplefin = (body, method = "POST") => invokeOn(M.simplefinHandler, body, method);
 
 /** Like invokeOn, but able to carry headers — the sync endpoints need auth. */
 const invokeWith = (handler, { method = "POST", body, headers: reqHeaders = {} } = {}) =>
@@ -314,14 +318,14 @@ await test("a cache that will not write does not leave a version number behind",
   }
 });
 
-await test("nothing in the app can pull from the retired bridge", () => {
-  // Stronger than the registry being empty, which is what this used to check:
-  // there is no registry. It held nothing, nothing was ever registered in it,
-  // and an empty list with a lookup nobody called was a promise the code was
-  // not keeping. The providers have their own paths in run.ts.
-  assert.equal("ADAPTERS" in M, false, "no registry for a provider to be offered through");
+await test("there is no registry for a provider to be offered through", () => {
+  // It held nothing, nothing was ever registered in it, and an empty list with
+  // a lookup nobody called was a promise the code was not keeping. Two
+  // providers have come and gone since and neither wanted it: each has its own
+  // path in run.ts, because they agree about the shape of a payload and almost
+  // nothing else.
+  assert.equal("ADAPTERS" in M, false);
   assert.equal("getAdapter" in M, false);
-  assert.equal("syncSimplefin" in M, false, "the pull itself must not exist");
 });
 
 
@@ -394,16 +398,187 @@ await test("a browser that has run out of room gives up a cache before it gives 
   }
 });
 
-await test("a stored access URL is dropped on load, so a restored backup is safe", () => {
+await test("an access URL from the old shape is never read back into a connection", () => {
+  // The bridge is back, under a new shape, and a document from before it was
+  // retired can still be carrying the old key. It is left where it is and
+  // never promoted: that credential was revoked when somebody disconnected,
+  // and reconnecting a household to a provider on the strength of a string in
+  // an old backup is the harm the retirement migration existed to prevent.
+  // Pasting a fresh setup token is the only way in.
   const stale = M.migrate({
     ...M.emptyDB(),
     settings: { ...M.emptyDB().settings, simplefinAccessUrl: "https://u:p@example.com/simplefin" },
   });
-  assert.equal(stale.settings.simplefinAccessUrl, undefined);
+  assert.equal(stale.settings.simplefin, undefined, "no connection appears out of an old backup");
+
   // Unchanged documents must come back identical, or every load would look
   // like an edit and push a save the household did not make.
   const clean = M.emptyDB();
   assert.equal(M.migrate(clean) === clean, true);
+});
+
+/* ── the bridge's proxy, and where it may be pointed ────────────────────── */
+
+await test("an access URL is held to a shape before this server fetches it", () => {
+  // The access URL is typed in by a person and then fetched by this
+  // deployment, which makes it an outbound request whose target somebody else
+  // chooses. Unchecked, that is a request to anything reachable from inside
+  // the deployment: a cloud provider's metadata endpoint, a private network,
+  // a port on the machine itself.
+  const ok = M.SFS.bridgeUrl("https://user:pass@bridge.simplefin.org/simplefin");
+  assert.equal(ok?.hostname, "bridge.simplefin.org");
+  // Self-hosting is the point of a protocol, so this is not one bridge's name.
+  assert.ok(M.SFS.bridgeUrl("https://u:p@sfin.example.co.uk/x"));
+
+  // Plaintext, so a credential cannot be sent in the clear.
+  assert.equal(M.SFS.bridgeUrl("http://u:p@bridge.simplefin.org/simplefin"), null);
+  assert.equal(M.SFS.bridgeUrl("file:///etc/passwd"), null);
+  // The address a cloud metadata service answers on, which is the one that
+  // hands out the deployment's own credentials.
+  assert.equal(M.SFS.bridgeUrl("https://169.254.169.254/latest/meta-data/"), null);
+  assert.equal(M.SFS.bridgeUrl("https://127.0.0.1/simplefin"), null);
+  assert.equal(M.SFS.bridgeUrl("https://10.0.0.5/simplefin"), null);
+  assert.equal(M.SFS.bridgeUrl("https://172.16.4.4/x"), null);
+  // The private range ends at 172.31, and blocking a decade of public
+  // addresses either side of it would be a different bug.
+  assert.equal(M.SFS.bridgeUrl("https://172.32.4.4/x")?.hostname, "172.32.4.4");
+  assert.equal(M.SFS.bridgeUrl("https://172.15.4.4/x")?.hostname, "172.15.4.4");
+  assert.equal(M.SFS.bridgeUrl("https://192.168.1.1/x"), null);
+  assert.equal(M.SFS.bridgeUrl("https://100.64.0.1/x"), null);
+  assert.equal(M.SFS.bridgeUrl("https://localhost/simplefin"), null);
+  assert.equal(M.SFS.bridgeUrl("https://[::1]/simplefin"), null);
+  assert.equal(M.SFS.bridgeUrl("https://[fd00::1]/x"), null);
+  // A name with no dot is a host on the local network, which is the shape a
+  // container's own service names take.
+  assert.equal(M.SFS.bridgeUrl("https://metadata/x"), null);
+  assert.equal(M.SFS.bridgeUrl("https://db.internal/x"), null);
+  assert.equal(M.SFS.bridgeUrl("not a url"), null);
+  assert.equal(M.SFS.bridgeUrl(""), null);
+});
+
+await test("a setup token is decoded and the address inside it is checked too", () => {
+  // The token is base64 of a URL this server then posts to, so it is the same
+  // outbound request with one more step in front of it.
+  const good = Buffer.from("https://bridge.simplefin.org/simplefin/claim/abc").toString("base64");
+  assert.equal(M.SFS.claimUrlFrom(good)?.hostname, "bridge.simplefin.org");
+  const inside = Buffer.from("http://169.254.169.254/latest/meta-data/").toString("base64");
+  assert.equal(M.SFS.claimUrlFrom(inside), null);
+  assert.equal(M.SFS.claimUrlFrom("not base64 of a url"), null);
+  assert.equal(M.SFS.claimUrlFrom(""), null);
+});
+
+await test("the proxy answers every shape of request, rather than hanging", async () => {
+  assert.equal((await invokeSimplefin({}, "GET")).status, 405);
+  const none = await invokeSimplefin({});
+  assert.equal(none.status, 400);
+  assert.match(JSON.parse(none.text).error, /access URL/i);
+  const undated = await invokeSimplefin({ accessUrl: "https://u:p@bridge.example/simplefin" });
+  assert.equal(undated.status, 400);
+  assert.match(JSON.parse(undated.text).error, /from and a to date/i);
+  const badDay = await invokeSimplefin({ accessUrl: "https://u:p@bridge.example/simplefin", from: "last tuesday", to: "2026-10-05" });
+  assert.equal(badDay.status, 400);
+});
+
+await test("a token that has been claimed before says so in those words", async () => {
+  // The ordinary way this fails. A token is one-use, somebody pastes the same
+  // one twice, and "the request failed" would send them looking for a problem
+  // that is not there.
+  const token = Buffer.from("https://bridge.simplefin.org/simplefin/claim/abc").toString("base64");
+  const r = await withFetch(
+    async () => new Response("", { status: 403 }),
+    () => invokeSimplefin({ setupToken: token }),
+  );
+  assert.equal(r.status, 403);
+  assert.match(JSON.parse(r.text).error, /already been used/i);
+  assert.match(JSON.parse(r.text).error, /generate a new one/i);
+});
+
+await test("and what the bridge hands back is checked before it is kept", async () => {
+  // Whatever comes out of the claim is the thing this server will fetch from
+  // then on, so it is held to the same shape as anything else.
+  const token = Buffer.from("https://bridge.simplefin.org/simplefin/claim/abc").toString("base64");
+  const good = await withFetch(
+    async () => new Response("https://u:p@bridge.simplefin.org/simplefin", { status: 200 }),
+    () => invokeSimplefin({ setupToken: token }),
+  );
+  assert.equal(JSON.parse(good.text).accessUrl, "https://u:p@bridge.simplefin.org/simplefin");
+
+  const evil = await withFetch(
+    async () => new Response("http://169.254.169.254/", { status: 200 }),
+    () => invokeSimplefin({ setupToken: token }),
+  );
+  assert.equal(evil.status, 502);
+  assert.match(JSON.parse(evil.text).error, /not an access URL/i);
+});
+
+await test("the credentials go in a header, never in the request line", async () => {
+  // A URL with userinfo in it is written into any log that records a request,
+  // and this one carries the only credential there is.
+  let seen = null;
+  await withFetch(async (url, init) => {
+    seen = { url: String(url), auth: init?.headers?.authorization ?? "" };
+    return new Response(JSON.stringify({ accounts: [], errors: [] }), { status: 200 });
+  }, () => invokeSimplefin({
+    accessUrl: "https://user:pass@bridge.example/simplefin", from: "2026-09-01", to: "2026-10-05",
+  }));
+
+  assert.equal(seen.url.includes("user"), false, seen.url);
+  assert.equal(seen.url.includes("pass"), false, seen.url);
+  assert.equal(seen.auth, `Basic ${Buffer.from("user:pass").toString("base64")}`);
+  // The window the protocol asks for: whole seconds, start inclusive.
+  assert.match(seen.url, /start-date=\d+/);
+  assert.match(seen.url, /end-date=\d+/);
+  const q = new URL(seen.url).searchParams;
+  assert.equal(q.get("start-date"), String(Math.floor(Date.parse("2026-09-01T00:00:00.000Z") / 1000)));
+  // The path the bridge lives under is kept rather than replaced.
+  assert.match(new URL(seen.url).pathname, /^\/simplefin\/accounts$/);
+});
+
+await test("there is a ceiling on what the bridge can pull through this server", async () => {
+  // Every other proxy here calls one fixed upstream. This one calls whatever
+  // host the access URL names, which makes it the only place a caller chooses
+  // where the request goes, so there is a limit on what can come back through
+  // it as well as on where it may be pointed.
+  const huge = "x".repeat(9_000_000);
+  const r = await withFetch(
+    async () => new Response(huge, { status: 200 }),
+    () => invokeSimplefin({ accessUrl: "https://u:p@bridge.example/simplefin", from: "2026-09-01", to: "2026-10-05" }),
+  );
+  assert.equal(r.status, 502);
+  assert.match(JSON.parse(r.text).error, /more than this will carry/i);
+
+  // A content-length that claims to be enormous is refused before any of it
+  // is read, rather than after it has all been buffered.
+  const lying = await withFetch(
+    async () => new Response("{}", { status: 200, headers: { "content-length": "99000000" } }),
+    () => invokeSimplefin({ accessUrl: "https://u:p@bridge.example/simplefin", from: "2026-09-01", to: "2026-10-05" }),
+  );
+  assert.equal(lying.status, 502);
+});
+
+await test("a bridge that refuses the saved URL says what to do about it", async () => {
+  const r = await withFetch(
+    async () => new Response("no", { status: 403 }),
+    () => invokeSimplefin({ accessUrl: "https://u:p@bridge.example/simplefin", from: "2026-09-01", to: "2026-10-05" }),
+  );
+  assert.equal(r.status, 401);
+  assert.match(JSON.parse(r.text).error, /new setup token/i);
+});
+
+await test("what one bank could not do does not cost the household the rest", async () => {
+  // The bridge reports per-institution trouble and still answers with what it
+  // has, which is the behaviour worth preserving all the way up.
+  const r = await withFetch(
+    async () => new Response(JSON.stringify({
+      errors: ["Connection to Wells Fargo may need attention"],
+      accounts: [{ id: "a", name: "Chequing", balance: "10.00", org: { name: "Chase" } }],
+    }), { status: 200 }),
+    () => invokeSimplefin({ accessUrl: "https://u:p@bridge.example/simplefin", from: "2026-09-01", to: "2026-10-05" }),
+  );
+  assert.equal(r.status, 200);
+  const body = JSON.parse(r.text);
+  assert.equal(body.accounts.length, 1);
+  assert.deepEqual(body.errors, ["Connection to Wells Fargo may need attention"]);
 });
 
 /* ── property valuations ──────────────────────────────────────────────── */
@@ -786,7 +961,7 @@ const rowsOf = (db, hopper = null, now = SEP) =>
 await test("every provider is a row, and an unconfigured one reads as off", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["plaid", "simplefin", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   for (const r of Object.values(rows)) {
     assert.equal(r.set, false, `${r.id} should not look configured`);
     assert.equal(M.healthOf(r).state, "off", r.id);
@@ -794,14 +969,26 @@ await test("every provider is a row, and an unconfigured one reads as off", () =
   }
 });
 
-await test("the bridge is not a row any more, and Plaid answers for both halves", () => {
-  // The retired bridge did the bank half and Plaid the investment half. With the last
-  // bridge account gone there is one provider, and a table listing a second
-  // one that is switched off for ever is a row nobody can act on.
+await test("the bridge is a row again, and reads as off until one is claimed", () => {
+  // Two providers once more, for the reason there were two before: a bank one
+  // will not open. Plaid still answers for both halves of what it does; the
+  // bridge is the bank half only and says so.
   const rows = rowsOf(M.emptyDB());
-  assert.equal("simplefin" in rows, false);
   assert.match(rows.plaid.process, /bank/i);
   assert.match(rows.plaid.process, /investment/i);
+  assert.equal(rows.simplefin.set, false, "nothing is connected until a token is pasted");
+  assert.equal(rows.simplefin.used, 0);
+  assert.match(rows.simplefin.process, /bank/i);
+  // The credential is the household's own and is claimed rather than issued,
+  // which is the whole difference from the providers that went away.
+  assert.equal(rows.simplefin.credential.kind, "claimed");
+
+  const connected = M.emptyDB();
+  const on = rowsOf({ ...connected, settings: { ...connected.settings,
+    simplefin: { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: "2026-10-05T09:00:00.000Z", lastSyncAt: "2026-10-05T09:00:00.000Z" } } });
+  assert.equal(on.simplefin.set, true);
+  assert.equal(on.simplefin.used, 1);
+  assert.equal(on.simplefin.lastAt, "2026-10-05T09:00:00.000Z");
 });
 
 await test("the connection meter counts items, which is what the plan caps", () => {
@@ -938,7 +1125,7 @@ await test("a response is measured from its header, and from a clone when there 
 await test("Neon and Vercel are rows too, and read as off before anything has run", () => {
   localStorage.clear();
   const rows = rowsOf(M.emptyDB());
-  assert.deepEqual(Object.keys(rows), ["plaid", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
+  assert.deepEqual(Object.keys(rows), ["plaid", "simplefin", "tiingo", "rentcast", "neon", "vercel-transfer", "vercel", "anthropic"]);
   assert.equal(rows.neon.set, false, "no traffic yet means nothing to report");
   assert.equal(rows.vercel.set, false);
 });
@@ -6549,6 +6736,189 @@ await test("an account stranded by a reconnection folds into the one that replac
   assert.equal(after.accountsUpdated, 1);
   assert.equal(after.transactionsAdded, 1);
   assert.deepEqual(after.db.accounts.map((a) => a.id), ["old"]);
+});
+
+/* ── the bridge, and moving a bank onto it ──────────────────────────────── */
+
+await test("the protocol's numeric strings become cents without going through a float", () => {
+  // The bug this exists for: 0.145 times a hundred is 14.499999999999998 in
+  // binary floating point, and rounding that gives 14 where the answer is 15.
+  const { toCents } = M.SF;
+  assert.equal(toCents("0.145"), 15);
+  assert.equal(toCents("-33293.43"), -3_329_343);
+  assert.equal(toCents("1000"), 100_000);
+  assert.equal(toCents("0"), 0);
+  assert.equal(toCents("-0.01"), -1);
+  assert.equal(toCents(".5"), 50);
+  assert.equal(toCents("12."), 1200);
+  assert.equal(toCents("1,234.56"), 123_456, "a bridge that writes a thousands separator");
+  assert.equal(toCents("+7.00"), 700);
+  // Anything that is not a number is absent rather than zero: a balance that
+  // reads zero because it could not be parsed is a wrong balance.
+  assert.equal(toCents("abc"), null);
+  assert.equal(toCents(""), null);
+  assert.equal(toCents(null), null);
+  assert.equal(toCents("1.2.3"), null);
+});
+
+await test("a bridge's answer becomes a payload, and what cannot be re-found is dropped", () => {
+  const out = M.SF.toPayload({
+    accounts: [
+      {
+        id: "acc-1", name: "Everyday Checking", currency: "USD", balance: "1234.56",
+        "balance-date": 1_790_000_000,
+        org: { name: "Wells Fargo", domain: "wellsfargo.com" },
+        transactions: [
+          { id: "t1", posted: 1_789_900_000, amount: "-20.00", description: "SHOP", payee: "Shop", pending: false },
+          // No id: nothing could re-find it, so it would arrive again as a new
+          // row on every pull.
+          { posted: 1_789_900_000, amount: "-5.00", description: "LOST" },
+          // No date at all, which the protocol says cannot happen and a bridge
+          // can still do.
+          { id: "t3", amount: "-5.00", description: "UNDATED" },
+        ],
+      },
+      // No id, so the account itself can never be matched again.
+      { name: "Nameless", balance: "1.00" },
+      // No balance that parses.
+      { id: "acc-3", name: "Odd", balance: "lots" },
+    ],
+    errors: ["Wells Fargo needs attention at the bridge."],
+  }, "2026-10-05T12:00:00.000Z");
+
+  assert.deepEqual(out.accounts.map((a) => a.syncId), ["acc-1"]);
+  assert.equal(out.accounts[0].balance, 123_456);
+  assert.equal(out.accounts[0].institution, "Wells Fargo", "the org is the bank");
+  assert.equal(out.accounts[0].domain, "wellsfargo.com");
+  assert.equal(out.accounts[0].type, "checking");
+  assert.equal(out.accounts[0].itemId, M.SF.SIMPLEFIN_ID, "every account points at the one connection");
+  assert.deepEqual(out.transactions.map((t) => t.syncId), ["t1"]);
+  assert.equal(out.transactions[0].amount, -20_00);
+  assert.equal(out.transactions[0].accountSyncId, "acc-1");
+  assert.deepEqual(out.errors, ["Wells Fargo needs attention at the bridge."]);
+});
+
+await test("an account with no organisation still says which bank it is", () => {
+  // A bridge is not obliged to name the institution, and an account with an
+  // empty bank reads as a stray in every table that groups by one.
+  const out = M.SF.toPayload({
+    accounts: [{ id: "a", name: "Valon Mortgage", balance: "-120000.00" }],
+    errors: [],
+  }, "2026-10-05T12:00:00.000Z");
+  assert.equal(out.accounts[0].institution, "Valon Mortgage");
+  assert.equal(out.accounts[0].type, "mortgage", "and the name is what the type is read from");
+});
+
+await test("a bank moved from Plaid onto the bridge keeps its history", () => {
+  // The whole reason the bridge is back. Plaid refused Wells Fargo four times
+  // in three days and would not list it at all, so it comes in through the
+  // bridge as new accounts and the real ones are left holding two years of
+  // work. Across providers is the ordinary case here, not the odd one.
+  const base = M.emptyDB();
+  const acct = (id, name, over) => ({
+    id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
+    includeInNetWorth: true, hidden: false, history: [], order: 1, ...over,
+  });
+  const db = {
+    ...base,
+    accounts: [
+      acct("old", "Everyday Checking", {
+        syncSource: "plaid", syncId: "pl-dead-1", plaidItemId: "it_gone",
+        lastSyncedAt: "2026-08-20T09:00:00.000Z",
+        balance: 90_00, history: [{ date: "2026-08-20", balance: 90_00 }],
+      }),
+      acct("new", "WELLS FARGO EVERYDAY CHECKING ...4471", {
+        syncSource: "simplefin", syncId: "acc-sf-1", plaidItemId: M.SF.SIMPLEFIN_ID,
+        lastSyncedAt: "2026-10-05T09:00:00.000Z",
+        balance: 102_00, history: [{ date: "2026-10-05", balance: 102_00 }],
+      }),
+    ],
+    transactions: [
+      { id: "t1", accountId: "old", date: "2024-06-01", amount: -50_00, merchant: "Shop", categoryId: "c-food", tags: [], importKey: "pl:dead-a", pending: false },
+      { id: "t2", accountId: "new", date: "2026-10-04", amount: -9_99, merchant: "Petrol", categoryId: "uncategorized", tags: [], importKey: "sf:a", pending: false },
+    ],
+    settings: {
+      ...base.settings,
+      // Plaid still has other banks; it is this one it would not open.
+      plaidItems: [{ itemId: "it_chase", institution: "Chase", kind: "both", accessToken: "x", lastSyncAt: "2026-10-05T09:00:00.000Z" }],
+      simplefin: { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: "2026-10-05T08:00:00.000Z", lastSyncAt: "2026-10-05T09:00:00.000Z" },
+    },
+  };
+
+  // Both providers are connections, read the same way.
+  assert.deepEqual(M.RA.feeders(db).map((f) => [f.provider, f.id]),
+    [["simplefin", M.SF.SIMPLEFIN_ID], ["plaid", "it_chase"]]);
+  // And an account is only ever fed by its own provider's connections. The
+  // bridge has no institution of its own, so it cannot be matched to the Plaid
+  // account by the bank's name the way a second Plaid login would be.
+  assert.equal(M.RA.feederOf(db.accounts[0], M.RA.feeders(db)), undefined);
+  assert.equal(M.RA.feederOf(db.accounts[1], M.RA.feeders(db))?.provider, "simplefin");
+
+  assert.deepEqual(M.RA.strandedIn(db).map((s) => [s.account.id, s.why]), [["old", "gone"]]);
+  assert.deepEqual(M.RA.replacementsFor(db, db.accounts[0]).map((r) => r.account.id), ["new"],
+    "the account the bridge is feeding, at the same bank");
+  assert.deepEqual(M.RA.suggestedPairs(db), [{ strandedId: "old", intoId: "new" }]);
+
+  const out = M.RA.foldInto(db, "old", "new");
+  assert.deepEqual(out.db.accounts.map((a) => a.id), ["old"]);
+  const kept = out.db.accounts[0];
+  assert.equal(kept.name, "Everyday Checking", "the household's own name for it, not the bridge's shouting");
+  // The provider actually feeding it now. Without this nothing would look for
+  // it on the bridge and the next pull would file a second copy.
+  assert.equal(kept.syncSource, "simplefin");
+  assert.equal(kept.syncId, "acc-sf-1");
+  assert.equal(kept.balance, 102_00);
+  assert.deepEqual([...kept.movedFrom].sort(), ["pl-dead-1"]);
+  assert.deepEqual(out.db.transactions.map((t) => t.accountId), ["old", "old"], "both years land on one account");
+
+  // And the next bridge pull finds it rather than filing a second copy.
+  const after = M.mergeSync(out.db, {
+    fetchedAt: "2026-10-06T09:00:00.000Z", errors: [],
+    accounts: [{
+      syncId: "acc-sf-1", name: "WELLS FARGO EVERYDAY CHECKING ...4471", institution: "Wells Fargo",
+      type: "checking", balance: 110_00, balanceDate: "2026-10-06", itemId: M.SF.SIMPLEFIN_ID,
+    }],
+    transactions: [{
+      syncId: "sf_new", accountSyncId: "acc-sf-1", date: "2026-10-06",
+      description: "SHOP", payee: "Shop", amount: -5_00, pending: false,
+    }],
+  }, "simplefin");
+  assert.equal(after.accountsAdded, 0, "no second copy of the account");
+  assert.equal(after.accountsUpdated, 1);
+  assert.equal(after.transactionsAdded, 1);
+  assert.equal(after.db.accounts[0].name, "Everyday Checking", "and the fold's name survives the pull");
+});
+
+await test("a bridge pull never claims an account Plaid is feeding", () => {
+  // The rule that keeps two providers from taking turns rewriting each other.
+  // A pull that cannot find an account by id falls back to the name, and the
+  // name is exactly what two providers at one bank agree about.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{
+      id: "a1", name: "Everyday Checking", institution: "Wells Fargo", type: "checking",
+      balance: 90_00, includeInNetWorth: true, hidden: false, history: [], order: 1,
+      syncSource: "plaid", syncId: "pl-1", lastSyncedAt: "2026-10-05T09:00:00.000Z",
+    }],
+  };
+  const out = M.mergeSync(db, {
+    fetchedAt: "2026-10-05T10:00:00.000Z", errors: [],
+    accounts: [{
+      syncId: "acc-sf-1", name: "Everyday Checking", institution: "Wells Fargo",
+      type: "checking", balance: 102_00, balanceDate: "2026-10-05", itemId: M.SF.SIMPLEFIN_ID,
+    }],
+    transactions: [],
+  }, "simplefin");
+  assert.equal(out.accountsAdded, 1, "a second account, because the first is Plaid's");
+  assert.equal(out.accountsUpdated, 0);
+  assert.equal(out.db.accounts.find((a) => a.id === "a1").syncId, "pl-1", "and Plaid's is untouched");
+  // Which is the state the reattach card exists for: two accounts, one bank,
+  // and a person who knows which is which.
+  const settled = { ...out.db, settings: { ...out.db.settings,
+    simplefin: { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: "x", lastSyncAt: "2026-10-05T10:00:00.000Z" } } };
+  assert.deepEqual(M.RA.strandedIn(settled).map((s) => s.account.id), ["a1"]);
+  assert.equal(M.RA.replacementsFor(settled, settled.accounts[0]).length, 1);
 });
 
 await test("a pull never claims an account it is not feeding", () => {

@@ -6,6 +6,7 @@ import { toCSV } from "../lib/csv";
 import { download, exportJSON, importJSON } from "../lib/storage";
 import { Btn, Card, CardHead, Field, Segmented, TextInput } from "../components/ui";
 import { IntegrationsCard } from "./IntegrationsCard";
+import { SimplefinCard } from "./SimplefinCard";
 import { PlaidCard } from "./PlaidCard";
 import { AlertsCard } from "./AlertsCard";
 import { ReattachCard } from "./Reattach";
@@ -110,6 +111,7 @@ export default function Settings() {
         {/* After Plaid, because it is the answer to something Plaid refused
             rather than an equal choice: one bank comes this way and the rest
             stay where they are. */}
+        <SimplefinCard />
         {/* Under the connections, because it is about them: an account a
             reconnected bank handed back under a new name. Renders nothing
             unless there is one. */}

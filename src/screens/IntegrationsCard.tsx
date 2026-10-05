@@ -10,7 +10,7 @@ import type { Health, Integration } from "../lib/integrations";
 import { hopperMeter } from "../lib/hopper/loop";
 import type { HopperMeter } from "../lib/hopper/loop";
 import { refreshPrices } from "../lib/prices";
-import { syncPlaid } from "../lib/sync";
+import { syncPlaid, syncSimplefin } from "../lib/sync";
 import { estimateHomeValue, canValue } from "../lib/property";
 import { reason, recordRun } from "../lib/usage";
 import { Btn, Card, CardHead, TextInput } from "../components/ui";
@@ -67,6 +67,11 @@ export function IntegrationsCard() {
     try {
       if (id === "plaid") {
         const out = await syncPlaid(db, apply);
+        notify(out.summary);
+        if (out.errors.length) setError(out.errors.join(" · "));
+      }
+      if (id === "simplefin") {
+        const out = await syncSimplefin(db, apply);
         notify(out.summary);
         if (out.errors.length) setError(out.errors.join(" · "));
       }
@@ -163,9 +168,8 @@ function intField(row: Integration, key: IntField): SortValue {
 
 /** Which rows have something to press, and what it says. */
 const ACTION: Record<string, string> = {
-  // No SimpleFIN. The bridge is retired: nothing in the app pulls from it, by
-  // hand or on a schedule. The row stays so its past runs are still readable.
   plaid: "Sync now",
+  simplefin: "Sync now",
   tiingo: "Refresh prices",
   rentcast: "Value properties",
 };

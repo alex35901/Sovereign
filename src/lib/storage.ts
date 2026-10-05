@@ -201,46 +201,10 @@ export function migrate(db: DB): DB {
   if (accounts.some((a, i) => a !== out.accounts[i])) out = { ...out, accounts };
 
   out = migrateBudgetDefaults(out);
-  out = dropSimplefin(out);
 
   // Goals used to name whole accounts; they hold amounts now. Runs once — it
   // leaves a document that already has allocations alone.
   return migrateGoalAccounts(out);
-}
-
-/**
- * Taking the last traces of the retired bridge out of a document.
- *
- * Two things, and both on every load rather than once. The access URL, because
- * the pull was never the only way that credential caused harm: restoring a
- * backup from before the bridge was disconnected hands the copy in it straight
- * back, and so does an import. And the tag on any account it used to feed,
- * because nothing syncs those accounts now, which is what "manual" means. The
- * tag was the only thing still claiming a provider that no longer exists.
- *
- * It returns the document it was given when there is nothing to take, so a
- * document that has never seen the bridge comes back as the very same object
- * and the caller can still tell it matches what the server holds.
- */
-type Legacy = DB & { settings: DB["settings"] & { simplefinAccessUrl?: string } };
-
-function dropSimplefin(db: DB): DB {
-  const settings = (db as Legacy).settings;
-  let out = db;
-
-  if (settings.simplefinAccessUrl !== undefined) {
-    const { simplefinAccessUrl: _gone, ...rest } = settings;
-    out = { ...out, settings: rest };
-  }
-
-  const accounts = out.accounts.map((a) => (
-    (a.syncSource as string) === "simplefin"
-      ? { ...a, syncSource: "manual" as const }
-      : a
-  ));
-  if (accounts.some((a, i) => a !== out.accounts[i])) out = { ...out, accounts };
-
-  return out;
 }
 
 /**

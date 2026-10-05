@@ -115,7 +115,7 @@ export function staleSince(i: Integration, now: number = Date.now()): string | u
  */
 export function quietSince(
   db: DB,
-  source: "plaid",
+  source: "plaid" | "simplefin",
   now: number = Date.now(),
 ): Quiet | undefined {
   const ids = new Set(
@@ -165,6 +165,7 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
     .at(-1);
 
   const plaidItems = s.plaidItems ?? [];
+  const simplefin = meterOf(usage, "simplefin", "ever", now);
   const plaidLast = newestSync(plaidItems);
 
   const properties = db.accounts.filter((a) => canValue(a.type) && !a.hidden && !a.closedAt);
@@ -202,6 +203,27 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       staleAfterHours: 72,
       quiet: quietSince(db, "plaid", now),
       error: plaid.error,
+    },
+    {
+      id: "simplefin",
+      // A protocol rather than a company. There is nothing to register and
+      // nobody to sign up with: the household authorises their banks at a
+      // bridge and the bridge hands over one credential. Which is the whole
+      // reason it is here, after two providers withdrew.
+      process: "Bank sync, through a bridge",
+      provider: "SimpleFIN",
+      credential: { kind: "claimed", held: "an access URL in your document", where: "a setup token from the bridge" },
+      set: Boolean(s.simplefin),
+      used: s.simplefin ? 1 : 0,
+      // One bridge, holding every bank behind it. There is no per-connection
+      // ceiling to count against, so the figure is whether it is connected.
+      ceiling: 1,
+      unit: "bridge",
+      period: "ever",
+      lastAt: s.simplefin?.lastSyncAt,
+      staleAfterHours: 72,
+      quiet: quietSince(db, "simplefin", now),
+      error: simplefin.error,
     },
     {
       id: "tiingo",

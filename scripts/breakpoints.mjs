@@ -19,7 +19,7 @@
  *   node scripts/breakpoints.mjs --only=detail
  *
  * Sections: tx-columns, tx-align, category-arrow, overflow, phone-account,
-* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, rewards, settings-trim, not-saved.
+* rule-conditions, phone-nav, nested-menu, drilldown-back, drilldown-scroll, goals, detail, explain, recurring, notifications, retry, compress, budget, accounts, account-page, tx-filters, tx-select, dashboard, merchants, reports, investments, forecast, estate, books, sorting, payoff, tax, price, year, drill-pick, smoke, draw, import-route, duplicate, amounts, calendar, history, mark-recurring, repeat-mark, wallet, rewards, simplefin, settings-trim, not-saved.
  * Push on a full run, always — a filter is for the loop, not for the verdict.
  */
 const BASE = process.env.PREVIEW_URL ?? "http://localhost:4173";
@@ -8372,11 +8372,10 @@ try {
       cards: [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim()),
       providers: [...document.querySelectorAll(".page table tbody tr td:nth-child(2)")].map((c) => c.innerText.trim()),
     }));
-    check("settings offers no way to connect the bridge any more",
-      !/setup token|bridge\.simplefin\.org/i.test(page.text),
-      (page.text.match(/.{0,40}(setup token|bridge\.simplefin\.org).{0,40}/i) ?? [""])[0]);
-    check("and the table of connections does not meter it",
-      !page.providers.some((p) => /simplefin/i.test(p)), page.providers.join(" | "));
+    check("settings offers a way to connect the bridge, which is a token to paste",
+      /setup token/i.test(page.text), (page.text.match(/.{0,60}setup token.{0,60}/i) ?? [""])[0]);
+    check("and the table of connections meters it beside the rest",
+      page.providers.some((p) => /simplefin/i.test(p)), page.providers.join(" | "));
     check("the one connections card is named for what it holds",
       page.cards.includes("Connections") && !page.cards.includes("Bank sync"), page.cards.join(" | "));
 
@@ -8442,30 +8441,34 @@ try {
       behind[1].flagged.length === 0 && behind[1].says === "",
       `${behind[1].flagged.join(" / ")} — ${behind[1].says.slice(0, 60)}`);
 
-    // ── a credential that cannot pull, because loading threw it away ──
+    // ── a credential from the old shape is not a connection ──
     //
-    // Removing the last account a bridge fed never removed the bridge: the URL
-    // stayed in the document, and the app pulled on the strength of that field
-    // alone. Nothing pulls from it now, and the field is dropped on load, so
-    // even a restored backup carrying one comes back clean. The seed above put
-    // one in; by the time this runs the app has opened, and it must be gone.
+    // The bridge is back, and a document from before it was retired can still
+    // be carrying the access URL under the key it used then. That credential
+    // was revoked when somebody disconnected, and reconnecting a household to
+    // a provider on the strength of a string in an old backup is exactly the
+    // harm the retirement was written to prevent. The old key is left where it
+    // is and never read: pasting a fresh setup token is the only way in. The
+    // seed above put one in, and by the time this runs the app has opened.
     const bridge = await st2.evaluate(() => {
       const stored = JSON.parse(localStorage.getItem("sovereign.db.v1"));
       return {
-        held: Boolean(stored.settings.simplefinAccessUrl),
-        key: "simplefinAccessUrl" in stored.settings,
-        // The word must not survive anywhere on the page either: a card
-        // offering to sync a bridge, or warning about one, is a button for
-        // something that no longer exists.
-        said: [...document.querySelectorAll(".page .card")].map((c) => c.innerText).join(" "),
+        connected: Boolean(stored.settings.simplefin),
+        legacy: stored.settings.simplefinAccessUrl ?? null,
+        card: [...document.querySelectorAll(".card")]
+          .find((c) => /^SimpleFIN$/.test(c.querySelector(".card-head h2")?.innerText?.trim() ?? ""))
+          ?.innerText.replace(/\n/g, " | ") ?? "",
       };
     });
-    check("a stored bridge credential is thrown away when the app loads",
-      !bridge.held && !bridge.key,
-      `held: ${bridge.held}, key present: ${bridge.key}`);
-    check("and nothing on the page offers to pull from it",
-      !/simplefin/i.test(bridge.said),
-      /simplefin/i.test(bridge.said) ? "still mentioned" : "not mentioned");
+    check("an access URL from the old shape never becomes a connection",
+      bridge.connected === false, `settings.simplefin: ${JSON.stringify(bridge.connected)}`);
+    check("and the card asks for a token rather than saying it is connected",
+      /setup token/i.test(bridge.card) && !/Disconnect/.test(bridge.card),
+      bridge.card.slice(0, 160) || "no card");
+    // The revoked credential is not shown back to anybody either.
+    check("without printing the credential that was left in the document",
+      bridge.legacy === null || !bridge.card.includes(bridge.legacy),
+      bridge.card.slice(0, 160));
 
     // A connection row at phone width. The demo carries no Plaid items, so
     // this row went unmeasured until now and ran off the card: four controls
@@ -8684,6 +8687,147 @@ try {
       `${phone?.overflow}px wide`);
     await narrow.close();
     await rc.close();
+  }
+
+  if (want("simplefin")) {
+    // ── the bridge, and moving a bank onto it ──
+    //
+    // Two providers withdrew in a fortnight: one would not open a bank at all
+    // and the other shut its API down with a few days' notice. A SimpleFIN
+    // bridge is a protocol rather than a company, so what is checked here is
+    // that connecting to one takes a single pasted token and nothing else,
+    // and that an account stranded on Plaid can be folded onto it without
+    // losing what is on it.
+    const sf = await browser.newContext({ viewport: { width: 1280, height: 1200 } });
+    const asked = [];
+    await sf.route("**/api/simplefin", async (route) => {
+      const body = route.request().postDataJSON();
+      asked.push(body);
+      if (body.setupToken) {
+        return route.fulfill({ json: { accessUrl: "https://user:pass@bridge.example/simplefin" } });
+      }
+      return route.fulfill({ json: { accounts: [], errors: [] } });
+    });
+
+    const page = await sf.newPage();
+    await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1200);
+
+    const cardOf = (title) => page.evaluate((t) => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === t);
+      if (!card) return null;
+      return {
+        text: card.innerText.replace(/\n/g, " | "),
+        inputs: [...card.querySelectorAll("input")].length,
+        buttons: [...card.querySelectorAll("button")].map((b) => b.innerText.trim()).filter(Boolean),
+      };
+    }, title);
+
+    const before = await cardOf("SimpleFIN");
+    check("Settings offers the bridge, with nothing to sign up for",
+      before !== null && /nothing to sign up for/i.test(before.text),
+      before === null ? "no card" : before.text.slice(0, 160));
+    check("asking for the one thing it needs, which is a token to paste",
+      before !== null && before.inputs === 1 && /setup token/i.test(before.text)
+      && /used once/i.test(before.text),
+      before?.text.slice(0, 200) ?? "");
+    // Nothing is sent until there is something to send. A connect button that
+    // posts an empty token spends the request and comes back confused.
+    check("and the button is off until something is in the box",
+      await page.evaluate(() => {
+        const card = [...document.querySelectorAll(".card")]
+          .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === "SimpleFIN");
+        return [...card.querySelectorAll("button")].some((b) => /connect/i.test(b.innerText) && b.disabled);
+      }), "");
+
+    if (await tryStep("a setup token can be pasted", async () => {
+      await page.locator('.card:has(h2:text-is("SimpleFIN")) input').fill("c2V0dXAtdG9rZW4", { timeout: 5000 });
+      await page.locator('.card:has(h2:text-is("SimpleFIN")) button', { hasText: "Connect" }).click({ timeout: 5000 });
+      await page.waitForTimeout(900);
+    })) {
+      check("which is exchanged once, and the token itself is what goes up",
+        asked.some((a) => a.setupToken === "c2V0dXAtdG9rZW4"),
+        JSON.stringify(asked).slice(0, 160));
+      const after = await cardOf("SimpleFIN");
+      check("and the card says it is connected rather than asking again",
+        after !== null && /connected/i.test(after.text) && after.inputs === 0,
+        after?.text.slice(0, 160) ?? "");
+      // The token is spent. Leaving it on screen invites a second press and a
+      // refusal that reads like a fault.
+      check("with the spent token cleared off the screen",
+        after !== null && !after.text.includes("c2V0dXAtdG9rZW4"), after?.text.slice(0, 160) ?? "");
+      check("offering the two things there are to do with a connection",
+        after !== null && after.buttons.some((b) => /sync now/i.test(b))
+        && after.buttons.some((b) => /disconnect/i.test(b)),
+        after?.buttons.join(" | ") ?? "");
+      // The access URL is a credential. It belongs in the document, and the
+      // card is not the place to print it.
+      check("and never printing the credential it was given",
+        after !== null && !/bridge\.example/.test(after.text) && !/user:pass/.test(after.text),
+        after?.text.slice(0, 200) ?? "");
+    }
+
+    // ── a bank stranded on Plaid, folded onto the bridge ──
+    const moved = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
+    const warm = await moved.newPage();
+    await warm.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(1300);
+    await warm.close();
+    await moved.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const now = new Date().toISOString();
+        // A bank the seeded document does not already hold a connection for.
+        // With a real one the stranded account matches that login by name,
+        // which is correct and not the case being checked here.
+        const acct = (over) => ({
+          institution: "Ridgeline Credit Union", type: "checking", includeInNetWorth: true,
+          hidden: false, history: [], order: 90, ...over,
+        });
+        db.accounts = [
+          ...db.accounts,
+          acct({
+            id: "sf_old", name: "Everyday Checking", balance: 90_00,
+            syncSource: "plaid", syncId: "pl-dead", plaidItemId: "it_gone",
+            lastSyncedAt: "2026-08-20T09:00:00.000Z",
+          }),
+          acct({
+            id: "sf_new", name: "RIDGELINE CU EVERYDAY CHECKING ...4471", balance: 102_00,
+            syncSource: "simplefin", syncId: "acc-sf-1", plaidItemId: "simplefin",
+            lastSyncedAt: now,
+          }),
+        ];
+        db.settings.simplefin = { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: now, lastSyncAt: now };
+        // Off, so no pull fires against a preview build that serves no API.
+        db.settings.syncCadence = "off";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const fold = await moved.newPage();
+    await fold.route("**/api/simplefin", (route) => route.fulfill({ json: { accounts: [], errors: [] } }));
+    await fold.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await fold.waitForTimeout(1400);
+
+    const offer = await fold.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /Accounts getting nothing/i.test(c.querySelector(".card-head h2")?.innerText ?? ""));
+      return card ? card.innerText.replace(/\n/g, " | ") : null;
+    });
+    check("an account the old connection left behind is offered a new home",
+      offer !== null && /Everyday Checking/.test(offer), offer?.slice(0, 220) ?? "nothing offered");
+    // The point of the card: it names the account to fold into, so the person
+    // confirming can see it is the right one before anything moves.
+    check("naming the account on the bridge it would fold into",
+      offer !== null && /4471/.test(offer), offer?.slice(0, 220) ?? "");
+
+    await fold.close();
+    await moved.close();
+    await page.close();
+    await sf.close();
   }
 
 

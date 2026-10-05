@@ -3,6 +3,7 @@ import { compressPoints } from "../history.js";
 import { accountKeys } from "./merge.js";
 import { itemFor, plainName, sameInstitution } from "./adopt.js";
 import type { ItemKind } from "./kind.js";
+import { SIMPLEFIN_ID } from "./simplefin.js";
 
 /**
  * One connection replaced by another at the same bank.
@@ -35,7 +36,7 @@ import type { ItemKind } from "./kind.js";
  * about lives in their own files.
  */
 export interface Feeder {
-  provider: "plaid";
+  provider: "plaid" | "simplefin";
   id: string;
   institution: string;
   kind: ItemKind;
@@ -45,7 +46,18 @@ export interface Feeder {
 
 /** Every connection in the document, both providers, in one shape. */
 export function feeders(db: DB): Feeder[] {
+  const bridge = db.settings.simplefin;
   return [
+    // The bridge is one connection holding every bank behind it, so it has no
+    // institution of its own to match on. The empty name is deliberate: an
+    // account is matched to it by the id it carries, and the loose name match
+    // below cannot reach it, which is what stops a bridge account being called
+    // Plaid's or the other way round.
+    ...(bridge ? [{
+      provider: "simplefin" as const, id: SIMPLEFIN_ID, institution: "", kind: "bank" as const,
+      ...(bridge.lastSyncAt ? { lastSyncAt: bridge.lastSyncAt } : {}),
+      ...(bridge.lastError ? { lastError: bridge.lastError } : {}),
+    }] : []),
     ...(db.settings.plaidItems ?? []).map((i): Feeder => ({
       provider: "plaid", id: i.itemId, institution: i.institution, kind: i.kind,
       ...(i.lastSyncAt ? { lastSyncAt: i.lastSyncAt } : {}),
@@ -96,7 +108,7 @@ export function feederOf(
  * what it is left here for.
  */
 export const isSynced = (a: Pick<Account, "syncSource">): boolean =>
-  a.syncSource === "plaid";
+  a.syncSource === "plaid" || a.syncSource === "simplefin";
 
 export type Stranding = "gone" | "passed-over";
 

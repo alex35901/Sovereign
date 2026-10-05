@@ -80,8 +80,9 @@
     <li>
       <b>Requests to financial data providers</b>, through this application's own server so that
       provider credentials never reach the browser. Plaid for accounts, transactions and holdings,
-      Tiingo for security prices, RentCast for property valuations. Each receives only what its own
-      request needs, and a provider that is not connected is never contacted at all.
+      a SimpleFIN bridge for accounts and transactions at banks Plaid will not connect, Tiingo for
+      security prices, RentCast for property valuations. Each receives only what its own request
+      needs, and a provider that is not connected is never contacted at all.
     </li>
     <li>
       <b>Questions asked of the assistant</b>, to Anthropic, only when the assistant is used. It is
@@ -99,8 +100,14 @@
   <p>
     Credentials that authorise every request, such as Plaid's client identifier and secret, are
     held in server environment variables and never sent to the browser. Credentials that belong to
-    the household, such as a Plaid access token, live inside the encrypted document, which means
-    they are unreadable to the server in the same way everything else is.
+    the household, such as a Plaid access token or a SimpleFIN access URL, live inside the
+    encrypted document, which means they are unreadable to the server in the same way everything
+    else is.
+  </p>
+  <p>
+    A SimpleFIN bridge has no credential of this application's at all. The household authorises
+    their own banks at the bridge and it hands them a one-use setup token, which is exchanged once
+    for an access URL that is theirs. Nothing about that exchange is kept here.
   </p>
 
   <h2>Retention</h2>

@@ -10,6 +10,7 @@
  */
 export { mergeSync, syncWindowStart, cleanMerchant } from "./merge";
 export { syncPlaid, syncPlaidDue, syncPlaidItem } from "./run";
+export { syncSimplefin, syncSimplefinDue } from "./run";
 export { CADENCES, DEFAULT_CADENCE, cadenceLabel, nextSyncAt, syncDue, untilLabel } from "./schedule";
 export type { SyncCadence } from "./schedule";
 export type { SyncPayload } from "./types";

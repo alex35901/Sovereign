@@ -101,7 +101,7 @@ export interface Account {
     beneficiary?: string;
     note?: string;
   };
-  syncSource?: "manual" | "csv" | "plaid";
+  syncSource?: "manual" | "csv" | "plaid" | "simplefin";
   syncId?: string;
   /**
    * The Plaid connection this account comes in through.
@@ -535,6 +535,15 @@ export interface Settings {
    */
   deletedAccountKeys?: string[];
   /**
+   * The SimpleFIN bridge, when one is connected.
+   *
+   * One connection, not a list: a bridge is the household's own account at it
+   * and every bank they have authorised sits behind the single access URL.
+   * The URL carries its own credentials, which is why it lives in here with
+   * everything else the server cannot read.
+   */
+  simplefin?: SimplefinRef;
+  /**
    * Thresholds the household has set for itself.
    *
    * Everything else in lib/notifications fires on rungs this app chose. These
@@ -633,6 +642,7 @@ export interface PlaidItemRef {
   historyTotal?: number;
 }
 
+import type { SimplefinRef } from "./lib/sync/simplefin.js";
 import type { ForecastPlan } from "./lib/forecast.js";
 import type { Survivorship } from "./lib/estate.js";
 
