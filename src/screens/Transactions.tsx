@@ -825,8 +825,13 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
       ) : (
         <span className="tiny truncate tx-account">-</span>
       )}
+      {/* Both ways, not just income. The day's subtotal above these rows and
+          the net figure at the top of the page have always coloured a negative
+          red; leaving the rows that make them up in plain ink was the odd one
+          out, and reading down a column for "what went out" meant reading the
+          minus signs. */}
       <div className="num bold tx-amount" style={{ cursor: "pointer" }} onClick={onEdit}>
-        <Money value={amount ?? txn.amount} colored={(amount ?? txn.amount) > 0} />
+        <Money value={amount ?? txn.amount} colored />
       </div>
     </div>
   );

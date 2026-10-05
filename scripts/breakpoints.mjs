@@ -3622,6 +3622,28 @@ try {
     check("a muted account's transactions are out of the ledger as well",
       (await listed()) === false, "the row is still listed");
 
+    // ── which way the money went, without reading the minus signs ──
+    //
+    // The day's subtotal and the net figure at the top have always coloured a
+    // negative red. The rows that make them up were plain, which left one
+    // column on the page where direction had to be read off a character.
+    const toned = await mt.evaluate(() => {
+      const rows = [...document.querySelectorAll(".list-row.tx-grid:not(.head) .tx-amount .num")];
+      const of = (el) => ({
+        text: el.innerText.trim(),
+        tone: el.classList.contains("neg") ? "neg" : el.classList.contains("pos") ? "pos" : "none",
+      });
+      return rows.slice(0, 40).map(of);
+    });
+    const out = toned.filter((t) => t.text.startsWith("-"));
+    const inn = toned.filter((t) => !t.text.startsWith("-") && /\d/.test(t.text) && !/^\$0/.test(t.text));
+    check("money going out is red, every row of it",
+      out.length > 0 && out.every((t) => t.tone === "neg"),
+      out.filter((t) => t.tone !== "neg").map((t) => `${t.text}:${t.tone}`).join(" ") || `${out.length} rows`);
+    check("and money coming in is still green rather than both being one colour",
+      inn.length === 0 || inn.every((t) => t.tone === "pos"),
+      inn.filter((t) => t.tone !== "pos").map((t) => `${t.text}:${t.tone}`).join(" ") || `${inn.length} rows`);
+
     // The two ways back to them. An account's own page links here with the
     // account named, and an empty list would be the wrong answer to "show me
     // this account".
