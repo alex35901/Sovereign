@@ -8,7 +8,6 @@ import { Btn, Card, CardHead, Field, Segmented, TextInput } from "../components/
 import { IntegrationsCard } from "./IntegrationsCard";
 import { PlaidCard } from "./PlaidCard";
 import { AlertsCard } from "./AlertsCard";
-import { TellerCard } from "./TellerCard";
 import { ReattachCard } from "./Reattach";
 import { CloudCard } from "./CloudCard";
 import { HistoryCard } from "./HistoryCard";
@@ -111,7 +110,6 @@ export default function Settings() {
         {/* After Plaid, because it is the answer to something Plaid refused
             rather than an equal choice: one bank comes this way and the rest
             stay where they are. */}
-        <TellerCard />
         {/* Under the connections, because it is about them: an account a
             reconnected bank handed back under a new name. Renders nothing
             unless there is one. */}

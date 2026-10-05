@@ -62,7 +62,7 @@ export interface SyncPayload {
  * queue can still be holding one sealed by an older job, and the only other
  * thing that ever wrote to it was a bridge whose pulls must never land.
  */
-export type QueuedPayload = SyncPayload & { source?: "plaid" | "teller" };
+export type QueuedPayload = SyncPayload & { source?: "plaid" };
 
 /** A source that reports no account type leaves the name to infer one from. */
 export function guessAccountType(name: string, balance: number): AccountType {

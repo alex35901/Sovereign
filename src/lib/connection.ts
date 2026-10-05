@@ -36,7 +36,6 @@ export interface Connection {
 
 const PROVIDER: Record<string, string> = {
   plaid: "Plaid",
-  teller: "Teller",
   csv: "CSV import",
   manual: "Entered by hand",
 };
@@ -121,12 +120,12 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
    * described by the guess below, which reasons from how long things have been
    * quiet. A real answer, from the bank, beats an inference about it.
    */
-  // Both providers, by the one rule: an account says which one feeds it, so
-  // the connection it is on is the one of that provider that matches. Teller
-  // accounts used to fall straight past this and be described by the guess
-  // below while their own connection was sitting there saying what was wrong.
+  // An account says which provider feeds it, so the connection it is on is
+  // the one of that provider that matches. An account that falls past this is
+  // described by the guess below while its own connection sits there saying
+  // what is actually wrong.
   const item = feederOf(account, feeders(db));
-  if ((source === "plaid" || source === "teller") && item?.lastError) {
+  if (source === "plaid" && item?.lastError) {
     return {
       state: "attention", provider, lastAt,
       status: "Needs attention",
@@ -145,7 +144,7 @@ export function connectionOf(account: Account, db: DB, now: number = Date.now())
    * decided it named nobody, which meant showing it against everybody: the one
    * case this rule exists for was the one case it got wrong.
    */
-  const known = [...db.accounts, ...(db.settings.plaidItems ?? []), ...(db.settings.tellerEnrollments ?? [])];
+  const known = [...db.accounts, ...(db.settings.plaidItems ?? [])];
   const mine = error
     ? Boolean(noteFor(account, [error])) || !namesABank(known, error)
     : false;

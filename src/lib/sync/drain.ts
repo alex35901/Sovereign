@@ -65,13 +65,7 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
    * last gate before anything is written, checks. A pull is applied only when
    * it names a connection that is still here.
    */
-  const live = new Set([
-    ...(db.settings.plaidItems ?? []).map((i) => i.itemId),
-    // Teller's enrollments by the same rule. Its accounts carry the enrollment
-    // id as their itemId, so one set answers for both providers and a pull
-    // naming a connection that has been disconnected is dropped either way.
-    ...(db.settings.tellerEnrollments ?? []).map((i) => i.enrollmentId),
-  ]);
+  const live = new Set((db.settings.plaidItems ?? []).map((i) => i.itemId));
 
   // A queued pull is the scheduled job's signature: on an encrypted document
   // the job cannot write settings, so this is the only place its run can be
@@ -98,7 +92,7 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
     // is thrown away rather than merged on the chance that it is wanted.
     const source = payload.source;
     const from = payload.accounts.map((a) => a.itemId).filter(Boolean) as string[];
-    if ((source !== "plaid" && source !== "teller") || !from.some((id) => live.has(id))) {
+    if (source !== "plaid" || !from.some((id) => live.has(id))) {
       out.ids.push(row.id);
       out.dropped += 1;
       continue;

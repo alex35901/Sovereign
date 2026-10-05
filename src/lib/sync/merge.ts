@@ -11,11 +11,13 @@ import { compressPoints } from "../history.js";
 /**
  * Who sent this payload.
  *
- * It decides which stored accounts a pull may claim, so widening it is not a
- * formality: a Teller pull must never adopt an account Plaid is feeding by
- * matching its name, or the two providers take turns rewriting each other.
+ * One provider today, and still a named type rather than a literal: it decides
+ * which stored accounts a pull may claim, so widening it is not a formality.
+ * While there were two, a pull from one adopting an account the other was
+ * feeding had the pair taking turns rewriting each other, and the next
+ * provider added here would have the same question to answer.
  */
-export type Provider = "plaid" | "teller";
+export type Provider = "plaid";
 
 
 export interface MergeResult {

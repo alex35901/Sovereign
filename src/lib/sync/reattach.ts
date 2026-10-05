@@ -35,7 +35,7 @@ import type { ItemKind } from "./kind.js";
  * about lives in their own files.
  */
 export interface Feeder {
-  provider: "plaid" | "teller";
+  provider: "plaid";
   id: string;
   institution: string;
   kind: ItemKind;
@@ -48,13 +48,6 @@ export function feeders(db: DB): Feeder[] {
   return [
     ...(db.settings.plaidItems ?? []).map((i): Feeder => ({
       provider: "plaid", id: i.itemId, institution: i.institution, kind: i.kind,
-      ...(i.lastSyncAt ? { lastSyncAt: i.lastSyncAt } : {}),
-      ...(i.lastError ? { lastError: i.lastError } : {}),
-    })),
-    ...(db.settings.tellerEnrollments ?? []).map((i): Feeder => ({
-      // Teller has no notion of what a connection was set up to carry, because
-      // a login reaches whatever is behind it. "bank" is what it does.
-      provider: "teller", id: i.enrollmentId, institution: i.institution, kind: "bank",
       ...(i.lastSyncAt ? { lastSyncAt: i.lastSyncAt } : {}),
       ...(i.lastError ? { lastError: i.lastError } : {}),
     })),
@@ -96,13 +89,14 @@ export function feederOf(
 /**
  * An account a provider is supposed to be feeding.
  *
- * Both providers, because the repair below is most useful across them: a bank
- * Plaid will not open comes in through Teller as new accounts, and the old
- * ones are left holding the history. Which is the same stranding as any other
- * and wants the same fix.
+ * The repair below was written when there were two, because it is most useful
+ * across them: a bank one provider would not open comes in through the other
+ * as new accounts, and the old ones are left holding the history. Within one
+ * provider the same stranding happens whenever a bank is reconnected, which is
+ * what it is left here for.
  */
 export const isSynced = (a: Pick<Account, "syncSource">): boolean =>
-  a.syncSource === "plaid" || a.syncSource === "teller";
+  a.syncSource === "plaid";
 
 export type Stranding = "gone" | "passed-over";
 
@@ -352,9 +346,9 @@ export function foldInto(db: DB, keepId: ID, dropId: ID): Folded {
     ...keep,
     balance: drop.balance,
     history,
-    // The provider that is actually feeding it now, which is the whole point
-    // when the fold is across providers: a Plaid account that has moved onto
-    // Teller must stop saying Plaid, or nothing will ever look for it there.
+    // The provider that is actually feeding it now. It mattered most when a
+    // fold could be across providers, and still has to be the new one's: an
+    // account carrying a source nothing feeds is never looked for again.
     syncSource: drop.syncSource ?? keep.syncSource,
     syncId: drop.syncId,
     plaidItemId: drop.plaidItemId,

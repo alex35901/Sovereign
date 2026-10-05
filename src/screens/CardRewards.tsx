@@ -13,9 +13,9 @@ import { Btn, Card, CardHead, Empty, Progress, Tile, cx } from "../components/ui
  * What the wallet has actually paid, and what to do about it.
  *
  * The honest shape of this page is set by one fact: no bank feed carries a
- * rewards balance. Plaid and Teller both answer about accounts, balances and
- * transactions, and neither has a field for the hundred thousand points
- * sitting with an issuer. So nothing here is fetched. What is earned is
+ * rewards balance. A bank feed answers about accounts, balances and
+ * transactions, and has no field for the hundred thousand points sitting with
+ * an issuer. So nothing here is fetched. What is earned is
  * computed from the household's own purchases against the rates it has
  * entered, which is exact rather than approximate, and the balance - the one
  * figure only the issuer knows - is typed in and dated.

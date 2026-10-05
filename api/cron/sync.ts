@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DB } from "../../src/types.js";
 import { mergeSync, windowFor } from "../../src/lib/sync/merge.js";
 import { fetchItemRaw, identifyItem, plaidCreds } from "../_plaid.js";
-import { fetchEnrollment, tellerCreds } from "../_teller.js";
 import type { QueuedPayload } from "../../src/lib/sync/types.js";
 import { toPlaidPayload } from "../../src/lib/sync/plaid.js";
 import type { SyncResponse } from "../../src/lib/sync/plaid.js";
@@ -100,13 +99,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // can read it back afterwards.
     if (seal.sealed) {
       const tokens = plaidTokens();
-      const tellers = tellerTokens();
-      if (!tokens.length && !tellers.length) {
+      if (!tokens.length) {
         return send(200, {
           ran: false,
           reason: "This document is encrypted, so the scheduled pull cannot read the credentials inside it and "
-            + "needs its own copy. Add PLAID_ACCESS_TOKENS, or TELLER_ACCESS_TOKENS, to the Vercel environment "
-            + "variables. Settings shows the values.",
+            + "needs its own copy. Add PLAID_ACCESS_TOKENS to the Vercel environment variables. Settings shows "
+            + "the values.",
         });
       }
 
@@ -157,25 +155,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       }
       if (skipped) errors.push(`${skipped} Plaid connection${skipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
 
-      // Teller, the same way. Its own credentials and its own loop, because a
-      // provider that is down must not cost the other one its night.
-      const tellerCreds_ = tellers.length ? tellerCreds() : null;
-      if (tellers.length && !tellerCreds_) {
-        errors.push("TELLER_ACCESS_TOKENS is set but TELLER_APP_ID, TELLER_CERT and TELLER_KEY are not.");
-      }
-      let tellerSkipped = 0;
-      for (const accessToken of tellerCreds_ ? tellers : []) {
-        if (Date.now() > deadline) { tellerSkipped += 1; continue; }
-        try {
-          await queue({ ...await fetchEnrollment(tellerCreds_!, accessToken, since), source: "teller" });
-        } catch (err) {
-          errors.push(err instanceof Error ? err.message : "A Teller pull failed.");
-        }
-      }
-      if (tellerSkipped) {
-        errors.push(`${tellerSkipped} Teller connection${tellerSkipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
-      }
-
       const trimmed = await trimQueue();
       return send(200, {
         ran: ids.length > 0,
@@ -206,11 +185,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const plaid = await refreshPlaid(next, deadline);
     next = plaid.db;
 
-    // Teller, for the banks Plaid will not open. Its own pass, so one provider
-    // being down leaves the other's accounts updated.
-    const teller = await refreshTeller(next, deadline);
-    next = teller.db;
-
     // Prices ride along with the balances, so a morning glance at the app has
     // both moved together rather than one of them a day behind the other.
     const priced = await refreshPrices(next);
@@ -219,7 +193,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // What actually happened, and separately whether the document moved at all:
     // a run that only recorded a failed provider still has something to save,
     // and is still a run that did nothing worth reporting as success.
-    const ran = plaid.ran || teller.ran || priced.ran;
+    const ran = plaid.ran || priced.ran;
 
     /**
      * Guarded by the version this run started from.
@@ -252,12 +226,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       ran,
       reason: ran
         ? undefined
-        : (priced.error ?? plaid.errors[0] ?? teller.errors[0]
+        : (priced.error ?? plaid.errors[0]
           ?? "No bank is connected and there was nothing to price."),
       version: write?.stored?.version,
-      transactionsAdded: plaid.transactions + teller.transactions,
-      accountsUpdated: plaid.accountsUpdated + teller.accountsUpdated,
-      accountsAdded: plaid.accountsAdded + teller.accountsAdded,
+      transactionsAdded: plaid.transactions,
+      accountsUpdated: plaid.accountsUpdated,
+      accountsAdded: plaid.accountsAdded,
       plaid: plaid.items || plaid.errors.length
         ? {
           items: plaid.items,
@@ -269,20 +243,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           errors: plaid.errors,
         }
         : undefined,
-      teller: teller.items || teller.errors.length
-        ? {
-          items: teller.items,
-          transactions: teller.transactions,
-          accountsAdded: teller.accountsAdded,
-          accountsUpdated: teller.accountsUpdated,
-          skipped: teller.skipped,
-          errors: teller.errors,
-        }
-        : undefined,
       pricesUpdated: priced.updated,
       pricesMissed: priced.misses,
       priceError: priced.error,
-      errors: [...plaid.errors, ...teller.errors],
+      errors: [...plaid.errors],
     });
   } catch (err) {
     return send(502, { ran: false, error: err instanceof Error ? err.message : "The scheduled sync failed." });
@@ -298,11 +262,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
  */
 function plaidTokens(): string[] {
   return splitTokens(process.env.PLAID_ACCESS_TOKENS);
-}
-
-/** The same, for Teller. One per connection, and each one is a bank. */
-function tellerTokens(): string[] {
-  return splitTokens(process.env.TELLER_ACCESS_TOKENS);
 }
 
 function splitTokens(raw: string | undefined): string[] {
@@ -393,73 +352,6 @@ export async function refreshPlaid(db: DB, deadline: number): Promise<{
   // succeed would clear the expired login of the first and the integrations
   // table would call the whole thing healthy.
   out.db = meter(out.db, "plaid", "ever", { error: out.errors[0] });
-  return out;
-}
-
-/**
- * The Teller half of the scheduled run.
- *
- * A near-copy of the Plaid half rather than an abstraction over it, for the
- * same reason the browser's two runners are: the providers agree about the
- * shape of a payload and almost nothing else, and a shared loop would be the
- * same code with the differences hidden in the middle of it.
- */
-export async function refreshTeller(db: DB, deadline: number): Promise<{
-  db: DB;
-  ran: boolean;
-  items: number;
-  transactions: number;
-  accountsAdded: number;
-  accountsUpdated: number;
-  skipped: number;
-  errors: string[];
-}> {
-  const idle = {
-    db, ran: false, items: 0, transactions: 0,
-    accountsAdded: 0, accountsUpdated: 0, skipped: 0, errors: [] as string[],
-  };
-
-  const items = db.settings?.tellerEnrollments ?? [];
-  if (!items.length) return idle;
-
-  const creds = tellerCreds();
-  if (!creds) {
-    return {
-      ...idle,
-      db: meter(db, "teller", "ever", {
-        error: "Teller is connected in this document but the deployment has no certificate.",
-      }),
-      errors: ["Teller isn't configured on the server: add TELLER_APP_ID, TELLER_CERT and TELLER_KEY to the Vercel environment variables."],
-    };
-  }
-
-  const out = { ...idle, db };
-  for (const item of items) {
-    if (Date.now() > deadline) {
-      out.skipped += 1;
-      continue;
-    }
-    try {
-      const payload = await fetchEnrollment(creds, item.accessToken, windowFor(item.lastSyncAt));
-      const merged = mergeSync(out.db, payload, "teller");
-      const stamped = (merged.db.settings.tellerEnrollments ?? []).map((i) =>
-        (i.enrollmentId === item.enrollmentId ? { ...i, lastSyncAt: payload.fetchedAt } : i));
-      out.db = { ...merged.db, settings: { ...merged.db.settings, tellerEnrollments: stamped } };
-      out.items += 1;
-      out.transactions += merged.transactionsAdded;
-      out.accountsAdded += merged.accountsAdded;
-      out.accountsUpdated += merged.accountsUpdated;
-      out.errors.push(...payload.errors.map((e) => `${item.institution}: ${e}`));
-    } catch (err) {
-      out.errors.push(`${item.institution}: ${err instanceof Error ? err.message : "the sync failed"}`);
-    }
-  }
-  if (out.skipped) {
-    out.errors.push(`${out.skipped} more Teller connection${out.skipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
-  }
-
-  out.ran = out.transactions > 0 || out.accountsAdded > 0;
-  out.db = meter(out.db, "teller", "ever", { error: out.errors[0] });
   return out;
 }
 

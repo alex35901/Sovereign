@@ -80,9 +80,8 @@
     <li>
       <b>Requests to financial data providers</b>, through this application's own server so that
       provider credentials never reach the browser. Plaid for accounts, transactions and holdings,
-      Teller for accounts and transactions at banks Plaid will not connect, Tiingo for security
-      prices, RentCast for property valuations. Each receives only what its own request needs, and
-      a provider that is not connected is never contacted at all.
+      Tiingo for security prices, RentCast for property valuations. Each receives only what its own
+      request needs, and a provider that is not connected is never contacted at all.
     </li>
     <li>
       <b>Questions asked of the assistant</b>, to Anthropic, only when the assistant is used. It is
@@ -91,23 +90,17 @@
     </li>
   </ul>
   <p>
-    There is no analytics, no tracking and no advertising. The only third-party scripts are Plaid
-    Link and Teller Connect, each loaded from its own provider's network and only while a bank is
-    being connected through that provider. Bank credentials are entered inside those dialogs and
-    never touch this application.
+    There is no analytics, no tracking and no advertising. The only third-party script is Plaid
+    Link, loaded from Plaid's own network and only while a bank is being connected. Bank
+    credentials are entered inside that dialog and never touch this application.
   </p>
 
   <h2>Credentials</h2>
   <p>
-    Credentials that authorise every request, such as Plaid's client identifier and secret or
-    Teller's client certificate and private key, are held in server environment variables and never
-    sent to the browser. Credentials that belong to the household, such as a Plaid or Teller access
-    token, live inside the encrypted document, which means they are unreadable to the server in the
-    same way everything else is.</p>
-  <p>
-    Teller's application identifier is the one exception, and it is not a credential: the Connect
-    dialog cannot open without it, so it is served to the browser. On its own it authorises
-    nothing.
+    Credentials that authorise every request, such as Plaid's client identifier and secret, are
+    held in server environment variables and never sent to the browser. Credentials that belong to
+    the household, such as a Plaid access token, live inside the encrypted document, which means
+    they are unreadable to the server in the same way everything else is.
   </p>
 
   <h2>Retention</h2>
