@@ -13,7 +13,7 @@ import { toCSV } from "../lib/csv";
 import { accountOptions, budgetedCategoryIds, budgetedSum, mutedAccountIds, recurringByMerchant } from "../lib/select";
 import { cadenceLabel, recurringIdFor } from "../lib/recurring";
 import type { BudgetedSum } from "../lib/select";
-import { fmt } from "../lib/money";
+import { fmt, toneWeight } from "../lib/money";
 import { filesIt } from "../lib/categories";
 import { download } from "../lib/storage";
 import { AmountBound, Btn, Card, Empty, Field, Money, Popover, SelectInput, TagPill, TextInput, cx } from "../components/ui";
@@ -825,13 +825,15 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
       ) : (
         <span className="tiny truncate tx-account">-</span>
       )}
-      {/* Both ways, not just income. The day's subtotal above these rows and
-          the net figure at the top of the page have always coloured a negative
-          red; leaving the rows that make them up in plain ink was the odd one
-          out, and reading down a column for "what went out" meant reading the
-          minus signs. */}
+      {/* Both ways, not just income, and by size rather than at full strength.
+          The day's subtotal and the net figure at the top have always coloured
+          a negative red, so leaving the rows that make them up in plain ink
+          was the odd one out; colouring every one of them fully was a wall of
+          red. The size decides how much of the tone a row wears, which puts
+          the month's big movements where the eye lands first and leaves a
+          four dollar coffee as a tint. */}
       <div className="num bold tx-amount" style={{ cursor: "pointer" }} onClick={onEdit}>
-        <Money value={amount ?? txn.amount} colored />
+        <Money value={amount ?? txn.amount} colored ramp={toneWeight(amount ?? txn.amount)} />
       </div>
     </div>
   );

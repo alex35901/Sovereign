@@ -26,12 +26,32 @@ export function CardHead({ title, sub, right, flush }: { title: ReactNode; sub?:
 }
 
 /** An amount, formatted and toned. */
-export function Money({ value, cents = true, sign, colored, compact, className, style }: {
+export function Money({ value, cents = true, sign, colored, ramp, compact, className, style }: {
   value: number; cents?: boolean; sign?: boolean; colored?: boolean; compact?: boolean; className?: string; style?: CSSProperties;
+  /**
+   * How much of the tone to wear, from 0 to 1, where 1 is the full colour.
+   *
+   * For a long list, where every row in full colour is a wall of it. The
+   * figure keeps its direction and loses its shouting: the mix runs toward the
+   * page's own ink rather than toward white, so it follows the theme, and
+   * every step of it sits further from the background than the full tone does.
+   * Which means a quieter row is never a less readable one.
+   */
+  ramp?: number;
 }) {
   const text = cents ? fmt(value, { sign, compact }) : fmt0(value, { sign, compact });
   const tone = colored ? (value > 0 ? "pos" : value < 0 ? "neg" : "muted") : "";
-  return <span className={cx("num", tone, className)} style={style}>{text}</span>;
+  const faded = colored && ramp !== undefined && value !== 0;
+  return (
+    <span
+      className={cx("num", tone, faded && "num-ramp", className)}
+      style={faded
+        ? { ...style, "--ramp": `${Math.round(Math.min(1, Math.max(0, ramp)) * 100)}%` } as CSSProperties
+        : style}
+    >
+      {text}
+    </span>
+  );
 }
 
 export function Tile({ label, value, sub, tone, onClick, action }: {

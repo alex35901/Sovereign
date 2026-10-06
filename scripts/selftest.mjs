@@ -65,7 +65,7 @@ await build({
       export * as PW from "./src/lib/price-watch.ts";
       export { applyRules, ruleMatches, countMatches, merchantTests, merchantMatches, MATCH_WORD } from "./src/lib/rules.ts";
       export { added, changes, record, history, eventTitle, eventDetail, sourceLabel } from "./src/lib/activity.ts";
-      export { parseMoney, fmt } from "./src/lib/money.ts";
+      export { parseMoney, fmt, toneWeight, TONE_FLOOR, TONE_FROM, TONE_TO } from "./src/lib/money.ts";
       export * as AF from "./src/lib/amount-filter.ts";
       export * as CL from "./src/lib/changelog.ts";
       export * as RC from "./src/lib/recurring.ts";
@@ -418,6 +418,83 @@ await test("an access URL from the old shape is never read back into a connectio
 });
 
 /* ── the bridge's proxy, and where it may be pointed ────────────────────── */
+
+await test("how loudly a figure wears its colour is read off its size", () => {
+  // A ledger in full colour is a wall of it. The size decides how much of the
+  // tone a row keeps, so the month's big movements are where the eye lands and
+  // a four dollar coffee is a tint.
+  const { toneWeight, TONE_FLOOR, TONE_FROM, TONE_TO } = M;
+
+  // The quiet end is a tint rather than plain ink. Colouring the ledger at all
+  // is so direction can be read without hunting for a minus sign, and a row in
+  // the text colour says nothing.
+  assert.equal(toneWeight(0), TONE_FLOOR);
+  // A figure that is not a number would come out the other end as one too, and
+  // reach the page as a percentage nobody can paint.
+  assert.equal(toneWeight(NaN), TONE_FLOOR);
+  assert.equal(toneWeight(Infinity), TONE_FLOOR);
+  assert.equal(toneWeight(1_00), TONE_FLOOR, "under the floor is the floor");
+  assert.equal(toneWeight(TONE_FROM), TONE_FLOOR);
+  assert.ok(TONE_FLOOR > 0, "never plain ink");
+
+  // The loud end saturates and stays there: a mortgage payment and a car are
+  // both simply large.
+  assert.equal(toneWeight(TONE_TO), 1);
+  assert.equal(toneWeight(50_000_00), 1);
+
+  // Sign is not its subject. Which colour to wear is the caller's business.
+  assert.equal(toneWeight(-500_00), toneWeight(500_00));
+
+  // Up all the way between, and inside the ends.
+  const steps = [50_00, 100_00, 500_00, 1_000_00, 3_000_00];
+  const got = steps.map((c) => toneWeight(c));
+  assert.ok(got.every((w, i) => i === 0 || w > got[i - 1]), got.join(" "));
+  assert.ok(got.every((w) => w > TONE_FLOOR && w < 1), got.join(" "));
+});
+
+await test("and read logarithmically, because money is not spread evenly", () => {
+  // The reason this is not a straight line. A household's transactions run
+  // from a four dollar coffee to a four thousand dollar mortgage payment, and
+  // on a linear scale every ordinary expense sits in the bottom tenth and
+  // looks identical to every other.
+  const { toneWeight } = M;
+  const linear = (c) => c / 5_000_00;
+
+  // A hundred dollars is a fiftieth of the top. It has to look like more than
+  // a fiftieth of the way along, or the page is one colour again.
+  assert.ok(toneWeight(100_00) > linear(100_00) * 4, `${toneWeight(100_00)} against ${linear(100_00)}`);
+  // Each tenfold step moves it the same distance, which is what a log scale
+  // is for. Taken inside the ends, since outside them it is clamped.
+  const a = toneWeight(300_00) - toneWeight(30_00);
+  const b = toneWeight(3_000_00) - toneWeight(300_00);
+  assert.ok(Math.abs(a - b) < 0.01, `${a.toFixed(3)} against ${b.toFixed(3)}`);
+});
+
+await test("the ramp is fixed, so a big coffee never looks like a mortgage", () => {
+  // Scaling to the largest row in view is the obvious alternative and the
+  // wrong one: filtered to a list of coffees, the biggest coffee would be as
+  // loud as a mortgage payment, which is the one thing this must not say.
+  // Nothing about the answer depends on what else exists.
+  const { toneWeight } = M;
+  assert.equal(toneWeight(4_50), toneWeight(4_50));
+  assert.ok(toneWeight(4_50) < toneWeight(3_000_00) / 2,
+    "a coffee stays a coffee however short the list it is in");
+});
+
+await test("a ramp whose ends are the wrong way round still answers a number", () => {
+  // Nobody can reach the division in the middle with these, because the two
+  // clamps above it already cover every size when the ends meet or cross.
+  // Asserted rather than reasoned about, since the alternative is a NaN that
+  // would reach the page as a colour nobody can name.
+  const { toneWeight, TONE_FLOOR } = M;
+  for (const [from, to] of [[500_00, 500_00], [500_00, 100_00]]) {
+    for (const size of [0, 1_00, 300_00, 500_00, 900_00]) {
+      const w = toneWeight(size, from, to);
+      assert.ok(Number.isFinite(w), `${size} on ${from}..${to} gave ${w}`);
+      assert.ok(w >= TONE_FLOOR && w <= 1, `${size} on ${from}..${to} gave ${w}`);
+    }
+  }
+});
 
 await test("an access URL is held to a shape before this server fetches it", () => {
   // The access URL is typed in by a person and then fetched by this

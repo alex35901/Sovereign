@@ -100,6 +100,15 @@ h3 { font-size: 14px; }
 .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
+/* A figure that wears only part of its colour.
+   Mixed toward the page's own ink rather than toward white, so one rule serves
+   both themes and the quiet end is the text colour on either. Every step sits
+   further from the background than the full tone does, so nothing on this ramp
+   is harder to read than the colour it is standing in for. Forced colours
+   collapse --pos, --neg and --text onto one value below, which takes the ramp
+   with it, correctly. */
+.num-ramp.pos { color: color-mix(in oklab, var(--pos) var(--ramp, 100%), var(--text)); }
+.num-ramp.neg { color: color-mix(in oklab, var(--neg) var(--ramp, 100%), var(--text)); }
 .flat { color: var(--muted); }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }

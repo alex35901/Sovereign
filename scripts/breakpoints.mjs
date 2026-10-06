@@ -3632,6 +3632,10 @@ try {
       const of = (el) => ({
         text: el.innerText.trim(),
         tone: el.classList.contains("neg") ? "neg" : el.classList.contains("pos") ? "pos" : "none",
+        // What the browser actually painted, after color-mix. Reading the
+        // custom property instead would only prove React set a number.
+        colour: getComputedStyle(el).color,
+        size: Math.abs(Number(el.innerText.replace(/[^\d.]/g, "")) || 0),
       });
       return rows.slice(0, 40).map(of);
     });
@@ -3643,6 +3647,36 @@ try {
     check("and money coming in is still green rather than both being one colour",
       inn.length === 0 || inn.every((t) => t.tone === "pos"),
       inn.filter((t) => t.tone !== "pos").map((t) => `${t.text}:${t.tone}`).join(" ") || `${inn.length} rows`);
+
+    // ── loud by size, rather than every row at full strength ──
+    //
+    // A ledger in full colour is a wall of it. The size decides how much of
+    // the tone a row keeps, so the big movements are where the eye lands and
+    // a four dollar coffee is a tint.
+    const shades = new Set(out.map((t) => t.colour));
+    check("and how much red a row wears depends on how big it is",
+      shades.size > 1, `${shades.size} shade${shades.size === 1 ? "" : "s"} across ${out.length} rows`);
+
+    // Mixed toward the page's own ink, so the quiet end is never pale on a
+    // light theme and never dark on a dark one. The check that matters is
+    // that the biggest is the reddest.
+    const bySize = out.filter((t) => t.size > 0).sort((a, b) => a.size - b.size);
+    // How far toward red the paint sits. A browser reports a color-mix in the
+    // space it was mixed in, so this reads oklab's green-to-red axis where it
+    // gets one and falls back to the channels where it gets rgb.
+    const redness = (css) => {
+      const n = (css.match(/[\d.-]+/g) ?? []).map(Number);
+      if (/^oklab/i.test(css)) return n[1];
+      const [r, g, b] = n;
+      return r - (g + b) / 2;
+    };
+    if (bySize.length >= 2) {
+      const small = bySize[0];
+      const large = bySize[bySize.length - 1];
+      check("with the largest expense redder than the smallest",
+        redness(large.colour) > redness(small.colour),
+        `${small.text} ${small.colour} against ${large.text} ${large.colour}`);
+    }
 
     // The two ways back to them. An account's own page links here with the
     // account named, and an empty list would be the wrong answer to "show me
