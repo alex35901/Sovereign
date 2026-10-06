@@ -40,7 +40,7 @@ export const MIN_SHARE = 0.02;
  * one particular one.
  */
 export const PER_YEAR: Record<Cadence, number> = {
-  weekly: 52, biweekly: 26, monthly: 12, quarterly: 4, semiannual: 2, yearly: 1,
+  weekly: 52, biweekly: 26, semimonthly: 24, monthly: 12, quarterly: 4, semiannual: 2, yearly: 1,
 };
 
 export interface PriceChange {

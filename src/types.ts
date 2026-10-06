@@ -396,7 +396,7 @@ export interface Goal {
   archived: boolean;
 }
 
-export type Cadence = "weekly" | "biweekly" | "monthly" | "quarterly" | "semiannual" | "yearly";
+export type Cadence = "weekly" | "biweekly" | "semimonthly" | "monthly" | "quarterly" | "semiannual" | "yearly";
 
 export interface Recurring {
   id: ID;

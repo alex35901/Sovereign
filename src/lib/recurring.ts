@@ -1,5 +1,5 @@
 import type { Cadence, DB, ID, ISODate, Recurring, Transaction } from "../types.js";
-import { addDays, addMonthsDate, today } from "./date.js";
+import { addDays, addMonthsDate, parseISO, toISO, today } from "./date.js";
 
 /**
  * What a repeating charge is, in one place.
@@ -16,6 +16,7 @@ import { addDays, addMonthsDate, today } from "./date.js";
 export const CADENCES: { value: Cadence; label: string }[] = [
   { value: "weekly", label: "Weekly" },
   { value: "biweekly", label: "Every 2 weeks" },
+  { value: "semimonthly", label: "15th and last day" },
   { value: "monthly", label: "Monthly" },
   { value: "quarterly", label: "Quarterly" },
   { value: "semiannual", label: "Twice a year" },
@@ -38,11 +39,76 @@ export const cadenceLabel = (c: Cadence): string =>
  * thirty days is not a month, and a year walked in thirty-day steps has
  * thirteen of them in it.
  */
-const STEP_DAYS: Record<Cadence, number> = { weekly: 7, biweekly: 14, monthly: 0, quarterly: 0, semiannual: 0, yearly: 0 };
-const STEP_MONTHS: Record<Cadence, number> = { weekly: 0, biweekly: 0, monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
+const STEP_DAYS: Record<Cadence, number> = { weekly: 7, biweekly: 14, semimonthly: 0, monthly: 0, quarterly: 0, semiannual: 0, yearly: 0 };
+const STEP_MONTHS: Record<Cadence, number> = { weekly: 0, biweekly: 0, semimonthly: 0, monthly: 1, quarterly: 3, semiannual: 6, yearly: 12 };
 
 export const stepDate = (from: ISODate, cadence: Cadence, n: number): ISODate =>
-  STEP_DAYS[cadence] ? addDays(from, STEP_DAYS[cadence] * n) : addMonthsDate(from, STEP_MONTHS[cadence] * n);
+  cadence === "semimonthly" ? semimonthlyStep(from, n)
+    : STEP_DAYS[cadence] ? addDays(from, STEP_DAYS[cadence] * n) : addMonthsDate(from, STEP_MONTHS[cadence] * n);
+
+/**
+ * Twice a month, on the 15th and the last day, moved back to the Friday when
+ * either lands on a weekend.
+ *
+ * Not "every 15 days" and not a step from the last date: a payroll on these
+ * dates is pinned to the calendar, so the gap is 13 to 18 days and no fixed
+ * step could ever stay on it. Each payday is a numbered slot instead (two a
+ * month, counted from year zero) and a step is a step in slots. Measuring from
+ * slots rather than from the dates themselves is what lets a Friday-the-13th
+ * payday still be "the 15th" when the next one is worked out.
+ *
+ * Back to the Friday, not forward to the Monday, because that is what payroll
+ * does: nobody holds wages over a weekend. Bank holidays are not modelled,
+ * which costs at most a day's early warning a few times a year.
+ */
+export function semimonthlySlot(d: ISODate): number {
+  const dt = parseISO(d);
+  // The 15th can be pulled back as far as the 13th and the last day as far as
+  // the 26th (a 28-day February ending on a Sunday). Anything up to the 22nd
+  // is nearer the 15th; anything after it is the month's end.
+  return (dt.getFullYear() * 12 + dt.getMonth()) * 2 + (dt.getDate() <= 22 ? 0 : 1);
+}
+
+export function semimonthlyDate(slot: number): ISODate {
+  const month = Math.floor(slot / 2);
+  const y = Math.floor(month / 12);
+  const m = month - y * 12;
+  const dt = slot % 2 === 0 ? new Date(y, m, 15) : new Date(y, m + 1, 0);
+  const dow = dt.getDay();
+  if (dow === 6) dt.setDate(dt.getDate() - 1);
+  else if (dow === 0) dt.setDate(dt.getDate() - 2);
+  return toISO(dt);
+}
+
+const semimonthlyStep = (from: ISODate, n: number): ISODate => semimonthlyDate(semimonthlySlot(from) + n);
+
+/**
+ * Whether a run of dates is the 15th-and-last-day pattern rather than a
+ * fortnight that happens to sit near it.
+ *
+ * The gaps alone cannot tell them apart: they are 13 to 18 days, which the
+ * detector reads as "every 2 weeks", and a fortnightly projection drifts a day
+ * further off the real payday every month. Landing on the exact date, nominal
+ * or pulled back to the Friday, is what tells them apart: a true fortnight
+ * keeps the same weekday and so walks off the calendar dates within a couple of
+ * months. Four in five of them exact, so one payday a bank posted a day late
+ * does not lose the pattern, and six dates at least: checked against every
+ * weekday fortnight over a decade, a run of four or five can land on the
+ * calendar dates by coincidence and a run of six never does. Until then the
+ * detector calls it every 2 weeks, which is what it did before this existed.
+ */
+export function looksSemimonthly(dates: readonly ISODate[]): boolean {
+  if (dates.length < 6) return false;
+  const exact = dates.filter((d) => {
+    const slot = semimonthlySlot(d);
+    const dt = parseISO(d);
+    const nominal = slot % 2 === 0 ? 15 : new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+    return d === semimonthlyDate(slot) || dt.getDate() === nominal;
+  }).length;
+  // And no slot twice: two charges in one half of a month are something else.
+  const slots = new Set(dates.map(semimonthlySlot));
+  return slots.size === dates.length && exact / dates.length >= 0.8;
+}
 
 /** A weekly item over five years is 260 steps; this is a spin guard, not a limit. */
 const CAP = 4000;

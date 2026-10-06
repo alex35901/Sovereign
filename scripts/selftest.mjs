@@ -18249,6 +18249,116 @@ await test("and Plaid saying nothing useful is admitted rather than guessed at",
   assert.equal(M.HL.worstOf([]), "unknown");
 });
 
+/* ── paid on the 15th and the last day ─────────────────────────────────── */
+
+await test("15th and last day walks the calendar, pulled back to Friday off a weekend", () => {
+  const from = "2026-10-15";
+  const walk = Array.from({ length: 10 }, (_, n) => M.RC.stepDate(from, "semimonthly", n));
+  assert.deepEqual(walk, [
+    "2026-10-15", // Thursday
+    "2026-10-30", // the 31st is a Saturday
+    "2026-11-13", // the 15th is a Sunday
+    "2026-11-30",
+    "2026-12-15",
+    "2026-12-31",
+    "2027-01-15",
+    "2027-01-29", // the 31st is a Sunday
+    "2027-02-15",
+    "2027-02-26", // the 28th is a Sunday
+  ]);
+  for (const d of walk) {
+    const dow = new Date(`${d}T12:00:00`).getDay();
+    assert.ok(dow >= 1 && dow <= 5, `${d} is a weekday`);
+  }
+});
+
+await test("and a payday already pulled back still counts as the date it stood in for", () => {
+  // Friday the 13th of November is the 15th's payday. A step from it is the
+  // end of the month, not a fortnight on and not a day after the 15th.
+  assert.equal(M.RC.stepDate("2026-11-13", "semimonthly", 1), "2026-11-30");
+  assert.equal(M.RC.stepDate("2026-11-13", "semimonthly", -1), "2026-10-30");
+  assert.equal(M.RC.stepDate("2026-10-30", "semimonthly", 1), "2026-11-13");
+  // Backwards across a year end, and a February in a leap year.
+  assert.equal(M.RC.stepDate("2027-01-15", "semimonthly", -2), "2026-12-15");
+  assert.equal(M.RC.stepDate("2028-02-15", "semimonthly", 1), "2028-02-29");
+  // The furthest a month's end is ever pulled back: a 28-day February ending
+  // on a Sunday. It is still the end of February, so the next is March 15th.
+  assert.equal(M.RC.stepDate("2027-02-26", "semimonthly", 1), "2027-03-15");
+  assert.equal(M.RC.stepDate("2027-02-26", "semimonthly", -1), "2027-02-15");
+});
+
+await test("the next payday after a date is the next slot, today excluded", () => {
+  assert.equal(M.RC.nextAfter("2026-10-15", "semimonthly", "2026-10-15"), "2026-10-30");
+  assert.equal(M.RC.nextAfter("2026-10-15", "semimonthly", "2026-11-01"), "2026-11-13");
+  assert.equal(M.RC.nextAfter("2026-10-15", "semimonthly", "2026-11-13"), "2026-11-30");
+});
+
+await test("two paydays land in every month, and cost twice a month", () => {
+  const pay = rec({ cadence: "semimonthly", nextDate: "2026-10-15", amount: 3_000_00, kind: "income" });
+  assert.deepEqual(M.occurrences(pay, "2026-11-01", "2026-11-30"), ["2026-11-13", "2026-11-30"]);
+  assert.deepEqual(M.occurrences(pay, "2027-01-01", "2027-01-31"), ["2027-01-15", "2027-01-29"]);
+  assert.equal(M.occurrences(pay, "2026-01-01", "2026-12-31").length, 24, "twenty-four a year");
+  const bill = rec({ cadence: "semimonthly", amount: -100_00 });
+  assert.equal(M.monthlyRecurringCost([bill]), 200_00);
+  assert.equal(M.RC.cadenceLabel("semimonthly"), "15th and last day");
+});
+
+/** The last `n` paydays before today, on the 15th-and-last-day calendar. */
+const lastPaydays = (n) => {
+  const now = new Date();
+  const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  let slot = M.RC.semimonthlySlot(iso);
+  while (M.RC.semimonthlyDate(slot) >= iso) slot--;
+  return Array.from({ length: n }, (_, i) => M.RC.semimonthlyDate(slot - n + 1 + i));
+};
+
+await test("a paycheck on the 15th and the last day is detected as that, not as every 2 weeks", () => {
+  const dates = lastPaydays(8);
+  const found = M.detectRecurring(recDB("Acme Payroll", dates, 3_000_00));
+  assert.equal(found.length, 1);
+  assert.equal(found[0].cadence, "semimonthly");
+  assert.equal(found[0].kind, "income");
+  const last = dates[dates.length - 1];
+  assert.equal(found[0].nextDate, M.RC.semimonthlyDate(M.RC.semimonthlySlot(last) + 1), "the next slot");
+
+  // With the latest paycheck not in yet, the payday after the last one seen is
+  // already behind us, so the next is the one after that, not a date gone by.
+  const late = M.detectRecurring(recDB("Acme Payroll", dates.slice(0, -1), 3_000_00));
+  assert.equal(late[0].cadence, "semimonthly");
+  assert.equal(late[0].nextDate, found[0].nextDate, "skips the payday already gone by");
+});
+
+await test("and a true fortnightly paycheck is still every 2 weeks", () => {
+  // Thursdays a fortnight apart, finishing within the last two weeks.
+  const end = new Date();
+  end.setDate(end.getDate() - ((end.getDay() + 3) % 7)); // last Thursday, or today
+  const dates = Array.from({ length: 10 }, (_, i) => {
+    const d = new Date(end); d.setDate(end.getDate() - 14 * (9 - i));
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  const found = M.detectRecurring(recDB("Spouse Employer", dates, 2_500_00));
+  assert.equal(found.length, 1);
+  assert.equal(found[0].cadence, "biweekly");
+});
+
+await test("no fortnight on weekdays, anywhere in a decade, passes for the 15th and last day", () => {
+  // The pattern test is the only thing between a spouse's fortnightly pay and
+  // a projection on the wrong calendar, so it is checked against every run of
+  // four, five and six there is rather than against the one example above.
+  // Four and five are where coincidences live, which is why six is the floor.
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const bad = [];
+  for (let t = new Date(2024, 0, 1); t < new Date(2034, 0, 1); t.setDate(t.getDate() + 1)) {
+    if (t.getDay() === 0 || t.getDay() === 6) continue;
+    for (const length of [4, 5, 6, 8]) {
+      const run = Array.from({ length }, (_, i) => { const d = new Date(t); d.setDate(t.getDate() + 14 * i); return iso(d); });
+      if (M.RC.looksSemimonthly(run)) bad.push(`${run[0]} x${length}`);
+    }
+  }
+  assert.deepEqual(bad, []);
+  assert.ok(M.RC.looksSemimonthly(Array.from({ length: 6 }, (_, i) => M.RC.semimonthlyDate(48600 + i))));
+});
+
 await rm(dir, { recursive: true, force: true });
 
 for (const [status, name, msg] of results) console.log(status.padEnd(5), name, msg ? `— ${msg}` : "");

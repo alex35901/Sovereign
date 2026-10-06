@@ -1,7 +1,7 @@
 import type { Account, Bucket, Category, DB, ID, ISODate, MonthKey, Recurring, Transaction } from "../types";
 import { addMonths, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
 import { goalSaved } from "./goal-funding.js";
-import { recurringIdFor, stepDate } from "./recurring.js";
+import { looksSemimonthly, nextAfter, recurringIdFor, stepDate } from "./recurring.js";
 
 /* ── lookups ──────────────────────────────────────────────────────────── */
 
@@ -846,15 +846,20 @@ export function detectRecurring(db: DB): Recurring[] {
       gaps.push((parseISO(sorted[i].date).getTime() - parseISO(sorted[i - 1].date).getTime()) / 86400000);
     }
     const median = gaps.slice().sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
-    const match = CADENCE_DAYS.find(([, d]) => Math.abs(median - d) / d < 0.18);
-    if (!match) continue;
+    // A paycheck on the 15th and the last day has gaps near enough a fortnight
+    // to be read as one, and a fortnightly projection drifts off it by a day a
+    // month. So it is asked first, and only of runs whose gaps could be it:
+    // landing on the calendar dates is a stricter test than a steady gap.
+    const semimonthly = median >= 12 && median <= 18 && looksSemimonthly(sorted.map((t) => t.date));
+    const match = semimonthly ? undefined : CADENCE_DAYS.find(([, d]) => Math.abs(median - d) / d < 0.18);
+    if (!semimonthly && !match) continue;
 
     // The interval has to be steady, not just right on average. Groceries land
     // ~5 times a month at random, which averages out near weekly — the spread
     // of the individual gaps is what tells the two apart.
     const tolerance = Math.max(3, median * 0.2);
     const steady = gaps.filter((g) => Math.abs(g - median) <= tolerance).length / gaps.length;
-    if (steady < 0.7) continue;
+    if (!semimonthly && steady < 0.7) continue;
 
     // Utility bills swing with the season, so only wildly variable amounts are
     // disqualifying here.
@@ -864,9 +869,18 @@ export function detectRecurring(db: DB): Recurring[] {
     if (avg > 0 && spread / avg > 1.5) continue;
 
     const last = sorted[sorted.length - 1];
-    const [cadence, days] = match;
-    let next = toISO(new Date(parseISO(last.date).getTime() + days * 86400000));
-    while (next < today()) next = toISO(new Date(parseISO(next).getTime() + days * 86400000));
+    let cadence: Recurring["cadence"] = "semimonthly";
+    let next: ISODate;
+    if (match) {
+      const days = match[1];
+      cadence = match[0];
+      next = toISO(new Date(parseISO(last.date).getTime() + days * 86400000));
+      while (next < today()) next = toISO(new Date(parseISO(next).getTime() + days * 86400000));
+    } else {
+      // Off the calendar, not off a step in days: the next payday is whichever
+      // slot comes next, whatever the gap to it is. Today counts, as above.
+      next = nextAfter(last.date, "semimonthly", addDays(today(), -1));
+    }
     out.push({
       id: recurringIdFor(last.merchant),
       merchant: last.merchant,
@@ -1245,7 +1259,7 @@ export function paidByMerchant(
 
 export function monthlyRecurringCost(list: Recurring[]): number {
   const per: Record<Recurring["cadence"], number> = {
-    weekly: 52 / 12, biweekly: 26 / 12, monthly: 1, quarterly: 1 / 3, semiannual: 1 / 6, yearly: 1 / 12,
+    weekly: 52 / 12, biweekly: 26 / 12, semimonthly: 2, monthly: 1, quarterly: 1 / 3, semiannual: 1 / 6, yearly: 1 / 12,
   };
   return list.filter((r) => r.amount < 0).reduce((s, r) => s + Math.abs(r.amount) * per[r.cadence], 0);
 }

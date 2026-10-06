@@ -318,7 +318,7 @@ function RecurringCard() {
           <MerchantAvatar name={r.merchant} size={30} />
           <div className="grow col" style={{ gap: 1, minWidth: 0 }}>
             <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
-            <span className="tiny faint truncate">Every {cadenceWord(r.cadence)}</span>
+            <span className="tiny faint truncate">{r.cadence === "semimonthly" ? "15th and last day" : `Every ${cadenceWord(r.cadence)}`}</span>
           </div>
           <div className="col" style={{ gap: 1, alignItems: "flex-end" }}>
             <Money value={r.amount} colored={r.amount > 0} className="bold" />

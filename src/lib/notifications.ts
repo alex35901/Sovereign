@@ -336,7 +336,7 @@ export function unusualCharges(db: DB, now: ISODate = today()): Unusual[] {
 export interface Overdue { id: string; merchant: string; amount: number; due: ISODate; since: ISODate }
 
 const CADENCE_DAYS: Record<string, number> = {
-  weekly: 7, biweekly: 14, monthly: 30, quarterly: 91, semiannual: 182, yearly: 365,
+  weekly: 7, biweekly: 14, semimonthly: 15, monthly: 30, quarterly: 91, semiannual: 182, yearly: 365,
 };
 
 export function overdueRecurring(db: DB, now: ISODate = today()): Overdue[] {
@@ -528,7 +528,7 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
       id: `recurring:${r.id}`,
       kind: "recurring",
       title: `${r.merchant} looks recurring`,
-      body: `${fmt0(Math.abs(r.amount))} ${r.cadence === "monthly" ? "a month" : r.cadence}, `
+      body: `${fmt0(Math.abs(r.amount))} ${r.cadence === "monthly" ? "a month" : r.cadence === "semimonthly" ? "twice a month" : r.cadence}, `
         + `spotted from your history. Check the amount and the date, or say it isn't.`,
       at: r.detectedAt!,
       when: sinceLabel(`${r.detectedAt!}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),

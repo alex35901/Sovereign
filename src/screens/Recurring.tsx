@@ -375,7 +375,7 @@ function PriceWatch() {
             <span className="bold">{c.merchant}</span>
             <span className="tiny faint">
               <Money value={c.was} cents /> to <Money value={c.now} cents />
-              {" "}per {c.cadence === "monthly" ? "month" : c.cadence === "yearly" ? "year" : c.cadence}
+              {" "}per {c.cadence === "monthly" ? "month" : c.cadence === "yearly" ? "year" : c.cadence === "semimonthly" ? "payment" : c.cadence}
               {" · "}from {longDate(c.at)}
             </span>
           </span>
