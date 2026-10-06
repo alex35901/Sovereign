@@ -10047,6 +10047,137 @@ try {
     }
   }
 
+  if (want("two-schedules")) {
+    // ── two tenants, one merchant name, two expectations ──
+    //
+    // Both tenants Zelle the same rent on the same day, and the service is the
+    // merchant on both deposits. The schedule's id was derived from that name,
+    // so writing down the second one landed on the first and overwrote it:
+    // there was no way to expect twice at one merchant, and a landlord's own
+    // rent roll is the obvious case of wanting to.
+    const ts = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+    await ts.goto(`${BASE}/recurring`, { waitUntil: "networkidle" });
+    await ts.waitForTimeout(1200);
+
+    const stored = () => ts.evaluate(() =>
+      (JSON.parse(localStorage.getItem("sovereign.db.v1")).recurring ?? [])
+        .filter((r) => /^Zelle Rent$/i.test(r.merchant ?? "")));
+    const rentRows = () => ts.evaluate(() =>
+      [...document.querySelectorAll(".rec-row")]
+        .map((r) => r.innerText.replace(/\n/g, " | "))
+        .filter((t) => /Zelle Rent/.test(t)));
+    const field = (name) => ts.locator(`.modal .field:has(label:text-is("${name}")) input`);
+    const openAdd = async () => {
+      await ts.locator(".topbar button.btn-primary").click({ timeout: 8000 });
+      await ts.locator(".rec-switch").waitFor({ timeout: 5000 });
+    };
+    const save = async () => {
+      await ts.locator(".modal-foot button.btn-primary", { hasText: "Save" }).click({ timeout: 8000 });
+      await ts.waitForTimeout(700);
+    };
+    /**
+     * One tenant's rent, filled into whichever editor is already open.
+     *
+     * The date is left as the editor offers it, which is today. A date in a
+     * later month would be stored correctly and show nothing, because this
+     * page reads one month at a time, and a rent dated earlier than the
+     * schedule's own start date is excluded by design.
+     */
+    const fill = async ({ merchant, label }) => {
+      if (merchant !== undefined) await field("Merchant").fill(merchant, { timeout: 5000 });
+      await ts.locator('.modal .field:has(label:text-is("Type")) select')
+        .selectOption("income", { timeout: 5000 });
+      await field("Amount").fill("1800.00", { timeout: 5000 });
+      await field("Label").fill(label, { timeout: 5000 });
+    };
+
+    const first = await tryStep("a rent can be written down by hand", async () => {
+      await openAdd();
+      await fill({ merchant: "Zelle Rent", label: "Unit 1" });
+      await save();
+    });
+
+    if (first) {
+      check("one tenant's rent is one schedule", (await stored()).length === 1,
+        `${(await stored()).length} stored`);
+
+      // The same name again. This is the press that used to overwrite.
+      const second = await tryStep("and the other tenant's rent can be written down too", async () => {
+        await openAdd();
+        await fill({ merchant: "Zelle Rent", label: "Unit 2" });
+      });
+
+      if (second) {
+        // Said before it happens: the dialog has to be honest that saving adds
+        // rather than edits, because either reading loses something if wrong.
+        const notice = await ts.evaluate(() =>
+          document.querySelector(".modal .rec-aside")?.innerText.replace(/\n/g, " ") ?? "");
+        check("the dialog says the merchant already has one and that this adds another",
+          /already has a schedule/i.test(notice) && /adds a second/i.test(notice), notice || "no notice");
+        check("and offers the existing one instead, for somebody who meant to edit",
+          await ts.locator(".modal .rec-aside button", { hasText: "Edit the existing one" }).count() === 1);
+
+        await save();
+        const two = await stored();
+        check("saving it leaves two schedules at that merchant rather than one",
+          two.length === 2, `${two.length} stored`);
+        check("and both keep their own label",
+          two.map((r) => r.label).sort().join(",") === "Unit 1,Unit 2",
+          two.map((r) => r.label ?? "(none)").join(","));
+        check("neither of them lost its amount to the other",
+          two.every((r) => r.amount === 180000), two.map((r) => r.amount).join(","));
+        // The ids are the thing that used to collide, and the second is
+        // numbered off the first rather than being a name with a 2 in it.
+        check("the second is numbered off the first merchant's own id",
+          two.some((r) => r.id === "rec_zelle_rent") && two.some((r) => r.id === "rec_zelle_rent__2"),
+          two.map((r) => r.id).join(","));
+      }
+
+      // Both on the page, told apart by their labels: two identical rows with
+      // nothing to distinguish them would be the page contradicting itself.
+      const rows = await rentRows();
+      check("the page shows both, each wearing its label",
+        rows.length === 2 && rows.some((r) => /Unit 1/.test(r)) && rows.some((r) => /Unit 2/.test(r)),
+        rows.join("  //  ") || "no rows");
+      check("and expects both amounts rather than one",
+        rows.filter((r) => /1,800/.test(r)).length === 2, rows.join("  //  "));
+
+      // The direct route, which is the one somebody with this arrangement
+      // would actually take: open the rent you already have and ask for the
+      // same again. It copies the shape, so only the label is left to type.
+      const third = await tryStep("a third can be added from a schedule that exists", async () => {
+        await ts.locator(".rec-row", { hasText: "Unit 1" }).first()
+          .locator('button[title="Edit schedule"]').click({ timeout: 8000 });
+        await ts.locator(".modal-foot button", { hasText: "Add another" }).click({ timeout: 8000 });
+        await ts.waitForTimeout(400);
+      });
+
+      if (third) {
+        const copied = await ts.evaluate(() => {
+          const modal = document.querySelector(".modal");
+          const val = (name) => [...modal.querySelectorAll(".field")]
+            .find((f) => f.querySelector("label")?.innerText === name)
+            ?.querySelector("input")?.value ?? "";
+          return { amount: val("Amount"), label: val("Label"), note: modal.querySelector(".rec-aside")?.innerText ?? "" };
+        });
+        check("the copy arrives with the rent already filled in",
+          copied.amount.replace(/,/g, "") === "1800.00", copied.amount || "empty");
+        check("and with the label cleared, because that is the one thing that differs",
+          copied.label === "", copied.label);
+
+        await field("Label").fill("Unit 3", { timeout: 5000 });
+        await save();
+        const three = await stored();
+        check("three tenants at one merchant are three schedules",
+          three.length === 3, `${three.length} stored`);
+        check("and the third did not overwrite either of the first two",
+          three.map((r) => r.label).sort().join(",") === "Unit 1,Unit 2,Unit 3",
+          three.map((r) => r.label ?? "(none)").join(","));
+      }
+    }
+    await ts.close();
+  }
+
 } finally {
   await browser.close();
 }

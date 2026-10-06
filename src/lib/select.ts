@@ -1,4 +1,4 @@
-import type { Account, Bucket, Category, DB, ISODate, MonthKey, Recurring, Transaction } from "../types";
+import type { Account, Bucket, Category, DB, ID, ISODate, MonthKey, Recurring, Transaction } from "../types";
 import { addMonths, diffMonths, monthEnd, monthOf, addDays, parseISO, thisMonth, today, toISO } from "./date";
 import { goalSaved } from "./goal-funding.js";
 import { recurringIdFor, stepDate } from "./recurring.js";
@@ -946,13 +946,48 @@ function buildRecurringList(db: DB): Recurring[] {
  * answer cannot outlive the figures it was worked out from and nothing has to
  * remember to clear it.
  */
-const scheduleCache = new WeakMap<DB, Map<string, Recurring>>();
+const scheduleCache = new WeakMap<DB, Map<string, Recurring[]>>();
 
-export function recurringByMerchant(db: DB): Map<string, Recurring> {
+/**
+ * Every live schedule, grouped under the id derived from its merchant's name.
+ *
+ * Keyed on the merchant rather than on the schedule, because a merchant can
+ * hold more than one and the question a ledger row asks is about the merchant:
+ * does anything repeat here. A merchant whose only schedule is a second one
+ * would otherwise answer no, since the first id is the one callers look up.
+ */
+export function schedulesByMerchant(db: DB): Map<string, Recurring[]> {
   const hit = scheduleCache.get(db);
   if (hit) return hit;
-  const map = new Map(recurringList(db).map((r) => [r.id, r]));
+  const map = new Map<string, Recurring[]>();
+  for (const r of recurringList(db)) {
+    const key = recurringIdFor(r.merchant);
+    const held = map.get(key);
+    if (held) held.push(r);
+    else map.set(key, [r]);
+  }
+  // The merchant's own id first within each group: that is the schedule a
+  // detected pattern merges into, and the one a caller wanting just one wants.
+  for (const [key, group] of map) group.sort((a, b) => Number(b.id === key) - Number(a.id === key));
   scheduleCache.set(db, map);
+  return map;
+}
+
+/**
+ * The schedule to show for a merchant that has one, where only one fits.
+ *
+ * Cached in its own right rather than folded out of the groups on demand: this
+ * is the one a ledger row asks, and a ledger draws a hundred and twenty rows
+ * at a time, so building a map per row would undo what the cache above it is
+ * for.
+ */
+const firstCache = new WeakMap<DB, Map<string, Recurring>>();
+
+export function recurringByMerchant(db: DB): Map<string, Recurring> {
+  const hit = firstCache.get(db);
+  if (hit) return hit;
+  const map = new Map([...schedulesByMerchant(db)].map(([key, group]) => [key, group[0]]));
+  firstCache.set(db, map);
   return map;
 }
 
@@ -1082,10 +1117,11 @@ export function recurringMonth(
 ): { past: RecurringCharge[]; upcoming: RecurringCharge[] } {
   const past: RecurringCharge[] = [];
   const upcoming: RecurringCharge[] = [];
+  const settled = paidByMerchant(db, list, from, to);
   for (const item of list) {
-    const settled = paidOccurrences(db, item, from, to);
+    const mine = settled.get(item.id) ?? new Set<ISODate>();
     for (const date of occurrences(item, from, to)) {
-      (date <= asOf ? past : upcoming).push({ item, date, paid: settled.has(date) });
+      (date <= asOf ? past : upcoming).push({ item, date, paid: mine.has(date) });
     }
   }
   // Both orders are "nearest to now first", which is what each list is read
@@ -1135,30 +1171,76 @@ const paidAmountFits = (expected: number, actual: number): boolean => {
  * weekly schedule is most of the month.
  */
 export function paidOccurrences(db: DB, r: Recurring, from: ISODate, to: ISODate): Set<ISODate> {
-  const muted = mutedAccountIds(db);
-  const key = merchantKey(r.merchant);
-  const sign = Math.sign(r.amount);
-  const candidates = db.transactions
-    .filter((t) => merchantKey(t.merchant) === key
-      && Math.sign(t.amount) === sign
-      && counts(t, muted)
-      && paidAmountFits(r.amount, t.amount))
-    .sort((a, b) => (a.date < b.date ? -1 : 1));
+  return paidByMerchant(db, [r], from, to).get(r.id) ?? new Set<ISODate>();
+}
 
-  const taken = new Set<string>();
-  const paid = new Set<ISODate>();
-  for (const date of occurrences(r, from, to)) {
-    let best: Transaction | null = null;
-    let bestGap = Infinity;
-    for (const t of candidates) {
-      if (taken.has(t.id)) continue;
-      const gap = Math.abs(parseISO(t.date).getTime() - parseISO(date).getTime()) / 86400000;
-      if (gap > PAID_WINDOW_DAYS) continue;
-      if (gap < bestGap) { best = t; bestGap = gap; }
-    }
-    if (best) { taken.add(best.id); paid.add(date); }
+/**
+ * The same question for a whole list, with the merchant's charges competing.
+ *
+ * This has to be settled across the schedules at a merchant and not one
+ * schedule at a time. Two tenants owing the same rent on the same day are two
+ * identical expectations, and one deposit arriving would otherwise be the
+ * nearest match for both of them and tick both rows: the page would report the
+ * rent collected in full on the strength of half of it.
+ *
+ * One transaction answers for one charge, whichever schedule that charge
+ * belongs to. Charges are taken in date order so the earliest expectation
+ * claims the earliest deposit, which is the reading somebody would give the
+ * same two rows by eye.
+ */
+export function paidByMerchant(
+  db: DB,
+  list: readonly Recurring[],
+  from: ISODate,
+  to: ISODate,
+): Map<ID, Set<ISODate>> {
+  const muted = mutedAccountIds(db);
+  const out = new Map<ID, Set<ISODate>>();
+  for (const r of list) out.set(r.id, new Set<ISODate>());
+
+  // Grouped by the name, because that is what a transaction can be matched on.
+  // Schedules at different merchants cannot compete for the same deposit, so
+  // they are settled separately and the amount test stays per schedule.
+  const groups = new Map<string, Recurring[]>();
+  for (const r of list) {
+    const key = merchantKey(r.merchant);
+    const held = groups.get(key);
+    if (held) held.push(r);
+    else groups.set(key, [r]);
   }
-  return paid;
+
+  for (const [key, group] of groups) {
+    const candidates = db.transactions
+      .filter((t) => merchantKey(t.merchant) === key && counts(t, muted))
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
+    if (!candidates.length) continue;
+
+    // Every charge the group expects in the window, earliest first, with the
+    // schedule it came from. Ties broken on the id so two identical rows
+    // settle the same way on every render rather than following list order.
+    const wanted: { r: Recurring; date: ISODate }[] = [];
+    for (const r of group) for (const date of occurrences(r, from, to)) wanted.push({ r, date });
+    wanted.sort((a, b) => (a.date === b.date ? a.r.id.localeCompare(b.r.id) : a.date < b.date ? -1 : 1));
+
+    const taken = new Set<string>();
+    for (const { r, date } of wanted) {
+      const sign = Math.sign(r.amount);
+      let best: Transaction | null = null;
+      let bestGap = Infinity;
+      for (const t of candidates) {
+        if (taken.has(t.id)) continue;
+        // Both tests stay per schedule: a group can hold a bill and a refund
+        // at one merchant, and a $9 charge is not a $90 one.
+        if (Math.sign(t.amount) !== sign) continue;
+        if (!paidAmountFits(r.amount, t.amount)) continue;
+        const gap = Math.abs(parseISO(t.date).getTime() - parseISO(date).getTime()) / 86400000;
+        if (gap > PAID_WINDOW_DAYS) continue;
+        if (gap < bestGap) { best = t; bestGap = gap; }
+      }
+      if (best) { taken.add(best.id); out.get(r.id)?.add(date); }
+    }
+  }
+  return out;
 }
 
 export function monthlyRecurringCost(list: Recurring[]): number {

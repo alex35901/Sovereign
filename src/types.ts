@@ -401,6 +401,15 @@ export type Cadence = "weekly" | "biweekly" | "monthly" | "quarterly" | "semiann
 export interface Recurring {
   id: ID;
   merchant: string;
+  /**
+   * What tells this schedule apart from another at the same merchant.
+   *
+   * Two tenants paying rent into the same account through the same service
+   * are one merchant name and two separate expectations, and without a word
+   * of their own the page would show the same row twice. Optional, because a
+   * merchant with one schedule needs nothing beyond its name.
+   */
+  label?: string;
   categoryId: ID;
   accountId?: ID;
   amount: number;

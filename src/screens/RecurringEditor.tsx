@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Cadence, Recurring } from "../types";
 import { useDB, useStore } from "../store";
 import { Btn, Field, Modal, MoneyInput, SelectInput, Toggle, cx } from "../components/ui";
+import { Plus } from "lucide-react";
 import { CategoryPicker } from "../components/pickers";
-import { CADENCES, KINDS, recurringIdFor } from "../lib/recurring";
-import { accountOptions } from "../lib/select";
+import { CADENCES, KINDS, anotherRecurringId, sameMerchant } from "../lib/recurring";
+import { accountOptions, recurringList } from "../lib/select";
 import { markRead } from "../lib/notifications";
 import { MerchantAvatar } from "./Transactions";
 
@@ -21,8 +22,12 @@ import { MerchantAvatar } from "./Transactions";
  * found by merchant, so renaming it there would quietly unhook it from the
  * very transaction it was opened from, and the transaction already has a
  * merchant field of its own a few rows up.
+ *
+ * A merchant may hold more than one of these. Two tenants paying the same rent
+ * through the same service are one name and two expectations, so the label
+ * field and the Add another button below are what keep them apart.
  */
-export function RecurringEditor({ item, exists, startOn = exists, nameLocked, onClose }: {
+export function RecurringEditor({ item, exists, startOn = exists, nameLocked, sibling, onSwitch, onClose }: {
   item: Recurring;
   /** Whether this schedule is live now, as opposed to a shape offered for one. */
   exists: boolean;
@@ -33,12 +38,31 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
    */
   startOn?: boolean;
   nameLocked?: boolean;
+  /**
+   * Deliberately an extra schedule at a merchant that already has one.
+   *
+   * It decides which ids the new one has to avoid. A name typed into the add
+   * button is allowed to land on a pattern the detector found, because that is
+   * how a found schedule becomes one you control; pressing Add another is a
+   * statement that this is a different charge, so it steps over the detected
+   * one as well as the written ones.
+   */
+  sibling?: boolean;
+  /**
+   * Hands the parent a different schedule to open this on.
+   *
+   * Used by Add another, and by the way out of "this merchant already has
+   * one": without it the only route to the schedule being warned about is to
+   * cancel and go looking for it.
+   */
+  onSwitch?: (next: { item: Recurring; exists: boolean; sibling?: boolean }) => void;
   onClose: () => void;
 }) {
   const db = useDB();
   const { actions, apply } = useStore();
   const [on, setOn] = useState(startOn);
   const [merchant, setMerchant] = useState(item.merchant);
+  const [label, setLabel] = useState(item.label ?? "");
   const [amount, setAmount] = useState(item.amount);
   const [cadence, setCadence] = useState<Cadence>(item.cadence);
   const [kind, setKind] = useState<Recurring["kind"]>(item.kind);
@@ -52,16 +76,48 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
   // with it.
   const acknowledge = () => apply((cur) => markRead(cur, [`recurring:${item.id}`]));
 
+  const live = useMemo(() => recurringList(db), [db]);
+  // What else is already expected at this name. Read off the typed name rather
+  // than the saved one, so it answers while the name is still being decided.
+  const others = useMemo(
+    () => sameMerchant(live, merchant.trim()).filter((r) => r.id !== item.id),
+    [live, merchant, item.id],
+  );
+
+  /**
+   * The id this will be saved under.
+   *
+   * An existing schedule keeps its own: renaming one must not leave the old id
+   * behind as a second row. A new one derives the merchant's id, which is how
+   * writing down a charge the detector already found edits that one instead of
+   * leaving two of it on the page, and steps past the ids already in use so
+   * that a second schedule at a merchant is a second row rather than an
+   * overwrite of the first.
+   */
+  const idFor = (name: string): string =>
+    exists ? item.id : anotherRecurringId(name, (sibling ? live : db.recurring).map((r) => r.id));
+
+  /** The same charge again, for the other tenant: same shape, no label. */
+  const addAnother = () => {
+    const name = merchant.trim() || item.merchant;
+    onSwitch?.({
+      item: { ...item, id: anotherRecurringId(name, live.map((r) => r.id)), merchant: name, label: "" },
+      exists: false,
+      sibling: true,
+    });
+  };
+
   const save = () => {
     const name = merchant.trim() || item.merchant;
     if (on) {
       const started = startDate.trim();
       actions.upsertRecurring({
         ...item,
-        // Derived from the name so a hand-written schedule and a detected one
-        // for the same merchant stay the same row rather than both showing.
-        id: recurringIdFor(name),
+        id: idFor(name),
         merchant: name,
+        // Trimmed away rather than stored blank, so a label cleared out leaves
+        // the row showing its merchant's name and nothing else.
+        ...(label.trim() ? { label: label.trim() } : { label: undefined }),
         amount, cadence, kind, nextDate, categoryId,
         // The key is left out rather than set to nothing when the field is
         // blank. A manual entry is spread over the detected one it shadows,
@@ -85,6 +141,15 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
       onClose={onClose}
       footer={
         <>
+          {/* Only on one that already exists, and only where the parent can
+              reopen this on something else. Offered beside the schedule it
+              copies, because the second tenant's rent is the first one's shape
+              with a different name on it. */}
+          {exists && on && onSwitch ? (
+            <Btn onClick={addAnother}>
+              <Plus size={14} /> Add another
+            </Btn>
+          ) : null}
           <div className="grow" />
           <Btn onClick={onClose}>Cancel</Btn>
           <Btn variant="primary" onClick={save}>Save</Btn>
@@ -106,6 +171,32 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
           </div>
         )}
       </div>
+
+      {/* Said before it happens rather than discovered afterwards. A second
+          schedule at one merchant is the point of this, and silently editing
+          the first would lose whatever it said; silently adding a second when
+          somebody meant to edit is a duplicate they can see and delete. So the
+          safe default is to add, with the other way out offered here. */}
+      {on && others.length ? (
+        <div className="rec-aside">
+          <span className="small">
+            {exists
+              ? `One of ${others.length + 1} schedules at ${merchant.trim() || item.merchant}.`
+              : others.length === 1
+                ? `${merchant.trim()} already has a schedule. Saving adds a second one.`
+                : `${merchant.trim()} already has ${others.length} schedules. Saving adds another.`}
+            {" "}
+            {others.some((r) => !r.label?.trim()) || !label.trim()
+              ? "Label them to tell them apart on the page."
+              : "Labels keep them apart on the page."}
+          </span>
+          {!exists && onSwitch ? (
+            <Btn onClick={() => onSwitch({ item: others[0], exists: true })}>
+              Edit the existing one
+            </Btn>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="rec-switch">
         <div className="col grow" style={{ gap: 2 }}>
@@ -145,6 +236,15 @@ export function RecurringEditor({ item, exists, startOn = exists, nameLocked, on
             </Field>
             <Field label="Category"><CategoryPicker value={categoryId} onChange={setCategoryId} /></Field>
           </div>
+          {/* Optional, and most merchants never need it. It earns its place on
+              the one that does: two rents arriving from the same service are
+              identical rows until somebody can say which is which. */}
+          <Field label="Label" hint="Only needed when a merchant has more than one, like Unit 1 and Unit 2">
+            <input
+              className="input" value={label} placeholder="Optional"
+              onChange={(e) => setLabel(e.target.value)}
+            />
+          </Field>
           <Field label="Account" hint="Which one it is expected to land on">
             <SelectInput
               value={accountId}

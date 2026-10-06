@@ -69,7 +69,7 @@ await build({
       export * as AF from "./src/lib/amount-filter.ts";
       export * as CL from "./src/lib/changelog.ts";
       export * as RC from "./src/lib/recurring.ts";
-      export { recurringList, recurringByMerchant } from "./src/lib/select.ts";
+      export { recurringList, recurringByMerchant, schedulesByMerchant, paidByMerchant } from "./src/lib/select.ts";
       export { debtsFrom, debtsLeftOut } from "./src/lib/payoff.ts";
       export * as CD from "./src/lib/cards.ts";
       export { readDraft, toRules } from "./src/lib/hopper/rewards.ts";
@@ -7980,6 +7980,117 @@ await test("income shows up in the split as well as bills", () => {
   const { past } = M.recurringMonth(db, pay, "2026-06-01", "2026-06-30", "2026-06-15");
   assert.equal(past.length, 1);
   assert.equal(past[0].item.amount, 3_000_00);
+});
+
+/* ── two of the same thing at one merchant ──────────────────────────────── */
+
+// Two tenants paying the same rent through the same service on the same day.
+// One merchant name, two expectations, and nothing in the data to tell the
+// deposits apart, which is exactly what makes this worth testing.
+const rent = (id, label) => ({
+  id, merchant: "Zelle", label, amount: 1_800_00, cadence: "monthly",
+  nextDate: "2026-06-01", categoryId: "c1", detected: false,
+});
+
+await test("two rents at one merchant are two charges, not one", () => {
+  const both = [rent("rec_zelle", "Unit 1"), rent("rec_zelle__2", "Unit 2")];
+  const db = monthDB(both);
+  const { past } = M.recurringMonth(db, both, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.equal(past.length, 2, "one of the two tenants went missing");
+  assert.deepEqual(past.map((c) => c.item.label), ["Unit 1", "Unit 2"]);
+  assert.equal(past.reduce((n, c) => n + c.item.amount, 0), 3_600_00);
+});
+
+await test("one tenant paying does not mark the other paid as well", () => {
+  // The reason the matching is settled across a merchant's schedules rather
+  // than one schedule at a time. Alone, each would find the same deposit the
+  // nearest match and tick its own row, and the page would report the rent
+  // collected in full on the strength of half of it.
+  const both = [rent("rec_zelle", "Unit 1"), rent("rec_zelle__2", "Unit 2")];
+  const db = monthDB(both, [{ date: "2026-06-01", merchant: "Zelle", amount: 1_800_00 }]);
+  const { past } = M.recurringMonth(db, both, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.equal(past.length, 2);
+  assert.equal(past.filter((c) => c.paid).length, 1, "one deposit settled two expectations");
+});
+
+await test("and both paying marks both", () => {
+  const both = [rent("rec_zelle", "Unit 1"), rent("rec_zelle__2", "Unit 2")];
+  const db = monthDB(both, [
+    { date: "2026-06-01", merchant: "Zelle", amount: 1_800_00 },
+    { date: "2026-06-02", merchant: "Zelle", amount: 1_800_00 },
+  ]);
+  const { past } = M.recurringMonth(db, both, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.equal(past.filter((c) => c.paid).length, 2, "the second deposit was not counted");
+});
+
+await test("a deposit at one merchant does not settle another merchant's charge", () => {
+  // The sharing is per merchant and no wider: the one-to-one rule must not
+  // turn into charges at unrelated merchants competing for the same money.
+  const items = [rent("rec_zelle", "Unit 1"), { ...rent("rec_venmo", undefined), merchant: "Venmo" }];
+  const db = monthDB(items, [{ date: "2026-06-01", merchant: "Zelle", amount: 1_800_00 }]);
+  const { past } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-15");
+  const paid = past.filter((c) => c.paid);
+  assert.equal(paid.length, 1);
+  assert.equal(paid[0].item.merchant, "Zelle");
+});
+
+await test("a refund and a bill at one merchant do not take each other's money", () => {
+  // Grouped by name, but the sign and the amount are still asked per schedule,
+  // so a merchant that both charges and refunds is not one pool of money.
+  const items = [
+    { ...rent("rec_shop", undefined), merchant: "Shop", amount: -50_00 },
+    { ...rent("rec_shop__2", undefined), merchant: "Shop", amount: 50_00 },
+  ];
+  const db = monthDB(items, [{ date: "2026-06-01", merchant: "Shop", amount: -50_00 }]);
+  const { past } = M.recurringMonth(db, items, "2026-06-01", "2026-06-30", "2026-06-15");
+  const paid = past.filter((c) => c.paid);
+  assert.equal(paid.length, 1, "the charge and the refund settled off one transaction");
+  assert.equal(paid[0].item.amount, -50_00, "the refund claimed a payment going the other way");
+});
+
+await test("the earlier expectation claims the earlier deposit", () => {
+  // Two tenants, one a few days late. Taking charges in date order is what
+  // makes the pairing the same one somebody would make by eye, and what makes
+  // it the same on every render rather than following list order.
+  const both = [
+    { ...rent("rec_zelle", "Unit 1"), nextDate: "2026-06-01" },
+    { ...rent("rec_zelle__2", "Unit 2"), nextDate: "2026-06-10" },
+  ];
+  const txns = [
+    { date: "2026-06-02", merchant: "Zelle", amount: 1_800_00 },
+    { date: "2026-06-11", merchant: "Zelle", amount: 1_800_00 },
+  ];
+  const settled = M.paidByMerchant(monthDB(both, txns), both, "2026-06-01", "2026-06-30");
+  assert.deepEqual([...settled.get("rec_zelle")], ["2026-06-01"]);
+  assert.deepEqual([...settled.get("rec_zelle__2")], ["2026-06-10"]);
+
+  // The same answer with the list the other way round, which is the part a
+  // page cannot be allowed to disagree with itself about.
+  const flipped = M.paidByMerchant(monthDB(both, txns), [both[1], both[0]], "2026-06-01", "2026-06-30");
+  assert.deepEqual([...flipped.get("rec_zelle")], ["2026-06-01"]);
+  assert.deepEqual([...flipped.get("rec_zelle__2")], ["2026-06-10"]);
+});
+
+await test("one deposit short, the month says so in the total as well as the tick", () => {
+  // The figure the page prints has to agree with the ticks beside it: $1,800
+  // of $3,600 collected, not $3,600 of $3,600 and one row unticked.
+  const both = [rent("rec_zelle", "Unit 1"), rent("rec_zelle__2", "Unit 2")];
+  const db = monthDB(both, [{ date: "2026-06-01", merchant: "Zelle", amount: 1_800_00 }]);
+  const { past } = M.recurringMonth(db, both, "2026-06-01", "2026-06-30", "2026-06-15");
+  const expected = past.reduce((n, c) => n + c.item.amount, 0);
+  const collected = past.filter((c) => c.paid).reduce((n, c) => n + c.item.amount, 0);
+  assert.equal(expected, 3_600_00);
+  assert.equal(collected, 1_800_00);
+});
+
+await test("a second schedule counts in the monthly cost as well as the first", () => {
+  const two = [
+    { ...rent("rec_gym", undefined), merchant: "Gym", amount: -40_00 },
+    { ...rent("rec_gym__2", undefined), merchant: "Gym", amount: -40_00 },
+  ];
+  assert.equal(M.monthlyRecurringCost(two), 80_00, "the second one was dropped from the total");
+  const spend = M.recurringSpend(two, "2026-06-01", "2026-06-30", "2026-06-15");
+  assert.equal(spend.total, 80_00);
 });
 
 await test("the split and the month's totals count the same charges", () => {
@@ -16039,6 +16150,107 @@ await test("case and spacing do not make a second schedule", () => {
   assert.equal(M.RC.recurringIdFor("NETFLIX"), want);
   assert.equal(M.RC.recurringIdFor("  Netflix "), want);
   assert.notEqual(M.RC.recurringIdFor("Netflix Games"), want, "a different name is a different schedule");
+});
+
+await test("a merchant's second schedule is numbered off the first, never over it", () => {
+  const first = M.RC.recurringIdFor("Zelle");
+  assert.equal(M.RC.anotherRecurringId("Zelle", []), first,
+    "the first one keeps the merchant's own id, which is the one the detector derives");
+  assert.equal(M.RC.anotherRecurringId("Zelle", [first]), `${first}__2`);
+  assert.equal(M.RC.anotherRecurringId("Zelle", [first, `${first}__2`]), `${first}__3`);
+
+  // A gap is a free id. Deleting the second of three and adding one back must
+  // not land on the third.
+  assert.equal(M.RC.anotherRecurringId("Zelle", [first, `${first}__3`]), `${first}__2`);
+
+  // Case and spacing are already one merchant, so they are already one family.
+  assert.equal(M.RC.anotherRecurringId("  ZELLE ", [first]), `${first}__2`);
+});
+
+await test("no merchant can be named into a suffix that collides", () => {
+  // The separator is safe rather than merely unlikely: every run of
+  // non-alphanumerics collapses to one underscore, so a slug cannot contain
+  // two in a row whatever the merchant is called.
+  for (const name of ["Zelle 2", "Zelle  2", "Zelle__2", "Zelle - 2", "Zelle.2", "Zelle_2"]) {
+    const id = M.RC.recurringIdFor(name);
+    assert.equal(id.includes("__"), false, `${name} slugged to ${id}`);
+  }
+  // Which is what makes this the only way to reach the numbered id.
+  assert.notEqual(M.RC.recurringIdFor("Zelle 2"), `${M.RC.recurringIdFor("Zelle")}__2`);
+});
+
+await test("every schedule at a merchant is reported, the second one included", () => {
+  const db = monthly("Netflix");
+  const detected = M.recurringList(db)[0];
+  const id = M.RC.recurringIdFor("Netflix");
+  const both = { ...db, recurring: [
+    { ...detected, id, detected: false, label: "Mine" },
+    { ...detected, id: `${id}__2`, detected: false, label: "Theirs" },
+  ] };
+  const found = M.RC.scheduleFor(both, "Netflix", M.recurringList(both));
+  assert.equal(found.items.length, 2);
+  assert.deepEqual(found.items.map((r) => r.label).sort(), ["Mine", "Theirs"]);
+  assert.equal(found.item.id, id, "the merchant's own id is the one reported as the schedule");
+});
+
+await test("a merchant whose only schedule is a second one still has a schedule", () => {
+  // The id a caller looks up is derived from the name, so a merchant holding
+  // only a numbered schedule would otherwise answer that nothing repeats
+  // there, and the ledger row would lose its marker.
+  const db = monthly("Netflix");
+  const detected = M.recurringList(db)[0];
+  const id = M.RC.recurringIdFor("Netflix");
+  const odd = { ...db, recurring: [
+    { ...detected, id, dismissed: true },
+    { ...detected, id: `${id}__2`, detected: false, label: "Theirs" },
+  ] };
+  const list = M.recurringList(odd);
+  assert.deepEqual(list.map((r) => r.id), [`${id}__2`], "the first was dismissed, the second was not");
+  assert.equal(M.RC.scheduleFor(odd, "Netflix", list).item?.id, `${id}__2`);
+  assert.equal(M.recurringByMerchant(odd).get(id)?.id, `${id}__2`,
+    "the ledger row still knows this merchant repeats");
+});
+
+await test("a merchant's schedules come back with the merchant's own id first", () => {
+  // Two hand-written schedules and no history to detect, stored with the
+  // numbered one first and falling due on the same day: nothing but the
+  // ordering puts the merchant's own id at the front, which is what a caller
+  // taking the first of them relies on. With a detected pattern in the mix the
+  // merge loop would have placed it there anyway and proved nothing.
+  const id = M.RC.recurringIdFor("Zelle");
+  const both = monthDB([
+    { ...rent(`${id}__2`, "Theirs"), detected: false },
+    { ...rent(id, "Mine"), detected: false },
+  ]);
+  const list = M.recurringList(both);
+  assert.deepEqual(list.map((r) => r.label), ["Theirs", "Mine"],
+    "the fixture has to put the numbered one first or it tests nothing");
+
+  const group = M.schedulesByMerchant(both).get(id);
+  assert.equal(group.length, 2);
+  assert.equal(group[0].id, id);
+  assert.equal(M.recurringByMerchant(both).get(id).label, "Mine");
+});
+
+await test("a label is what tells two schedules at one merchant apart", () => {
+  const plain = { id: "r1", merchant: "Zelle", amount: 1_800_00, cadence: "monthly",
+    nextDate: "2026-06-01", categoryId: "c1", detected: false };
+  assert.equal(M.RC.recurringTitle(plain), "Zelle", "a merchant with one schedule needs no label");
+  assert.equal(M.RC.recurringTitle({ ...plain, label: "Unit 1" }), "Zelle \u00b7 Unit 1");
+  // A label of spaces is no label, not a name ending in a separator.
+  assert.equal(M.RC.recurringTitle({ ...plain, label: "   " }), "Zelle");
+  assert.equal(M.RC.recurringTitle({ ...plain, label: " Unit 2 " }), "Zelle \u00b7 Unit 2");
+});
+
+await test("the schedules at a merchant are found by name, not by id", () => {
+  const list = [
+    { id: "rec_zelle", merchant: "Zelle", amount: 1, cadence: "monthly", nextDate: "2026-06-01", categoryId: "c1", detected: false },
+    { id: "rec_zelle__2", merchant: " zelle ", amount: 1, cadence: "monthly", nextDate: "2026-06-01", categoryId: "c1", detected: false },
+    { id: "rec_venmo", merchant: "Venmo", amount: 1, cadence: "monthly", nextDate: "2026-06-01", categoryId: "c1", detected: false },
+  ];
+  assert.deepEqual(M.RC.sameMerchant(list, "ZELLE").map((r) => r.id), ["rec_zelle", "rec_zelle__2"]);
+  assert.deepEqual(M.RC.sameMerchant(list, "Venmo").map((r) => r.id), ["rec_venmo"]);
+  assert.deepEqual(M.RC.sameMerchant(list, "Nobody"), []);
 });
 
 await test("which merchants repeat is worked out once for the whole document", () => {

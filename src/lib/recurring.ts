@@ -70,6 +70,54 @@ export function nextAfter(seen: ISODate, cadence: Cadence, from: ISODate = today
 export const recurringIdFor = (merchant: string): ID =>
   `rec_${merchant.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_")}`;
 
+/**
+ * The id for a second, third, fourth schedule at a merchant that has one.
+ *
+ * Two tenants paying the same rent through the same service are one merchant
+ * name and two expectations: the same day, the same amount, and either of them
+ * able to stop paying without the other. One row cannot say that, so the
+ * merchant's own id keeps the first of them and the rest are numbered off it.
+ *
+ * Why the first keeps the plain id: that is the id the detector derives, and
+ * the whole point of deriving it is that a hand-written schedule and a found
+ * one for the same name are the same row. Numbering the others preserves that,
+ * because the detector only ever finds one pattern per merchant.
+ *
+ * The double underscore is safe as a separator rather than merely unlikely:
+ * recurringIdFor collapses every run of non-alphanumerics to a single
+ * underscore, so no merchant's slug can contain two in a row, whatever it is
+ * called.
+ */
+export function anotherRecurringId(merchant: string, taken: Iterable<ID>): ID {
+  const base = recurringIdFor(merchant);
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  // Counts rather than searches: a merchant with three schedules whose second
+  // was deleted gets __2 back, which is a free id and not the one in use.
+  let n = 2;
+  while (used.has(`${base}__${n}`) && n < 1000) n++;
+  return `${base}__${n}`;
+}
+
+/** Which merchant a schedule belongs to, whether or not it is the first there. */
+export const recurringMerchantId = (r: Recurring): ID => recurringIdFor(r.merchant);
+
+/**
+ * The name to put on a row, which is the merchant unless two of them share it.
+ *
+ * The label is the only thing separating one tenant's rent from the other's,
+ * so it travels with the name everywhere the name is shown rather than being
+ * left to each caller to remember.
+ */
+export const recurringTitle = (r: Recurring): string =>
+  r.label?.trim() ? `${r.merchant} \u00b7 ${r.label.trim()}` : r.merchant;
+
+/** Every schedule at one merchant, first to last. */
+export const sameMerchant = (list: readonly Recurring[], merchant: string): Recurring[] => {
+  const key = recurringIdFor(merchant);
+  return list.filter((r) => recurringIdFor(r.merchant) === key);
+};
+
 /** A schedule shaped like this transaction, for a merchant that has none yet. */
 export function fromTransaction(t: Transaction, cadence: Cadence = "monthly"): Recurring {
   return {
@@ -89,6 +137,14 @@ export function fromTransaction(t: Transaction, cadence: Cadence = "monthly"): R
 export interface MerchantSchedule {
   /** The live schedule: hand-written if there is one, otherwise detected. */
   item?: Recurring;
+  /**
+   * Every live schedule at the merchant, the first of them included.
+   *
+   * A merchant can hold more than one, so "does this repeat" and "what does
+   * it repeat as" have one answer and several. Callers that only need the
+   * first still read `item`.
+   */
+  items: Recurring[];
   /** Written down by somebody, as opposed to worked out from the history. */
   manual: boolean;
   /** Said, by hand, not to be recurring at all. */
@@ -103,5 +159,14 @@ export interface MerchantSchedule {
 export function scheduleFor(db: DB, merchant: string, list: Recurring[]): MerchantSchedule {
   const id = recurringIdFor(merchant);
   const own = db.recurring.find((r) => r.id === id);
-  return { item: list.find((r) => r.id === id), manual: !!own && !own.dismissed, dismissed: !!own?.dismissed };
+  const items = sameMerchant(list, merchant);
+  return {
+    // The merchant's own id first, which is the one the detector and a
+    // hand-written entry share; a merchant whose only schedule is a second one
+    // still has a schedule, so fall through to it rather than reporting none.
+    item: items.find((r) => r.id === id) ?? items[0],
+    items,
+    manual: !!own && !own.dismissed,
+    dismissed: !!own?.dismissed,
+  };
 }

@@ -11,7 +11,7 @@ import { fmt0 } from "../lib/money";
 import { priceChanges, yearlyImpact } from "../lib/price-watch";
 import { isNewRecurring, isSeen } from "../lib/notifications";
 import { UNCATEGORIZED } from "../lib/categories";
-import { cadenceLabel } from "../lib/recurring";
+import { cadenceLabel, recurringTitle } from "../lib/recurring";
 import type { RecurringSpend } from "../lib/select";
 import { MonthGrid } from "../components/charts";
 import { Btn, Card, CardHead, Empty, Money, cx } from "../components/ui";
@@ -47,7 +47,7 @@ const blank = (): RecurringItem => ({
 
 export default function Recurring() {
   const db = useDB();
-  const [editing, setEditing] = useState<{ item: RecurringItem; exists: boolean } | null>(null);
+  const [editing, setEditing] = useState<{ item: RecurringItem; exists: boolean; sibling?: boolean } | null>(null);
 
   const list = useMemo(() => recurringList(db), [db]);
 
@@ -102,7 +102,8 @@ export default function Recurring() {
     for (const c of [...charges.past, ...charges.upcoming]) {
       const day = parseISO(c.date).getDate();
       (out[day] ??= []).push({
-        tone: c.item.amount > 0 ? "--pos" : "--bill", amount: c.item.amount, label: c.item.merchant,
+        tone: c.item.amount > 0 ? "--pos" : "--bill", amount: c.item.amount,
+        label: recurringTitle(c.item),
         // The same place the row below the calendar goes: one merchant, one
         // page, however you arrived at it.
         to: `/merchants/${encodeURIComponent(c.item.merchant)}`,
@@ -228,7 +229,18 @@ export default function Recurring() {
         </Card>
       </div>
       {editing ? (
-        <RecurringEditor item={editing.item} exists={editing.exists} startOn onClose={() => setEditing(null)} />
+        <RecurringEditor
+          // Keyed on the subject, so switching to another schedule rebuilds
+          // the form rather than leaving the fields filled in from the last
+          // one. Add another is the whole reason that matters.
+          key={editing.item.id}
+          item={editing.item}
+          exists={editing.exists}
+          sibling={editing.sibling}
+          startOn
+          onSwitch={setEditing}
+          onClose={() => setEditing(null)}
+        />
       ) : null}
     </>
   );
@@ -263,6 +275,10 @@ function ChargeRow({ charge, onEdit, showPaid }: {
       <div className="grow col" style={{ gap: 1 }}>
         <span className="row" style={{ gap: 6 }}>
           <span className="truncate" style={{ fontWeight: 500 }}>{r.merchant}</span>
+          {/* What separates two rents arriving from the same service on the
+              same day. Beside the name rather than under it, because without
+              it the two rows are the same row twice. */}
+          {r.label?.trim() ? <span className="tag rec-label">{r.label.trim()}</span> : null}
           {isNewRecurring(r) && !isSeen(db, `recurring:${r.id}`)
             ? <span className="tag rec-new">New</span>
             : r.detected ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--faint)" }}>auto</span> : null}

@@ -1182,6 +1182,19 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 
 /* A pattern the app has only just worked out, until somebody has looked at it. */
 .rec-new { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+/* Which of a merchant's schedules this row is. Quieter than the New and auto
+   tags beside it: it is not news, it is the row's other half of a name, so it
+   has to be legible without competing with the merchant it follows. */
+.rec-label {
+  background: var(--surface-3);
+  color: var(--muted);
+  font-weight: 500;
+  max-width: 11ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: none;
+}
 
 /* ── notifications ── */
 .notif-bell { position: relative; overflow: visible; }
@@ -1634,6 +1647,28 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   border-radius: 10px;
 }
 .rec-switch > .row { flex: none; margin-top: 2px; }
+
+/* A note about the merchant rather than about this schedule: that it already
+   holds others, and what saving will therefore do. Accented down the left edge
+   because it is the one thing in the dialog that is not a field to fill in.
+   Wraps to a column on a narrow phone, where the button beside the sentence
+   would leave the sentence about four words wide. */
+.rec-aside {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  color: var(--muted);
+}
+.rec-aside > span { flex: 1 1 auto; min-width: 0; }
+.rec-aside > .btn { flex: none; }
+@media (max-width: 460px) {
+  .rec-aside { flex-direction: column; align-items: stretch; }
+}
 
 /* ── history ──────────────────────────────────────────────────────────── */
 .hist-list { display: flex; flex-direction: column; }

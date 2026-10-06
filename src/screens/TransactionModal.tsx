@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, CircleHelp, Copy, Plus, Repeat, Trash2 } from "lucide-react";
-import type { Bucket, Transaction } from "../types";
+import type { Bucket, Recurring, Transaction } from "../types";
 import { useDB, useStore } from "../store";
 import { dateLabel, longDate, today } from "../lib/date";
 import { fmt, parseMoney, toInput } from "../lib/money";
@@ -149,6 +149,10 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
   };
   const [explaining, setExplaining] = useState<ExplainFacts | null>(null);
   const [scheduling, setScheduling] = useState(false);
+  // A second schedule at this merchant, once Add another has been pressed. The
+  // one found by merchant is still the one the row above reports; this is only
+  // what the open dialog is working on.
+  const [another, setAnother] = useState<Recurring | null>(null);
 
   // Found by merchant rather than stored on the row, so every transaction at
   // a merchant agrees about whether it repeats, including the ones that
@@ -432,10 +436,13 @@ export function TransactionModal({ txn, onClose }: { txn?: Transaction; onClose:
       {explaining ? <ExplainModal facts={explaining} onClose={() => setExplaining(null)} /> : null}
       {scheduling && txn ? (
         <RecurringEditor
-          item={schedule.item ?? fromTransaction({ ...txn, ...asTyped() })}
-          exists={!!schedule.item}
+          key={another?.id ?? schedule.item?.id ?? "new"}
+          item={another ?? schedule.item ?? fromTransaction({ ...txn, ...asTyped() })}
+          exists={!another && !!schedule.item}
+          sibling={!!another}
           nameLocked
-          onClose={() => setScheduling(false)}
+          onSwitch={(next) => setAnother(next.item)}
+          onClose={() => { setScheduling(false); setAnother(null); }}
         />
       ) : null}
     </Modal>
