@@ -343,13 +343,41 @@ export function counts(
  * A set rather than a predicate, because the callers ask once per line across
  * every transaction on screen.
  */
+const budgetedCache = new WeakMap<DB, Set<string>>();
+
 export function budgetedCategoryIds(db: DB): Set<string> {
+  // Memoised on the document, like the other answers that are asked for once
+  // per render and now once per row: every line on the ledger asks whether its
+  // category is one the figures count, and walking the categories for each of
+  // them would be the whole list times the whole list.
+  const held = budgetedCache.get(db);
+  if (held) return held;
   const transfers = new Set(db.groups.filter((g) => g.kind === "transfer").map((g) => g.id));
-  return new Set(
+  const out = new Set(
     db.categories
       .filter((c) => !c.excludeFromBudget && !transfers.has(c.groupId))
       .map((c) => c.id),
   );
+  budgetedCache.set(db, out);
+  return out;
+}
+
+/**
+ * Money that belongs in the ledger but not in the figures.
+ *
+ * A transfer between your own accounts, a category kept off the budget, or a
+ * row somebody has hidden from reports. None of it is spending or income, and
+ * on a page that colours by direction it would otherwise claim to be one or
+ * the other: a thousand moved to savings reads as a thousand spent.
+ *
+ * Every line has to be off the books, not just the first. A split that pays a
+ * credit card and buys lunch in one charge is partly real spending, and the
+ * half that counts is the half worth colouring.
+ */
+export function offBooks(db: DB, t: Transaction): boolean {
+  if (t.hideFromReports) return true;
+  const budgeted = budgetedCategoryIds(db);
+  return lines(t).every((l) => !budgeted.has(l.categoryId));
 }
 
 /**

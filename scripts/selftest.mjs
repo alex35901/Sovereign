@@ -39,7 +39,7 @@ await build({
       export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, spendRun, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
-      export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum } from "./src/lib/select.ts";
+      export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum, offBooks } from "./src/lib/select.ts";
       export { occurrences, recurringSpend, recurringMonth, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
@@ -12668,6 +12668,73 @@ await test("every transfer category is out, flag or no flag", () => {
       assert.equal(budgeted.has(c.id), true, `${c.name} should be on budget`);
     }
   }
+});
+
+// --- which rows are money moving rather than money spent -------------------
+
+await test("a transfer is off the books and an ordinary expense is not", () => {
+  const db = M.buildDemoDB();
+  const transfer = db.categories.find((c) => c.name === "Savings Transfer");
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const row = (categoryId, extra = {}) => ({
+    id: "t", accountId: "a_checking", date: "2026-08-04", merchant: "X",
+    amount: -5_000, categoryId, tags: [], ...extra,
+  });
+  assert.equal(M.offBooks(db, row(transfer.id)), true);
+  assert.equal(M.offBooks(db, row(groceries.id)), false);
+});
+
+await test("a row hidden from reports is off the books whatever it is filed under", () => {
+  const db = M.buildDemoDB();
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const row = {
+    id: "t", accountId: "a_checking", date: "2026-08-04", merchant: "X",
+    amount: -5_000, categoryId: groceries.id, tags: [],
+  };
+  assert.equal(M.offBooks(db, row), false);
+  assert.equal(M.offBooks(db, { ...row, hideFromReports: true }), true);
+});
+
+await test("a split is off the books only when every line is", () => {
+  const db = M.buildDemoDB();
+  const payment = db.categories.find((c) => c.name === "Credit Card Payment");
+  const transfer = db.categories.find((c) => c.name === "Savings Transfer");
+  const groceries = db.categories.find((c) => c.name === "Groceries");
+  const row = (splits) => ({
+    id: "t", accountId: "a_checking", date: "2026-08-04", merchant: "X",
+    amount: -10_000, categoryId: groceries.id, tags: [], splits,
+  });
+  // The filed category is spending in both of these; the splits are what
+  // counts, and a half that is real spending is worth colouring.
+  assert.equal(M.offBooks(db, row([
+    { categoryId: payment.id, amount: -5_000 },
+    { categoryId: transfer.id, amount: -5_000 },
+  ])), true, "a split with nothing budgeted in it should be off the books");
+  assert.equal(M.offBooks(db, row([
+    { categoryId: payment.id, amount: -5_000 },
+    { categoryId: groceries.id, amount: -5_000 },
+  ])), false, "a split that buys something is not purely a transfer");
+  // And the other way: a transfer sliced into two transfers is still one.
+  assert.equal(M.offBooks(db, { ...row([]), categoryId: transfer.id }), true,
+    "an empty splits array should fall back to the filed category");
+});
+
+await test("a row filed under a category nobody recognises goes grey with the figure", () => {
+  // Not a judgement about the row: budgetedSum leaves an unknown category out
+  // of the total it prints above these rows, so the colour has to agree with
+  // it. The two are the same question asked twice, and a row counted in
+  // neither figure must not be the one row painted as though it were.
+  const db = M.buildDemoDB();
+  const row = {
+    id: "t", accountId: "a_checking", date: "2026-08-04", merchant: "X",
+    amount: -5_000, categoryId: "c_gone_missing", tags: [],
+  };
+  assert.equal(M.budgetedSum(db, [row]).total, 0);
+  assert.equal(M.offBooks(db, row), true);
+
+  // Uncategorized is not that case. It is a real category, it is on the
+  // budget, and it is where most of a fresh import lands.
+  assert.equal(M.offBooks(db, { ...row, categoryId: "c_uncategorized" }), false);
 });
 
 await test("a category moved into Transfers goes off budget without being re-flagged", () => {

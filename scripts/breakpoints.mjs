@@ -3602,10 +3602,33 @@ try {
           balance: -50_00, includeInNetWorth: true, hidden: false, history: [], order: 95,
           hideTransactions: true,
         }];
+        // Three rows side by side on one day, so the colouring can be read as
+        // a comparison rather than one row at a time: a transfer, a category
+        // somebody took out of the budget, and an ordinary expense between
+        // them. The taxonomy ships no non-transfer exclusion, so one is made
+        // here, which is the half of the rule a transfer alone never exercises.
+        const transfers = new Set(db.groups.filter((g) => g.kind === "transfer").map((g) => g.id));
+        const spends = db.categories.filter((c) =>
+          !c.excludeFromBudget && !transfers.has(c.groupId)
+          && db.groups.find((g) => g.id === c.groupId)?.kind === "expense");
+        const plain = spends[0];
+        const dropped = spends[1];
+        if (dropped) dropped.excludeFromBudget = true;
+        const moved = db.categories.find((c) => transfers.has(c.groupId));
+        const open = db.accounts.find((a) => !a.hideTransactions && !a.hidden) ?? db.accounts[0];
+        const aside = (id, merchant, amount, categoryId, hideFromReports = false) => ({
+          id, accountId: open.id, date: day, merchant, amount, categoryId,
+          tags: [], pending: false, reviewed: true, hideFromReports,
+          createdAt: `${day}T08:00:00.000Z`,
+        });
         db.transactions = [
           { id: "muted_t1", accountId: "muted_acct", date: day, merchant: "Zzz Muted Purchase",
             amount: -4242, categoryId: cat, tags: [], pending: false, reviewed: true,
             hideFromReports: false, createdAt: `${day}T09:00:00.000Z` },
+          aside("aside_t1", "Zzz Transfer Out", -900_00, moved?.id ?? cat),
+          aside("aside_t2", "Zzz Unbudgeted Out", -800_00, dropped?.id ?? cat),
+          aside("aside_t3", "Zzz Ordinary Out", -700_00, plain?.id ?? cat),
+          aside("aside_t4", "Zzz Hidden Out", -600_00, plain?.id ?? cat, true),
           ...db.transactions,
         ];
         db.settings.syncCadence = "off";
@@ -3632,6 +3655,10 @@ try {
       const of = (el) => ({
         text: el.innerText.trim(),
         tone: el.classList.contains("neg") ? "neg" : el.classList.contains("pos") ? "pos" : "none",
+        // A row deliberately kept out of the ramp, as opposed to one that lost
+        // its colour by accident: the grey is a class of its own, so the two
+        // cases do not look alike to the checks below.
+        aside: el.classList.contains("muted"),
         // What the browser actually painted, after color-mix. Reading the
         // custom property instead would only prove React set a number.
         colour: getComputedStyle(el).color,
@@ -3639,8 +3666,9 @@ try {
       });
       return rows.slice(0, 40).map(of);
     });
-    const out = toned.filter((t) => t.text.startsWith("-"));
-    const inn = toned.filter((t) => !t.text.startsWith("-") && /\d/.test(t.text) && !/^\$0/.test(t.text));
+    const out = toned.filter((t) => t.text.startsWith("-") && !t.aside);
+    const inn = toned.filter((t) =>
+      !t.aside && !t.text.startsWith("-") && /\d/.test(t.text) && !/^\$0/.test(t.text));
     check("money going out is red, every row of it",
       out.length > 0 && out.every((t) => t.tone === "neg"),
       out.filter((t) => t.tone !== "neg").map((t) => `${t.text}:${t.tone}`).join(" ") || `${out.length} rows`);
@@ -3677,6 +3705,61 @@ try {
         redness(large.colour) > redness(small.colour),
         `${small.text} ${small.colour} against ${large.text} ${large.colour}`);
     }
+
+    // ── money that moved without being spent says so by wearing neither ──
+    //
+    // A transfer to savings is not an expense and a card payment is not a
+    // second purchase, but on a page that colours by direction they were
+    // painted the same red as the groceries, and a thousand moved across read
+    // as a thousand gone. The figures on this page never counted that money;
+    // the colour now agrees with them. Three cases, because the rule has
+    // three limbs: the transfer group, a category somebody took out of the
+    // budget, and a single row hidden from reports.
+    const aside = await mt.evaluate(() => {
+      const rows = [...document.querySelectorAll(".list-row.tx-grid:not(.head)")];
+      const pick = (name) => {
+        const row = rows.find((r) => r.innerText.includes(name));
+        const el = row?.querySelector(".tx-amount .num");
+        if (!el) return null;
+        return {
+          grey: el.classList.contains("muted"),
+          tone: el.classList.contains("neg") ? "neg" : el.classList.contains("pos") ? "pos" : "none",
+          colour: getComputedStyle(el).color,
+        };
+      };
+      // The token as the browser resolves it, rather than a hex copied out of
+      // the stylesheet, so retuning grey does not fail a check about transfers.
+      const probe = document.createElement("span");
+      probe.className = "muted";
+      document.body.appendChild(probe);
+      const muted = getComputedStyle(probe).color;
+      probe.remove();
+      const ink = getComputedStyle(document.querySelector(".list-row.tx-grid")).color;
+      return {
+        muted, ink,
+        transfer: pick("Zzz Transfer Out"),
+        unbudgeted: pick("Zzz Unbudgeted Out"),
+        hidden: pick("Zzz Hidden Out"),
+        ordinary: pick("Zzz Ordinary Out"),
+      };
+    });
+    const neutral = (name, row) =>
+      check(name, !!row && row.grey && row.tone === "none" && row.colour === aside.muted,
+        !row ? "the row is not on the page" : `${row.tone} ${row.colour} against ${aside.muted}`);
+
+    neutral("a transfer is grey rather than red, because it was not spent", aside.transfer);
+    neutral("so is a category somebody took out of the budget", aside.unbudgeted);
+    neutral("and so is a single row hidden from reports", aside.hidden);
+    check("while the ordinary expense beside them is still red",
+      !!aside.ordinary && aside.ordinary.tone === "neg" && !aside.ordinary.grey,
+      aside.ordinary ? `${aside.ordinary.tone} ${aside.ordinary.colour}` : "the row is not on the page");
+    // Worth saying separately: a grey that matched the row's own text would
+    // separate nothing, and separating them is the whole point. Grey rather
+    // than white, which on a dark theme would have been the loudest thing on
+    // the page.
+    check("and the grey is told apart from the text in the rest of the row",
+      !!aside.transfer && aside.transfer.colour !== aside.ink,
+      `${aside.transfer?.colour} against ${aside.ink}`);
 
     // The two ways back to them. An account's own page links here with the
     // account named, and an empty list would be the wrong answer to "show me

@@ -10,7 +10,7 @@ import { dateLabel, monthLabel } from "../lib/date";
 import { hash } from "../lib/id";
 import { logoFor } from "../lib/merchant-domain";
 import { toCSV } from "../lib/csv";
-import { accountOptions, budgetedCategoryIds, budgetedSum, mutedAccountIds, recurringByMerchant } from "../lib/select";
+import { accountOptions, budgetedCategoryIds, budgetedSum, mutedAccountIds, offBooks, recurringByMerchant } from "../lib/select";
 import { cadenceLabel, recurringIdFor } from "../lib/recurring";
 import type { BudgetedSum } from "../lib/select";
 import { fmt, toneWeight } from "../lib/money";
@@ -711,6 +711,10 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
   // so every transaction there is part of the pattern, including the ones
   // that arrived before anybody said so.
   const repeats = recurringByMerchant(db).get(recurringIdFor(txn.merchant));
+  // A transfer, an off-budget category or a row hidden from reports. It is
+  // real money that moved and it stays on the ledger, but it is neither
+  // spending nor income, so it wears grey instead of taking a side.
+  const aside = offBooks(db, txn);
 
   return (
     <div
@@ -831,9 +835,14 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           was the odd one out; colouring every one of them fully was a wall of
           red. The size decides how much of the tone a row wears, which puts
           the month's big movements where the eye lands first and leaves a
-          four dollar coffee as a tint. */}
+          four dollar coffee as a tint. A row that is off the books opts out of
+          the ramp entirely: the figures above it do not count that money, and
+          a card payment painted the same red as a card purchase would say it
+          was spent twice. */}
       <div className="num bold tx-amount" style={{ cursor: "pointer" }} onClick={onEdit}>
-        <Money value={amount ?? txn.amount} colored ramp={toneWeight(amount ?? txn.amount)} />
+        {aside
+          ? <Money value={amount ?? txn.amount} className="muted" />
+          : <Money value={amount ?? txn.amount} colored ramp={toneWeight(amount ?? txn.amount)} />}
       </div>
     </div>
   );
