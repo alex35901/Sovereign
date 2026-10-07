@@ -89,11 +89,44 @@ export const isSeen = (db: DB, id: string): boolean => Boolean(db.settings.seenN
  * itself would be a new notice on every transaction.
  */
 export function overspendTier(planned: number, actual: number): "over" | "over25" | "over50" | null {
-  if (planned <= 0 || actual <= planned) return null;
+  if (planned <= 0 || actual - planned < overFloor(planned)) return null;
   const share = (actual - planned) / planned;
   if (share >= 0.5) return "over50";
   if (share >= 0.25) return "over25";
   return "over";
+}
+
+/**
+ * How far past a plan counts as past it: five dollars, or a hundredth of the
+ * plan, whichever is more.
+ *
+ * Without it, a mortgage paid to the cent against a plan rounded down by a few
+ * cents read "$3,133 spent of $3,133 planned. $0 past it." Spending what was
+ * planned is the plan working, not news. The hundredth is for big lines, where
+ * an escrow adjustment of a few dollars is the same payment.
+ */
+export const overFloor = (planned: number): number => Math.max(5_00, Math.round(planned / 100));
+
+/**
+ * How far below nothing left a rollover category has to go before it is
+ * worth a word, and how much further for each word after that.
+ *
+ * A rollover category is an envelope, not a monthly limit: last month's
+ * surplus is this month's to spend, so spending past this month's plan out of
+ * money carried in is the envelope doing its job. What matters is what is
+ * left, and that only becomes news once it is meaningfully below nothing.
+ */
+export const SHORT_STEP = 500_00;
+
+/**
+ * Which $500 step below nothing a rollover category has reached: 1 at -$500,
+ * 2 at -$1,000, and so on. Zero above the first.
+ *
+ * A step, not a running count of crossings, so a single charge that takes it
+ * from fine to -$3,000 is step six and one notice, not six.
+ */
+export function shortStep(remaining: number): number {
+  return Math.max(0, Math.floor(-remaining / SHORT_STEP));
 }
 
 /** The rungs in order, so "reached this one or further" is a comparison. */
@@ -541,6 +574,32 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
   const month = thisMonth();
   for (const group of budgetSummary(db, month).expense) {
     for (const row of group.rows) {
+      if (row.category.rollover) {
+        // Measured against what is left, carry included, not against this
+        // month's plan. Fired off the plan, a category with a surplus carried
+        // in was reported over budget for spending money it had.
+        const step = shortStep(row.remaining);
+        if (!step) continue;
+        const available = row.planned + row.rollover;
+        // The day it went past this step, off the same running spend as the
+        // rungs below: remaining <= -step*500 is spent >= available + step*500.
+        const went = crossedOn(spendRun(db, month, row.category.id), available + step * SHORT_STEP);
+        const crossed = went && went > now ? now : went;
+        out.push({
+          id: `budget:${month}:${row.category.id}:short${step}`,
+          kind: "budget",
+          title: `${row.category.name} is ${fmt0(step * SHORT_STEP)}+ over budget`,
+          body: `${fmt0(row.actual)} spent of ${fmt0(available)} available, `
+            + `carryover included. ${fmt0(-row.remaining)} past it.`,
+          at: crossed ?? `${month}-01`,
+          when: crossed
+            ? sinceLabel(`${crossed}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`))
+            : `${monthLabel(month)} so far`,
+          to: "/budget",
+          tone: "neg",
+        });
+        continue;
+      }
       const tier = overspendTier(row.planned, row.actual);
       if (!tier) continue;
       // The day it actually went past, worked out from the month's spending
@@ -585,8 +644,11 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
       for (const row of group.rows) {
         if (row.planned <= 0) continue;
         // Already past the plan, which the notice above says more usefully.
-        // Two lines about one category is one line too many.
-        if (overspendTier(row.planned, row.actual)) continue;
+        // Two lines about one category is one line too many. Past it at all,
+        // not past the floor: a plan spent to within a few dollars is the
+        // quiet case the floor exists for, and "90% through, -$3 left" would
+        // say it anyway.
+        if (row.actual > row.planned) continue;
         const mark = Math.round((row.planned * budgetAt) / 100);
         if (row.actual < mark) continue;
         const went = crossedOn(spendRun(db, month, row.category.id), mark);

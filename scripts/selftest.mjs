@@ -8506,7 +8506,8 @@ await test("a category creeping past its plan says so once, then only when it ma
   // fresh notice on every transaction for the rest of the month.
   assert.equal(M.NT.overspendTier(100_00, 100_00), null, "spent to the penny is not over");
   assert.equal(M.NT.overspendTier(100_00, 99_00), null);
-  assert.equal(M.NT.overspendTier(100_00, 100_01), "over");
+  assert.equal(M.NT.overspendTier(100_00, 104_99), null, "a few dollars past is the plan working");
+  assert.equal(M.NT.overspendTier(100_00, 105_00), "over", "five dollars past is over");
   assert.equal(M.NT.overspendTier(100_00, 124_99), "over", "just under a quarter is still the first rung");
   assert.equal(M.NT.overspendTier(100_00, 125_00), "over25");
   assert.equal(M.NT.overspendTier(100_00, 149_99), "over25");
@@ -8551,6 +8552,104 @@ await test("going further past a plan raises a new notice, not the old one again
   // And reading the first leaves the second unread.
   const read = M.NT.markRead(budgetDB(100_00, 160_00), idOf(first));
   assert.equal(M.NT.unread(read, `${month}-20`).filter((n) => n.kind === "budget").length, 1);
+});
+
+await test("a plan spent to within the floor is not news", () => {
+  // The mortgage that started this: paid to the cent against a plan a few
+  // cents under it, and reported as "$3,133 spent of $3,133 planned. $0 past it."
+  assert.equal(M.NT.overspendTier(3_133_00, 3_133_40), null);
+  // On a big line the floor is a hundredth of the plan, so an escrow change of
+  // a few dollars is still the same payment.
+  assert.equal(M.NT.overFloor(3_133_00), 31_33);
+  assert.equal(M.NT.overspendTier(3_133_00, 3_133_00 + 31_32), null);
+  assert.equal(M.NT.overspendTier(3_133_00, 3_133_00 + 31_33), "over");
+  assert.equal(M.NT.overFloor(38_00), 5_00, "and five dollars on a small one");
+
+  const month = M.thisMonth();
+  const db = { ...budgetDB(3_133_00, 3_133_40), settings: { ...M.emptyDB().settings, alerts: { budgetAt: 90 } } };
+  const ns = M.NT.notices(db, `${month}-20`);
+  assert.deepEqual(ns.filter((n) => n.kind === "budget").map((n) => n.id), [], "no over-budget notice");
+  assert.deepEqual(ns.filter((n) => n.kind === "nearing").map((n) => n.id), [],
+    "and no '90% through, -$0 left' in its place");
+});
+
+/**
+ * A rollover category that had `planLast` planned last month and `spentLast`
+ * spent, so it carries the difference in, and `planNow` / `spentNow` this
+ * month. Each charge in `charges` is [day, cents] this month, for checking a
+ * single big one against several small ones.
+ */
+const rollDB = ({ planLast, spentLast, planNow, charges }) => {
+  const month = M.thisMonth();
+  const last = M.addMonths(month, -1);
+  const base = budgetDB(planNow, 0, month);
+  const cat = { ...base.__cat, rollover: true };
+  const tx = (id, date, amount) => ({
+    id, accountId: "chk", date, merchant: "Shop", amount: -amount,
+    categoryId: cat.id, tags: [], pending: false, reviewed: true, hideFromReports: false,
+  });
+  return {
+    ...base,
+    categories: base.categories.map((c) => (c.id === cat.id ? cat : c)),
+    budgets: { [last]: { [cat.id]: planLast }, [month]: { [cat.id]: planNow } },
+    transactions: [
+      ...(spentLast ? [tx("last", `${last}-10`, spentLast)] : []),
+      ...charges.map(([day, cents], i) => tx(`t${i}`, `${month}-${String(day).padStart(2, "0")}`, cents)),
+    ],
+    __cat: cat,
+  };
+};
+const budgetIds = (db, day = 20) =>
+  M.NT.notices(db, `${M.thisMonth()}-${day}`).filter((n) => n.kind === "budget").map((n) => n.id);
+
+await test("a rollover category spending its carryover is not over budget", () => {
+  // A thousand left over last month, three hundred planned, twelve hundred
+  // spent: nine hundred past this month's plan, a hundred still in hand.
+  const db = rollDB({ planLast: 1_000_00, spentLast: 0, planNow: 300_00, charges: [[5, 1_200_00]] });
+  assert.equal(M.rolloverFor(db, M.thisMonth(), db.__cat.id), 1_000_00, "the fixture carries a thousand in");
+  assert.deepEqual(budgetIds(db), []);
+});
+
+await test("a rollover category speaks at $500 below nothing left, and every $500 after", () => {
+  const at = (spent) => budgetIds(rollDB({ planLast: 0, spentLast: 0, planNow: 1_000_00, charges: [[5, spent]] }));
+  assert.deepEqual(at(1_499_99), [], "$499.99 short is not yet $500");
+  assert.equal(at(1_500_00).length, 1);
+  assert.match(at(1_500_00)[0], /:short1$/);
+  assert.match(at(1_999_99)[0], /:short1$/, "still the first step until the second is reached");
+  assert.match(at(2_000_00)[0], /:short2$/);
+
+  // Carryover counts against it the other way too: three hundred overspent
+  // last month means two hundred past this month's plan is already $500 short.
+  const owed = rollDB({ planLast: 100_00, spentLast: 400_00, planNow: 1_000_00, charges: [[5, 1_200_00]] });
+  const ids = budgetIds(owed);
+  assert.equal(ids.length, 1);
+  assert.match(ids[0], /:short1$/);
+  const n = M.NT.notices(owed, `${M.thisMonth()}-20`).find((x) => x.kind === "budget");
+  assert.equal(n.title, `${owed.__cat.name} is $500+ over budget`);
+  assert.match(n.body, /\$1,200 spent of \$700 available, carryover included\. \$500 past it\./);
+});
+
+await test("one charge that goes $3,000 short is one notice, not six", () => {
+  const db = rollDB({ planLast: 0, spentLast: 0, planNow: 1_000_00, charges: [[5, 4_000_00]] });
+  const ids = budgetIds(db);
+  assert.equal(ids.length, 1);
+  assert.match(ids[0], /:short6$/);
+  // And dated to that charge, not the first of the month.
+  const n = M.NT.notices(db, `${M.thisMonth()}-20`).find((x) => x.kind === "budget");
+  assert.equal(n.at, `${M.thisMonth()}-05`);
+});
+
+await test("each further $500 is a new unread notice, and the step reached is dated to its own day", () => {
+  const first = rollDB({ planLast: 0, spentLast: 0, planNow: 1_000_00, charges: [[3, 1_600_00]] });
+  const later = rollDB({ planLast: 0, spentLast: 0, planNow: 1_000_00, charges: [[3, 1_600_00], [12, 500_00]] });
+  const read = M.NT.markRead(later, budgetIds(first));
+  const unread = M.NT.unread(read, `${M.thisMonth()}-20`).filter((n) => n.kind === "budget");
+  assert.equal(unread.length, 1);
+  assert.match(unread[0].id, /:short2$/);
+  assert.equal(unread[0].at, `${M.thisMonth()}-12`, "the day the second step was reached");
+  // And reading it with no more spending leaves nothing to say.
+  assert.equal(M.NT.unread(M.NT.markRead(first, budgetIds(first)), `${M.thisMonth()}-20`)
+    .filter((n) => n.kind === "budget").length, 0);
 });
 
 await test("a category inside its plan says nothing at all", () => {
