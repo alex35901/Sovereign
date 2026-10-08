@@ -12,7 +12,7 @@ import { fmt0 } from "../lib/money";
 import { uid } from "../lib/id";
 import { merchantIndex } from "../lib/select";
 import type { BonusProgress } from "../lib/cards";
-import { candidateValue, cardAccounts, cardReport, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
+import { candidateValue, cardAccounts, cardReport, nextQuarter, quarterLabel, quarterWindow, rewardsOf, DEFAULT_REWARDS } from "../lib/cards";
 import { draftRewards, toRules } from "../lib/hopper/rewards";
 import type { DealView } from "../lib/hopper/offers";
 import { MIN_REWARD, fetchOffers, ratioOf, topBy } from "../lib/hopper/offers";
@@ -91,6 +91,17 @@ const VIEWS = [
   { value: "ratio", label: "Best per $1" },
   { value: "reward", label: "Biggest bonus" },
 ] as const;
+
+/**
+ * What a rotating card usually caps its bonus quarter at.
+ *
+ * A starting figure for the button below, not a fact about anybody's card:
+ * it sits in an editable box the moment the rate is added, and the cards that
+ * work this way have settled on the same number for years. Wrong by a lot is
+ * better than blank here, because a blank cap means no cap, which would have
+ * the page promising five percent on everything.
+ */
+const ROTATING_CAP = 1_500_00;
 
 const PERIODS = [
   { value: "month", label: "a month" },
@@ -713,6 +724,18 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
   const patch = (id: ID, p: Partial<EarnRule>) =>
     setRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...p } : r)));
 
+  /**
+   * The quarter to offer next.
+   *
+   * The one after the latest window already written down, or the one we are in
+   * if there are none. Four presses lay out a year, in order, without anybody
+   * having to work out which quarter they are up to.
+   */
+  const nextWindow = useMemo(() => {
+    const latest = rules.map((r) => r.to).filter((d): d is string => !!d).sort().pop();
+    return latest ? nextQuarter(latest) : quarterWindow(today());
+  }, [rules]);
+
   const save = (confirmed: boolean) => {
     onSave(name.trim() || startName, {
       pointCents, base, annualFee: annualFee || undefined,
@@ -808,12 +831,30 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
       <div className="col" style={{ gap: 10 }}>
         <div className="spread">
           <span className="small muted">Bonus rates</span>
-          <Btn
-            size="sm"
-            onClick={() => setRules((prev) => [...prev, { id: uid("er"), rate: 3, categoryIds: [] }])}
-          >
-            <Plus size={13} /> Add
-          </Btn>
+          <span className="row" style={{ gap: 6 }}>
+            {/* Named for the quarter it will add, so pressing it four times
+                walks the year without anybody working out which one is next.
+                A rotating card is the case this exists for: the rate and the
+                cap are the same every quarter and only the categories change,
+                so the dates are the part worth filling in for somebody. */}
+            <Btn
+              size="sm"
+              title={`A 5% rate running ${nextWindow.from} to ${nextWindow.to}`}
+              onClick={() => setRules((prev) => [...prev, {
+                id: uid("er"), rate: 5, categoryIds: [],
+                from: nextWindow.from, to: nextWindow.to,
+                cap: ROTATING_CAP, period: "quarter",
+              }])}
+            >
+              <Plus size={13} /> {quarterLabel(nextWindow.from)}
+            </Btn>
+            <Btn
+              size="sm"
+              onClick={() => setRules((prev) => [...prev, { id: uid("er"), rate: 3, categoryIds: [] }])}
+            >
+              <Plus size={13} /> Add
+            </Btn>
+          </span>
         </div>
         {rules.length ? rules.map((r) => (
           <div key={r.id} className="card-rule">
@@ -885,6 +926,36 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
               </span>
               <span className="tiny faint">{r.cap ? "" : "no cap"}</span>
             </div>
+            {/* Only shown once a rule has one. Most rates are permanent, and
+                two date boxes on every one of them would be asking a question
+                about a card that does not rotate. */}
+            {r.from || r.to ? (
+              <div className="row wrap" style={{ gap: 8 }}>
+                <span className="tiny faint">running</span>
+                <input
+                  className="input card-rule-date" type="date" value={r.from ?? ""}
+                  onChange={(e) => patch(r.id, { from: e.target.value || undefined })}
+                />
+                <span className="tiny faint">to</span>
+                <input
+                  className="input card-rule-date" type="date" value={r.to ?? ""}
+                  onChange={(e) => patch(r.id, { to: e.target.value || undefined })}
+                />
+                <button
+                  className="btn btn-ghost btn-sm" title="Make this rate permanent"
+                  onClick={() => patch(r.id, { from: undefined, to: undefined })}
+                >
+                  Always
+                </button>
+              </div>
+            ) : (
+              <button
+                className="btn btn-ghost btn-sm card-rule-dates"
+                onClick={() => patch(r.id, nextWindow)}
+              >
+                Only for a while
+              </button>
+            )}
           </div>
         )) : <span className="tiny faint">Nothing beyond the base rate yet.</span>}
       </div>

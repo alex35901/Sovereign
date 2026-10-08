@@ -16439,6 +16439,118 @@ await test("a bonus category is paid at its own rate and everything else at base
   assert.equal(M.CD.earned(card, [buy("2026-03-01", "food", 100), buy("2026-03-02", "gas", 100)]), 5_00);
 });
 
+/* ── a card whose bonus categories rotate every quarter ─────────────────── */
+
+await test("a rate with a window is paid inside it and not outside", () => {
+  const card = cash(1, [earnRule("q4", 5, ["food"], { from: "2026-10-01", to: "2026-12-31" })]);
+  assert.equal(M.CD.earned(card, [buy("2026-10-15", "food", 100)]), 5_00, "inside the window");
+  assert.equal(M.CD.earned(card, [buy("2026-09-30", "food", 100)]), 1_00, "the day before it opens");
+  assert.equal(M.CD.earned(card, [buy("2027-01-01", "food", 100)]), 1_00, "the day after it closes");
+  // Both ends count as inside. A quarter that paid on its first and last days
+  // is not a quarter that paid on neither.
+  assert.equal(M.CD.earned(card, [buy("2026-10-01", "food", 100)]), 5_00);
+  assert.equal(M.CD.earned(card, [buy("2026-12-31", "food", 100)]), 5_00);
+});
+
+await test("a rate with no window still applies to everything, as it always did", () => {
+  // Every rule written before windows existed has neither end, and those cards
+  // must not quietly stop paying.
+  const card = cash(1, [earnRule("always", 3, ["food"])]);
+  assert.equal(M.CD.earned(card, [buy("2020-01-01", "food", 100)]), 3_00);
+  assert.equal(M.CD.earned(card, [buy("2099-12-31", "food", 100)]), 3_00);
+
+  // And one open at one end only.
+  const since = cash(1, [earnRule("since", 3, ["food"], { from: "2026-06-01" })]);
+  assert.equal(M.CD.earned(since, [buy("2026-05-31", "food", 100)]), 1_00);
+  assert.equal(M.CD.earned(since, [buy("2026-06-01", "food", 100)]), 3_00);
+  const until = cash(1, [earnRule("until", 3, ["food"], { to: "2026-06-01" })]);
+  assert.equal(M.CD.earned(until, [buy("2026-06-01", "food", 100)]), 3_00);
+  assert.equal(M.CD.earned(until, [buy("2026-06-02", "food", 100)]), 1_00);
+});
+
+await test("last quarter keeps what it earned when the categories rotate", () => {
+  // The reason the window is on the rule rather than something to retype four
+  // times a year. One card, a year of it written down at once, and every
+  // purchase judged by the rate that was being paid on the day it happened.
+  const card = cash(1, [
+    earnRule("q3", 5, ["gas"], { from: "2026-07-01", to: "2026-09-30", cap: 1_500_00, period: "quarter" }),
+    earnRule("q4", 5, ["food"], { from: "2026-10-01", to: "2026-12-31", cap: 1_500_00, period: "quarter" }),
+  ]);
+  // Petrol in the quarter that paid for petrol, and in the one that did not.
+  assert.equal(M.CD.earned(card, [buy("2026-08-01", "gas", 100)]), 5_00);
+  assert.equal(M.CD.earned(card, [buy("2026-11-01", "gas", 100)]), 1_00);
+  // And groceries, the other way round.
+  assert.equal(M.CD.earned(card, [buy("2026-08-01", "food", 100)]), 1_00);
+  assert.equal(M.CD.earned(card, [buy("2026-11-01", "food", 100)]), 5_00);
+
+  // The year read in one go, which is the figure a card page prints.
+  assert.equal(M.CD.earned(card, [
+    buy("2026-08-01", "gas", 100), buy("2026-08-02", "food", 100),
+    buy("2026-11-01", "gas", 100), buy("2026-11-02", "food", 100),
+  ]), 12_00, "5 + 1 in Q3, 1 + 5 in Q4");
+});
+
+await test("each quarter gets its own cap, and spending past it drops to base", () => {
+  // $1,500 at five percent is $75, and the dollar after it earns the base
+  // rate. Both quarters are capped separately, so a quarter spent out does not
+  // take the next one with it.
+  const card = cash(1, [
+    earnRule("q3", 5, ["food"], { from: "2026-07-01", to: "2026-09-30", cap: 1_500_00, period: "quarter" }),
+    earnRule("q4", 5, ["food"], { from: "2026-10-01", to: "2026-12-31", cap: 1_500_00, period: "quarter" }),
+  ]);
+  assert.equal(M.CD.earned(card, [buy("2026-08-01", "food", 1500)]), 75_00, "the cap exactly");
+  assert.equal(M.CD.earned(card, [buy("2026-08-01", "food", 2000)]), 75_00 + 5_00,
+    "$1,500 at 5% and the last $500 at 1%");
+  assert.equal(M.CD.earned(card, [
+    buy("2026-08-01", "food", 2000), buy("2026-11-01", "food", 1500),
+  ]), 75_00 + 5_00 + 75_00, "the next quarter starts with a full cap");
+});
+
+await test("a purchase picks the better rate when two windows overlap", () => {
+  // Nothing stops somebody writing two overlapping windows, and the rule the
+  // engine already follows everywhere else is that the best rate wins.
+  const card = cash(1, [
+    earnRule("a", 2, ["food"], { from: "2026-10-01", to: "2026-12-31" }),
+    earnRule("b", 5, ["food"], { from: "2026-11-01", to: "2026-11-30" }),
+  ]);
+  assert.equal(M.CD.earned(card, [buy("2026-10-15", "food", 100)]), 2_00, "only the first is running");
+  assert.equal(M.CD.earned(card, [buy("2026-11-15", "food", 100)]), 5_00, "the better of the two");
+});
+
+await test("a quarter is three whole months, and the next one follows it", () => {
+  assert.deepEqual(M.CD.quarterWindow("2026-11-14"), { from: "2026-10-01", to: "2026-12-31" });
+  assert.deepEqual(M.CD.quarterWindow("2026-01-01"), { from: "2026-01-01", to: "2026-03-31" });
+  // February's length is the month's own, leap year or not.
+  assert.deepEqual(M.CD.quarterWindow("2027-02-15"), { from: "2027-01-01", to: "2027-03-31" });
+  assert.deepEqual(M.CD.quarterWindow("2028-02-15"), { from: "2028-01-01", to: "2028-03-31" });
+
+  // And the year rolls over rather than running out.
+  assert.deepEqual(M.CD.nextQuarter("2026-11-14"), { from: "2027-01-01", to: "2027-03-31" });
+  assert.deepEqual(M.CD.nextQuarter("2026-02-01"), { from: "2026-04-01", to: "2026-06-30" });
+
+  // Counted from one, the way a card's own calendar is written.
+  assert.equal(M.CD.quarterLabel("2026-01-01"), "Q1 2026");
+  assert.equal(M.CD.quarterLabel("2026-10-01"), "Q4 2026");
+  assert.equal(M.CD.quarterLabel("2026-12-31"), "Q4 2026");
+});
+
+await test("four presses of the quarter button lay out a year in order", () => {
+  // What the button does, worked out the same way the dialog works it out:
+  // the quarter after the latest one already written down.
+  const next = (rules) => {
+    const latest = rules.map((r) => r.to).filter(Boolean).sort().pop();
+    return latest ? M.CD.nextQuarter(latest) : M.CD.quarterWindow("2026-11-14");
+  };
+  const out = [];
+  let rules = [];
+  for (let i = 0; i < 4; i++) {
+    const w = next(rules);
+    out.push(M.CD.quarterLabel(w.from));
+    rules = [...rules, { id: `q${i}`, rate: 5, categoryIds: [], ...w }];
+  }
+  assert.deepEqual(out, ["Q4 2026", "Q1 2027", "Q2 2027", "Q3 2027"]);
+});
+
 await test("points are worth what they are worth, not a cent each", () => {
   // Two points at 1.5 cents beats three percent cash, and a comparison that
   // could not say so would be comparing the wrong numbers.

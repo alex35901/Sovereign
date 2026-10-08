@@ -194,6 +194,21 @@ export interface EarnRule {
    * categories, and also these shops".
    */
   merchants?: string[];
+  /**
+   * The first and last day this rate is paid, for one that does not last.
+   *
+   * A rotating card pays its bonus rate on different categories every quarter,
+   * so "5% on groceries" is not a fact about the card but about three months
+   * of it. Without a window the only way to follow one is to retype the
+   * categories four times a year, which also rewrites the past: last quarter's
+   * earnings would be worked out from this quarter's categories, and the
+   * year's total would be wrong in a way nobody could see.
+   *
+   * Either end may be left off. No window at all is a rate that always
+   * applies, which is what every rule written before this was.
+   */
+  from?: ISODate;
+  to?: ISODate;
   /** Spend this rate applies to before it drops to base, in cents. */
   cap?: number;
   /** What the cap resets on. Absent with a cap means it never resets. */

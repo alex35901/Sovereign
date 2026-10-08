@@ -1,5 +1,5 @@
-import type { Account, CardRewards, DB, EarnRule, ID, ISODate, SignupBonus } from "../types.js";
-import { addDays, dateLabel, monthEnd, monthOf, parseISO, today } from "./date.js";
+import type { Account, CardRewards, DB, EarnRule, ID, ISODate, MonthKey, SignupBonus } from "../types.js";
+import { addDays, addMonths, dateLabel, monthEnd, monthOf, monthStart, parseISO, today } from "./date.js";
 import { fmt } from "./money.js";
 import { categoryKind, counts, lines, merchantIndex, merchantKey, mutedAccountIds } from "./select.js";
 
@@ -71,13 +71,40 @@ function capKey(rule: EarnRule, date: ISODate): string {
  * groups merchants under, so a rule naming "Amazon" claims a charge the bank
  * spelled "AMAZON" without the household having to spell it the bank's way.
  */
-const claiming = (r: CardRewards, line: { categoryId: ID; merchant?: string }): EarnRule[] => {
+const claiming = (r: CardRewards, line: { categoryId: ID; merchant?: string; date: ISODate }): EarnRule[] => {
   const who = merchantKey(line.merchant ?? "");
   return r.rules
+    .filter((x) => runsOn(x, line.date))
     .filter((x) => x.categoryIds.includes(line.categoryId)
       || (!!who && (x.merchants ?? []).some((m) => merchantKey(m) === who)))
     .sort((a, b) => b.rate - a.rate);
 };
+
+/**
+ * Whether a rate was being paid on a given day.
+ *
+ * Asked per purchase rather than per card, so a quarter that has ended keeps
+ * what it earned. The alternative is to judge every purchase by the rate in
+ * force today, which would move last quarter's earnings onto this quarter's
+ * categories every time the card rotated.
+ */
+export const runsOn = (rule: Pick<EarnRule, "from" | "to">, date: ISODate): boolean =>
+  (!rule.from || date >= rule.from) && (!rule.to || date <= rule.to);
+
+/** Which quarter a day falls in, as the first and last day of it. */
+export function quarterWindow(date: ISODate): { from: ISODate; to: ISODate } {
+  const q = Math.floor((Number(date.slice(5, 7)) - 1) / 3);
+  const first: MonthKey = `${date.slice(0, 4)}-${String(q * 3 + 1).padStart(2, "0")}`;
+  return { from: monthStart(first), to: monthEnd(addMonths(first, 2)) };
+}
+
+/** The quarter after the one this day falls in. */
+export const nextQuarter = (date: ISODate): { from: ISODate; to: ISODate } =>
+  quarterWindow(addDays(quarterWindow(date).to, 1));
+
+/** "Q1 2027", counting from one the way a card's own calendar does. */
+export const quarterLabel = (date: ISODate): string =>
+  `Q${Math.floor((Number(date.slice(5, 7)) - 1) / 3) + 1} ${date.slice(0, 4)}`;
 
 /**
  * What these purchases earn on this card, in cents of value.

@@ -1638,6 +1638,13 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .card-rule-rate { width: 78px; flex: none; }
 .card-rule-cap { width: 116px; flex: none; }
 .card-rule-period { width: 104px; flex: none; }
+/* The two ends of a rate that does not last. Narrow enough that the pair plus
+   their labels still sit on one line beside each other on a phone, and the row
+   wraps rather than overflowing when they cannot. */
+.card-rule-date { width: 148px; flex: none; }
+/* The way in to those dates, on a rule that has none. Quiet, because most
+   rates are permanent and this is a question about the few that are not. */
+.card-rule-dates { align-self: flex-start; padding-left: 0; }
 
 /* ── a merchant that repeats ─────────────────────────────────────────────
    The switch reads as one thing you turn on, which is why it sits in its own
