@@ -36,7 +36,7 @@ await build({
   stdin: {
     contents: `
       export { mergeSync, cleanMerchant, syncWindowStart, windowFor, FIRST_PULL_DAYS, accountKeys, skipNotes } from "./src/lib/sync/merge.ts";
-      export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, detectRecurring as detectRec } from "./src/lib/select.ts";
+      export { mutedAccountIds, counts, cashFlowSeries, categoryTotals, needsReviewCount, detectRecurring as detectRec } from "./src/lib/select.ts";
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, spendRun, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum, offBooks } from "./src/lib/select.ts";
@@ -16416,6 +16416,80 @@ await test("what is set aside is only ever what would have been a debt", () => {
   };
   assert.deepEqual(M.debtsLeftOut(odd).map((d) => d.name), ["Venture X", "Auto Loan"]);
   assert.deepEqual(M.debtsFrom(odd), [], "and the plan is empty rather than falling back to them");
+});
+
+/* ── how much is waiting to be looked at ───────────────────────────────── */
+
+const reviewDB = (accounts, txns) => ({
+  ...M.emptyDB(),
+  accounts: accounts.map((a, i) => ({
+    id: a.id, name: a.id, institution: "Bank", type: "checking", balance: 0,
+    includeInNetWorth: true, hidden: false, history: [], order: i,
+    ...(a.hideTransactions ? { hideTransactions: true } : {}),
+  })),
+  categories: [{ id: "c1", groupId: "g1", name: "Things", icon: "x", color: "--c1",
+    excludeFromBudget: false, rollover: false, order: 0 }],
+  groups: [{ id: "g1", name: "Bills", kind: "expense", order: 0 }],
+  transactions: txns.map((t, i) => ({
+    id: `t${i}`, accountId: t.accountId, date: "2026-10-01", merchant: "Shop",
+    amount: -10_00, categoryId: "c1", tags: [], pending: false,
+    reviewed: t.reviewed ?? false, hideFromReports: t.hideFromReports ?? false,
+    createdAt: "2026-10-01T00:00:00.000Z",
+  })),
+});
+
+await test("what is waiting to be reviewed is what has not been reviewed", () => {
+  const db = reviewDB([{ id: "a1" }], [{ accountId: "a1" }, { accountId: "a1" }, { accountId: "a1", reviewed: true }]);
+  assert.equal(M.needsReviewCount(db), 2);
+  assert.equal(M.needsReviewCount(reviewDB([{ id: "a1" }], [])), 0);
+});
+
+await test("an account told to hide its transactions does not nag about them", () => {
+  // The badge pointed at a screen that showed nothing. An account set to hide
+  // its transactions keeps them out of the ledger under every view but the
+  // Hidden one, so four unreviewed sweeps on a brokerage sat on the tab for
+  // ever with no way to reach them and nothing that could clear the number.
+  const db = reviewDB(
+    [{ id: "checking" }, { id: "brokerage", hideTransactions: true }],
+    [
+      { accountId: "checking" },
+      { accountId: "brokerage" }, { accountId: "brokerage" },
+      { accountId: "brokerage" }, { accountId: "brokerage" },
+    ],
+  );
+  assert.equal(M.needsReviewCount(db), 1, "only the one that can actually be reached");
+
+  // And switching the account back on brings them back, rather than having
+  // quietly marked them reviewed.
+  const shown = { ...db, accounts: db.accounts.map((a) => ({ ...a, hideTransactions: false })) };
+  assert.equal(M.needsReviewCount(shown), 5);
+});
+
+await test("a row hidden from reports is not nagged about either", () => {
+  // Being told to keep something out of the figures and then being asked to
+  // review it is the app wanting both at once.
+  const db = reviewDB([{ id: "a1" }], [
+    { accountId: "a1" },
+    { accountId: "a1", hideFromReports: true },
+    { accountId: "a1", hideFromReports: true },
+  ]);
+  assert.equal(M.needsReviewCount(db), 1);
+});
+
+await test("the count agrees with the test every other figure in the app uses", () => {
+  // Not a second opinion about what is visible: the same predicate, so the
+  // badge and the month's totals cannot come to disagree about one row.
+  const db = reviewDB(
+    [{ id: "a1" }, { id: "muted", hideTransactions: true }],
+    [
+      { accountId: "a1" }, { accountId: "a1", hideFromReports: true },
+      { accountId: "muted" }, { accountId: "a1", reviewed: true },
+    ],
+  );
+  const muted = M.mutedAccountIds(db);
+  const byHand = db.transactions.filter((t) => !t.reviewed && M.counts(t, muted)).length;
+  assert.equal(M.needsReviewCount(db), byHand);
+  assert.equal(M.needsReviewCount(db), 1);
 });
 
 /* ── what a wallet of cards actually earns ─────────────────────────────── */

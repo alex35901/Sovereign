@@ -1008,6 +1008,76 @@ try {
       "a badge is still showing with everything reviewed");
     await done.close();
     await clear.close();
+
+    // ── the number means what the screen behind it will show ──
+    //
+    // The complaint this comes from: the tab said four, and Needs Review
+    // showed nothing. They were on a brokerage set to hide its transactions,
+    // which keeps them out of the ledger under every view but the Hidden one,
+    // so the badge pointed at an empty screen and no amount of reviewing could
+    // ever clear it.
+    const shy = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const warmShy = await shy.newPage();
+    await warmShy.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await warmShy.waitForTimeout(1300);
+    await warmShy.close();
+    await shy.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        // Hide whichever account carries the most unreviewed rows, so the
+        // fixture is one where the old count and the new one differ.
+        const tally = new Map();
+        for (const t of db.transactions ?? []) {
+          if (!t.reviewed) tally.set(t.accountId, (tally.get(t.accountId) ?? 0) + 1);
+        }
+        const worst = [...tally].sort((a, b) => b[1] - a[1])[0]?.[0];
+        db.accounts = (db.accounts ?? []).map((a) =>
+          (a.id === worst ? { ...a, hideTransactions: true } : a));
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const shyPage = await shy.newPage();
+    await shyPage.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await shyPage.waitForTimeout(1200);
+
+    const split = await shyPage.evaluate(() => {
+      const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+      const hidden = new Set((db.accounts ?? []).filter((a) => a.hideTransactions).map((a) => a.id));
+      const un = (db.transactions ?? []).filter((t) => !t.reviewed);
+      return { all: un.length, reachable: un.filter((t) => !hidden.has(t.accountId)).length };
+    });
+    check("390px — the fixture really does hide some of what is unreviewed",
+      split.all > split.reachable && split.reachable > 0,
+      `${split.all} unreviewed, ${split.reachable} of them reachable`);
+
+    const shown = await shyPage.evaluate(() =>
+      document.querySelector('.mobile-tabs a[href="/transactions"] .tab-badge')?.innerText.trim() ?? "");
+    check("390px — the tab counts what can be reached, not what exists",
+      shown === String(split.reachable), `tab said ${shown || "nothing"} of ${split.reachable}`);
+
+    // And the screen it points at agrees, which is the whole claim.
+    if (await tryStep("390px — the unreviewed view can be asked for", async () => {
+      await shyPage.locator(".filter-toggle").click({ timeout: 6000 });
+      await shyPage.locator('.filter-panel .field:has(label:text-is("Show")) select')
+        .selectOption("unreviewed", { timeout: 6000 });
+      await shyPage.waitForTimeout(800);
+      await shyPage.keyboard.press("Escape");
+      await shyPage.waitForTimeout(500);
+    })) {
+      const listed = await shyPage.evaluate(() => {
+        const said = [...document.querySelectorAll(".small .muted, .spread.small span")]
+          .map((e) => e.innerText.trim())
+          .find((t) => / transactions?$/.test(t));
+        return said ? Number(said.replace(/[^\d]/g, "")) : null;
+      });
+      check("390px — and the list behind it holds exactly that many",
+        listed === split.reachable, `the list says ${listed}, the tab says ${shown}`);
+    }
+    await shyPage.close();
+    await shy.close();
   }
 
   if (want("nested-menu")) {

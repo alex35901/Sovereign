@@ -1317,8 +1317,25 @@ export function goalProgress(db: DB, goalId: string): { saved: number; pct: numb
 
 /* ── misc ─────────────────────────────────────────────────────────────── */
 
+/**
+ * How much is waiting to be looked at, counting only what can be reached.
+ *
+ * The same test every other figure in the app uses, which is the point: a
+ * badge is a call to action, and one that counts rows the ledger will not show
+ * is a number nobody can ever clear. An account set to hide its transactions
+ * keeps them out of the list under every view but the Hidden one, so four
+ * unreviewed sweeps on a brokerage used to sit on the tab for ever, pointing
+ * at a screen that showed nothing.
+ *
+ * Rows hidden from reports go the same way, by the same argument: being told
+ * to keep something out of the figures and then being nagged to review it is
+ * the app asking for both at once. Those do still appear under Needs Review
+ * for anybody who goes looking, which is the harmless direction for the two to
+ * disagree in.
+ */
 export function needsReviewCount(db: DB): number {
-  return db.transactions.filter((t) => !t.reviewed).length;
+  const muted = mutedAccountIds(db);
+  return db.transactions.filter((t) => !t.reviewed && counts(t, muted)).length;
 }
 
 export function monthOptions(db: DB): MonthKey[] {
