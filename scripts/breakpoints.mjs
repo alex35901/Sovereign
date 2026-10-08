@@ -10310,6 +10310,127 @@ try {
     await ts.close();
   }
 
+  if (want("quiet-sync")) {
+    // ── a refresh does its work without saying so ──
+    //
+    // Every bank pulled used to raise its own toast with an Undo beside it,
+    // and the round finished with one more listing what each had returned.
+    // Thirteen institutions made that a column of text down the middle of the
+    // dashboard, over the figures somebody had opened the app to read, asking
+    // repeatedly whether they wanted to take back a sync they never asked for.
+    // What arrived is on the Transactions page; what failed is on the account,
+    // in the bell and in Settings. None of it needed interrupting for.
+    const qs = await browser.newContext({ viewport: { width: 1280, height: 1200 } });
+    const day = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    await qs.route("**/api/simplefin", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.setupToken) {
+        return route.fulfill({ json: { accessUrl: "https://user:pass@bridge.example/simplefin" } });
+      }
+      // A pull that really brings something back, so the summary this used to
+      // raise would have had something to say. A pull returning nothing was
+      // already silent, and would prove nothing.
+      return route.fulfill({
+        json: {
+          errors: [],
+          accounts: [{
+            id: "qs-acct", name: "Bridge Checking", currency: "USD", balance: "1234.56",
+            "balance-date": Math.floor(Date.now() / 1000),
+            org: { name: "Ridgeline Credit Union", domain: "ridgeline.example" },
+            transactions: [
+              { id: "qs-t1", posted: Math.floor(new Date(`${day}T12:00:00Z`).getTime() / 1000),
+                amount: "-42.10", description: "Zzz Quiet Coffee" },
+              { id: "qs-t2", posted: Math.floor(new Date(`${day}T12:00:00Z`).getTime() / 1000),
+                amount: "-18.00", description: "Zzz Quiet Lunch" },
+            ],
+          }],
+        },
+      });
+    });
+
+    const qp = await qs.newPage();
+    await qp.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await qp.waitForTimeout(1300);
+
+    /**
+     * Every toast raised from now on, caught as it appears.
+     *
+     * Watched rather than looked for afterwards: a toast is gone in a few
+     * seconds, so a check that only reads the screen at the end would pass
+     * whether or not one had been and gone.
+     */
+    const watchToasts = () => qp.evaluate(() => {
+      window.__toasts = [];
+      const note = () => {
+        for (const el of document.querySelectorAll(".toast")) {
+          const said = el.innerText.replace(/\n/g, " ").trim();
+          if (said && !window.__toasts.includes(said)) window.__toasts.push(said);
+        }
+      };
+      note();
+      new MutationObserver(note).observe(document.body, { childList: true, subtree: true });
+    });
+    const toastsSeen = () => qp.evaluate(() => window.__toasts ?? []);
+    const txnCount = () => qp.evaluate(() =>
+      (JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions ?? []).length);
+
+    const connected = await tryStep("a bridge can be connected", async () => {
+      await watchToasts();
+      await qp.locator('.card:has(h2:text-is("SimpleFIN")) input').fill("c2V0dXAtdG9rZW4", { timeout: 5000 });
+      await qp.locator('.card:has(h2:text-is("SimpleFIN")) button', { hasText: "Connect" }).click({ timeout: 5000 });
+      await qp.waitForTimeout(900);
+    });
+
+    if (connected) {
+      // The other half of this, and the reason it is not simply "no toasts
+      // ever": connecting a bank is something somebody did on purpose and
+      // pressed a button for, so it still answers. What follows on its own is
+      // what has gone quiet.
+      check("pressing Connect still answers, because somebody asked it to",
+        (await toastsSeen()).some((t) => /connected/i.test(t)),
+        (await toastsSeen()).join("  //  ") || "nothing said");
+
+      const was = await txnCount();
+      const pulled = await tryStep("and asked for a refresh", async () => {
+        // From a clean screen: the connect confirmation above is still up, and
+        // counting it here would be reading the last step's answer.
+        await qp.waitForFunction(() => !document.querySelector(".toast"), { timeout: 10000 });
+        await watchToasts();
+        await qp.locator('.card:has(h2:text-is("SimpleFIN")) button', { hasText: "Sync now" })
+          .click({ timeout: 5000 });
+        // Long enough for a toast to have appeared and gone: they stand for
+        // between three and six seconds.
+        await qp.waitForTimeout(7000);
+      });
+
+      if (pulled) {
+        const now = await txnCount();
+        check("the refresh really did bring something in",
+          now > was, `${was} transactions before, ${now} after`);
+        const said = await toastsSeen();
+        check("and said nothing at the bottom of the screen about it",
+          said.length === 0, said.join("  //  "));
+
+        // The two things the toasts were standing in for, both of which
+        // outlast them and neither of which is in the way.
+        const card = await qp.evaluate(() => {
+          const c = [...document.querySelectorAll(".card")]
+            .find((x) => (x.querySelector(".card-head h2")?.innerText ?? "").trim() === "SimpleFIN");
+          return c ? c.innerText.replace(/\n/g, " | ") : "";
+        });
+        check("while the card itself still shows the connection is live",
+          /connected/i.test(card), card.slice(0, 200));
+
+        await qp.goto(`${BASE}/history`, { waitUntil: "networkidle" });
+        await qp.waitForTimeout(1000);
+        check("and the sync is on the History page, where it can be put back",
+          await qp.evaluate(() => /sync/i.test(document.body.innerText)),
+          "the refresh left no trace in the history");
+      }
+    }
+    await qs.close();
+  }
+
 } finally {
   await browser.close();
 }

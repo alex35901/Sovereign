@@ -67,12 +67,10 @@ export function IntegrationsCard() {
     try {
       if (id === "plaid") {
         const out = await syncPlaid(db, apply);
-        notify(out.summary);
         if (out.errors.length) setError(out.errors.join(" · "));
       }
       if (id === "simplefin") {
         const out = await syncSimplefin(db, apply);
-        notify(out.summary);
         if (out.errors.length) setError(out.errors.join(" · "));
       }
       if (id === "tiingo") { await refreshPrices(db, apply, "refresh prices"); notify("Prices refreshed."); }

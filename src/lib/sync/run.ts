@@ -44,7 +44,7 @@ async function withInstitution(item: PlaidItemRef): Promise<PlaidItemRef> {
  * would drift.
  */
 export async function syncPlaidItem(
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  apply: (fn: (cur: DB) => DB, label?: string, opts?: { quiet?: boolean }) => void,
   rawItem: PlaidItemRef,
   opts: { fullHistory?: boolean } = {},
 ): Promise<SyncOutcome> {
@@ -99,7 +99,11 @@ export async function syncPlaidItem(
         }
         : i));
     return { ...res.db, settings: { ...res.db.settings, plaidItems: stamped } };
-  }, `sync ${item.institution}`);
+    // Named for the History page but silent on screen. A refresh is something
+    // the app did on its own, and a toast per bank with an Undo beside it
+    // asked a question nobody had: thirteen institutions filled the screen
+    // with offers to take back a sync, over the figures they had come to read.
+  }, `sync ${item.institution}`, { quiet: true });
 
   return { summary, errors: payload.errors, changed, notes };
 }
@@ -112,7 +116,7 @@ export async function syncPlaidItem(
  */
 export async function syncPlaid(
   db: DB,
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  apply: (fn: (cur: DB) => DB, label?: string, opts?: { quiet?: boolean }) => void,
 ): Promise<SyncOutcome> {
   const items = db.settings.plaidItems ?? [];
   if (!items.length) throw new Error("No Plaid accounts are connected.");
@@ -129,7 +133,7 @@ export async function syncPlaid(
  */
 export async function syncPlaidDue(
   db: DB,
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  apply: (fn: (cur: DB) => DB, label?: string, opts?: { quiet?: boolean }) => void,
   cadence: SyncCadence,
   now: number,
   sessionStart: number,
@@ -143,7 +147,7 @@ export async function syncPlaidDue(
 }
 
 async function runItems(
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  apply: (fn: (cur: DB) => DB, label?: string, opts?: { quiet?: boolean }) => void,
   items: readonly PlaidItemRef[],
 ): Promise<SyncOutcome> {
   const summaries: string[] = [];
@@ -191,7 +195,7 @@ async function runItems(
  */
 export async function syncSimplefin(
   db: DB,
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  apply: (fn: (cur: DB) => DB, label?: string, opts?: { quiet?: boolean }) => void,
   opts: { fullHistory?: boolean } = {},
 ): Promise<SyncOutcome> {
   const ref = db.settings.simplefin;
@@ -244,7 +248,8 @@ export async function syncSimplefin(
         },
       }
       : res.db;
-  }, "sync SimpleFIN");
+    // Silent for the same reason as the Plaid pull above.
+  }, "sync SimpleFIN", { quiet: true });
 
   recordRun(apply, "simplefin", "ever", { error: payload.errors[0] });
   return { summary, errors: payload.errors, changed, notes };
@@ -253,7 +258,7 @@ export async function syncSimplefin(
 /** The same thing on a schedule, when its turn has come. */
 export async function syncSimplefinDue(
   db: DB,
-  apply: (fn: (cur: DB) => DB, label?: string) => void,
+  apply: (fn: (cur: DB) => DB, label?: string, opts?: { quiet?: boolean }) => void,
   cadence: SyncCadence,
   now: number,
   sessionStart: number,

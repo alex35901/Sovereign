@@ -288,7 +288,11 @@ export function CloudSync() {
     install(out.db);
     base.current = out.version;
     setCloudState({ version: out.version, dirty: false });
-    if (out.said) act.current.notify(out.said);
+    // What the overnight pull brought in is not announced. It is on the
+    // Transactions page, where somebody who wants to know what arrived is
+    // already looking, and this fires on a poll rather than on anything the
+    // reader did. The line below is a different matter: it is not a summary of
+    // work done but a warning that something of theirs was set aside.
     if (moved) {
       act.current.notify("A change made while the overnight pull was saving was set aside, see Settings.");
     }

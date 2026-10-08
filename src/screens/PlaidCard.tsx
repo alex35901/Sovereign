@@ -228,7 +228,10 @@ export function PlaidCard() {
   const syncItem = async (item: PlaidItemRef, opts: { fullHistory?: boolean } = {}) => {
     const out = await syncPlaidItem(apply, item, opts);
     recordRun(apply, "plaid", "ever", { error: out.errors[0] });
-    notify(out.summary);
+    // No toast for a pull that worked. The row below says when it last synced,
+    // and anything the pull could not do is reported on the card itself a few
+    // lines down, where it stays until it is dealt with rather than for six
+    // seconds over the dashboard.
     // A window Plaid could not be read to the end of has transactions missing
     // from it. Showing the count is the only thing that turns silent data loss
     // into something anyone can act on.
@@ -245,7 +248,6 @@ export function PlaidCard() {
     setNote(null);
     try {
       const out = await syncPlaid(db, apply);
-      notify(out.summary);
       if (out.errors.length) setError(out.errors.join(" · "));
       if (out.notes.length) setNote(out.notes.join(" "));
     } finally {

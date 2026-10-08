@@ -71,11 +71,12 @@ export function AutoSync() {
       running.current = true;
       try {
         if (plaidDue) {
-          const out = await syncPlaidDue(latest.current, act.current.apply, cadence, now, sessionStart.current);
-          // Silent unless something arrived: this runs unattended, and a
-          // toast on every app open saying nothing happened is worse than no
-          // toast at all.
-          if (out?.changed) act.current.notify(out.summary);
+          // Silent whether or not anything arrived. This runs unattended, so
+          // every toast it raises lands on top of whatever the reader opened
+          // the app to look at. What came in is on the Transactions page, what
+          // a bank is refusing is on its own row and in the bell, and a sync
+          // nobody asked for has nothing else worth interrupting for.
+          await syncPlaidDue(latest.current, act.current.apply, cadence, now, sessionStart.current);
         }
       } catch {
         holdPlaid.current = Date.now() + BACKOFF_MS;
@@ -83,8 +84,8 @@ export function AutoSync() {
 
       try {
         if (bridgeDue) {
-          const out = await syncSimplefinDue(latest.current, act.current.apply, cadence, now, sessionStart.current);
-          if (out?.changed) act.current.notify(out.summary);
+          // Silent for the same reason as the Plaid pull above.
+          await syncSimplefinDue(latest.current, act.current.apply, cadence, now, sessionStart.current);
         }
       } catch {
         holdBridge.current = Date.now() + BACKOFF_MS;

@@ -50,7 +50,7 @@ export function SimplefinCard() {
     setError(null);
     try {
       const out = await syncSimplefin(db, apply);
-      notify(out.summary);
+      // What it did is on the card; only what it could not do needs saying.
       if (out.errors.length) setError(out.errors.join(" · "));
     } catch (err) {
       setError(reason(err, "That sync failed."));

@@ -342,7 +342,9 @@ export function EncryptionCard(){
       if (drained) {
         replaceFromCloud(drained.db);
         setCloudState({ version: drained.version, dirty: false });
-        if (drained.said) notify(drained.said);
+        // The same summary the cloud poll used to raise, and silent for the
+        // same reason. Unlocking shows the budget; what came in overnight is
+        // part of it rather than news to put over the top of it.
       }
     } catch (err) {
       setError(`Unlocked, but the budget could not be fetched just now: ${

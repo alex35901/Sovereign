@@ -35,8 +35,16 @@ type Mutator = (db: DB) => DB;
 
 interface Store {
   db: DB;
-  /** Every write goes through here; `label` powers the undo toast. */
-  apply: (fn: Mutator, label?: string) => void;
+  /**
+   * Every write goes through here; `label` powers the undo toast.
+   *
+   * `quiet` names the write for the history without raising that toast or
+   * taking a snapshot for it. It is for the writes nobody asked for: a sync
+   * running on its own is not an edit to offer back, and eight banks in a row
+   * would both bury the screen and push every edit the reader actually made
+   * off a twelve-deep undo stack.
+   */
+  apply: (fn: Mutator, label?: string, opts?: { quiet?: boolean }) => void;
   undo: () => void;
   undoLabel: string | null;
   toast: string | null;
@@ -241,16 +249,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     window.setTimeout(() => setToast((t) => (t === msg ? null : t)), 3200);
   }, []);
 
-  const apply = useCallback((fn: Mutator, label?: string) => {
+  const apply = useCallback((fn: Mutator, label?: string, opts?: { quiet?: boolean }) => {
     setDb((prev) => {
       const next = withGroupColors(fn(prev));
-      if (label) {
+      if (label && !opts?.quiet) {
         undoStack.current = [{ db: prev, label }, ...undoStack.current].slice(0, 12);
         setUndoLabel(label);
         window.setTimeout(() => setUndoLabel((l) => (l === label ? null : l)), 6000);
       }
-      // Logged whether or not it was named, because the label is there for the
-      // toast and plenty of ordinary edits deliberately do not raise one.
+      // Logged whether or not it was named, and whether or not it was quiet:
+      // the label is there for the toast, plenty of ordinary edits deliberately
+      // do not raise one, and a quiet write is still something that happened.
+      // The History page is where a sync can be read back and put back.
       // Changing a single transaction is one of them, and a history without it
       // would be a history of everything except what people do all day.
       //
