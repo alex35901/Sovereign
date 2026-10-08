@@ -118,6 +118,11 @@ const tabStyle = (on: boolean) => ({
 
 /** Compact bar for narrow screens, where the sidebar is hidden. */
 export function MobileTabs() {
+  const db = useDB();
+  // The same figure the sidebar puts beside Transactions. A phone has no
+  // sidebar, so the one place the app said there was work waiting was the one
+  // place a phone could not see.
+  const unreviewed = needsReviewCount(db);
   const { pathname } = useLocation();
   const [open, setOpen] = useState(false);
   const here = (to: string) => pathname.startsWith(to);
@@ -170,12 +175,28 @@ export function MobileTabs() {
         }}
         className="mobile-tabs"
       >
-        {TABS.map(({ to, label, Icon }) => (
-          <NavLink key={to} to={to} style={tabStyle(here(to))}>
-            <Icon size={18} />
-            {label}
-          </NavLink>
-        ))}
+        {TABS.map(({ to, label, Icon }) => {
+          const waiting = to === "/transactions" && unreviewed > 0;
+          return (
+            <NavLink
+              key={to} to={to} style={tabStyle(here(to))}
+              // The count is read out as part of the tab rather than left as a
+              // number floating beside it, which is what a screen reader would
+              // otherwise announce it as.
+              aria-label={waiting ? `${label}, ${unreviewed} to review` : undefined}
+            >
+              <span className="tab-icon">
+                <Icon size={18} />
+                {waiting ? (
+                  <span className="tab-badge" aria-hidden="true">
+                    {unreviewed > 99 ? "99+" : unreviewed}
+                  </span>
+                ) : null}
+              </span>
+              {label}
+            </NavLink>
+          );
+        })}
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}

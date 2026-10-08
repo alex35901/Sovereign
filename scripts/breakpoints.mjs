@@ -879,6 +879,12 @@ try {
     await desktop.waitForTimeout(500);
     const everywhere = await desktop.evaluate(() =>
       [...document.querySelectorAll(".sidebar a[href^='/']")].map((a) => a.getAttribute("href")));
+    // Read off the wide layout while it is still open, for the comparison at
+    // the end: the two bars are two readings of one number and must not be
+    // allowed to drift apart.
+    const sidebarSaid = await desktop.evaluate(() =>
+      document.querySelector('.sidebar a[href="/transactions"] .tag')?.innerText.trim() ?? "");
+    const desktopCount = async () => sidebarSaid;
     await desktop.close();
 
     const more = nav.locator('.mobile-tabs button[aria-label="More screens"]');
@@ -924,7 +930,84 @@ try {
     check("390px — tapping outside the menu closes it without navigating",
       await nav.locator(".more-sheet").count() === 0 && new URL(nav.url()).pathname === "/goals",
       `at ${new URL(nav.url()).pathname}`);
+
+    // ── how much is waiting, on the bar that stands in for the sidebar ──
+    //
+    // The sidebar has carried this count beside Transactions all along, and the
+    // sidebar is hidden below 720px: the one place the app said there was work
+    // waiting was the one place a phone could not look.
+    const waiting = await nav.evaluate(() =>
+      (JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions ?? [])
+        .filter((t) => !t.reviewed).length);
+    check("390px — the seeded document has something to review, or this proves nothing",
+      waiting > 0, `${waiting} unreviewed`);
+
+    const badge = await nav.evaluate(() => {
+      const el = document.querySelector('.mobile-tabs a[href="/transactions"] .tab-badge');
+      if (!el) return null;
+      const tab = el.closest("a").getBoundingClientRect();
+      const box = el.getBoundingClientRect();
+      const icon = el.closest("a").querySelector("svg").getBoundingClientRect();
+      return {
+        said: el.innerText.trim(),
+        label: el.closest("a").getAttribute("aria-label"),
+        // On the icon, and inside the tab it belongs to: a badge that spills
+        // past its own tab reads as belonging to the one beside it.
+        onIcon: box.top < icon.top + icon.height / 2 && box.right > icon.left + icon.width / 2,
+        inTab: box.left >= tab.left && box.right <= tab.right,
+      };
+    });
+    check("390px — the Transactions tab carries the count",
+      badge !== null && badge.said === String(waiting > 99 ? "99+" : waiting),
+      badge === null ? "no badge on the tab" : `said ${badge.said} of ${waiting}`);
+    check("390px — and the sidebar and the tab bar agree about the number",
+      badge !== null && badge.said === await desktopCount(), `tab said ${badge?.said}`);
+    check("390px — it sits on the icon rather than pushing the tabs about",
+      badge !== null && badge.onIcon && badge.inTab, JSON.stringify(badge));
+    check("390px — and a screen reader is told what the number is for",
+      badge !== null && /\d+ to review/.test(badge.label ?? ""), badge?.label ?? "no label");
+
+    // The five tabs still share the width evenly. A badge that changed a tab's
+    // size would move the other four every time something was reviewed.
+    const evenly = await nav.evaluate(() => {
+      const kids = [...document.querySelectorAll(".mobile-tabs > *")];
+      const widths = kids.map((k) => Math.round(k.getBoundingClientRect().width));
+      return { widths, spread: Math.max(...widths) - Math.min(...widths) };
+    });
+    check("390px — and the five tabs are still the same width as each other",
+      evenly.spread <= 1, evenly.widths.join(", "));
+
     await nav.close();
+
+    // Nothing to review, nothing to say. A zero in a circle is an alarm about
+    // an empty list. In its own context, written before the app boots: a live
+    // page saves its own copy back over anything written underneath it.
+    const clear = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const warmTabs = await clear.newPage();
+    await warmTabs.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await warmTabs.waitForTimeout(1300);
+    await warmTabs.close();
+    await clear.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        db.transactions = (db.transactions ?? []).map((t) => ({ ...t, reviewed: true }));
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+    const done = await clear.newPage();
+    await done.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await done.waitForTimeout(1100);
+    check("390px — with everything reviewed the fixture really is empty",
+      await done.evaluate(() => (JSON.parse(localStorage.getItem("sovereign.db.v1")).transactions ?? [])
+        .filter((t) => !t.reviewed).length) === 0,
+      "the fixture still has unreviewed rows, so the next check proves nothing");
+    check("390px — and the tab says nothing at all",
+      await done.locator('.mobile-tabs a[href="/transactions"] .tab-badge').count() === 0,
+      "a badge is still showing with everything reviewed");
+    await done.close();
+    await clear.close();
   }
 
   if (want("nested-menu")) {
