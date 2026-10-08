@@ -977,6 +977,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .budget-stat:hover:not(:disabled) { background: var(--surface-3); border-color: var(--accent); }
 .budget-stat:disabled { opacity: 0.5; cursor: default; }
 .budget-chart { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 8px 6px 2px; margin-top: 10px; }
+/* Quick top-ups under the amount: three round sums, then whatever is unassigned. */
+.budget-quick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+/* Qualified by the panel because `.menu .btn` sets width: auto and would
+   otherwise win, leaving this one half the width of the row above it. */
+.budget-quick .btn, .budget-panel .budget-quick-left { justify-content: center; min-height: 34px; }
+.budget-panel .budget-quick-left { width: 100%; margin-top: 6px; }
 .budget-forward { display: flex; align-items: center; gap: 8px; margin-top: 12px; cursor: pointer; }
 
 /* ── move money popover ───────────────────────────────────────────────── */

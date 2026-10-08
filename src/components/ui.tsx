@@ -421,7 +421,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
   onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number; up: boolean }>({ top: 0, left: 0, up: false });
+  const [pos, setPos] = useState<{ top: number; left: number; up: boolean; maxHeight?: number }>({ top: 0, left: 0, up: false });
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
 
@@ -442,16 +442,37 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
     const el = anchor.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    const room = window.innerHeight - r.bottom;
-    const up = room < 260 && r.top > room;
-    setPos({
-      top: up ? r.top - 4 : r.bottom + 4,
-      left: Math.max(8, Math.min(
-        align === "right" ? r.right - width : r.left,
-        window.innerWidth - width - 8,
-      )),
-      up,
-    });
+    const left = Math.max(8, Math.min(
+      align === "right" ? r.right - width : r.left,
+      window.innerWidth - width - 8,
+    ));
+    const vh = window.innerHeight;
+    // The menu's own height, measured, rather than a guess at it. The guess
+    // was 260px, which suits a list of options and not the budget panel, a
+    // little over twice that: opened from a row in the lower half of a phone
+    // it went down anyway and its Done button sat under the bottom edge with
+    // nothing to scroll. The menu is already in the page (unpainted, at the
+    // corner) by the time the layout effect calls this, so the first placement
+    // is a measured one; the old rule stays only for a menu not yet mounted.
+    // Once capped to the screen its box is the cap, so the content is read
+    // instead, or the next scroll would uncap it and the one after cap it.
+    const m = menu.current;
+    const h = m ? (m.style.maxHeight ? m.scrollHeight + 2 : m.offsetHeight) : undefined;
+    if (h === undefined) {
+      const room = vh - r.bottom;
+      const up = room < 260 && r.top > room;
+      setPos({ top: up ? r.top - 4 : r.bottom + 4, left, up });
+      return;
+    }
+    const below = vh - r.bottom - 12;
+    const above = r.top - 12;
+    if (h <= below) setPos({ top: r.bottom + 4, left, up: false });
+    else if (h <= above) setPos({ top: r.top - 4, left, up: true });
+    // Fits neither way: kept on the screen even if that means covering the
+    // row it came from, and scrolled inside itself if it is taller than the
+    // screen. A menu half off the edge is a menu half of which cannot be used.
+    else if (h <= vh - 16) setPos({ top: Math.max(8, Math.min(r.bottom + 4, vh - h - 8)), left, up: false });
+    else setPos({ top: 8, left, up: false, maxHeight: vh - 16 });
   }, [align, width]);
 
   useLayoutEffect(() => {
@@ -504,6 +525,7 @@ export function Popover({ trigger, children, align = "left", width = 220, classN
               style={{
                 position: "fixed", top: pos.top, left: pos.left, width,
                 transform: pos.up ? "translateY(-100%)" : undefined,
+                ...(pos.maxHeight ? { maxHeight: pos.maxHeight, overflowY: "auto" as const } : {}),
               }}
             >
               <Nest.Provider value={claim}>{children(() => setOpen(false))}</Nest.Provider>

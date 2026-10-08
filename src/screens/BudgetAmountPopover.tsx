@@ -4,11 +4,15 @@ import type { Category, MonthKey } from "../types";
 import { useDB, useStore } from "../store";
 import { addMonths, monthLabel } from "../lib/date";
 import { fmt0 } from "../lib/money";
-import { categoryAverage, categoryHistory, plannedFor } from "../lib/select";
+import { budgetSummary, categoryAverage, categoryHistory, plannedFor } from "../lib/select";
+import { coarsePointer } from "../lib/pointer";
 import { BarChart } from "../components/charts";
 import { Money, MoneyInput, Popover } from "../components/ui";
 
 const WINDOW = 6;
+
+/** The fixed nudges, in cents. Round amounts, because that is how people top a line up. */
+const QUICK = [25_00, 50_00, 100_00];
 
 /**
  * The budget figure, and the history behind it.
@@ -77,6 +81,11 @@ function Panel({ category, month, kind, onDone }: {
 
   const verb = kind === "income" ? "Earned" : "Spent";
 
+  // Read live rather than captured when the panel opened, so the button empties
+  // the moment it is pressed and cannot be pressed twice into an overdraft.
+  // Same figure as the "Left to budget" tile at the top of the screen.
+  const left = budgetSummary(db, month).leftToBudget;
+
   return (
     <div className="budget-panel">
       <div className="spread" style={{ marginBottom: 10 }}>
@@ -87,7 +96,26 @@ function Panel({ category, month, kind, onDone }: {
         <span className="tiny faint">{monthLabel(month, true)}</span>
       </div>
 
-      <MoneyInput value={amount} onChange={commit} autoFocus />
+      {/* Not focused on a touch screen: focusing it there raises the keyboard
+          over the panel, which hides the buttons most people opened it for. */}
+      <MoneyInput value={amount} onChange={commit} autoFocus={!coarsePointer()} />
+
+      <div className="budget-quick">
+        {QUICK.map((q) => (
+          <button key={q} className="btn btn-sm" onClick={() => commit(amount + q)}>+{fmt0(q)}</button>
+        ))}
+      </div>
+      {/* Spending only. On an income line, adding what is unassigned would
+          plan more income to cover a gap, which is the wrong way round. */}
+      {kind === "expense" ? (
+        <button
+          className="btn btn-sm budget-quick-left"
+          onClick={() => commit(amount + left)}
+          disabled={left <= 0}
+        >
+          {left > 0 ? `Add the ${fmt0(left)} left to budget` : "Nothing left to budget"}
+        </button>
+      ) : null}
 
       <div className="tile-label" style={{ marginTop: 12 }}>History</div>
 

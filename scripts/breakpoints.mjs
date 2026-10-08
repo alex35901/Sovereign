@@ -2993,6 +2993,138 @@ try {
       }
       await dp.close();
     }
+
+    // ── the planned amount: no keyboard on a phone, and quick top-ups ──
+    //
+    // The box used to take focus on open everywhere, which on a phone raises
+    // the keyboard over the very buttons the panel was opened for. A mouse
+    // still gets the cursor, because there it costs nothing.
+    {
+      /** What the panel's focus is, read without a locator so absence is an answer. */
+      const focusOf = (pg) => pg.evaluate(() => {
+        const panel = document.querySelector(".budget-panel");
+        const box = panel?.querySelector("input.input");
+        return { open: !!panel, focused: !!box && document.activeElement === box };
+      });
+      const phoneB = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+      await phoneB.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+      await phoneB.waitForTimeout(800);
+      if (await tryStep("phone: open a planned amount", () =>
+        phoneB.locator(".bcol-plan button.budget-amount").last().click({ timeout: 5000 }))) {
+        await phoneB.waitForTimeout(300);
+        const f = await focusOf(phoneB);
+        check("on a phone the planned amount opens without raising the keyboard",
+          f.open && !f.focused, JSON.stringify(f));
+        // The button itself against the row of three above it, not the panel:
+        // the panel is full width whatever the button inside it does.
+        const widths = await phoneB.evaluate(() => {
+          const row = document.querySelector(".budget-panel .budget-quick")?.getBoundingClientRect();
+          const btn = document.querySelector(".budget-panel .budget-quick-left")?.getBoundingClientRect();
+          return row && btn ? { row: Math.round(row.width), btn: Math.round(btn.width), dx: Math.round(btn.left - row.left) } : null;
+        });
+        check("and the left-to-budget button spans the row of top-ups above it",
+          widths !== null && Math.abs(widths.btn - widths.row) <= 1 && Math.abs(widths.dx) <= 1, JSON.stringify(widths));
+      }
+      // Opened from a row low on the screen, the panel used to go down anyway,
+      // because the menu only went up when less than 260px was left below and
+      // this one is twice that. Its Done button sat under the bottom edge.
+      await phoneB.locator(".budget-panel .btn-primary").click({ timeout: 3000 }).catch(() => null);
+      await phoneB.waitForTimeout(250);
+      const low = await phoneB.evaluate(() => {
+        const vh = innerHeight;
+        const btns = [...document.querySelectorAll(".bcol-plan button.budget-amount")];
+        // A row whose button, once scrolled to, sits about two thirds down.
+        const b = btns[Math.min(6, btns.length - 1)];
+        if (!b) return null;
+        scrollBy(0, b.getBoundingClientRect().top - vh * 0.62);
+        return Math.round(b.getBoundingClientRect().top);
+      });
+      await phoneB.waitForTimeout(300);
+      if (low !== null && await tryStep("phone: open a planned amount low on the screen", () =>
+        phoneB.locator(".bcol-plan button.budget-amount").nth(6).click({ timeout: 5000 }))) {
+        await phoneB.waitForTimeout(300);
+        const box = await phoneB.evaluate(() => {
+          const m = document.querySelector(".budget-menu")?.getBoundingClientRect();
+          const d = document.querySelector(".budget-panel .btn-primary")?.getBoundingClientRect();
+          return m && d ? { top: Math.round(m.top), bottom: Math.round(m.bottom), done: Math.round(d.bottom), vh: innerHeight } : null;
+        });
+        check("opened low on a phone, the whole panel and its Done button stay on the screen",
+          box !== null && box.top >= 0 && box.bottom <= box.vh && box.done <= box.vh,
+          `trigger at ${low}: ${JSON.stringify(box)}`);
+      }
+      await phoneB.close();
+
+      const deskB = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      await deskB.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+      await deskB.waitForTimeout(800);
+      /** The panel's figure in cents, and what its quick buttons say. */
+      const panelState = () => deskB.evaluate(() => {
+        const panel = document.querySelector(".budget-panel");
+        if (!panel) return null;
+        const left = panel.querySelector(".budget-quick-left");
+        return {
+          cents: Math.round(Number(panel.querySelector("input.input").value.replace(/,/g, "")) * 100),
+          quick: [...panel.querySelectorAll(".budget-quick .btn")].map((b) => b.innerText.trim()),
+          left: left ? { text: left.innerText.trim(), disabled: left.disabled } : null,
+        };
+      });
+      const leftTile = () => deskB.evaluate(() => {
+        const cell = [...document.querySelectorAll(".budget-stats > *")].find((c) => /left to budget/i.test(c.innerText));
+        const t = cell?.querySelector(".num")?.innerText ?? "";
+        return Number(t.replace(/[$,\s]/g, "").replace(/\u2212/g, "-").match(/-?\d+(\.\d+)?/)?.[0] ?? "NaN");
+      });
+      const closePanel = async () => {
+        await deskB.locator(".budget-panel .btn-primary").click({ timeout: 3000 }).catch(() => null);
+        await deskB.waitForTimeout(250);
+      };
+
+      // Income first, raised far enough that there is something left to
+      // budget: the demo month ships with more planned out than in.
+      if (await tryStep("desk: open an income line", () =>
+        deskB.locator(".bcol-plan button.budget-amount").first().click({ timeout: 5000 }))) {
+        await deskB.waitForTimeout(300);
+        const f = await focusOf(deskB);
+        check("with a mouse the planned amount still opens ready to type", f.focused, JSON.stringify(f));
+        const inc = await panelState();
+        check("an income line offers the round top-ups but not the left-to-budget one",
+          inc !== null && inc.quick.length === 3 && inc.left === null, JSON.stringify(inc));
+        const shortBy = await leftTile();
+        const raise = Math.max(0, -shortBy) + 750;
+        await deskB.locator(".budget-panel input.input").fill(((inc?.cents ?? 0) / 100 + raise).toFixed(2)).catch(() => null);
+        await closePanel();
+      }
+
+      const before = await leftTile();
+      if (await tryStep("desk: open a spending line", () =>
+        deskB.locator(".bcol-plan button.budget-amount").last().click({ timeout: 5000 }))) {
+        await deskB.waitForTimeout(300);
+        const s0 = await panelState();
+        check("a spending line offers +$25, +$50 and +$100",
+          s0 !== null && s0.quick.join("|") === "+$25|+$50|+$100", JSON.stringify(s0?.quick));
+        await deskB.locator(".budget-quick .btn", { hasText: "+$25" }).click({ timeout: 3000 }).catch(() => null);
+        await deskB.locator(".budget-quick .btn", { hasText: "+$100" }).click({ timeout: 3000 }).catch(() => null);
+        const s1 = await panelState();
+        check("and each one adds to the figure rather than replacing it",
+          s0 !== null && s1 !== null && s1.cents - s0.cents === 125_00, `${s0?.cents} to ${s1?.cents}`);
+
+        const mid = await leftTile();
+        const offered = Number((s1?.left?.text.match(/\$([\d,]+)/)?.[1] ?? "NaN").replace(/,/g, ""));
+        check("the left-to-budget button offers what the tile at the top says is left",
+          before > 0 && Math.abs(offered - mid) <= 1 && s1?.left?.disabled === false,
+          `tile ${before} then ${mid}, button "${s1?.left?.text}"`);
+        await deskB.locator(".budget-quick-left").click({ timeout: 3000 }).catch(() => null);
+        await deskB.waitForTimeout(250);
+        const s2 = await panelState();
+        const after = await leftTile();
+        check("pressing it moves all of it onto this line",
+          s1 !== null && s2 !== null && Math.abs((s2.cents - s1.cents) / 100 - mid) <= 1 && Math.abs(after) < 1,
+          `${s1?.cents} to ${s2?.cents}, tile ${mid} then ${after}`);
+        check("and then has nothing left to offer, so it cannot be pressed twice",
+          s2?.left?.disabled === true && /Nothing left/.test(s2?.left?.text ?? ""), JSON.stringify(s2?.left));
+        await closePanel();
+      }
+      await deskB.close();
+    }
   }
 
   if (want("accounts")) {
