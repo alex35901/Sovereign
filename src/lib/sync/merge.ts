@@ -86,6 +86,18 @@ export function mergeSync(
   source: Provider,
 ): MergeResult {
   const accounts = [...db.accounts];
+
+  /**
+   * Everything the pull said about a bank, fault or not.
+   *
+   * An account's own note is the right home for both: "this bank needs a new
+   * login" and "this one never carries transactions" are both things to read
+   * on the account whose figures stopped moving. What they are not both is a
+   * reason to call the provider broken, which is why only one of the two is
+   * in `errors` by the time this is read.
+   */
+  const remarks = [...payload.errors, ...(payload.notes ?? [])];
+
   let accountsAdded = 0;
   let accountsUpdated = 0;
   const idBySyncId = new Map<string, string>();
@@ -152,8 +164,8 @@ export function mergeSync(
         plaidItemId: r.itemId ?? existing.plaidItemId,
         // Whatever the provider said about this one last time, said again or
         // dropped. An account that came back clean is clean.
-        syncNote: noteFor(existing, payload.errors)
-          ? { message: noteFor(existing, payload.errors)!, at: payload.fetchedAt }
+        syncNote: noteFor(existing, remarks)
+          ? { message: noteFor(existing, remarks)!, at: payload.fetchedAt }
           : undefined,
         // Refreshed on every pull, but never blanked: a provider that stops
         // sending one shouldn't lose the logo already held.

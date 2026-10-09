@@ -79,7 +79,10 @@ export async function syncPlaidItem(
   let notes: string[] = [];
   apply((cur) => {
     const res = mergeSync(cur, payload, "plaid");
-    notes = skipNotes(res);
+    // What the merge skipped, plus whatever the pull itself wanted on the
+    // record without calling it a fault. Both belong in the same place: the
+    // card says them, and neither makes the provider read as down.
+    notes = [...skipNotes(res), ...(payload!.notes ?? [])];
     const accounts = res.accountsAdded + res.accountsUpdated;
     summary =
       `${item.institution}: ${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}` +
@@ -230,7 +233,10 @@ export async function syncSimplefin(
   let notes: string[] = [];
   apply((cur) => {
     const res = mergeSync(cur, payload, "simplefin");
-    notes = skipNotes(res);
+    // What the merge skipped, plus whatever the pull itself wanted on the
+    // record without calling it a fault. Both belong in the same place: the
+    // card says them, and neither makes the provider read as down.
+    notes = [...skipNotes(res), ...(payload!.notes ?? [])];
     const accounts = res.accountsAdded + res.accountsUpdated;
     summary = `${res.transactionsAdded} new transaction${res.transactionsAdded === 1 ? "" : "s"}`
       + `, ${accounts} account${accounts === 1 ? "" : "s"}`;

@@ -356,14 +356,17 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
         ? [`Plaid has ${raw.total} transactions in this window and sent ${transactions.length}. `
           + "Sync a shorter period, or sync again to pick up the rest."]
         : []),
-      // Named, so it lands on this bank's account and stays off the others.
-      // The pull itself worked: these accounts and balances are real, and
-      // saying so as a note rather than throwing is what lets them be saved.
-      ...(raw.notReady
-        ? [`${item.institution}: Plaid has no transactions ready for this connection yet. `
-          + "Balances are up to date. Some connections, a mortgage among them, never carry transactions at all."]
-        : []),
     ],
+    // Named, so it lands on this bank's account and stays off the others. A
+    // note rather than an error, which is what the sentence has always said:
+    // the pull worked, the balances are real, and a mortgage that carries no
+    // transactions is the arrangement rather than a fault. Filed under errors
+    // it became the provider's error, and the provider's error is what makes
+    // the whole of Plaid read as failing.
+    notes: raw.notReady
+      ? [`${item.institution}: Plaid has no transactions ready for this connection yet. `
+        + "Balances are up to date. Some connections, a mortgage among them, never carry transactions at all."]
+      : [],
     fetchedAt: new Date().toISOString(),
     holdings,
   };

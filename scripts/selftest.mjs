@@ -5320,13 +5320,56 @@ await test("a connection Plaid has no transactions for still brings its balances
     { accounts: raw.accounts, transactions: [], holdings: [], securities: [], notReady: true },
     { institution: "Valon Mortgage" },
   );
-  assert.equal(payload.errors.length, 1);
-  assert.match(payload.errors[0], /^Valon Mortgage: /);
-  assert.match(payload.errors[0], /Balances are up to date/);
+  assert.deepEqual(payload.errors, [],
+    "a mortgage with no transactions is not a fault, and an error is what makes the provider read as failing");
+  assert.equal(payload.notes.length, 1, "it is a note");
+  assert.match(payload.notes[0], /^Valon Mortgage: /);
+  assert.match(payload.notes[0], /Balances are up to date/);
 
-  // And a connection that is simply ready says nothing at all.
+  // And a connection that is simply ready says nothing at all, either way.
   const fine = M.toPlaidPayload({ accounts: [], transactions: [], holdings: [], securities: [] }, { institution: "X" });
   assert.deepEqual(fine.errors, []);
+  assert.deepEqual(fine.notes, []);
+});
+
+await test("a mortgage that carries no transactions does not call Plaid broken", () => {
+  // What the household saw: a red "Plaid is failing" against a sentence
+  // explaining that this is normal and nothing is wrong. The note was filed in
+  // the column that decides whether the provider is up, so the one connection
+  // that can never carry transactions made the whole of Plaid look down, with
+  // nothing to act on and no way to clear it.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{
+      id: "a1", name: "Mortgage", institution: "Valon Mortgage", type: "mortgage",
+      balance: -420_000_00, includeInNetWorth: true, hidden: false, history: [], order: 1,
+      syncSource: "plaid", syncId: "pl-1", plaidItemId: "it_1",
+    }],
+  };
+  const merged = M.mergeSync(db, {
+    accounts: [{ syncId: "pl-1", name: "Mortgage", institution: "Valon Mortgage", balance: -419_000_00,
+      currency: "USD", type: "mortgage", balanceDate: "2026-10-09", itemId: "it_1" }],
+    transactions: [],
+    errors: [],
+    notes: ["Valon Mortgage: Plaid has no transactions ready for this connection yet. Balances are up to date."],
+    fetchedAt: "2026-10-09T09:00:00.000Z",
+  }, "plaid");
+
+  // The balance still lands, which is the whole point of not throwing.
+  assert.equal(merged.db.accounts[0].balance, -419_000_00);
+  // And the explanation lands where somebody would look for it: on the account
+  // whose figures it is about.
+  assert.match(merged.db.accounts[0].syncNote.message, /no transactions ready/);
+
+  // A note that names no bank at all still has nowhere better to be than the
+  // connection, exactly as an unaddressed error does.
+  const general = M.mergeSync(db, {
+    accounts: [], transactions: [], errors: [],
+    notes: ["Something about nobody in particular."],
+    fetchedAt: "2026-10-09T09:00:00.000Z",
+  }, "plaid");
+  assert.equal(general.db.accounts[0].syncNote, undefined, "it is not pinned to an arbitrary account");
 });
 
 await test("a rule can ask for more than one thing about the merchant", () => {
@@ -11435,6 +11478,43 @@ await test("a recurring charge that stopped arriving is said out loud", () => {
 
   // A few days late is a bill landing on a working day, not a bill that stopped.
   assert.deepEqual(M.NT.overdueRecurring(db, "2026-08-08"), []);
+});
+
+await test("nothing is missing on the day it was expected", () => {
+  // "Expected around 9 October, and nothing has landed" read on the 9th of
+  // October is the app reading its own calendar back. Payroll lands when it
+  // lands and a provider takes a day to report it, so the date in the notice
+  // has to have been and gone before the notice is worth anything.
+  const base = M.emptyDB();
+  const pay = (over) => ({
+    ...withTxns([
+      { date: "2026-08-14", amount: 2_000_00, merchant: "Cisco Pay" },
+      { date: "2026-08-28", amount: 2_000_00, merchant: "Cisco Pay" },
+    ]),
+    recurring: [{
+      id: "rec_pay", merchant: "Cisco Pay", categoryId: base.categories[0].id,
+      amount: 2_000_00, cadence: "biweekly", nextDate: "2026-10-09", kind: "income", detected: false,
+      ...over,
+    }],
+  });
+  const db = pay();
+
+  // Six weeks of silence, and the most recent expected day is today.
+  const onTheDay = M.NT.overdueRecurring(db, "2026-10-09");
+  assert.deepEqual(onTheDay, [], "due today is not late today");
+  assert.deepEqual(M.NT.overdueRecurring(db, "2026-10-10"), [], "nor the morning after");
+  assert.deepEqual(M.NT.overdueRecurring(db, "2026-10-11"), [], "nor the day after that");
+
+  // And then it is worth saying.
+  const [late] = M.NT.overdueRecurring(db, "2026-10-12");
+  assert.ok(late, `${M.NT.LATE_AFTER_DAYS} days past the day it was due is late`);
+  assert.equal(late.due, "2026-10-09", "named for the day it was expected");
+  assert.equal(late.since, "2026-08-28", "and honest about how long it has been");
+
+  // The wait is measured from the expected day, not from the run of silence,
+  // so a charge missing for months still waits out its own next date rather
+  // than firing the moment the clock ticks past it.
+  assert.equal(M.NT.LATE_AFTER_DAYS >= 2, true, "a weekend has to fit inside it");
 });
 
 await test("income that has not landed is the more urgent of the two", () => {

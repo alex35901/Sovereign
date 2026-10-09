@@ -50,6 +50,16 @@ export interface SyncPayload {
   accounts: RemoteAccount[];
   transactions: RemoteTransaction[];
   errors: string[];
+  /**
+   * Things the pull wants on the record that are not faults.
+   *
+   * A mortgage carries no transactions and never will, and saying so belongs
+   * on that account rather than in the column that decides whether the whole
+   * provider is failing. Kept apart from `errors` because that is the one
+   * thing a reader cannot tell from the sentence itself: both are prose, and
+   * only one of them means something is broken.
+   */
+  notes?: string[];
   fetchedAt: string;
 }
 

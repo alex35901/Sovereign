@@ -321,6 +321,17 @@ export function reviewTier(count: number): number | null {
  */
 export interface Overdue { id: string; merchant: string; amount: number; due: ISODate; since: ISODate }
 
+/**
+ * How long after the day it was expected before a charge is called missing.
+ *
+ * Nothing is late on the day it is due. A payroll run lands when it lands, a
+ * direct debit takes a working day to appear, and a provider takes another to
+ * report it, so saying "expected 9 October, nothing has arrived" on the 9th of
+ * October is the app reading its own calendar back rather than telling anybody
+ * anything. Three days is past a weekend.
+ */
+export const LATE_AFTER_DAYS = 3;
+
 const CADENCE_DAYS: Record<string, number> = {
   weekly: 7, biweekly: 14, semimonthly: 15, monthly: 30, quarterly: 91, semiannual: 182, yearly: 365,
 };
@@ -351,10 +362,13 @@ export function overdueRecurring(db: DB, now: ISODate = today()): Overdue[] {
     // the first absence would go on being the same notice somebody has already
     // read while the thing gets steadily worse.
     const periods = Math.floor(gap / span);
-    out.push({
-      id: r.id, merchant: r.merchant, amount: r.amount,
-      due: addDays(seen, span * periods), since: seen,
-    });
+    const due = addDays(seen, span * periods);
+    // And nothing is missing until its own day has been and gone. The test
+    // above is about the run of silence, which can be months; this one is
+    // about the date actually named in the notice, which is the thing somebody
+    // reads it against.
+    if (daysBetween(due, now) < LATE_AFTER_DAYS) continue;
+    out.push({ id: r.id, merchant: r.merchant, amount: r.amount, due, since: seen });
   }
   return out;
 }
