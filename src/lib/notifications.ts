@@ -1,5 +1,5 @@
 import type { Account, DB, ID, ISODate } from "../types.js";
-import { budgetSummary, categoryKind, counts, merchantKey, mutedAccountIds, recurringList, spendRun } from "./select.js";
+import { budgetSummary, counts, merchantKey, mutedAccountIds, recurringList, spendRun } from "./select.js";
 import { integrations, healthOf, staleSince } from "./integrations.js";
 import { connectionOf } from "./connection.js";
 import type { Connection } from "./connection.js";
@@ -26,7 +26,7 @@ import { fmt0 } from "./money.js";
 
 export type NoticeKind =
   | "recurring" | "budget" | "connection" | "goal"
-  | "unusual" | "missing" | "review" | "integration" | "swing" | "price"
+  | "missing" | "review" | "integration" | "swing" | "price"
   // The two the household sets for itself. See settings.alerts.
   | "nearing" | "balance";
 
@@ -308,53 +308,6 @@ export function reviewTier(count: number): number | null {
   return hit;
 }
 
-/**
- * How far past its own usual a charge has to be before it is worth a word.
- *
- * Three times, and at least fifty dollars clear of it. The multiple alone
- * would flag a coffee that cost six pounds instead of two, which is not news
- * about anybody's money.
- */
-export const UNUSUAL_MULTIPLE = 3;
-export const UNUSUAL_FLOOR = 50_00;
-
-/** How recently a charge must have landed to still be worth remarking on. */
-export const UNUSUAL_DAYS = 30;
-
-/** Charges enough short of their merchant's usual to be worth a second look. */
-export interface Unusual { id: string; merchant: string; amount: number; typical: number; date: ISODate }
-
-export function unusualCharges(db: DB, now: ISODate = today()): Unusual[] {
-  const muted = mutedAccountIds(db);
-  const byMerchant = new Map<string, { name: string; amounts: number[] }>();
-  for (const t of db.transactions) {
-    if (!counts(t, muted) || t.amount >= 0) continue;
-    if (categoryKind(db, t.categoryId) === "transfer") continue;
-    const key = merchantKey(t.merchant);
-    if (!key) continue;
-    const at = byMerchant.get(key) ?? { name: t.merchant, amounts: [] };
-    at.amounts.push(Math.abs(t.amount));
-    byMerchant.set(key, at);
-  }
-
-  const out: Unusual[] = [];
-  for (const t of db.transactions) {
-    if (!counts(t, muted) || t.amount >= 0) continue;
-    if (categoryKind(db, t.categoryId) === "transfer") continue;
-    if (daysBetween(t.date, now) > UNUSUAL_DAYS || t.date > now) continue;
-    const at = byMerchant.get(merchantKey(t.merchant));
-    // Four charges is the fewest that can establish a usual: with three, one
-    // outlier is a third of the evidence for what normal looks like.
-    if (!at || at.amounts.length < 4) continue;
-    const sorted = [...at.amounts].sort((a, b) => a - b);
-    const typical = sorted[Math.floor(sorted.length / 2)]!;
-    const amount = Math.abs(t.amount);
-    if (typical <= 0) continue;
-    if (amount < typical * UNUSUAL_MULTIPLE || amount - typical < UNUSUAL_FLOOR) continue;
-    out.push({ id: t.id, merchant: t.merchant, amount, typical, date: t.date });
-  }
-  return out;
-}
 
 /**
  * A recurring charge that has not turned up.
@@ -789,19 +742,6 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
     });
   }
 
-  // ── a charge well past what that merchant usually costs ──
-  for (const u of unusualCharges(db, now)) {
-    out.push({
-      id: `unusual:${u.id}`,
-      kind: "unusual",
-      title: `${u.merchant} charged ${fmt0(u.amount)}`,
-      body: `Usually about ${fmt0(u.typical)}. Worth a look if you were not expecting it.`,
-      at: u.date,
-      when: sinceLabel(`${u.date}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`)),
-      to: "/transactions",
-      tone: "warn",
-    });
-  }
 
   // ── something that should have arrived and has not ──
   for (const o of overdueRecurring(db, now)) {

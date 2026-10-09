@@ -636,7 +636,7 @@ export const TOOLS: ToolSpec[] = [
     name: "notices",
     description:
       "What the app would tell the user if they had not been looking: a balance that jumped in a "
-      + "sync, a category past its plan, a bill that has not arrived, an unusual charge, a "
+      + "sync, a category past its plan, a bill that has not arrived, a "
       + "subscription that went up, a bank that stopped answering. Good for 'anything I should know'.",
     input_schema: { type: "object", properties: {}, additionalProperties: false },
     run: (db) => notices(db).map((n) => ({

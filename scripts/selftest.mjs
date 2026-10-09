@@ -9489,33 +9489,6 @@ const withTxns = (txns, cats) => {
   };
 };
 
-await test("a charge well past a merchant's usual is worth a word", () => {
-  const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-08-0${d}`, amount: -20_00 }));
-  const db = withTxns([...usual, { date: "2026-09-05", amount: -400_00 }]);
-  const [odd] = M.NT.unusualCharges(db, "2026-09-07");
-  assert.ok(odd, "four charges is enough to know what usual looks like");
-  assert.equal(odd.amount, 400_00);
-  assert.equal(odd.typical, 20_00);
-
-  // Three charges in total is not enough: one of them is the outlier, which
-  // leaves two to say what usual looks like.
-  const thin = withTxns([...usual.slice(0, 2), { date: "2026-09-05", amount: -400_00 }]);
-  assert.deepEqual(M.NT.unusualCharges(thin, "2026-09-07"), []);
-});
-
-await test("a coffee that cost triple is not news about anybody's money", () => {
-  // The multiple alone would flag it; the floor is what stops that.
-  const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-08-0${d}`, amount: -2_00 }));
-  const db = withTxns([...usual, { date: "2026-09-05", amount: -8_00 }]);
-  assert.deepEqual(M.NT.unusualCharges(db, "2026-09-07"), []);
-});
-
-await test("an old outlier is not news either", () => {
-  const usual = [1, 2, 3, 4].map((d) => ({ date: `2026-01-0${d}`, amount: -20_00 }));
-  const db = withTxns([...usual, { date: "2026-02-05", amount: -400_00 }]);
-  assert.deepEqual(M.NT.unusualCharges(db, "2026-09-07"), [], "seven months ago is not a surprise");
-});
-
 /* ── measuring a portfolio against the market ──────────────────────────── */
 
 const hist = (pairs, at = "2026-09-10T12:00:00.000Z") => ({
