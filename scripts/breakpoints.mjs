@@ -2873,7 +2873,7 @@ try {
         // run: a stall while the strip was still is not what misreads it.
         if (Math.abs(moved) === worst) gap = Math.round(trace[i][1] - trace[i - 1][1]);
       }
-      return { months: key() - from, back, worst, gap };
+      return { months: key() - from, back, worst, gap, width: w };
     });
     // ── a tap is not a drag, and must not rebuild the row under the finger ──
     //
@@ -2923,9 +2923,26 @@ try {
 
     check("two flicks in a row turn two months, neither of them swallowed",
       rapid.months === 2, `${rapid.months} months`);
+    /*
+     * Two claims, and only the first is about the bug.
+     *
+     * Backwards at all is the snap this exists for: a flick caught mid-flight
+     * used to reset the strip to where the last one started. That stays at two
+     * pixels, which is rounding.
+     *
+     * The second is a guard against the strip teleporting instead of
+     * travelling, and it used to be a flat 130px. That is a velocity in
+     * disguise, and the velocity here is whatever two synthetic flicks happen
+     * to compound to: under load they land closer together, the strip moves
+     * faster, and a frame covers more ground without anything being wrong. It
+     * failed twice in full runs and never once alone. Measured against the
+     * panel instead, which is what a teleport would actually cross, it says
+     * what it means and stops reporting the machine's load as a defect.
+     */
+    const hop = Math.round(rapid.width * 0.5);
     check("and catching one still flying picks it up rather than snapping it back",
-      rapid.back <= 2 && rapid.worst <= 130,
-      `${rapid.back}px backwards, ${rapid.worst}px at once, over ${rapid.gap}ms `
+      rapid.back <= 2 && rapid.worst <= hop,
+      `${rapid.back}px backwards, ${rapid.worst}px at once of a ${rapid.width}px panel, over ${rapid.gap}ms `
       + `(a gap far past 16ms is the sampler missing frames, not the strip jumping)`);
 
     // A scroll must not drag the strip sideways at all, not merely fail to
@@ -4774,10 +4791,14 @@ try {
       check("which is the merchant drill-down, not a new screen",
         where.startsWith("/merchants/") && decodeURIComponent(where.slice(11)) === first.rows[0].name,
         `${where} for ${first.rows[0].name}`);
-      check("and the drill-down carries its way back",
-        (await mer.evaluate(() => document.querySelector(".topbar-back")?.getAttribute("href") ?? "")) === "/transactions");
-      await mer.goBack();
-      await mer.waitForTimeout(600);
+      // Back where it was opened from, which here is the merchants list. It
+      // used to be a link to Transactions wherever you had come from.
+      check("and the drill-down carries a way back",
+        await mer.locator(".topbar-back").count() === 1);
+      await mer.locator(".topbar-back").first().evaluate((el) => el.click());
+      await mer.waitForTimeout(700);
+      check("which lands on the list it was opened from",
+        new URL(mer.url()).pathname === "/merchants", new URL(mer.url()).pathname);
     }
 
     // Searching narrows it without changing what the rows mean.
@@ -10734,6 +10755,73 @@ try {
       }), "a full bar is still drawn against a ceiling it does not have");
     await bp.close();
     await bo.close();
+  }
+
+  if (want("backtrack")) {
+    // ── the way out of a drill-down lands where you came from ──
+    //
+    // A merchant can be reached from Recurring, Transactions, the Dashboard
+    // and the Cards page. The arrow used to go to Transactions from all four,
+    // so coming from Recurring meant losing the page you were working through
+    // and its scroll position with it.
+    const bt = await browser.newContext({ viewport: { width: 1280, height: 1200 } });
+    const bp = await bt.newPage();
+    await bp.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await bp.waitForTimeout(1600);
+
+    const drill = async (from, selector) => {
+      await bp.goto(`${BASE}${from}`, { waitUntil: "networkidle" });
+      await bp.waitForTimeout(900);
+      const link = bp.locator(selector).first();
+      if (!await link.count()) return null;
+      // Pressed through the DOM: the bar at the top is sticky and sits over a
+      // row that has scrolled under it. Whether a link can be hit with a
+      // finger is a question other sections ask; this one is about where the
+      // arrow lands.
+      await link.evaluate((el) => el.click());
+      await bp.waitForTimeout(800);
+      const landed = new URL(bp.url()).pathname;
+      await bp.locator(".topbar-back").first().evaluate((el) => el.click());
+      await bp.waitForTimeout(800);
+      return { landed, back: new URL(bp.url()).pathname };
+    };
+
+    const viaRecurring = await drill("/recurring", 'a[href^="/merchants/"]');
+    check("a merchant opened from Recurring goes back to Recurring",
+      viaRecurring !== null && viaRecurring.back === "/recurring",
+      viaRecurring ? `landed on ${viaRecurring.landed}, back to ${viaRecurring.back}` : "no merchant link on Recurring");
+
+    const viaTransactions = await drill("/transactions", 'a[href^="/merchants/"]');
+    check("and one opened from Transactions goes back to Transactions",
+      viaTransactions !== null && viaTransactions.back === "/transactions",
+      viaTransactions ? `back to ${viaTransactions.back}` : "no merchant link on Transactions");
+
+    const viaBudget = await drill("/budget", 'a[href^="/categories/"]');
+    check("a category opened from the Budget goes back to the Budget",
+      viaBudget !== null && viaBudget.back === "/budget",
+      viaBudget ? `back to ${viaBudget.back}` : "no category link on Budget");
+
+    // The one case the old fixed destination was right about: a page opened
+    // from outside has nothing behind it, so the arrow has to name a place.
+    await bp.goto(`${BASE}/merchants`, { waitUntil: "networkidle" });
+    await bp.waitForTimeout(900);
+    const href = await bp.evaluate(() => {
+      const a = document.querySelector('a[href^="/merchants/"]');
+      return a ? a.getAttribute("href") : null;
+    });
+    const cold = await bt.newPage();
+    await cold.goto(`${BASE}${href ?? "/merchants/nobody"}`, { waitUntil: "networkidle" });
+    await cold.waitForTimeout(1400);
+    const named = await cold.locator(".topbar-back").first().getAttribute("aria-label").catch(() => null);
+    await cold.locator(".topbar-back").first().evaluate((el) => el.click());
+    await cold.waitForTimeout(800);
+    check("and a page opened cold still offers somewhere to go",
+      new URL(cold.url()).pathname === "/transactions" && named === "Transactions",
+      `labelled ${named}, landed on ${new URL(cold.url()).pathname}`);
+    await cold.close();
+
+    await bp.close();
+    await bt.close();
   }
 
   if (want("refused")) {

@@ -1,7 +1,7 @@
 import { ArrowLeft, Bell, RefreshCw } from "lucide-react";
 import { useDeferredValue, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
 import { Btn, Popover, cx } from "../components/ui";
 import { SaveState } from "../components/SaveState";
@@ -51,17 +51,7 @@ export function TopBar({ title, back, actions, primary }: {
   return (
     <header className="topbar">
       <div className="row topbar-own" style={{ gap: 6 }}>
-        {/* A fixed destination rather than history: you can reach a category
-            from four different screens, and an arrow that lands somewhere
-            different each time is not somewhere you can aim. */}
-        {back ? (
-          <Link
-            to={back.to} className="btn btn-ghost btn-icon topbar-back"
-            title={back.label} aria-label={back.label}
-          >
-            <ArrowLeft size={17} />
-          </Link>
-        ) : null}
+        {back ? <Back back={back} /> : null}
         {actions}
       </div>
       {typeof title === "string"
@@ -73,6 +63,53 @@ export function TopBar({ title, back, actions, primary }: {
         {primary}
       </div>
     </header>
+  );
+}
+
+/**
+ * The way out of a drill-down.
+ *
+ * Back where you came from, which is not what this used to do. It went to one
+ * declared destination on the grounds that a merchant can be reached from four
+ * screens and an arrow landing somewhere different each time is not somewhere
+ * you can aim. That reasoning holds for a button whose label names a place.
+ * What it missed is that nobody reads this arrow as "go to Transactions". They
+ * read it as "go back", the same as the arrow on the phone beside it, and an
+ * arrow that leaves you somewhere you have never been is worse than one that
+ * lands somewhere you did not memorise: you reach a merchant from Recurring
+ * and are put on Transactions, with the page you were working through gone and
+ * its scroll position with it.
+ *
+ * So history when there is history, and the declared destination when there is
+ * not. React Router keys the first entry of a session "default", which is what
+ * a deep link, a refresh, or a page opened from outside all look like: nothing
+ * behind them to go back to, and the one case the old rule was right about.
+ *
+ * The detail screens deliberately keep their own state out of the URL, so a
+ * step back is a step out of the screen rather than an undo of the last thing
+ * pressed on it.
+ */
+function Back({ back }: { back: { to: string; label: string } }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const came = location.key !== "default";
+
+  // Named rather than "Back" when it is a destination, because then it is one.
+  return came ? (
+    <button
+      type="button" onClick={() => navigate(-1)}
+      className="btn btn-ghost btn-icon topbar-back"
+      title="Back" aria-label="Back"
+    >
+      <ArrowLeft size={17} />
+    </button>
+  ) : (
+    <Link
+      to={back.to} className="btn btn-ghost btn-icon topbar-back"
+      title={back.label} aria-label={back.label}
+    >
+      <ArrowLeft size={17} />
+    </Link>
   );
 }
 
