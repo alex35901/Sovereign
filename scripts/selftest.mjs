@@ -8043,6 +8043,108 @@ await test("a queued overnight pull lands only when it names a live connection",
   assert.equal(after.db.transactions[0].importKey, "pl:pt1");
 });
 
+await test("a card whose login expired overnight says so, rather than going quiet", async () => {
+  // The whole of the failure this fixes. On a sealed document the scheduled
+  // job cannot write anything down, so a Plaid item that needs a new login
+  // used to fail into the job's HTTP response and nowhere else: the card
+  // simply stopped bringing transactions, and the app, which raises a notice
+  // the moment a connection reports trouble, was never told there was any.
+  const at = await M.C.newKeypair();
+  const row = async (body, id) => ({ id, createdAt: "2026-09-02T09:00:00.000Z", ...await M.C.sealTo(at.pub, JSON.stringify(body)) });
+  const base = M.emptyDB();
+  const held = {
+    ...base,
+    accounts: [{
+      id: "a1", name: "Prime Visa", institution: "Chase", type: "credit", balance: -45_00,
+      includeInNetWorth: true, hidden: false, order: 0, history: [],
+      syncSource: "plaid", syncId: "pa1", lastSyncedAt: "2026-08-20T09:00:00.000Z",
+    }],
+    settings: {
+      ...base.settings,
+      plaidItems: [{
+        accessToken: "tok-1", itemId: "item-1", institution: "Chase", kind: "bank",
+        addedAt: "2026-01-01T00:00:00.000Z", lastSyncAt: "2026-08-20T09:00:00.000Z",
+      }],
+    },
+  };
+
+  const failure = {
+    accounts: [], transactions: [],
+    errors: ["Chase: This connection needs re-authenticating at the bank. Reconnect it below."],
+    fetchedAt: "2026-09-02T09:00:00.000Z", source: "plaid", itemId: "item-1",
+  };
+
+  const told = await M.applyQueue(held, [await row(failure, 1)], at.priv);
+  assert.equal(told.dropped, 0, "a pull that names a live connection is not thrown away for bringing no accounts");
+  assert.equal(told.noted, 1, "it is counted as something that happened");
+  const item = told.db.settings.plaidItems[0];
+  assert.equal(item.lastError.message, failure.errors[0], "the reason is kept on the connection it belongs to");
+  assert.equal(item.lastError.at, "2026-09-02T09:00:00.000Z", "dated by the pull, not by whenever a browser opened it");
+
+  // Which is the whole point: this is what the app reads to decide a
+  // connection needs attention, and what raises the notice.
+  const conn = M.connectionOf(told.db.accounts[0], told.db, Date.parse("2026-09-03T09:00:00.000Z"));
+  assert.equal(conn.state, "attention", "the account's connection reports trouble");
+  assert.match(conn.detail, /re-authenticating/);
+  const notices = M.NT.notices(told.db, "2026-09-03");
+  assert.ok(notices.some((n) => n.kind === "connection" && /Chase/.test(n.title)), "and the household is told");
+
+  // A failure must not look like a sync. Everything that warns about an
+  // account going quiet is built on when it last heard anything, so a pull
+  // that brought nothing must leave both clocks exactly where they were.
+  assert.equal(told.db.accounts[0].lastSyncedAt, "2026-08-20T09:00:00.000Z", "the account was not stamped as synced");
+  assert.equal(told.db.settings.lastSyncAt, held.settings.lastSyncAt, "nor the document's own window");
+  assert.equal(told.transactionsAdded, 0);
+
+  // And the next pull that works puts it right without anybody pressing
+  // anything, the same as a sync in the browser does.
+  const working = {
+    accounts: [{
+      syncId: "pa1", name: "Prime Visa", institution: "Chase", balance: -50_00,
+      currency: "USD", type: "credit", balanceDate: "2026-09-03", itemId: "item-1",
+    }],
+    transactions: [], errors: [], fetchedAt: "2026-09-03T09:00:00.000Z", source: "plaid",
+  };
+  const healed = await M.applyQueue(told.db, [await row(working, 2)], at.priv);
+  assert.equal(healed.db.settings.plaidItems[0].lastError, undefined, "a pull that worked clears the last one's failure");
+
+  // But an older pull cannot rub out something newer. The queue holds last
+  // night's work and is drained in the morning, by which time a sync in the
+  // browser may already have found the same trouble.
+  const fresher = {
+    ...told.db,
+    settings: {
+      ...told.db.settings,
+      plaidItems: told.db.settings.plaidItems.map((i) =>
+        ({ ...i, lastError: { message: "Chase: said no this morning", at: "2026-09-04T08:00:00.000Z" } })),
+    },
+  };
+  const older = await M.applyQueue(fresher, [await row(working, 3)], at.priv);
+  assert.equal(older.db.settings.plaidItems[0].lastError.at, "2026-09-04T08:00:00.000Z",
+    "last night's success must not erase this morning's failure");
+
+  // A pull that brought figures is a working connection, whatever else it
+  // remarked on. Those remarks go on the accounts they name, which is the
+  // merge's job; calling the login broken over one would put a red line and a
+  // Reconnect button on a bank that is answering perfectly well. The browser's
+  // own sync draws the line in exactly this place.
+  const grumbled = await M.applyQueue(told.db, [await row({
+    ...working,
+    errors: ["Chase: this account never carries transactions."],
+    fetchedAt: "2026-09-05T09:00:00.000Z",
+  }, 5)], at.priv);
+  assert.equal(grumbled.db.settings.plaidItems[0].lastError, undefined,
+    "a pull that worked is not a failed connection, whatever it also said");
+  assert.equal(grumbled.noted, 0);
+
+  // A connection the document no longer holds is still dropped, failure or
+  // not: the gate that stops a disconnected bank coming back is not softened
+  // by letting an error through it.
+  const elsewhere = await M.applyQueue(held, [await row({ ...failure, itemId: "item-9" }, 4)], at.priv);
+  assert.equal(elsewhere.dropped, 1, "a failure about a connection this document does not hold is not written down");
+  assert.equal(elsewhere.db.settings.plaidItems[0].lastError, undefined);
+});
+
 await test("a bridge pull from the overnight job lands, the same as a Plaid one", async () => {
   // The whole reason the scheduled job existed for this household and did
   // nothing: it could only pull Plaid, the queue could only describe a Plaid

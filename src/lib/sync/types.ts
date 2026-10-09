@@ -80,7 +80,19 @@ export interface SyncPayload {
  * that names no source at all predates this and is dropped rather than
  * guessed at.
  */
-export type QueuedPayload = SyncPayload & { source?: "plaid" | "simplefin" };
+export type QueuedPayload = SyncPayload & {
+  source?: "plaid" | "simplefin";
+  /**
+   * The connection this payload is about, when it carries no accounts.
+   *
+   * A pull that failed outright has nothing to be matched by: the browser
+   * decides whether to merge a payload by looking at the connections its
+   * accounts name, and a pull that brought none names nobody. Without this a
+   * card whose login expired goes quiet, the reason is thrown away unopened,
+   * and the only sign left is a balance that stops moving.
+   */
+  itemId?: string;
+};
 
 /** A source that reports no account type leaves the name to infer one from. */
 export function guessAccountType(name: string, balance: number): AccountType {

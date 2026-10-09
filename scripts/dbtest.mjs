@@ -1811,6 +1811,71 @@ await test("the right passphrase gets the diagnosis it exists to give", async ()
   assert.equal(text.includes("cron-secret-value"), false, "nor any other secret's value");
 });
 
+await test("an expired card login is queued for the browser, not lost in the job's reply", async () => {
+  // The failure this exists for. On a sealed document the job cannot write
+  // anything down, so a Plaid item whose login has expired used to fail into
+  // the HTTP response and nowhere else: the card stopped bringing anything,
+  // and the app, which raises a notice the moment a connection reports
+  // trouble, was never told there was any to report.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  process.env.PLAID_CLIENT_ID = "cid";
+  process.env.PLAID_SECRET = "sec";
+  process.env.PLAID_ACCESS_TOKENS = "access-sandbox-1";
+  delete process.env.SIMPLEFIN_ACCESS_URL;
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  const at = await unlockCheap(null);
+  const env = await C.encryptDocument(M.emptyDB(), at);
+  await asServer({ doc: env, baseVersion: 0 }, "PUT");
+
+  const r = await withFetch(async (url) => {
+    const path = new URL(String(url)).pathname;
+    // /item/get still answers for a connection whose login has expired, which
+    // is how the job learns whose failure this is.
+    if (path === "/item/get") {
+      return new Response(JSON.stringify({ item: { institution_id: "ins_1", item_id: "item-1" } }));
+    }
+    if (path === "/institutions/get_by_id") {
+      return new Response(JSON.stringify({ institution: { name: "Third National" } }));
+    }
+    if (path === "/accounts/get") {
+      return new Response(JSON.stringify({
+        error_code: "ITEM_LOGIN_REQUIRED",
+        error_message: "the login details have expired",
+      }), { status: 400 });
+    }
+    return new Response(JSON.stringify({ error_message: "unexpected" }), { status: 400 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.44" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(r.status, 200);
+  assert.equal(body.encrypted, true);
+  assert.equal(body.queued.length, 1, "the failure is queued, the same as a pull would be");
+  assert.ok(body.errors.some((e) => /re-authenticating/.test(e)), "and still reported in the reply");
+
+  // The document is untouched, as it must be: a merge over an envelope would
+  // destroy it.
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.deepEqual(after.doc, env);
+
+  const rows = await M.readQueue();
+  assert.equal(rows.length, 1);
+  const opened = JSON.parse(await C.openFrom(at.priv, rows[0]));
+  assert.equal(opened.source, "plaid");
+  assert.equal(opened.itemId, "item-1", "named, or the browser cannot tell whose failure it is and drops it");
+  assert.deepEqual(opened.accounts, [], "nothing was fetched, and nothing is claimed to have been");
+  assert.deepEqual(opened.transactions, []);
+  assert.equal(opened.errors.length, 1);
+  assert.match(opened.errors[0], /^Third National: /, "addressed to the bank, or it is shown against every account");
+  assert.match(opened.errors[0], /re-authenticating/);
+
+  delete process.env.PLAID_CLIENT_ID;
+  delete process.env.PLAID_SECRET;
+  delete process.env.PLAID_ACCESS_TOKENS;
+});
+
 for (const [state, name, msg] of results) console.log(`${state}  ${name}${msg ? ` — ${msg}` : ""}`);
 const failed = results.filter((r) => r[0] === "FAIL").length;
 console.log(`\n${results.length - failed}/${results.length} passed`);

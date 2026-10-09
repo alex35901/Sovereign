@@ -3,7 +3,7 @@ import type { DB } from "../../src/types.js";
 import { mergeSync, windowFor } from "../../src/lib/sync/merge.js";
 import { fetchItemRaw, identifyItem, plaidCreds } from "../_plaid.js";
 import { fetchAccounts } from "../_simplefin.js";
-import { toPayload } from "../../src/lib/sync/simplefin.js";
+import { SIMPLEFIN_ID, toPayload } from "../../src/lib/sync/simplefin.js";
 import type { QueuedPayload } from "../../src/lib/sync/types.js";
 import { toPlaidPayload } from "../../src/lib/sync/plaid.js";
 import type { SyncResponse } from "../../src/lib/sync/plaid.js";
@@ -143,17 +143,40 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       let skipped = 0;
       for (const accessToken of creds ? tokens : []) {
         if (Date.now() > deadline) { skipped += 1; continue; }
+        // Asked for before the pull, so a failure still knows whose it is.
+        // /item/get answers for a connection whose login has expired, which is
+        // the case this exists for: the item is broken, not gone.
+        let mark: Awaited<ReturnType<typeof identifyItem>> | null = null;
         try {
           // The kind is not knowable from a bare token, so holdings are always
           // asked for; an item without the investments product simply answers
           // with none.
-          const mark = await identifyItem(creds!, accessToken);
+          mark = await identifyItem(creds!, accessToken);
           await queue({
             ...await pullItem(creds!, { ...mark, accessToken, kind: "investment" }, since),
             source: "plaid",
           });
         } catch (err) {
-          errors.push(err instanceof Error ? err.message : "A Plaid pull failed.");
+          const said = err instanceof Error ? err.message : "A Plaid pull failed.";
+          // Named, because an error that names no bank is shown against every
+          // account in the document rather than the one it is about.
+          const named = mark && mark.institution !== "Connected account"
+            ? `${mark.institution}: ${said}`
+            : said;
+          // Queued like a pull, and for the same reason: this document is
+          // sealed, so the queue is the only way anything this job learns can
+          // reach the person it concerns. Returning it in the response tells
+          // Vercel's log and nobody else, and an expired card login would go
+          // on being quiet every night with nothing ever saying why.
+          if (mark?.itemId) {
+            await queue({
+              accounts: [], transactions: [], errors: [named],
+              fetchedAt: new Date().toISOString(),
+              source: "plaid", itemId: mark.itemId,
+            });
+          } else {
+            errors.push(named);
+          }
         }
       }
       if (skipped) errors.push(`${skipped} Plaid connection${skipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
@@ -172,8 +195,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         } else {
           try {
             const raw = await fetchAccounts(bridge, new Date(`${since}T00:00:00.000Z`), new Date());
-            if ("error" in raw) errors.push(raw.error);
-            else await queue({ ...toPayload(raw, new Date().toISOString()), source: "simplefin" });
+            // The bridge's refusal is queued rather than returned, exactly as
+            // a Plaid item's is: one connection, one id, and the browser is
+            // the only thing that can write it down.
+            if ("error" in raw) {
+              await queue({
+                accounts: [], transactions: [], errors: [raw.error],
+                fetchedAt: new Date().toISOString(),
+                source: "simplefin", itemId: SIMPLEFIN_ID,
+              });
+            } else await queue({ ...toPayload(raw, new Date().toISOString()), source: "simplefin" });
           } catch (err) {
             errors.push(err instanceof Error ? err.message : "A bridge pull failed.");
           }

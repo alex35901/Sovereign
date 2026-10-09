@@ -42,12 +42,14 @@ export interface Drained {
    * nothing back is still visible as something that happened.
    */
   dropped: number;
+  /** Rows that carried a failure rather than figures, and were written down. */
+  noted: number;
 }
 
 export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): Promise<Drained> {
   const out: Drained = {
     db, ids: [], transactionsAdded: 0, accountsUpdated: 0, accountsAdded: 0, holdingsUpdated: 0,
-    unreadable: 0, dropped: 0,
+    unreadable: 0, dropped: 0, noted: 0,
   };
 
   /**
@@ -99,12 +101,42 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
     // for, which includes one whose item could not be identified at all, so it
     // is thrown away rather than merged on the chance that it is wanted.
     const source = payload.source;
-    const from = payload.accounts.map((a) => a.itemId).filter(Boolean) as string[];
+    // A pull that failed outright brought no accounts to be named by, so it
+    // says which connection it is about instead.
+    const from = [
+      ...payload.accounts.map((a) => a.itemId).filter(Boolean) as string[],
+      ...(payload.itemId ? [payload.itemId] : []),
+    ];
     if ((source !== "plaid" && source !== "simplefin") || !from.some((id) => live.has(id))) {
       out.ids.push(row.id);
       out.dropped += 1;
       continue;
     }
+
+    // A pull that brought nothing at all and said why is a failed connection.
+    // One that brought figures is a working connection, whatever it also
+    // remarked on: those remarks belong on the accounts they name, which is
+    // the merge's job, not a reason to call the login broken. The same rule
+    // the browser's own sync follows, because a connection cannot be healthy
+    // on one path and failing on the other.
+    const failed = !payload.accounts.length && !payload.transactions.length && payload.errors.length > 0;
+
+    // Recorded on the connection itself, so a bank whose name no account
+    // matched still shows red in Settings and still raises the notice that
+    // says to reconnect it.
+    out.db = recordTrouble(out.db, source, from, failed ? payload.errors[0] : undefined, payload.fetchedAt);
+
+    // Merging a failed pull would stamp its accounts as freshly synced and
+    // move the document's own sync clock forward, which is the one thing that
+    // must not happen: the staleness every other warning is built on would be
+    // reset by the failure it is supposed to report, and the next pull would
+    // ask for a window that had already been declared covered.
+    if (!payload.accounts.length && !payload.transactions.length) {
+      out.ids.push(row.id);
+      out.noted += failed ? 1 : 0;
+      continue;
+    }
+
     const merged = mergeSync(out.db, payload, source);
     out.db = merged.db;
     out.ids.push(row.id);
@@ -114,6 +146,52 @@ export async function applyQueue(db: DB, rows: QueuedPull[], priv: CryptoKey): P
     out.holdingsUpdated += merged.holdingsUpdated;
   }
   return out;
+}
+
+/**
+ * The connection's own last word, kept beside it.
+ *
+ * `mergeSync` puts a message naming a bank onto that bank's accounts, which is
+ * where somebody looks first. This is the other half: the connection records
+ * that it failed and when, so a message naming no bank at all still turns the
+ * row red in Settings and still raises the notice that says to reconnect.
+ *
+ * Only a payload newer than what is already recorded may change it. The queue
+ * is drained oldest first and holds last night's work, so without that rule a
+ * stale success would rub out an error the browser recorded this morning.
+ */
+function recordTrouble(
+  db: DB,
+  source: "plaid" | "simplefin",
+  ids: readonly string[],
+  said: string | undefined,
+  at: string,
+): DB {
+  const fresh = (held?: { at: string }): boolean => !held || held.at < at;
+
+  if (source === "simplefin") {
+    const bridge = db.settings.simplefin;
+    if (!bridge || !fresh(bridge.lastError)) return db;
+    if (!said && !bridge.lastError) return db;
+    return {
+      ...db,
+      settings: {
+        ...db.settings,
+        simplefin: { ...bridge, lastError: said ? { message: said, at } : undefined },
+      },
+    };
+  }
+
+  const items = db.settings.plaidItems ?? [];
+  const named = new Set(ids);
+  let touched = false;
+  const next = items.map((i) => {
+    if (!named.has(i.itemId) || !fresh(i.lastError)) return i;
+    if (!said && !i.lastError) return i;
+    touched = true;
+    return { ...i, lastError: said ? { message: said, at } : undefined };
+  });
+  return touched ? { ...db, settings: { ...db.settings, plaidItems: next } } : db;
 }
 
 /** "3 new transactions from the overnight sync." — or nothing worth saying. */
