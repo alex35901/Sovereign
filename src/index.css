@@ -1684,6 +1684,21 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    because it is the one thing in the dialog that is not a field to fill in.
    Wraps to a column on a narrow phone, where the button beside the sentence
    would leave the sentence about four words wide. */
+/* A paragraph that is neither a field nor a fault: something the app wants
+   read before the form below it is trusted. Accented down one edge and set in
+   the ordinary muted ink, because a long sentence in the accent colour reads
+   as an alarm, and the one place this is used most is Hopper explaining what
+   it is not sure of, which is a careful answer rather than a failure. */
+.aside-note {
+  padding: 9px 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .rec-aside {
   display: flex;
   align-items: center;

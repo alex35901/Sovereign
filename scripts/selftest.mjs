@@ -72,7 +72,7 @@ await build({
       export { recurringList, recurringByMerchant, schedulesByMerchant, paidByMerchant } from "./src/lib/select.ts";
       export { debtsFrom, debtsLeftOut } from "./src/lib/payoff.ts";
       export * as CD from "./src/lib/cards.ts";
-      export { readDraft, toRules } from "./src/lib/hopper/rewards.ts";
+      export { readDraft, toRules, clip } from "./src/lib/hopper/rewards.ts";
       export { default as propertyHandler } from "./api/property.ts";
       export { default as simplefinHandler } from "./api/simplefin.ts";
       export * as SFS from "./api/_simplefin.ts";
@@ -17980,8 +17980,40 @@ await test("a period only means something with a cap beside it", () => {
 });
 
 await test("a note is kept short and a label shorter", () => {
-  assert.equal(draft({ note: "x".repeat(900) }).note.length, 300);
+  // Bounded, because it is prose arriving from outside and it lands in a small
+  // space above a form. One long word has nowhere to cut, so it is cut where
+  // the allowance runs out and marked as cut.
+  const long = draft({ note: "x".repeat(900) }).note;
+  assert.ok(long.length <= 701, `${long.length} characters`);
+  assert.ok(long.endsWith("\u2026"), "and says it was cut");
   assert.equal(draft({ rules: [{ rate: 2, categories: ["Gas"], label: "y".repeat(500) }] }).rules[0].label.length, 80);
+});
+
+await test("a note that runs long is cut at a word, not through one", () => {
+  // What the household saw: a careful answer about which quarters of a
+  // rotating calendar are published, ending "...so I have listed no quarterly
+  // rules rather than guess; the iss". A sentence that stops dead reads as the
+  // thing having crashed, whatever it says.
+  const words = `${"The issuer publishes these a quarter at a time. ".repeat(40)}done`;
+  const out = M.clip(words, 300);
+  assert.ok(out.length <= 301, `${out.length} characters`);
+  assert.ok(out.endsWith("\u2026"), "it says it was cut");
+  assert.ok(!/\s\u2026$/.test(out), "and not left hanging on a space");
+  // The giveaway: the last word before the ellipsis is a whole one.
+  const lastWord = out.slice(0, -1).trim().split(" ").pop();
+  assert.ok(["The", "issuer", "publishes", "these", "a", "quarter", "at", "time"].includes(lastWord),
+    `cut through "${lastWord}"`);
+
+  // Short enough to fit is left exactly alone, ellipsis and all.
+  assert.equal(M.clip("All of it fits.", 300), "All of it fits.");
+  assert.equal(M.clip("  spaces   collapse\n", 300), "spaces collapse");
+
+  // And the real shape of the complaint: this note used to be cut at 300.
+  const real = "Discover it Cash Back pays 1% on everything and 5% in rotating quarterly categories "
+    + "on up to $1,500 of spending per quarter after activation, but I do not reliably know "
+    + "Discover's 2026 calendar (including the current Q4 2026 categories), so I have listed no "
+    + "quarterly rules rather than guess; the issuer publishes each quarter closer to the date.";
+  assert.equal(draft({ note: real }).note, real, "a note this long now survives whole");
 });
 
 await test("a draft becomes rules this document can hold", () => {

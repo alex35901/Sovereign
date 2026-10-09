@@ -42,7 +42,7 @@ outside the object.
       "label": string      // a short condition, e.g. "booked through the issuer"
     }
   ],
-  "note": string           // one short sentence on anything you are unsure of
+  "note": string           // a sentence or two on anything you are unsure of
 }
 
 Rules:
@@ -67,6 +67,8 @@ Rules:
   this form can be. Give the quarters you know, leave out the ones you do not,
   and say in the note which you have given and that the issuer publishes the
   rest later. Never fill a year out to look complete.
+- Keep the note to two or three sentences. It is read in a small space above
+  the form, and the reader is about to check every line of the form anyway.
 - Your answer is a draft a person is about to check against their own card. Say
   in the note what you are least sure of.`;
 
@@ -88,6 +90,35 @@ export interface RewardsDraft {
   annualFee: number;
   rules: DraftRule[];
   note: string;
+}
+
+/**
+ * How much of the model's note to keep.
+ *
+ * It was three hundred, which was right when the note was one sentence about
+ * one rate. Asking it to say which quarters of a rotating calendar it knows
+ * and which the issuer has not published made the note longer than that, and
+ * a cut at three hundred characters landed mid-word: the reader was shown a
+ * sentence that stopped dead, which reads as the thing having crashed rather
+ * than as the careful answer it is.
+ */
+const MAX_NOTE = 700;
+
+/**
+ * Cut at a word, with something to show for it.
+ *
+ * A note that ends mid-word reads as a failure whatever it says. One that ends
+ * on a word and an ellipsis reads as a note that went on a bit, which is what
+ * it is.
+ */
+export function clip(text: string, max: number = MAX_NOTE): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  // A single word longer than the whole allowance has no space to cut at, and
+  // is not prose anyway.
+  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:.]+$/, "")}\u2026`;
 }
 
 /** Rates outside this are a misread, not a card. */
@@ -224,7 +255,7 @@ export function readDraft(text: string, known: readonly string[], now: string = 
     pointCents: num(raw.pointCents, 1, 10),
     annualFee: num(raw.annualFee, 0, MAX_FEE),
     rules,
-    note: typeof raw.note === "string" ? raw.note.slice(0, 300) : "",
+    note: typeof raw.note === "string" ? clip(raw.note) : "",
   };
 }
 

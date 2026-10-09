@@ -787,7 +787,12 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
           <Sparkles size={13} /> {asking ? "Asking" : "Draft"}
         </Btn>
       </div>
-      {note ? <span className="tiny" style={{ color: "var(--accent)" }}>{note}</span> : null}
+      {/* Hopper saying what it is unsure of is the most important thing on
+          this form and the least like a fault. A whole paragraph in the accent
+          colour read as one, which on an answer that says "I have listed no
+          quarterly rules rather than guess" is precisely backwards: that is the
+          draft being careful. */}
+      {note ? <div className="tiny aside-note">{note}</div> : null}
       {failed ? <span className="tiny neg">{failed}</span> : null}
 
       {nameLocked ? null : (
