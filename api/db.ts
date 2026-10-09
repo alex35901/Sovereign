@@ -88,6 +88,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
         encryption: {
           documentSealed: meta ? meta.sealed : null,
           plaidTokensSet: (process.env.PLAID_ACCESS_TOKENS ?? "").trim().length > 0,
+          simplefinUrlSet: (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim().length > 0,
           cronSecretSet: (process.env.CRON_SECRET ?? "").trim().length > 0,
           queued: waiting.count,
           queuedOldest: waiting.oldest,

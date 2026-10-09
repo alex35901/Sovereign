@@ -590,6 +590,7 @@ export interface CloudDiagnosis {
   encryption?: {
     documentSealed: boolean | null;
     plaidTokensSet: boolean;
+    simplefinUrlSet: boolean;
     cronSecretSet: boolean;
     queued: number;
     queuedOldest: string | null;

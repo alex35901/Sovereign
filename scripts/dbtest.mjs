@@ -1279,6 +1279,10 @@ await test("the job says what is missing rather than failing silently", async ()
   process.env.SYNC_PASSPHRASE = "the-right-one";
   process.env.CRON_SECRET = "cron-secret-value";
   PLAID_ENV_OFF();
+  // Neither credential, which is what this is about. An earlier test leaves
+  // the bridge URL in the environment, and with it set the job has something
+  // to pull with and rightly says so instead.
+  delete process.env.SIMPLEFIN_ACCESS_URL;
   await wipe(); await clearAttempts();
 
   const at = await unlockCheap(null);
@@ -1287,7 +1291,59 @@ await test("the job says what is missing rather than failing silently", async ()
   const r = await invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.2" } });
   const body = JSON.parse(r.text);
   assert.equal(body.ran, false);
+  // Both, because either one is enough to work with and a household on one of
+  // them should not be sent hunting for the other's.
   assert.match(body.reason, /PLAID_ACCESS_TOKENS/, "it must name the variable to set");
+  assert.match(body.reason, /SIMPLEFIN_ACCESS_URL/, "and the bridge's, for a budget that syncs that way");
+});
+
+await test("a sealed document's bridge is pulled too, and queued like Plaid's", async () => {
+  // The failure this comes from. The scheduled job could only ever pull Plaid
+  // on an encrypted document: a household that had moved to the bridge had an
+  // overnight sync that reached nothing, night after night, while the app
+  // reported the setup as complete. The queue could not describe a bridge pull
+  // and the browser dropped one on sight, so all three had to move.
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  PLAID_ENV_OFF();
+  process.env.SIMPLEFIN_ACCESS_URL = "https://u:p@bridge.example/accounts";
+  delete process.env.TIINGO_API_KEY;
+  await wipe(); await clearAttempts();
+
+  const at = await unlockCheap(null);
+  const env = await C.encryptDocument(M.emptyDB(), at);
+  await asServer({ doc: env, baseVersion: 0 }, "PUT");
+  const versionBefore = JSON.parse((await asServer(undefined, "GET")).text).version;
+
+  const reached = [];
+  const r = await withFetch(async (url) => {
+    reached.push(String(url));
+    return new Response(BRIDGE, { status: 200 });
+  }, () => invokeWith(M.cronHandler2, { headers: { authorization: "Bearer cron-secret-value", "x-real-ip": "10.0.0.32" } }));
+
+  const body = JSON.parse(r.text);
+  assert.equal(r.status, 200);
+  assert.equal(body.encrypted, true, "the document is sealed and the job has to notice");
+  assert.ok(body.queued.length > 0, "the bridge pull has to reach the queue");
+  assert.ok(reached.some((u) => u.includes("bridge.example")), "the bridge has to actually be called");
+
+  // The envelope is untouched, exactly as for Plaid: a merge written over it
+  // would destroy the only copy.
+  const after = JSON.parse((await asServer(undefined, "GET")).text);
+  assert.equal(after.version, versionBefore, "the job must not have written the document");
+  assert.deepEqual(after.doc, env, "byte for byte the same envelope");
+
+  // And what it left is opaque, readable only with the household's key, and
+  // says which provider it came from so the browser knows how to merge it.
+  const rows = await M.readQueue();
+  assert.equal(rows.length, 1);
+  assert.equal(JSON.stringify(rows).includes("COSTCO"), false, "the queued pull must be opaque");
+  const pulled = JSON.parse(await C.openFrom(at.priv, rows[0]));
+  assert.equal(pulled.source, "simplefin", "the browser merges the two providers on different terms");
+  assert.equal(pulled.transactions.length, 1);
+  assert.equal(pulled.transactions[0].description, "COSTCO GAS #1234");
+  assert.equal(pulled.accounts[0].itemId, "simplefin", "and it has to name a connection the document holds");
+  delete process.env.SIMPLEFIN_ACCESS_URL;
 });
 
 await test("an installation that never encrypted still syncs the old way", async () => {

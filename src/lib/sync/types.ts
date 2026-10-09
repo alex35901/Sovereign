@@ -62,7 +62,15 @@ export interface SyncPayload {
  * queue can still be holding one sealed by an older job, and the only other
  * thing that ever wrote to it was a bridge whose pulls must never land.
  */
-export type QueuedPayload = SyncPayload & { source?: "plaid" };
+/**
+ * A pull the scheduled job left for a browser to open.
+ *
+ * The source travels with it because the browser has to decide whether to
+ * merge it, and the two providers are merged on different terms. A payload
+ * that names no source at all predates this and is dropped rather than
+ * guessed at.
+ */
+export type QueuedPayload = SyncPayload & { source?: "plaid" | "simplefin" };
 
 /** A source that reports no account type leaves the name to infer one from. */
 export function guessAccountType(name: string, balance: number): AccountType {

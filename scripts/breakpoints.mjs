@@ -10666,6 +10666,76 @@ try {
     await qs.close();
   }
 
+  if (want("bridge-overnight")) {
+    // ── what the scheduled job needs, for the provider actually in use ──
+    //
+    // The job cannot read an encrypted document, so it needs its own copy of
+    // whatever credential the budget syncs with. It asked for Plaid's and only
+    // Plaid's: a household that had moved to the bridge was told its setup was
+    // complete while the nightly pull had nothing it could reach.
+    // At phone width, where the table becomes cards and the two figures are
+    // printed as "1 of 1" in one breath. The wide layout puts them in separate
+    // columns, so only the narrow one can see the sentence that alarmed
+    // somebody paying monthly for the bridge.
+    const bo = await browser.newContext({ viewport: { width: 390, height: 1200 } });
+    const warmBo = await bo.newPage();
+    await warmBo.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await warmBo.waitForTimeout(1300);
+    await warmBo.close();
+    await bo.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        // A budget on the bridge and nothing else, which is the case that was
+        // being told to set a Plaid variable it has no use for.
+        db.settings.simplefin = {
+          accessUrl: "https://user:pass@bridge.example/simplefin",
+          lastSyncAt: new Date().toISOString(),
+        };
+        db.settings.plaidItems = [];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+    const bp = await bo.newPage();
+    await bp.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await bp.waitForTimeout(1400);
+
+    // The box offering SIMPLEFIN_ACCESS_URL to copy lives in the sealed-document
+    // panel, which needs a real envelope and a passphrase held in the browser;
+    // this harness has neither, so that panel is not reachable from here and is
+    // deliberately not asserted rather than asserted against a page that never
+    // renders it. What is checked below is on every settings page.
+    //
+    // The credential must never be printed where it was not asked for: it
+    // carries its own user and password in the URL.
+    const hidden = await bp.evaluate(() => !document.body.innerText.includes("bridge.example"));
+    check("a bridge credential is never printed on the settings page unasked",
+      hidden, "the access URL is on the page in the clear");
+
+    // ── and the bridge is not reported as an allowance already spent ──
+    //
+    // "1 of 1 bridge" with a full bar, on a connection somebody pays monthly
+    // to keep. How many banks a bridge carries is between the household and
+    // whoever runs it; this app does not know a ceiling and should not invent
+    // one.
+    const row = await bp.evaluate(() => {
+      const texts = [...document.querySelectorAll(".int-facts, tr")]
+        .map((e) => e.innerText.replace(/\n/g, " | "));
+      return texts.find((t) => /bridge/i.test(t)) ?? null;
+    });
+    check("the bridge is not reported as one of one",
+      row !== null && !/\b1 of 1\b/.test(row), row ?? "no bridge row found");
+    check("and draws no meter, because there is no allowance to be full of",
+      await bp.evaluate(() => {
+        const rows = [...document.querySelectorAll(".int-facts, tr")];
+        const here = rows.find((e) => /bridge/i.test(e.innerText));
+        return here ? here.querySelectorAll(".int-bar").length === 0 : false;
+      }), "a full bar is still drawn against a ceiling it does not have");
+    await bp.close();
+    await bo.close();
+  }
+
 } finally {
   await browser.close();
 }

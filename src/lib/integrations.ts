@@ -215,9 +215,13 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       credential: { kind: "claimed", held: "an access URL in your document", where: "a setup token from the bridge" },
       set: Boolean(s.simplefin),
       used: s.simplefin ? 1 : 0,
-      // One bridge, holding every bank behind it. There is no per-connection
-      // ceiling to count against, so the figure is whether it is connected.
-      ceiling: 1,
+      // One bridge, holding every bank behind it, and no ceiling this app can
+      // know: how many banks a bridge will carry is a matter between the
+      // household and whoever runs it, and some of them are paid for. So this
+      // row is not metered. It used to claim a ceiling of one, which drew a
+      // full bar and read as an allowance spent — on a bridge somebody pays
+      // monthly to keep, that is alarming and it was never true.
+      ceiling: 0,
       unit: "bridge",
       period: "ever",
       lastAt: s.simplefin?.lastSyncAt,

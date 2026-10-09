@@ -320,7 +320,13 @@ function Stacked({ row, busy, onRun }: { row: Integration; busy: boolean; onRun:
       <div className="int-facts">
         <span className="col" style={{ gap: 0 }}>
           <span className="small">
-            {row.set ? <><b>{row.used.toLocaleString()}</b> of {row.ceiling.toLocaleString()}</> : "-"}
+            {/* A row with no ceiling is not metered, and "1 of 0" is worse
+                than saying nothing about an allowance that does not exist. */}
+            {!row.set
+              ? "-"
+              : row.ceiling > 0
+                ? <><b>{row.used.toLocaleString()}</b> of {row.ceiling.toLocaleString()}</>
+                : <b>{row.used.toLocaleString()}</b>}
           </span>
           <span className="tiny faint">{row.unit} {PERIOD_LABEL[row.period]}{row.caveat ? ` · ${row.caveat}` : ""}</span>
           <Bar row={row} state={health.state} />

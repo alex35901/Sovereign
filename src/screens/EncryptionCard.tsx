@@ -43,6 +43,26 @@ function PlaidTokens() {
 }
 
 /**
+ * The same, for the bridge.
+ *
+ * One URL rather than a list: the bridge holds every bank behind it, so there
+ * is one credential however many banks are authorised at it. It carries its
+ * own user and password in the URL, which is why it is hidden until asked for.
+ */
+function SimplefinUrl() {
+  const db = useDB();
+  const url = db.settings.simplefin?.accessUrl;
+  if (!url) return null;
+  return (
+    <SecretBox
+      name="SIMPLEFIN_ACCESS_URL" value={url} said="Access URL copied."
+      note={`One URL for the whole bridge, whatever it has behind it. It carries its own credentials, so treat
+             it like a password. Re-claiming a setup token at the bridge changes it: paste it again.`}
+    />
+  );
+}
+
+/**
  * A credential from inside the document, shown so it can be copied into Vercel.
  *
  * The document is the only place these exist in readable form, which makes this
@@ -118,12 +138,14 @@ function Row({ ok, label, detail }: { ok: boolean; label: string; detail: string
 /**
  * Whether the setup is actually finished.
  *
- * Half of it cannot be seen from the browser: the scheduled job reads its
- * Plaid tokens from the Vercel environment, and getting those wrong shows up
- * only as an overnight pull that quietly never happens. The server reports
- * whether the variables are set — presence only, never a value.
+ * Half of it cannot be seen from the browser: the scheduled job reads its own
+ * copy of each provider's credential from the Vercel environment, and getting
+ * those wrong shows up only as an overnight pull that quietly never happens.
+ * The server reports whether the variables are set — presence only, never a
+ * value.
  */
 function Readiness({ unlocked }: { unlocked: boolean }) {
+  const db = useDB();
   const [seen, setSeen] = useState<CloudDiagnosis | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -136,6 +158,10 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
   };
 
   const e = seen?.encryption;
+  // Which providers this budget actually uses, so the checklist asks only
+  // about the credentials the overnight job would need for it.
+  const plaidHere = (db.settings.plaidItems ?? []).length > 0;
+  const bridgeHere = Boolean(db.settings.simplefin?.accessUrl);
   return (
     <div className="col" style={{ gap: 10 }}>
       <div className="row wrap" style={{ gap: 8 }}>
@@ -160,13 +186,27 @@ function Readiness({ unlocked }: { unlocked: boolean }) {
             label="The key on this browser"
             detail={unlocked ? "is held: it can read and save." : "is missing. Enter the encryption passphrase."}
           />
-          <Row
-            ok={e.plaidTokensSet}
-            label="PLAID_ACCESS_TOKENS in Vercel"
-            detail={e.plaidTokensSet
-              ? "is set: the 9am pull can reach Plaid too."
-              : "is not set. Plaid connections will not be pulled overnight until it is."}
-          />
+          {/* Only asked about where it is wanted. A budget that syncs through
+              the bridge alone has no Plaid to pull, and a row reporting a
+              missing variable it does not need reads as a fault. */}
+          {plaidHere ? (
+            <Row
+              ok={e.plaidTokensSet}
+              label="PLAID_ACCESS_TOKENS in Vercel"
+              detail={e.plaidTokensSet
+                ? "is set: the 9am pull can reach Plaid too."
+                : "is not set. Plaid connections will not be pulled overnight until it is."}
+            />
+          ) : null}
+          {bridgeHere ? (
+            <Row
+              ok={e.simplefinUrlSet}
+              label="SIMPLEFIN_ACCESS_URL in Vercel"
+              detail={e.simplefinUrlSet
+                ? "is set: the 9am pull can reach the bridge too."
+                : "is not set. The bridge will not be pulled overnight until it is."}
+            />
+          ) : null}
           <Row
             ok={e.cronSecretSet}
             label="CRON_SECRET in Vercel"
@@ -427,11 +467,13 @@ export function EncryptionCard(){
               <b>The overnight sync still runs.</b> It cannot read the document, so it encrypts each pull to
               this installation&rsquo;s public key and leaves it in a queue. Whichever browser opens the app
               next merges it in. That is the only place it can be read. For that to work, the credentials
-              have to live in Vercel as <b>PLAID_ACCESS_TOKENS</b>, since the job can no longer find them
-              inside the document.
+              have to live in Vercel: <b>PLAID_ACCESS_TOKENS</b>, <b>SIMPLEFIN_ACCESS_URL</b>, or both,
+              depending on what this budget syncs with. The job can no longer find them inside the document,
+              and only the ones below will appear.
             </span>
           </div>
           <PlaidTokens />
+          <SimplefinUrl />
           <Readiness unlocked />
           <div className="row wrap" style={{ gap: 8 }}>
             <Btn onClick={backup}><Download size={14} /> Download a plain backup</Btn>
@@ -701,11 +743,12 @@ function SetupFlow({ busy, onBackup, onSeal }: {
       <div className="setting-row">
         <span className="small">
           <b>One thing to do afterwards.</b> Once the document is sealed the scheduled 9am sync can no
-          longer read the bank credentials out of it. Put the value below into Vercel and redeploy, or
-          the overnight pull stops until you do.
+          longer read the bank credentials out of it. Put the values below into Vercel and redeploy, or
+          the overnight pull stops until you do. There is one for each provider this budget uses.
         </span>
       </div>
       <PlaidTokens />
+      <SimplefinUrl />
     </div>
   );
 }

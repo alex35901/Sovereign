@@ -101,12 +101,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // can read it back afterwards.
     if (seal.sealed) {
       const tokens = plaidTokens();
-      if (!tokens.length) {
+      const bridge = simplefinUrl();
+      if (!tokens.length && !bridge) {
         return send(200, {
           ran: false,
           reason: "This document is encrypted, so the scheduled pull cannot read the credentials inside it and "
-            + "needs its own copy. Add PLAID_ACCESS_TOKENS to the Vercel environment variables. Settings shows "
-            + "the values.",
+            + "needs its own copy. Add PLAID_ACCESS_TOKENS or SIMPLEFIN_ACCESS_URL to the Vercel environment "
+            + "variables, whichever this budget syncs with. Settings shows the values.",
         });
       }
 
@@ -156,6 +157,28 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         }
       }
       if (skipped) errors.push(`${skipped} Plaid connection${skipped === 1 ? "" : "s"} ran out of time and will be pulled tomorrow.`);
+
+      // The bridge, queued the same way. One connection rather than a loop,
+      // because one access URL carries every bank behind it.
+      //
+      // Its window is the fixed look-back above rather than the one the
+      // document records, for the same reason the tokens come from the
+      // environment: the last sync time is inside the ciphertext. Asking for
+      // more days than are needed is cheap and the merge is idempotent, where
+      // asking for too few would quietly lose a week.
+      if (bridge) {
+        if (Date.now() > deadline) {
+          errors.push("The bridge ran out of time and will be pulled tomorrow.");
+        } else {
+          try {
+            const raw = await fetchAccounts(bridge, new Date(`${since}T00:00:00.000Z`), new Date());
+            if ("error" in raw) errors.push(raw.error);
+            else await queue({ ...toPayload(raw, new Date().toISOString()), source: "simplefin" });
+          } catch (err) {
+            errors.push(err instanceof Error ? err.message : "A bridge pull failed.");
+          }
+        }
+      }
 
       const trimmed = await trimQueue();
       return send(200, {
@@ -264,6 +287,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
  */
 function plaidTokens(): string[] {
   return splitTokens(process.env.PLAID_ACCESS_TOKENS);
+}
+
+/**
+ * The bridge's access URL, for a document this job cannot read.
+ *
+ * The same arrangement Plaid's tokens have and for the same reason: on a
+ * sealed document the credential lives inside the ciphertext, so the job needs
+ * its own copy or it has nothing to pull with. Unsealed, the document is read
+ * directly and this is not consulted at all.
+ */
+function simplefinUrl(): string {
+  return (process.env.SIMPLEFIN_ACCESS_URL ?? "").trim();
 }
 
 function splitTokens(raw: string | undefined): string[] {

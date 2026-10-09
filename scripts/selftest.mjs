@@ -7753,6 +7753,61 @@ await test("a queued overnight pull lands only when it names a live connection",
   assert.equal(after.db.transactions[0].importKey, "pl:pt1");
 });
 
+await test("a bridge pull from the overnight job lands, the same as a Plaid one", async () => {
+  // The whole reason the scheduled job existed for this household and did
+  // nothing: it could only pull Plaid, the queue could only describe a Plaid
+  // pull, and the browser dropped anything else on the floor. Three places,
+  // all assuming one provider, on a budget that had moved to the other.
+  const bridgePayload = (over = {}) => ({
+    accounts: [{
+      syncId: "sa1", name: "Everyday", institution: "Ridgeline", balance: 90_00,
+      currency: "USD", type: "checking", balanceDate: "2026-09-01", itemId: "simplefin",
+      ...over,
+    }],
+    transactions: [{
+      syncId: "st1", accountSyncId: "sa1", date: "2026-09-01", amount: -2500,
+      description: "RIDGELINE COFFEE", pending: false,
+    }],
+    errors: [], fetchedAt: "2026-09-01T09:00:00.000Z",
+  });
+
+  const at = await M.C.newKeypair();
+  const row = async (body, id) => ({ id, createdAt: "2026-09-01T09:00:00.000Z", ...await M.C.sealTo(at.pub, JSON.stringify(body)) });
+  const base = M.emptyDB();
+  const withBridge = {
+    ...base,
+    settings: { ...base.settings, simplefin: { accessUrl: "https://user:pass@bridge.example/simplefin" } },
+  };
+
+  const out = await M.applyQueue(withBridge, [await row({ ...bridgePayload(), source: "simplefin" }, 1)], at.priv);
+  assert.equal(out.dropped, 0, "a bridge pull must not be dropped");
+  assert.equal(out.transactionsAdded, 1);
+  assert.equal(out.db.accounts[0].syncSource, "simplefin");
+  assert.equal(out.db.transactions.length, 1);
+
+  // And the run is recorded, which is what clears the "hasn't run" notice. It
+  // was never a separate fault: nothing was being queued, so nothing arrived
+  // to stamp it.
+  assert.ok(out.db.settings.usage?.vercel?.at, "a drained pull is the job's signature");
+
+  // The gate still holds the other way. A budget with no bridge must not have
+  // one put back by a pull the job queued before it was disconnected.
+  const without = await M.applyQueue(base, [await row({ ...bridgePayload(), source: "simplefin" }, 2)], at.priv);
+  assert.deepEqual(without.db.accounts, [], "a disconnected bridge must not come back through the queue");
+  assert.equal(without.dropped, 1);
+  assert.deepEqual(without.ids, [2], "and the row is consumed rather than retried nightly");
+
+  // A bridge pull is not a licence for a Plaid one, nor the reverse: each has
+  // to name a connection the document still holds.
+  const crossed = await M.applyQueue(withBridge, [await row({
+    accounts: [{ ...bridgePayload().accounts[0], itemId: "item-9" }],
+    transactions: [], errors: [], fetchedAt: "2026-09-01T09:00:00.000Z",
+    source: "plaid",
+  }, 3)], at.priv);
+  assert.deepEqual(crossed.db.accounts, [], "a Plaid pull naming an item this document never had");
+  assert.equal(crossed.dropped, 1);
+});
+
 await test("what the overnight queue says it did counts holdings too", async () => {
   const none = M.drainSummary({ ids: [], transactionsAdded: 0, accountsAdded: 0, accountsUpdated: 0, holdingsUpdated: 0 });
   assert.equal(none, null, "an empty drain has nothing to say");
