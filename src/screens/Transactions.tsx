@@ -750,7 +750,7 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
               jump when the pointer arrives, and that reserved space reads as a
               gap — so it is held at the end of the line, past the badges,
               rather than between the name and them. */}
-          {txn.pending ? <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>Pending</span> : null}
+          {txn.pending ? <span className="tag tag-pending">Pending</span> : null}
           {!txn.reviewed ? <span className="dot" style={{ background: "var(--accent)" }} title="Needs review" /> : null}
           {/* Inline rather than pinned like the category's: this column is
               left-aligned, so nothing shifts when it appears. */}

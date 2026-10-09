@@ -3515,6 +3515,88 @@ try {
     }
     await one.close();
 
+    // ── a charge the bank has not settled yet says so here too ──
+    //
+    // A card page showing ten Amazon charges, every one of them pending,
+    // against a balance of nothing: the figures were right and the page gave
+    // no way to see why they disagreed with the list under them. The ledger
+    // has always marked these. This list is a different component that happens
+    // to draw the same row, and it did not.
+    const pend = await browser.newContext({ viewport: { width: 390, height: 1000 } });
+    const warmPend = await pend.newPage();
+    await warmPend.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await warmPend.waitForTimeout(1300);
+    await warmPend.close();
+    await pend.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const mine = (db.transactions ?? []).filter((t) => t.accountId === "a_checking");
+        // Two pending and the rest settled, so the check can tell a tag on the
+        // right rows from a tag on every row.
+        mine.slice(0, 2).forEach((t) => { t.pending = true; });
+        mine.slice(2).forEach((t) => { t.pending = false; });
+        // A name long enough to need truncating beside the tag.
+        if (mine[0]) mine[0].merchant = "Amazon Marketplace Seller Services";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+    const pp = await pend.newPage();
+    await pp.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await pp.waitForTimeout(1200);
+
+    const rows = await pp.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => /Recent transactions/.test(c.querySelector(".card-head")?.innerText ?? ""));
+      if (!card) return null;
+      return [...card.querySelectorAll(".list-row")].slice(0, 6).map((r) => {
+        const tag = r.querySelector(".tag-pending");
+        const name = r.querySelector(".truncate");
+        return {
+          said: tag?.innerText.trim() ?? null,
+          // Beside the merchant's name, which is where the ledger puts it, and
+          // not wrapped onto a line of its own.
+          sameLine: tag && name
+            ? Math.abs(tag.getBoundingClientRect().top - name.getBoundingClientRect().top) < 8
+            : null,
+          // The name gives way, not the tag: a "Pending" squeezed to "Pend..."
+          // is worse than a shortened merchant.
+          tagWide: tag ? tag.getBoundingClientRect().width : 0,
+          clipped: name ? name.scrollWidth > name.clientWidth + 1 : false,
+        };
+      });
+    });
+    check("an account's own list marks what is pending",
+      rows !== null && rows.filter((r) => r.said === "Pending").length === 2,
+      rows === null ? "no recent transactions card" : JSON.stringify(rows.map((r) => r.said)));
+    check("and leaves the settled ones unmarked",
+      rows !== null && rows.slice(2).every((r) => r.said === null),
+      JSON.stringify(rows?.map((r) => r.said)));
+    check("with the mark beside the name rather than below it",
+      rows !== null && rows[0].sameLine === true, JSON.stringify(rows?.[0]));
+    check("and the long name giving way rather than the mark",
+      rows !== null && rows[0].clipped === true && rows[0].tagWide > 40,
+      JSON.stringify(rows?.[0]));
+
+    // The same words and the same colour as the ledger's, which is the thing
+    // that would otherwise drift apart the next time either is touched.
+    const ledger = await pp.evaluate(async () => {
+      const el = document.querySelector(".card .tag-pending");
+      return el ? getComputedStyle(el).backgroundColor : null;
+    });
+    await pp.goto(`${BASE}/transactions?account=a_checking`, { waitUntil: "networkidle" });
+    await pp.waitForTimeout(1200);
+    const onLedger = await pp.evaluate(() => {
+      const el = document.querySelector(".list-row .tag-pending");
+      return el ? { said: el.innerText.trim(), bg: getComputedStyle(el).backgroundColor } : null;
+    });
+    check("and the ledger marks the same charge the same way",
+      onLedger !== null && onLedger.said === "Pending" && onLedger.bg === ledger,
+      `${JSON.stringify(onLedger)} against ${ledger}`);
+    await pp.close();
+    await pend.close();
+
     // ── the connection status card ──
     //
     // A balance that stopped arriving three weeks ago looks exactly like an

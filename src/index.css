@@ -1187,6 +1187,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 .donut-key { flex: 0 1 320px; min-width: 220px; }
 
 /* A pattern the app has only just worked out, until somebody has looked at it. */
+/* A charge the bank has not settled yet. A class rather than a style written
+   out at each place that draws one: the ledger and an account's own list are
+   the same row to a reader, and two copies of a colour are two things to keep
+   in step. Never shrinks, so the merchant's name is what gives way when the
+   line is too narrow for both. */
+.tag-pending { background: var(--surface-3); color: var(--muted); flex: none; }
 .rec-new { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 /* Which of a merchant's schedules this row is. Quieter than the New and auto
    tags beside it: it is not news, it is the row's other half of a name, so it

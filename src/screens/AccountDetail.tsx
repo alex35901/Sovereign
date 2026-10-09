@@ -153,8 +153,15 @@ export default function AccountDetail() {
           {mine.slice(0, RECENT).map((t) => (
             <div key={t.id} className="list-row click" onClick={() => setEditTxn(t)}>
               <MerchantAvatar name={t.merchant} size={28} />
-              <div className="grow col" style={{ gap: 0 }}>
-                <span className="truncate" style={{ fontWeight: 500 }}>{t.merchant}</span>
+              <div className="grow col" style={{ gap: 0, minWidth: 0 }}>
+                {/* The same mark the ledger puts on it, in the same place. A
+                    card showing ten charges the bank has not settled yet was
+                    reporting a balance nobody could reconcile, and the one
+                    screen that said which were pending was somewhere else. */}
+                <span className="row" style={{ gap: 6, minWidth: 0 }}>
+                  <span className="truncate" style={{ fontWeight: 500 }}>{t.merchant}</span>
+                  {t.pending ? <span className="tag tag-pending">Pending</span> : null}
+                </span>
                 <span className="tiny faint">{dateLabel(t.date, { year: true })}</span>
               </div>
               <span className="acct-txn-cat"><CategoryTag categoryId={t.categoryId} /></span>
