@@ -35,6 +35,7 @@ await build({
       export { default as hopperHandler } from "./api/hopper.ts";
       export { claimMessage, spentToday, noteTokens, DAILY_MESSAGES } from "./api/_budget.ts";
       export { default as cronHandler } from "./api/cron/sync.ts";
+      export { default as pingHandler } from "./api/ping.ts";
       export { readAttempt, noteFailure, clearFailures, lockedOutNow, callerKey, MAX_FAILURES } from "./api/_ratelimit.ts";
       export { queuePull, readQueue, clearQueue, trimQueue } from "./api/_store.ts";
       export { default as cronHandler2 } from "./api/cron/sync.ts";
@@ -1758,6 +1759,58 @@ await test("a compressed body that is not compressed is refused, not stored", as
 });
 
 /* ── results, always last so every test above is reported ─────────────── */
+/* ── the diagnostic endpoint keeps its own door shut ───────────────────── */
+
+const ping = (headers = {}) =>
+  invokeWith(M.pingHandler, { method: "GET", url: "/api/ping", headers });
+
+await test("the diagnostic endpoint tells a stranger nothing about the environment", async () => {
+  // It reports which variables are set, never their values, and that list is
+  // still a map of the deployment. It used to be handed out unguarded whenever
+  // no passphrase was configured, which is exactly the half-built state where
+  // somebody is most likely to find the URL before the lock is on.
+  process.env.SYNC_PASSPHRASE = "";
+  const open = await ping();
+  const body = JSON.parse(open.text);
+  assert.equal(open.status, 200, "it still answers, because its job is to prove it can");
+  assert.equal(body.alive, true);
+  assert.equal(body.needsPassphrase, true, "and says which state it is in, which is what a first setup needs");
+  assert.equal(body.envSet, undefined, "but not which variables are set");
+  assert.equal(body.region, undefined, "nor where it is running");
+  assert.equal(body.pg, undefined, "nor what it could and could not load");
+});
+
+await test("and refuses a wrong passphrase without saying how wrong", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  const no = await ping({ authorization: "Bearer not-the-right-one" });
+  assert.equal(no.status, 401);
+  const body = JSON.parse(no.text);
+  assert.equal(body.envSet, undefined, "a refusal must not carry the answer with it");
+
+  // A passphrase of the right length but wrong contents, and one of the wrong
+  // length, are both simply refused.
+  assert.equal((await ping({ authorization: "Bearer the-wrong-one" })).status, 401);
+  assert.equal((await ping({ authorization: "Bearer short" })).status, 401);
+  assert.equal((await ping()).status, 401, "and no passphrase at all is not a free pass");
+});
+
+await test("the right passphrase gets the diagnosis it exists to give", async () => {
+  process.env.SYNC_PASSPHRASE = "the-right-one";
+  process.env.CRON_SECRET = "cron-secret-value";
+  const yes = await ping({ authorization: "Bearer the-right-one" });
+  assert.equal(yes.status, 200);
+  const body = JSON.parse(yes.text);
+  assert.ok(Array.isArray(body.envSet), "which variables are set");
+  assert.ok(body.envSet.includes("SYNC_PASSPHRASE"), "by name");
+  assert.ok(body.pg, "and whether the modules the real endpoints need will load");
+
+  // Names only. The whole point of the endpoint is that it never carries a
+  // value out of the environment.
+  const text = JSON.stringify(body);
+  assert.equal(text.includes("the-right-one"), false, "never the passphrase itself");
+  assert.equal(text.includes("cron-secret-value"), false, "nor any other secret's value");
+});
+
 for (const [state, name, msg] of results) console.log(`${state}  ${name}${msg ? ` — ${msg}` : ""}`);
 const failed = results.filter((r) => r[0] === "FAIL").length;
 console.log(`\n${results.length - failed}/${results.length} passed`);

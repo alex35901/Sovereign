@@ -7,7 +7,11 @@
  * and it reports whether the pieces the real endpoints depend on can be loaded,
  * which is what turns "it crashed" into a specific cause.
  *
- * It returns no values from the environment, only which names are set.
+ * It returns no values from the environment, only which names are set, and it
+ * says even that much only to somebody holding the passphrase. A deployment
+ * with no passphrase configured hands out nothing: that used to be the one
+ * state where the guard below was skipped, which left the diagnostics open to
+ * anyone who found the URL.
  */
 
 type Req = { method?: string; url?: string; headers: Record<string, string | string[] | undefined> };
@@ -24,28 +28,67 @@ const reason = (err: unknown): string => {
   return `${e?.message ? String(e.message) : String(err)}${code}`;
 };
 
-export default async function handler(req: Req, res: Res): Promise<void> {
-  const out: Record<string, unknown> = { alive: true };
+/**
+ * Fixed-time string comparison, written out rather than imported.
+ *
+ * The rest of the app compares secrets through timingSafeEqual in ./_auth, and
+ * for the same reason: a plain !== returns as soon as two bytes differ, which
+ * is a measurable read on how much of a guess was right. This file is the one
+ * that must answer when imports are the thing that is broken, so it cannot
+ * reach for that module and does the work itself. Length is compared first and
+ * separately, which is the one thing this cannot hide; the passphrase's length
+ * is not the secret.
+ */
+function sameSecret(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
+export default async function handler(req: Req, res: Res): Promise<void> {
+  const send = (status: number, body: unknown) => {
+    res.statusCode = status;
+    res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
+    res.end(JSON.stringify(body));
+  };
+
+  // The guard comes first now, before anything is read out of the environment,
+  // so there is no assembled answer sitting around to be returned by mistake.
+  const raw = req.headers.authorization;
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  const supplied = /^Bearer\s+(.+)$/i.exec((header ?? "").trim())?.[1];
+  let expected = "";
+  try {
+    expected = (process.env.SYNC_PASSPHRASE ?? "").trim();
+  } catch {
+    // A process with no readable environment cannot authenticate anybody, so
+    // it is in the same position as one with no passphrase set.
+  }
+
+  // No passphrase configured is not open house. It is the state with nothing
+  // to check against, so nothing is handed out beyond which state it is in --
+  // which is what somebody setting this up for the first time needs, and tells
+  // a stranger nothing, because /api/db refuses everything in this state too.
+  if (!expected) {
+    return send(200, {
+      alive: true,
+      needsPassphrase: true,
+      hint: "Set SYNC_PASSPHRASE in Vercel and redeploy. Until then nothing here is readable, including this.",
+    });
+  }
+  if (!supplied || !sameSecret(supplied, expected)) {
+    return send(401, { alive: true, error: "That passphrase doesn't match." });
+  }
+
+  const out: Record<string, unknown> = { alive: true };
   try {
     out.node = process.version;
     out.region = process.env.VERCEL_REGION ?? null;
     out.envSet = NAMES.filter((n) => Boolean(process.env[n]?.trim()));
   } catch (err) {
     out.envError = reason(err);
-  }
-
-  // Guard the rest: knowing which variables are set is dull, but there is no
-  // reason to hand it out to anyone who finds the URL.
-  const raw = req.headers.authorization;
-  const header = Array.isArray(raw) ? raw[0] : raw;
-  const supplied = /^Bearer\s+(.+)$/i.exec((header ?? "").trim())?.[1];
-  const expected = (process.env.SYNC_PASSPHRASE ?? "").trim();
-  if (expected && supplied !== expected) {
-    res.statusCode = 401;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ alive: true, error: "That passphrase doesn't match." }));
-    return;
   }
 
   for (const [label, load] of [
@@ -66,8 +109,5 @@ export default async function handler(req: Req, res: Res): Promise<void> {
     }
   }
 
-  res.statusCode = 200;
-  res.setHeader("content-type", "application/json");
-  res.setHeader("cache-control", "no-store");
-  res.end(JSON.stringify(out));
+  send(200, out);
 }
