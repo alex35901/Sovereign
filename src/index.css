@@ -507,6 +507,10 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .recon-tbl td, .recon-tbl th { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
 .recon-tbl td:first-child, .recon-tbl th:first-child { padding-left: 12px; }
 .recon-tbl td:last-child, .recon-tbl th:last-child { padding-right: 12px; }
+/* Centred on the column, headings and figures alike. Four short columns of the
+   same kind of thing read as a grid; right-aligned they read as three ragged
+   edges with a date leaning away from them. */
+.recon-tbl th, .recon-tbl td { text-align: center; }
 
 /* A heading that sorts. The whole cell is the target rather than the words in
    it, because a two-word heading with a four-pixel gap between the words is

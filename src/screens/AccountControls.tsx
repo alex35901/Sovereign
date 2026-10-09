@@ -108,7 +108,7 @@ export function AccountControls({ account }: { account: Account }) {
 
 /** The eye that opens the hidden list, as on the accounts page. */
 /**
- * Which envelopes this account is holding the money for.
+ * Which rollover categories this account is holding the money for.
  *
  * The month-end job somebody does by hand: add up what every rollover category
  * still has left and check it against the account the money actually sits in.

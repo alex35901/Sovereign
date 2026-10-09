@@ -204,7 +204,7 @@ export default function AccountDetail() {
 }
 
 /**
- * The account checked against the envelopes it is holding the money for.
+ * The account checked against the rollover categories it holds the money for.
  *
  * A month-end audit done by hand otherwise: add up what every rollover
  * category still has left, and see whether the account that money sits in
@@ -224,21 +224,22 @@ function ReconcileCard({ account }: { account: Account }) {
   if (!rows.length) return null;
 
   const live = thisMonth();
+  const tied = tiedCategories(db, account).length;
   return (
     <Card pad={false}>
       <CardHead
         flush
-        title="Against its envelopes"
-        sub={`${tiedCategories(db, account).length} rollover categories. A difference is not automatically wrong, but it is worth knowing.`}
+        title="Month-end check"
+        sub={`${tied} rollover ${tied === 1 ? "category" : "categories"}. A difference is not automatically wrong, but it is worth knowing.`}
       />
       <div className="tbl-wrap">
         <table className="tbl recon-tbl">
           <thead>
             <tr>
               <th>Month</th>
-              <th className="right">Account</th>
-              <th className="right">Envelopes</th>
-              <th className="right">Difference</th>
+              <th>Account</th>
+              <th>Rollover</th>
+              <th>Difference</th>
             </tr>
           </thead>
           <tbody>
@@ -253,9 +254,9 @@ function ReconcileCard({ account }: { account: Account }) {
                       as the month closes. */}
                   {r.month === live ? <span className="tiny faint"> so far</span> : null}
                 </td>
-                <td className="right num"><Money value={r.balance} /></td>
-                <td className="right num"><Money value={r.rollover} /></td>
-                <td className="right num bold">
+                <td className="num"><Money value={r.balance} /></td>
+                <td className="num"><Money value={r.rollover} /></td>
+                <td className="num bold">
                   <Money value={r.difference} colored={r.difference !== 0} />
                 </td>
               </tr>

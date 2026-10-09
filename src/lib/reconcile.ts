@@ -3,7 +3,7 @@ import { addMonths, monthEnd, monthOf, today } from "./date.js";
 import { balanceAt, rolloverFor } from "./select.js";
 
 /**
- * Checking an account against the envelopes it is supposed to be holding.
+ * Checking an account against the rollover categories it is holding for.
  *
  * The month-end job somebody does by hand: add up what every rollover category
  * still has left, and see whether the account the money actually sits in holds
@@ -25,7 +25,7 @@ export interface ReconcileRow {
   balance: number;
   /** What the tied categories carried out of it. */
   rollover: number;
-  /** Account less envelopes. Positive means the account holds more than the envelopes claim. */
+  /** Account less rollover. Positive means the account holds more than the categories claim. */
   difference: number;
 }
 
@@ -36,6 +36,16 @@ export const tiedCategories = (db: DB, account: Pick<Account, "rolloverCategoryI
   // since, or one whose rollover was switched off, is not holding anything.
   return db.categories.filter((c) => want.has(c.id) && c.rollover).map((c) => c.id);
 };
+
+/**
+ * The month everything was moved over to Sovereign.
+ *
+ * Earlier months do exist in the records: history pulled in from elsewhere, a
+ * balance or two carried back by hand, plans that were never really kept. A
+ * difference in those months means nothing, and a table that opens with rows
+ * nobody can act on teaches somebody to skim the ones they can.
+ */
+const MOVED_IN = "2026-09";
 
 /**
  * The first month worth showing.
@@ -49,7 +59,8 @@ function firstMonth(db: DB, account: Account): MonthKey | null {
   const planned = Object.keys(db.budgets).sort()[0];
   if (!planned) return null;
   const opened = account.history[0]?.date;
-  return opened && monthOf(opened) > planned ? monthOf(opened) : planned;
+  const start = opened && monthOf(opened) > planned ? monthOf(opened) : planned;
+  return start > MOVED_IN ? start : MOVED_IN;
 }
 
 /**

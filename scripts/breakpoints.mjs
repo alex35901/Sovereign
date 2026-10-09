@@ -10737,7 +10737,7 @@ try {
   }
 
   if (want("reconcile")) {
-    // ── an account checked against the envelopes it holds ──
+    // ── an account checked against the categories it holds ──
     //
     // The month-end job done by hand: add up what every rollover category
     // still has left, and see whether the account the money sits in holds that
@@ -10754,8 +10754,8 @@ try {
     await bare.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
     await bare.waitForTimeout(1200);
     check("an account nobody reconciles shows no table",
-      await bare.locator('.card:has(h2:text-is("Against its envelopes"))').count() === 0,
-      "a table is being shown for an account with no envelopes tied to it");
+      await bare.locator('.card:has(h2:text-is("Month-end check"))').count() === 0,
+      "a table is being shown for an account with no categories tied to it");
     await bare.close();
 
     await rc.addInitScript(() => {
@@ -10778,9 +10778,9 @@ try {
     const tied = await rc.newPage();
     await tied.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
     await tied.waitForTimeout(1300);
-    const card = tied.locator('.card:has(h2:text-is("Against its envelopes"))');
+    const card = tied.locator('.card:has(h2:text-is("Month-end check"))');
     check("and one that is reconciled shows it", await card.count() === 1,
-      "no table on an account with envelopes tied to it");
+      "no table on an account with categories tied to it");
 
     if (await card.count()) {
       const table = await tied.evaluate(() => {
@@ -10803,10 +10803,21 @@ try {
       });
       check("with the four columns asked for, in that order",
         table.head.length === 4 && /month/i.test(table.head[0]) && /account/i.test(table.head[1])
-        && /envelope/i.test(table.head[2]) && /difference/i.test(table.head[3]),
+        && /rollover/i.test(table.head[2]) && /difference/i.test(table.head[3]),
         table.head.join(" | "));
       check("and a row for every month there is something to compare",
         table.count > 1, `${table.count} rows`);
+      // Asked for centred on the column, so the heading sits over its own
+      // figures rather than over the gap beside them.
+      const aligned = await tied.evaluate(() => {
+        const cells = [...document.querySelectorAll(".recon-tbl thead th, .recon-tbl tbody tr:first-child td")];
+        const off = cells.filter((c) => getComputedStyle(c).textAlign !== "center");
+        return { total: cells.length, off: off.map((c) => `${c.innerText.trim()}: ${getComputedStyle(c).textAlign}`) };
+      });
+      check("every column is centred, heading and figure alike",
+        aligned.total === 8 && aligned.off.length === 0,
+        `${aligned.total} cells, off-centre: ${aligned.off.join(", ")}`);
+
       check("the difference is on the screen, not off the right of it",
         table.rightEdge <= table.viewport && !table.scrolls,
         `last column ends at ${table.rightEdge} of ${table.viewport}, scrolls: ${table.scrolls}`);
@@ -10814,7 +10825,7 @@ try {
       // last column makes, read off the rendered text rather than the model.
       const money = (s) => Math.round(Number(s.replace(/[^0-9.-]/g, "")) * 100);
       const bad = table.rows.filter((r) => money(r[1]) - money(r[2]) !== money(r[3]));
-      check("and each one really is the account less the envelopes",
+      check("and each one really is the account less the categories",
         bad.length === 0, bad.map((r) => r.join(" / ")).join("  //  "));
     }
     await tied.close();
