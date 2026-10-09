@@ -11212,6 +11212,55 @@ await test("income that has not landed is the more urgent of the two", () => {
   assert.notEqual(later[0].id, n.id);
 });
 
+await test("no server secret can be read from code the browser runs", () => {
+  // The whole arrangement rests on this. Everything under src/ is bundled and
+  // shipped, so a secret read there is a secret published: Vite replaces
+  // import.meta.env.VITE_* at build time and writes the value into the file
+  // the browser downloads. The server's own credentials live in api/, which is
+  // never bundled, and the split is worth holding by a test rather than by
+  // everyone remembering.
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) return walk(full);
+    return /\.(ts|tsx)$/.test(e.name) ? [full] : [];
+  });
+
+  const bad = [];
+  for (const file of walk("src")) {
+    const text = readFileSync(file, "utf8");
+    text.split("\n").forEach((line, i) => {
+      const at = `${file}:${i + 1}`;
+      // Nothing in the browser may reach for the server's environment. It is
+      // undefined there in any case, so a read is either dead code or a build
+      // step quietly inlining a value.
+      if (/\bprocess\s*\.\s*env\b/.test(line)) bad.push(`${at}: reads process.env`);
+      // Vite ships every VITE_ name it is asked for, so the ones asked for
+      // have to be things a reader could see anyway. A secret cannot be given
+      // that prefix, and this is where that is enforced.
+      for (const m of line.matchAll(/import\s*\.\s*meta\s*\.\s*env\s*\.\s*([A-Za-z0-9_]+)/g)) {
+        const name = m[1];
+        if (!/^(VITE_HASH_ROUTER|MODE|DEV|PROD|SSR|BASE_URL)$/.test(name)) {
+          bad.push(`${at}: reads import.meta.env.${name}, which ships to the browser`);
+        }
+      }
+    });
+  }
+  assert.deepEqual(bad, [], `\n${bad.join("\n")}`);
+});
+
+await test("the server names its secrets to the browser but never their values", () => {
+  // Settings tells somebody which variable to set, which means the names are
+  // in the bundle on purpose. What must never follow is a value: the endpoints
+  // answer "is it set" and nothing more. Checked on the shape of the answer,
+  // because reading a value and reporting a boolean are one character apart.
+  const text = readFileSync("api/db.ts", "utf8");
+  for (const name of ["PLAID_ACCESS_TOKENS", "SIMPLEFIN_ACCESS_URL", "CRON_SECRET"]) {
+    const line = text.split("\n").find((l) => l.includes(`process.env.${name}`));
+    assert.ok(line, `${name} is no longer reported, so this check is stale`);
+    assert.match(line, /\.length > 0/, `${name} must be reported as presence, never as a value`);
+  }
+});
+
 await test("no user-facing text in the app uses an em dash", () => {
   // Asked for, and easy to undo by accident: the character is one keystroke on
   // a Mac and every generated sentence reaches for one. Comments are the
