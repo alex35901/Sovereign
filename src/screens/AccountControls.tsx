@@ -1,9 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff, RotateCcw } from "lucide-react";
-import type { Account } from "../types";
-import { useStore } from "../store";
+import type { Account, ID } from "../types";
+import { useDB, useStore } from "../store";
 import { dateLabel } from "../lib/date";
-import { Btn, Card, CardHead, ConfirmButton, Toggle } from "../components/ui";
+import { Btn, Card, CardHead, ConfirmButton, Toggle, cx } from "../components/ui";
 
 /** One switch and the sentence explaining what it actually does. */
 function Row({ title, body, on, onChange }: {
@@ -55,6 +55,9 @@ export function AccountControls({ account }: { account: Account }) {
       </div>
 
       <div className="divider" />
+      <ReconcileWith account={account} />
+
+      <div className="divider" />
       <CardHead title="Actions" sub={account.closedAt ? `Closed ${dateLabel(account.closedAt, { year: true })}` : undefined} />
 
       <div className="col" style={{ gap: 10 }}>
@@ -104,6 +107,67 @@ export function AccountControls({ account }: { account: Account }) {
 }
 
 /** The eye that opens the hidden list, as on the accounts page. */
+/**
+ * Which envelopes this account is holding the money for.
+ *
+ * The month-end job somebody does by hand: add up what every rollover category
+ * still has left and check it against the account the money actually sits in.
+ * Saying which categories belong here is the whole of the setup; the table on
+ * the account's own page does the addition from the months already recorded.
+ *
+ * Only rollover categories are offered. A category that does not carry has
+ * nothing left at the end of a month by definition, so it has nothing to be
+ * reconciled against and listing it would be offering a sum of zeroes.
+ */
+function ReconcileWith({ account }: { account: Account }) {
+  const db = useDB();
+  const { actions } = useStore();
+  const chosen = account.rolloverCategoryIds ?? [];
+  const able = db.categories
+    .filter((c) => c.rollover && !c.archived)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const toggle = (id: ID) => actions.updateAccount(account.id, {
+    rolloverCategoryIds: chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id],
+  });
+
+  return (
+    <>
+      <CardHead
+        title="Reconcile against"
+        sub={able.length
+          ? "The rollover categories this account holds the money for"
+          : "Nothing to reconcile against yet"}
+      />
+      {able.length ? (
+        <div className="col" style={{ gap: 8 }}>
+          <div className="row wrap" style={{ gap: 6 }}>
+            {able.map((c) => (
+              <button
+                key={c.id}
+                className={cx("chip", chosen.includes(c.id) && "on")}
+                aria-pressed={chosen.includes(c.id)}
+                onClick={() => toggle(c.id)}
+              >
+                {c.icon} {c.name}
+              </button>
+            ))}
+          </div>
+          <span className="tiny faint">
+            {chosen.length
+              ? `${chosen.length} chosen. The account's page shows what they came to at the end of each month, beside what the account held.`
+              : "Choose some and a table appears on this account's page, checking the two against each other month by month."}
+          </span>
+        </div>
+      ) : (
+        <span className="tiny faint">
+          Switch rollover on for a category under Categories, and it can be chosen here.
+        </span>
+      )}
+    </>
+  );
+}
+
 export function HiddenToggle({ count, open, onToggle }: { count: number; open: boolean; onToggle: () => void }) {
   return (
     <button className="hidden-toggle" onClick={onToggle}>

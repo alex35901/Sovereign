@@ -101,6 +101,18 @@ export interface Account {
     beneficiary?: string;
     note?: string;
   };
+  /**
+   * The rollover categories this account is supposed to be holding the money for.
+   *
+   * A reconciliation, written down. Somebody doing it by hand adds up what every
+   * rollover category still has left and checks the figure against the account
+   * the money actually sits in; saying which categories belong to which account
+   * is what lets the app do that addition and show the difference.
+   *
+   * Absent or empty means this account is not reconciled that way, and nothing
+   * about it changes.
+   */
+  rolloverCategoryIds?: ID[];
   syncSource?: "manual" | "csv" | "plaid" | "simplefin";
   syncId?: string;
   /**

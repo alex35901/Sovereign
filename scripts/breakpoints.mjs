@@ -10736,6 +10736,91 @@ try {
     await bo.close();
   }
 
+  if (want("reconcile")) {
+    // ── an account checked against the envelopes it holds ──
+    //
+    // The month-end job done by hand: add up what every rollover category
+    // still has left, and see whether the account the money sits in holds that
+    // much. Shown only where somebody has said which categories belong to the
+    // account, because everywhere else it is a column of zeroes beside a
+    // balance, which is a worse answer than no table at all.
+    const rc = await browser.newContext({ viewport: { width: 390, height: 1100 } });
+    const warmRc = await rc.newPage();
+    await warmRc.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await warmRc.waitForTimeout(1400);
+    await warmRc.close();
+
+    const bare = await rc.newPage();
+    await bare.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await bare.waitForTimeout(1200);
+    check("an account nobody reconciles shows no table",
+      await bare.locator('.card:has(h2:text-is("Against its envelopes"))').count() === 0,
+      "a table is being shown for an account with no envelopes tied to it");
+    await bare.close();
+
+    await rc.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const spend = (db.categories ?? []).filter((c) => {
+          const g = (db.groups ?? []).find((x) => x.id === c.groupId);
+          return g && g.kind === "expense" && !c.excludeFromBudget;
+        }).slice(0, 6);
+        db.categories = db.categories.map((c) =>
+          (spend.some((p) => p.id === c.id) ? { ...c, rollover: true } : c));
+        db.accounts = db.accounts.map((a) =>
+          (a.id === "a_checking" ? { ...a, rolloverCategoryIds: spend.map((c) => c.id) } : a));
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const tied = await rc.newPage();
+    await tied.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await tied.waitForTimeout(1300);
+    const card = tied.locator('.card:has(h2:text-is("Against its envelopes"))');
+    check("and one that is reconciled shows it", await card.count() === 1,
+      "no table on an account with envelopes tied to it");
+
+    if (await card.count()) {
+      const table = await tied.evaluate(() => {
+        const t = document.querySelector(".recon-tbl");
+        const head = [...t.querySelectorAll("thead th")].map((h) => h.innerText.trim());
+        const rows = [...t.querySelectorAll("tbody tr")].map((r) =>
+          [...r.querySelectorAll("td")].map((c) => c.innerText.replace(/\n/g, " ").trim()));
+        const last = t.querySelector("tbody tr td:last-child");
+        return {
+          head,
+          rows: rows.slice(0, 3),
+          count: rows.length,
+          // The column worth reading has to be on the screen, not just in the
+          // document: four money columns on a phone is exactly the shape that
+          // ends with the answer off the right edge.
+          rightEdge: Math.round(last.getBoundingClientRect().right),
+          viewport: window.innerWidth,
+          scrolls: t.parentElement.scrollWidth > t.parentElement.clientWidth + 1,
+        };
+      });
+      check("with the four columns asked for, in that order",
+        table.head.length === 4 && /month/i.test(table.head[0]) && /account/i.test(table.head[1])
+        && /envelope/i.test(table.head[2]) && /difference/i.test(table.head[3]),
+        table.head.join(" | "));
+      check("and a row for every month there is something to compare",
+        table.count > 1, `${table.count} rows`);
+      check("the difference is on the screen, not off the right of it",
+        table.rightEdge <= table.viewport && !table.scrolls,
+        `last column ends at ${table.rightEdge} of ${table.viewport}, scrolls: ${table.scrolls}`);
+      // Every row is one figure less the other, which is the only claim the
+      // last column makes, read off the rendered text rather than the model.
+      const money = (s) => Math.round(Number(s.replace(/[^0-9.-]/g, "")) * 100);
+      const bad = table.rows.filter((r) => money(r[1]) - money(r[2]) !== money(r[3]));
+      check("and each one really is the account less the envelopes",
+        bad.length === 0, bad.map((r) => r.join(" / ")).join("  //  "));
+    }
+    await tied.close();
+    await rc.close();
+  }
+
 } finally {
   await browser.close();
 }

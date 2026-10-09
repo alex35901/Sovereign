@@ -40,6 +40,7 @@ await build({
       export { bucketOf, bucketIndex, scopeFilter, hasBuckets, actualsFor, spendRun, SCOPES } from "./src/lib/select.ts";
       export { parseCSV, guessColumns, buildPlan, parseDate, toCSV, balanceHistoryToCSV, rowsToTransactions, newTagNames, splitTags, importKeyFor } from "./src/lib/csv.ts";
       export { budgetSummary, detectRecurring, netWorthSeries, rolloverFor, budgetedCategoryIds, movingCategoryIds, budgetedSum, offBooks } from "./src/lib/select.ts";
+      export * as RC2 from "./src/lib/reconcile.ts";
       export { occurrences, recurringSpend, recurringMonth, monthlyRecurringCost, paidOccurrences, PAID_WINDOW_DAYS } from "./src/lib/select.ts";
       export { TONE_NAMES } from "./src/lib/category-colors.ts";
       export { categoryActivity, entryStats, entriesByPeriod, categoryBudget } from "./src/lib/select.ts";
@@ -16893,6 +16894,158 @@ await test("the count agrees with the test every other figure in the app uses", 
   const byHand = db.transactions.filter((t) => !t.reviewed && M.counts(t, muted)).length;
   assert.equal(M.needsReviewCount(db), byHand);
   assert.equal(M.needsReviewCount(db), 1);
+});
+
+/* ── an account checked against the envelopes it holds ─────────────────── */
+
+const reconDB = (over = {}) => {
+  const base = M.emptyDB();
+  const cat = (id, name, rollover) => ({
+    id, groupId: "g_spend", name, icon: "x", color: "--c1",
+    excludeFromBudget: false, rollover, order: 0,
+  });
+  return {
+    ...base,
+    groups: [{ id: "g_spend", name: "Spending", kind: "expense", order: 0 }],
+    categories: [cat("c_food", "Food", true), cat("c_gas", "Gas", true), cat("c_fun", "Fun", false)],
+    accounts: [{
+      id: "chk", name: "Everyday", institution: "Bank", type: "checking", balance: 500_00,
+      includeInNetWorth: true, hidden: false, order: 0,
+      history: [
+        { date: "2026-08-31", balance: 300_00 },
+        { date: "2026-09-30", balance: 500_00 },
+      ],
+      rolloverCategoryIds: ["c_food", "c_gas"],
+    }],
+    budgets: {
+      "2026-08": { c_food: 100_00, c_gas: 50_00, c_fun: 20_00 },
+      "2026-09": { c_food: 100_00, c_gas: 50_00, c_fun: 20_00 },
+    },
+    transactions: [],
+    ...over,
+  };
+};
+
+await test("a month's actuals are worked out once for the whole document", () => {
+  // rolloverFor asks twenty-four times for one category, the budget page asks
+  // for forty categories, and the reconciliation table multiplies both by the
+  // months on it. Each call walked every transaction there was.
+  const db = reconDB({
+    transactions: [{
+      id: "t1", accountId: "chk", date: "2026-08-10", merchant: "Shop", amount: -40_00,
+      categoryId: "c_food", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: "2026-08-10T00:00:00.000Z",
+    }],
+  });
+  const first = M.actualsFor(db, "2026-08");
+  assert.equal(M.actualsFor(db, "2026-08"), first, "the same document and month gets the same answer back");
+  assert.notEqual(M.actualsFor(db, "2026-09"), first, "a different month is a different question");
+  assert.equal(first.get("c_food"), 40_00);
+
+  // A document is replaced whole on every write, so a copy is a new question
+  // and a cached answer cannot outlive the figures it came from.
+  const copy = { ...db };
+  assert.notEqual(M.actualsFor(copy, "2026-08"), first);
+  assert.equal(M.actualsFor(copy, "2026-08").get("c_food"), 40_00);
+
+  // And the cache must not be handing out a map a caller could write into and
+  // corrupt for everybody else.
+  const changed = {
+    ...db,
+    transactions: [...db.transactions, {
+      id: "t2", accountId: "chk", date: "2026-08-11", merchant: "Shop", amount: -10_00,
+      categoryId: "c_food", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: "2026-08-11T00:00:00.000Z",
+    }],
+  };
+  assert.equal(M.actualsFor(changed, "2026-08").get("c_food"), 50_00, "a write is a new document and a new answer");
+  assert.equal(M.actualsFor(db, "2026-08").get("c_food"), 40_00, "and the old one still reads as it did");
+});
+
+await test("an account with no envelopes tied to it has no table at all", () => {
+  // The whole table is hidden for an account nobody reconciles this way, and
+  // an empty list is how the page is told to hide it. A column of zeroes
+  // beside a balance is a worse answer than no table.
+  const db = reconDB();
+  const bare = { ...db.accounts[0], rolloverCategoryIds: undefined };
+  assert.deepEqual(M.RC2.reconcileRows(db, bare, "2026-09-30"), []);
+  assert.equal(M.RC2.isReconciled(db, bare), false);
+  assert.equal(M.RC2.isReconciled(db, db.accounts[0]), true);
+});
+
+await test("a category that does not carry is not an envelope to check against", () => {
+  // Rollover is the whole premise: a category that does not carry has nothing
+  // left at the end of a month by definition, so counting it would be adding
+  // a zero and calling it evidence.
+  const db = reconDB();
+  const greedy = { ...db.accounts[0], rolloverCategoryIds: ["c_food", "c_gas", "c_fun"] };
+  assert.deepEqual(M.RC2.tiedCategories(db, greedy), ["c_food", "c_gas"]);
+
+  // And one switched off afterwards stops counting, rather than going on being
+  // added from a list written when it still carried.
+  const off = { ...db, categories: db.categories.map((c) => ({ ...c, rollover: false })) };
+  assert.deepEqual(M.RC2.tiedCategories(off, greedy), []);
+  assert.deepEqual(M.RC2.reconcileRows(off, db.accounts[0], "2026-09-30"), []);
+});
+
+await test("the table checks what the account held against what the envelopes carry", () => {
+  // Nothing spent, so each envelope carries its whole plan: August hands on
+  // 150 and September hands on 300, against an account holding 300 and 500.
+  const db = reconDB();
+  const rows = M.RC2.reconcileRows(db, db.accounts[0], "2026-09-30");
+  assert.deepEqual(rows.map((r) => r.month), ["2026-09", "2026-08"], "newest first");
+
+  const aug = rows.find((r) => r.month === "2026-08");
+  assert.equal(aug.balance, 300_00, "what the account held at the end of August");
+  assert.equal(aug.rollover, 150_00, "and what the two envelopes carried out of it");
+  assert.equal(aug.difference, 150_00, "account less envelopes");
+
+  const sep = rows.find((r) => r.month === "2026-09");
+  assert.equal(sep.balance, 500_00);
+  assert.equal(sep.rollover, 300_00, "two months of unspent plan");
+  assert.equal(sep.difference, 200_00);
+
+  // Every row is the one minus the other, which is the only claim the last
+  // column makes.
+  for (const r of rows) assert.equal(r.difference, r.balance - r.rollover, r.month);
+});
+
+await test("spending comes off the envelope, and the difference follows it", () => {
+  const db = reconDB({
+    transactions: [{
+      id: "t1", accountId: "chk", date: "2026-08-10", merchant: "Shop", amount: -40_00,
+      categoryId: "c_food", tags: [], pending: false, reviewed: true, hideFromReports: false,
+      createdAt: "2026-08-10T00:00:00.000Z",
+    }],
+  });
+  const aug = M.RC2.reconcileRows(db, db.accounts[0], "2026-09-30").find((r) => r.month === "2026-08");
+  assert.equal(aug.rollover, 110_00, "150 planned, 40 spent");
+  assert.equal(aug.difference, 300_00 - 110_00);
+});
+
+await test("the month still running is shown as it stands today", () => {
+  // Somebody watches this as the month closes, so the row is there before the
+  // month is over: the balance as at today, and what the envelopes would hand
+  // on if it ended now.
+  const db = reconDB();
+  const rows = M.RC2.reconcileRows(db, db.accounts[0], "2026-09-14");
+  assert.equal(rows[0].month, "2026-09", "the month in progress is the first row");
+  assert.equal(rows[0].balance, 300_00, "the account as at today, not a date that has not happened");
+  assert.equal(rows.length, 2);
+});
+
+await test("the table starts where there is something to compare", () => {
+  // No budgets, no carry, nothing to check against.
+  const db = reconDB({ budgets: {} });
+  assert.deepEqual(M.RC2.reconcileRows(db, db.accounts[0], "2026-09-30"), []);
+
+  // And it does not reach back past the account itself: a row for a month
+  // before it existed compares nothing against something.
+  const later = reconDB({
+    budgets: { "2026-01": { c_food: 10_00 }, "2026-08": { c_food: 100_00 }, "2026-09": { c_food: 100_00 } },
+  });
+  const months = M.RC2.reconcileRows(later, later.accounts[0], "2026-09-30").map((r) => r.month);
+  assert.deepEqual(months, ["2026-09", "2026-08"], "the account's history starts in August");
 });
 
 /* ── what a wallet of cards actually earns ─────────────────────────────── */

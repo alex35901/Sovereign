@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Download, MoreHorizontal, Pencil, Settings2, Upload, Wallet } from "lucide-react";
 import { useDB } from "../store";
 import { TopBar } from "../shell/TopBar";
-import { dateLabel, today } from "../lib/date";
+import { dateLabel, monthLabel, thisMonth, today } from "../lib/date";
 import { balanceAt, trendTone } from "../lib/select";
 import { canValue } from "../lib/property";
 import { balanceHistoryToCSV, toCSV } from "../lib/csv";
@@ -22,8 +22,9 @@ import { ImportModal } from "./ImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
 import { AccountControls } from "./AccountControls";
 import { ConnectionCard } from "./ConnectionCard";
+import { reconcileRows, tiedCategories } from "../lib/reconcile";
 import { TransactionModal } from "./TransactionModal";
-import type { Transaction } from "../types";
+import type { Account, Transaction } from "../types";
 
 const slug = (name: string) =>
   name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "account";
@@ -180,6 +181,7 @@ export default function AccountDetail() {
             <Empty title="No transactions on this account" />
           )}
         </Card>
+        <ReconcileCard account={account} />
         <ConnectionCard account={account} />
       </div>
 
@@ -198,5 +200,69 @@ export default function AccountDetail() {
         </Modal>
       ) : null}
     </>
+  );
+}
+
+/**
+ * The account checked against the envelopes it is holding the money for.
+ *
+ * A month-end audit done by hand otherwise: add up what every rollover
+ * category still has left, and see whether the account that money sits in
+ * holds that much. Shown only for an account somebody has actually tied
+ * categories to, because for every other account it would be a column of
+ * zeroes beside a balance, which is a worse answer than no table.
+ *
+ * Every month is worked out from what the document already holds rather than
+ * recorded once as the month closes. A month nobody opened the app in would
+ * otherwise have no row and never get one, and a transaction recategorised in
+ * September would leave August reporting a figure that was true once and is
+ * not any more, which is the one thing an audit must not do.
+ */
+function ReconcileCard({ account }: { account: Account }) {
+  const db = useDB();
+  const rows = useMemo(() => reconcileRows(db, account), [db, account]);
+  if (!rows.length) return null;
+
+  const live = thisMonth();
+  return (
+    <Card pad={false}>
+      <CardHead
+        flush
+        title="Against its envelopes"
+        sub={`${tiedCategories(db, account).length} rollover categories. A difference is not automatically wrong, but it is worth knowing.`}
+      />
+      <div className="tbl-wrap">
+        <table className="tbl recon-tbl">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th className="right">Account</th>
+              <th className="right">Envelopes</th>
+              <th className="right">Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.month}>
+                <td>
+                  {/* Short, so the difference fits on a phone. The year is
+                      kept: this table is read a year after the fact. */}
+                  {monthLabel(r.month, true)}
+                  {/* The month still running is not a reconciliation yet. It is
+                      where things stand today, which is what somebody watches
+                      as the month closes. */}
+                  {r.month === live ? <span className="tiny faint"> so far</span> : null}
+                </td>
+                <td className="right num"><Money value={r.balance} /></td>
+                <td className="right num"><Money value={r.rollover} /></td>
+                <td className="right num bold">
+                  <Money value={r.difference} colored={r.difference !== 0} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }

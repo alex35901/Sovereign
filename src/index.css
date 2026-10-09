@@ -494,6 +494,20 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .tbl td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .tbl tbody tr:hover { background: var(--surface-2); }
 
+/* Four money columns and a month do not fit a phone, and a table that only
+   half fits is read by nobody. Scrolled sideways inside its own card rather
+   than squeezed: the figures are the point and a wrapped one is worse than a
+   swipe. */
+.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* Four columns on a phone, with the one worth reading last. Tightened until
+   the difference fits on screen at 390px rather than sitting just off the
+   right edge, where the whole table is a row of figures leading to a number
+   nobody can see. The scroll stays as a fallback for anything narrower. */
+.recon-tbl { min-width: 330px; }
+.recon-tbl td, .recon-tbl th { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+.recon-tbl td:first-child, .recon-tbl th:first-child { padding-left: 12px; }
+.recon-tbl td:last-child, .recon-tbl th:last-child { padding-right: 12px; }
+
 /* A heading that sorts. The whole cell is the target rather than the words in
    it, because a two-word heading with a four-pixel gap between the words is
    two targets otherwise. */

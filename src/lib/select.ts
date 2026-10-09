@@ -636,7 +636,28 @@ export function categoryAverage(history: { actual: number }[]): number {
   return Math.round(history.reduce((sum, h) => sum + h.actual, 0) / history.length);
 }
 
+/**
+ * What each category actually spent in a month, worked out once per document.
+ *
+ * Every call walked every transaction there is, and the callers ask in loops:
+ * rolloverFor asks twenty-four times for one category, the budget page asks it
+ * for forty categories, and anything wanting a run of months multiplies the
+ * whole thing again. Keyed on the document, like the other answers here, so a
+ * write replaces it rather than anything having to remember to clear it.
+ */
+const actualsCache = new WeakMap<DB, Map<MonthKey, Map<string, number>>>();
+
 export function actualsFor(db: DB, month: MonthKey): Map<string, number> {
+  const held = actualsCache.get(db);
+  const hit = held?.get(month);
+  if (hit) return hit;
+  const out = buildActuals(db, month);
+  if (held) held.set(month, out);
+  else actualsCache.set(db, new Map([[month, out]]));
+  return out;
+}
+
+function buildActuals(db: DB, month: MonthKey): Map<string, number> {
   const out = new Map<string, number>();
   const muted = mutedAccountIds(db);
   const household = householdOnly(db);
