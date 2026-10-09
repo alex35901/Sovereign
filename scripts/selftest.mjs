@@ -17802,6 +17802,80 @@ await test("a well-formed draft is read as it was written", () => {
   assert.equal(d.note, "Check the travel rate.");
 });
 
+await test("a quarter of a rotating card is drafted as a rate that runs for it", () => {
+  // The card this exists for pays five percent on categories that change every
+  // three months. Written down by hand that is four rules a year, every year,
+  // each with its own dates; drafted, it is a form to check.
+  const NOW = "2026-10-09";
+  const d = M.readDraft(JSON.stringify({
+    base: 1, pointCents: 1, annualFee: 0,
+    rules: [
+      { rate: 5, categories: ["Groceries"], cap: 1500, period: "quarter", from: "2026-10-01", to: "2026-12-31" },
+      { rate: 5, categories: ["Gas"], cap: 1500, period: "quarter", from: "2027-01-01", to: "2027-03-31" },
+    ],
+    note: "Discover publishes the rest of the year later.",
+  }), KNOWN, NOW);
+
+  assert.equal(d.rules.length, 2);
+  assert.equal(d.rules[0].from, "2026-10-01");
+  assert.equal(d.rules[0].to, "2026-12-31");
+  assert.equal(d.rules[0].cap, 1500);
+  assert.equal(d.rules[0].period, "quarter");
+
+  // And it becomes a rule the document can hold, in cents, with the window on it.
+  const cats = [
+    { id: "c_gro", name: "Groceries" }, { id: "c_gas", name: "Gas" },
+  ];
+  const rules = M.toRules(d, cats);
+  assert.equal(rules.length, 2);
+  assert.equal(rules[0].cap, 150000, "dollars in the draft, cents in the document");
+  assert.equal(rules[0].from, "2026-10-01");
+  assert.equal(rules[0].to, "2026-12-31");
+  assert.deepEqual(rules[0].categoryIds, ["c_gro"]);
+});
+
+await test("a rate that runs all year keeps no window at all", () => {
+  const d = draft({
+    base: 1, rules: [{ rate: 3, categories: ["Groceries"], from: "", to: "" }],
+  });
+  assert.equal(d.rules[0].from, undefined);
+  assert.equal(d.rules[0].to, undefined);
+  assert.equal(M.toRules(d, [{ id: "c_gro", name: "Groceries" }])[0].from, undefined);
+});
+
+await test("a window that does not hold together is dropped, and the rate kept", () => {
+  // The rate is still worth drafting; it is the dates that are not to be
+  // trusted. A half-open window is the dangerous one: a rate that starts and
+  // never stops silently changes what every later purchase earns.
+  const NOW = "2026-10-09";
+  const one = (over) => M.readDraft(JSON.stringify({
+    base: 1, rules: [{ rate: 5, categories: ["Groceries"], ...over }],
+  }), KNOWN, NOW).rules[0];
+
+  for (const [what, over] of [
+    ["only a start", { from: "2026-10-01", to: "" }],
+    ["only an end", { from: "", to: "2026-12-31" }],
+    ["backwards", { from: "2026-12-31", to: "2026-10-01" }],
+    ["not a day at all", { from: "the first of October", to: "2026-12-31" }],
+    ["a day that does not exist", { from: "2026-02-30", to: "2026-03-31" }],
+    ["a month that does not exist", { from: "2026-13-01", to: "2026-13-31" }],
+    ["years from now", { from: "2031-01-01", to: "2031-03-31" }],
+    ["years ago", { from: "2019-01-01", to: "2019-03-31" }],
+    ["longer than a year", { from: "2026-01-01", to: "2027-06-30" }],
+  ]) {
+    const r = one(over);
+    assert.ok(r, `${what}: the rate itself survives`);
+    assert.equal(r.rate, 5);
+    assert.equal(r.from, undefined, `${what}: no start`);
+    assert.equal(r.to, undefined, `${what}: and no end`);
+  }
+
+  // Last quarter is ordinary: somebody writing this down in March is owed the
+  // quarters already gone, or the year's earnings do not add up.
+  const back = one({ from: "2026-07-01", to: "2026-09-30" });
+  assert.equal(back.from, "2026-07-01", "a quarter just gone is still worth having");
+});
+
 await test("an answer wrapped in chatter is still read", () => {
   // Models say "Here you go:" whatever they are asked. Losing a whole draft
   // to a greeting would make the button unreliable for no reason.

@@ -1,6 +1,7 @@
 import type { Category, EarnRule, ID } from "../../types.js";
 import { uid } from "../id.js";
 import { turn } from "./loop.js";
+import { today as todayISO } from "../date.js";
 
 /**
  * A first draft of what a card pays, for a person to check.
@@ -13,9 +14,11 @@ import { turn } from "./loop.js";
  * visible, and the reader's own press of "Save and confirm" is the only thing
  * that marks the terms as checked.
  *
- * What is sent is the card's name and the household's own category names,
- * which is what a bonus rate has to be mapped onto to mean anything. No
- * balances, no transactions, no totals.
+ * What is sent is the card's name, today's date and the household's own
+ * category names: the name to look the card up by, the date because a card
+ * whose categories rotate every quarter cannot be answered without one, and
+ * the names because a bonus rate has to be mapped onto them to mean anything.
+ * No balances, no transactions, no totals.
  */
 
 const SYSTEM = `You fill in one form: what a single credit card pays back.
@@ -34,6 +37,8 @@ outside the object.
       "merchants": string[],  // shops this rate is tied to, e.g. ["Amazon"]
       "cap": number,       // dollars of spending the rate applies to, 0 for none
       "period": "month" | "quarter" | "year" | "",
+      "from": string,      // "" or YYYY-MM-DD: first day this rate is paid
+      "to": string,        // "" or YYYY-MM-DD: last day this rate is paid
       "label": string      // a short condition, e.g. "booked through the issuer"
     }
   ],
@@ -52,6 +57,16 @@ Rules:
 - Caps matter. If a rate is capped, say so; if you do not know, leave cap 0.
 - If you do not recognise the card, return base 1, pointCents 1, no rules, and
   say so in the note. Do not invent a card.
+- Some cards rotate their bonus categories every quarter. For those, give one
+  rule per quarter, each with its own "from" and "to" covering that quarter,
+  and the quarterly cap and "period": "quarter" that go with it. A rate that
+  runs all year leaves "from" and "to" empty.
+- Only give a quarter you actually know. These calendars are published by the
+  issuer a few at a time, and a guessed quarter sends somebody shopping in the
+  wrong category for three months, which is the most expensive kind of wrong
+  this form can be. Give the quarters you know, leave out the ones you do not,
+  and say in the note which you have given and that the issuer publishes the
+  rest later. Never fill a year out to look complete.
 - Your answer is a draft a person is about to check against their own card. Say
   in the note what you are least sure of.`;
 
@@ -61,6 +76,9 @@ export interface DraftRule {
   merchants: string[];
   cap?: number;
   period?: EarnRule["period"];
+  /** The stretch a rate runs for, when it does not run all year. */
+  from?: string;
+  to?: string;
   label?: string;
 }
 
@@ -87,6 +105,57 @@ const num = (v: unknown, fallback: number, max: number): number => {
 const PERIODS = new Set(["month", "quarter", "year"]);
 
 /**
+ * How far either side of today a drafted window may reach.
+ *
+ * A rotating calendar is published a few quarters ahead, so a window a year
+ * out is ordinary and one three years out is the model filling in a pattern.
+ * Backwards is wider because somebody writing this down in March is entitled
+ * to the quarters already gone, which is what makes last year's earnings add
+ * up correctly.
+ */
+const WINDOW_BACK_DAYS = 500;
+const WINDOW_AHEAD_DAYS = 500;
+/** Longer than this is not a rotating quarter, whatever it says. */
+const WINDOW_MAX_DAYS = 400;
+
+/**
+ * A date the model offered, or nothing.
+ *
+ * Checked by round trip rather than by pattern. Date accepts a great deal that
+ * is not a day, and the dangerous ones are not the shapes that fail to parse
+ * but the ones that parse into something else: "2026-02-30" becomes the 2nd of
+ * March, months from where it was meant to be. Writing the parsed day back out
+ * and insisting it is what arrived catches both, and the shape with them,
+ * since toISOString only ever produces one.
+ */
+const day = (v: unknown): string | undefined => {
+  const text = String(v ?? "").trim();
+  const at = new Date(`${text}T00:00:00.000Z`);
+  if (Number.isNaN(at.getTime()) || at.toISOString().slice(0, 10) !== text) return undefined;
+  return text;
+};
+
+/**
+ * The pair, kept only if it describes a stretch somebody could actually be in.
+ *
+ * Both ends or neither: half a window is a rate that starts and never stops,
+ * or stops having never started, and either one silently changes what every
+ * purchase on that card earns. The rest is plausibility, because this is a
+ * guess arriving from outside and the form it lands in is about money.
+ */
+const windowOf = (row: Record<string, unknown>, now: string): { from: string; to: string } | null => {
+  const from = day(row.from);
+  const to = day(row.to);
+  if (!from || !to || from > to) return null;
+  const days = (a: string, b: string) =>
+    (Date.parse(`${b}T00:00:00.000Z`) - Date.parse(`${a}T00:00:00.000Z`)) / 86_400_000;
+  if (days(from, to) > WINDOW_MAX_DAYS) return null;
+  if (days(now, from) > WINDOW_AHEAD_DAYS) return null;
+  if (days(to, now) > WINDOW_BACK_DAYS) return null;
+  return { from, to };
+};
+
+/**
  * Whatever came back, read as a draft or not at all.
  *
  * Every field is checked rather than trusted. This is the one place in the app
@@ -94,7 +163,7 @@ const PERIODS = new Set(["month", "quarter", "year"]);
  * answered with prose, or with a rate of 400, must produce an empty draft
  * rather than a form full of nonsense.
  */
-export function readDraft(text: string, known: readonly string[]): RewardsDraft {
+export function readDraft(text: string, known: readonly string[], now: string = todayISO()): RewardsDraft {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("Hopper did not answer with a draft.");
@@ -137,12 +206,14 @@ export function readDraft(text: string, known: readonly string[]): RewardsDraft 
       if (!categories.length && !merchants.length) return [];
       const period = String(row.period ?? "");
       const cap = num(row.cap, 0, 1_000_000);
+      const span = windowOf(row, now);
       return [{
         rate: num(row.rate, 1, MAX_RATE),
         categories,
         merchants,
         cap: cap > 0 ? cap : undefined,
         period: cap > 0 && PERIODS.has(period) ? period as EarnRule["period"] : undefined,
+        ...(span ?? {}),
         label: typeof row.label === "string" ? row.label.slice(0, 80) : undefined,
       }];
     })
@@ -173,23 +244,35 @@ export function toRules(draft: RewardsDraft, categories: readonly Category[]): E
       merchants: merchants.length ? merchants : undefined,
       cap: r.cap ? Math.round(r.cap * 100) : undefined,
       period: r.period,
+      // Both ends or neither, the same way the draft was read: readDraft keeps
+      // a window only when it holds together, so a half of one here would be
+      // something this file invented rather than something it was given.
+      ...(r.from && r.to ? { from: r.from, to: r.to } : {}),
       label: r.label,
     }];
   });
 }
 
 /** Ask for one card's terms. Throws whatever the endpoint threw. */
-export async function draftRewards(card: string, categories: readonly Category[]): Promise<RewardsDraft> {
+export async function draftRewards(
+  card: string,
+  categories: readonly Category[],
+  now: string = todayISO(),
+): Promise<RewardsDraft> {
   const names = categories.filter((c) => !c.archived).map((c) => c.name);
   const answer = await turn({
     system: [{ type: "text", text: SYSTEM }],
     messages: [{
       role: "user",
-      content: `Card: ${card}\n\nCategories to choose from:\n${names.join("\n")}`,
+      // The date, because a rotating calendar is only answerable against one:
+      // "this quarter" and "the ones still to come" mean nothing otherwise,
+      // and a model guessing at the year would date every window wrong. It is
+      // today's date and nothing about this household.
+      content: `Today: ${now}\n\nCard: ${card}\n\nCategories to choose from:\n${names.join("\n")}`,
     }],
   }, () => {});
   const text = answer.content
     .map((b) => (b.type === "text" ? b.text : ""))
     .join("");
-  return readDraft(text, names);
+  return readDraft(text, names, now);
 }
