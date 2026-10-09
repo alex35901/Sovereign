@@ -97,6 +97,12 @@ export function feederOf(
  *   touch this account. Which means it is not one of the accounts that login
  *   holds any more, whatever it is called, and the account that is holds the
  *   history this one should have.
+ * - `superseded`: this account's own connection is down, and the other
+ *   provider is now feeding an account at the same bank. This is the case a
+ *   household actually hits, because a provider failing is why anybody moves
+ *   to the other one, and it was the one case with no remedy: the two tests
+ *   above both need a clean pull from the connection that is broken, which is
+ *   the one thing a broken connection cannot give.
  */
 /**
  * An account a provider is supposed to be feeding.
@@ -110,7 +116,7 @@ export function feederOf(
 export const isSynced = (a: Pick<Account, "syncSource">): boolean =>
   a.syncSource === "plaid" || a.syncSource === "simplefin";
 
-export type Stranding = "gone" | "passed-over";
+export type Stranding = "gone" | "passed-over" | "superseded";
 
 export interface Stranded {
   account: Account;
@@ -140,8 +146,13 @@ export function strandedIn(db: DB): Stranded[] {
       out.push({ account, why: "gone" });
       continue;
     }
-    // A pull that failed says nothing about which accounts the login holds.
-    if (!feeder.lastSyncAt || feeder.lastError) continue;
+    // A pull that failed says nothing about which accounts the login holds,
+    // so it cannot pass anything over. It can still be superseded, though,
+    // and that is read off the other provider rather than off this one.
+    if (!feeder.lastSyncAt || feeder.lastError) {
+      if (supersededBy(db, account, all)) out.push({ account, why: "superseded" });
+      continue;
+    }
     if ((account.lastSyncedAt ?? "") >= feeder.lastSyncAt) continue;
     /**
      * Something the provider said about this account in the pull being
@@ -158,6 +169,33 @@ export function strandedIn(db: DB): Stranded[] {
     out.push({ account, why: "passed-over" });
   }
   return out;
+}
+
+/**
+ * Whether the other provider has taken this bank over while this one is down.
+ *
+ * Deliberately narrow. The evidence has to come from somewhere other than the
+ * failing connection, so it is this: an account at the same bank, fed by a
+ * healthy connection belonging to the *other* provider, that has been pulled
+ * more recently than this one. Within one provider a failing login is the
+ * ordinary "reconnect this bank" repair and nothing here should touch it.
+ *
+ * Self-contained on purpose: replacementsFor asks strandedIn what is stranded,
+ * so anything this reached for there would be asking itself the question.
+ */
+function supersededBy(db: DB, account: Account, all: readonly Feeder[]): boolean {
+  return db.accounts.some((other) => {
+    if (other.id === account.id || other.closedAt || !isSynced(other)) return false;
+    if (other.syncSource === account.syncSource) return false;
+    if (!sameInstitution(other.institution ?? "", account.institution ?? "")) return false;
+    // The one feeding it has to be working, or this is two broken connections
+    // and a suggestion to fold one into the other helps nobody.
+    const theirs = feederOf(other, all);
+    if (!theirs?.lastSyncAt || theirs.lastError) return false;
+    // And it has to be the one being fed now, which is what tells a takeover
+    // from a bank the household has simply held on both for years.
+    return (other.lastSyncedAt ?? "") > (account.lastSyncedAt ?? "");
+  });
 }
 
 /** An account that could be what a stranded one has become. */

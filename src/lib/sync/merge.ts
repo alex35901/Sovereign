@@ -205,14 +205,33 @@ export function mergeSync(
   let skippedNoAccount = 0;
   const floorCounts = new Map<string, { name: string; from: ISODate; count: number }>();
 
-  // "pl:" marks a Plaid id. Older rows carry "sf:" from a provider that no
-  // longer exists; they are left alone, and nothing writes that prefix now.
-  const keyFor = (syncId: string) => `pl:${syncId}`;
   const known = new Set(db.transactions.map((t) => t.importKey).filter(Boolean) as string[]);
   // By key, so a row the provider has restated can be found and corrected
   // rather than merely recognised and skipped.
   const heldByKey = new Map<string, Transaction>();
   for (const t of db.transactions) if (t.importKey) heldByKey.set(t.importKey, t);
+
+  /**
+   * What a row from this provider is filed under.
+   *
+   * The prefix is the provider, so two of them cannot mint the same key for
+   * two different transactions: an id is only unique within the thing that
+   * issued it, and a bare id as the identity of a row is a collision waiting
+   * for the day the two happen to agree.
+   *
+   * Bridge pulls were written under "pl:" for a while, while there was only
+   * one provider left to key against, so a document can hold either. The
+   * stored one wins where there is one, which is what keeps a row that is
+   * already filed from being filed a second time under its proper name.
+   */
+  const prefix = source === "simplefin" ? "sf:" : "pl:";
+  const legacy = source === "simplefin" ? "pl:" : null;
+  const keyFor = (syncId: string) => {
+    const mine = `${prefix}${syncId}`;
+    if (!legacy || heldByKey.has(mine)) return mine;
+    const older = `${legacy}${syncId}`;
+    return heldByKey.has(older) ? older : mine;
+  };
 
   /** Rows the provider has revised, by id. Applied after the walk. */
   const revised = new Map<string, Partial<Transaction>>();

@@ -148,7 +148,13 @@ export function ReattachCard({ only }: { only?: Account }) {
                 <span className="tiny faint">
                   {why === "gone"
                     ? "The connection this came in on is not here any more."
-                    : "A connection to this bank pulled and did not recognise this account."}
+                    : why === "superseded"
+                      // Named for what the household did rather than for what
+                      // the connection reported, because this is the one they
+                      // arrived at on purpose: the bank stopped answering on
+                      // one provider, so they connected it through the other.
+                      ? "This account's connection is down, and the other provider is now feeding this bank."
+                      : "A connection to this bank pulled and did not recognise this account."}
                 </span>
               </div>
               <ArrowRight size={14} className="faint reattach-arrow" />

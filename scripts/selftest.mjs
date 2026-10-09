@@ -6252,6 +6252,252 @@ const strandedFixture = (over = {}) => {
   };
 };
 
+await test("the two providers file transactions under their own names", () => {
+  // An id is only unique inside the thing that issued it. Both providers were
+  // writing "pl:", so a bridge id that happened to match a Plaid one would
+  // have had one of the two rows silently dropped as already held.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{ id: "a1", name: "Everyday", institution: "Third National", type: "checking",
+      balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 1,
+      syncSource: "plaid", syncId: "acct-1" }],
+  };
+  const pull = (ids) => ({
+    accounts: [{ syncId: "acct-1", name: "Everyday", institution: "Third National", balance: 0,
+      currency: "USD", type: "checking", balanceDate: "2026-10-01", itemId: "item-1" }],
+    transactions: ids.map((id) => ({
+      syncId: id, accountSyncId: "acct-1", date: "2026-10-01", amount: -10_00,
+      description: "COSTCO", pending: false,
+    })),
+    errors: [], fetchedAt: "2026-10-01T09:00:00.000Z",
+  });
+
+  const viaPlaid = M.mergeSync(db, pull(["shared-id"]), "plaid").db;
+  assert.equal(viaPlaid.transactions[0].importKey, "pl:shared-id");
+  const viaBridge = M.mergeSync(db, pull(["shared-id"]), "simplefin").db;
+  assert.equal(viaBridge.transactions[0].importKey, "sf:shared-id",
+    "the bridge files under its own prefix, or the two share a namespace");
+});
+
+await test("a bridge row filed under the old prefix is not imported twice", () => {
+  // Documents in the wild hold bridge rows keyed "pl:", from when there was
+  // only one provider left to key against. Changing what is written must not
+  // make every one of those arrive again as new.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [{ id: "a1", name: "Everyday", institution: "Third National", type: "checking",
+      balance: 0, includeInNetWorth: true, hidden: false, history: [], order: 1,
+      syncSource: "simplefin", syncId: "acct-1" }],
+    transactions: [{
+      id: "t1", accountId: "a1", date: "2026-10-01", amount: -10_00, merchant: "Costco",
+      categoryId: "c_groceries", tags: [], notes: "mine", pending: false, reviewed: true,
+      hideFromReports: false, importKey: "pl:sf-1", createdAt: "2026-10-01T00:00:00.000Z",
+    }],
+  };
+  const again = M.mergeSync(db, {
+    accounts: [{ syncId: "acct-1", name: "Everyday", institution: "Third National", balance: 0,
+      currency: "USD", type: "checking", balanceDate: "2026-10-02", itemId: "simplefin" }],
+    transactions: [{ syncId: "sf-1", accountSyncId: "acct-1", date: "2026-10-01", amount: -10_00,
+      description: "COSTCO", pending: false }],
+    errors: [], fetchedAt: "2026-10-02T09:00:00.000Z",
+  }, "simplefin");
+
+  assert.equal(again.db.transactions.length, 1, "the row it already had must not arrive again");
+  assert.equal(again.transactionsAdded, 0);
+  assert.equal(again.db.transactions[0].notes, "mine", "and the household's copy is the one kept");
+  assert.equal(again.db.transactions[0].importKey, "pl:sf-1", "left under the name it is filed by");
+
+  // The collision itself, which is what the prefix is for. A Plaid row and a
+  // bridge row that happen to carry the same id, on different accounts. The
+  // bridge pull has to find its own, not the one belonging to Plaid.
+  const both = {
+    ...db,
+    accounts: [
+      db.accounts[0],
+      { ...db.accounts[0], id: "a2", syncId: "acct-2", syncSource: "plaid" },
+    ],
+    transactions: [
+      // Both still pending, so the settled row arriving below has to land on
+      // one of them: which one it lands on is the whole question, and a pull
+      // that merely recognises a row would not show the difference.
+      { ...db.transactions[0], id: "mine", importKey: "sf:clash", notes: "the bridge one", pending: true },
+      { ...db.transactions[0], id: "theirs", accountId: "a2", importKey: "pl:clash", notes: "the Plaid one", pending: true },
+    ],
+  };
+  const pulled = M.mergeSync(both, {
+    accounts: [{ syncId: "acct-1", name: "Everyday", institution: "Third National", balance: 0,
+      currency: "USD", type: "checking", balanceDate: "2026-10-02", itemId: "simplefin" }],
+    transactions: [{ syncId: "clash", accountSyncId: "acct-1", date: "2026-10-01", amount: -10_00,
+      description: "COSTCO", pending: false }],
+    errors: [], fetchedAt: "2026-10-02T09:00:00.000Z",
+  }, "simplefin");
+
+  assert.equal(pulled.transactionsAdded, 0, "it already holds this row under its own name");
+  assert.equal(pulled.db.transactions.length, 2, "and neither row is lost to the other");
+  const by = (note) => pulled.db.transactions.find((t) => t.notes === note);
+  assert.equal(by("the bridge one").pending, false, "the bridge's own row is the one that settles");
+  assert.equal(by("the Plaid one").pending, true, "and Plaid's is not touched by a bridge pull");
+});
+
+await test("a bank taken over by the other provider is found while the first is still broken", () => {
+  // The case this whole repair exists for, and the one it used to miss. A
+  // provider failing is *why* anybody connects the bank through the other one,
+  // and both of the other two tests need a clean pull from the connection that
+  // is broken. So the one route a household actually takes produced a second
+  // copy of the account and nothing ever offered to put it right.
+  const base = M.emptyDB();
+  const acct = (id, name, over) => ({
+    id, name, institution: "Wells Fargo", type: "checking", balance: 1000,
+    includeInNetWorth: true, hidden: false, history: [], order: 1, ...over,
+  });
+  const db = {
+    ...base,
+    accounts: [
+      acct("old", "Everyday Checking", {
+        syncSource: "plaid", syncId: "pl-1", plaidItemId: "it_plaid",
+        lastSyncedAt: "2026-09-01T09:00:00.000Z",
+      }),
+      acct("new", "WF Everyday Checking ...4471", {
+        syncSource: "simplefin", syncId: "sf-1", plaidItemId: "simplefin",
+        lastSyncedAt: "2026-10-02T09:00:00.000Z",
+      }),
+    ],
+    settings: {
+      ...base.settings,
+      // Still connected, and refusing. This is what the two older tests both
+      // skip over: a failed pull cannot pass an account over, so it was read
+      // as saying nothing at all.
+      plaidItems: [{
+        itemId: "it_plaid", institution: "Wells Fargo", kind: "both", accessToken: "x",
+        lastSyncAt: "2026-09-01T09:00:00.000Z",
+        lastError: { message: "ITEM_LOGIN_REQUIRED", at: "2026-10-02T09:00:00.000Z" },
+      }],
+      simplefin: { accessUrl: "https://u:p@bridge.example/x", lastSyncAt: "2026-10-02T09:00:00.000Z" },
+    },
+  };
+  assert.deepEqual(M.RA.strandedIn(db).map((s) => [s.account.id, s.why]), [["old", "superseded"]]);
+  assert.deepEqual(M.RA.suggestedPairs(db), [{ strandedId: "old", intoId: "new" }]);
+
+  // A broken connection with nothing to hand over to is the ordinary "log in
+  // again" repair, and must not be dressed up as a move to the other provider.
+  const alone = { ...db, accounts: [db.accounts[0]] };
+  assert.deepEqual(M.RA.strandedIn(alone), [], "a failing bank on its own is a login to fix");
+
+  // And a household that simply holds the same bank on both, with nothing
+  // broken, is not being told to fold one into the other.
+  const healthy = {
+    ...db,
+    settings: {
+      ...db.settings,
+      plaidItems: [{ ...db.settings.plaidItems[0], lastError: undefined, lastSyncAt: "2026-10-02T09:00:00.000Z" }],
+    },
+    accounts: db.accounts.map((a) => ({ ...a, lastSyncedAt: "2026-10-02T09:00:00.000Z" })),
+  };
+  assert.deepEqual(M.RA.strandedIn(healthy), [], "two working connections at one bank is an arrangement, not a fault");
+
+  // The other provider has to be the one actually being fed. Both pulled on
+  // the same day and neither is ahead, so nothing has taken anything over.
+  // Its own connection is level with it too, or the ordinary passed-over rule
+  // would strand the bridge account instead and prove something else.
+  const level = {
+    ...db,
+    accounts: db.accounts.map((a) => ({ ...a, lastSyncedAt: "2026-09-01T09:00:00.000Z" })),
+    settings: {
+      ...db.settings,
+      simplefin: { ...db.settings.simplefin, lastSyncAt: "2026-09-01T09:00:00.000Z" },
+    },
+  };
+  assert.deepEqual(M.RA.strandedIn(level), [], "neither account is ahead, so neither has superseded the other");
+
+  // Both connections down is not a takeover, it is two things to fix, and
+  // folding one into the other would gain nothing.
+  const bothDown = {
+    ...db,
+    settings: {
+      ...db.settings,
+      simplefin: { ...db.settings.simplefin, lastError: { message: "the bridge is refusing", at: "2026-10-02T09:00:00.000Z" } },
+    },
+  };
+  assert.deepEqual(M.RA.strandedIn(bothDown), [], "a dead connection cannot take anything over");
+
+  // A different bank entirely, however recently it pulled.
+  const elsewhere = {
+    ...db,
+    accounts: [db.accounts[0], { ...db.accounts[1], institution: "Third National" }],
+  };
+  assert.deepEqual(M.RA.strandedIn(elsewhere).map((x) => x.why), [],
+    "an account at another bank has superseded nothing");
+
+  // Something that is not being fed at all cannot be what took over: a closed
+  // account, or one somebody keeps by hand.
+  for (const over of [{ closedAt: "2026-10-01" }, { syncSource: "manual" }]) {
+    const inert = { ...db, accounts: [db.accounts[0], { ...db.accounts[1], ...over }] };
+    assert.deepEqual(M.RA.strandedIn(inert), [],
+      `an account that is ${JSON.stringify(over)} is not feeding anything`);
+  }
+
+  // And deliberately narrow: two Plaid logins at one bank, one of them down,
+  // is the ordinary reconnect-this-bank repair and has its own paths. This
+  // rule is for the move between providers and says nothing about that.
+  const sameProvider = {
+    ...db,
+    accounts: [db.accounts[0], { ...db.accounts[1], syncSource: "plaid", plaidItemId: "it_other" }],
+    settings: {
+      ...db.settings,
+      simplefin: undefined,
+      plaidItems: [
+        db.settings.plaidItems[0],
+        { itemId: "it_other", institution: "Wells Fargo", kind: "both", accessToken: "y", lastSyncAt: "2026-10-02T09:00:00.000Z" },
+      ],
+    },
+  };
+  assert.deepEqual(M.RA.strandedIn(sameProvider).map((x) => x.why), [],
+    "one provider's own reconnection is not this repair's business");
+});
+
+await test("and folding it keeps the household's work and takes the new connection", () => {
+  // What the repair is worth: two years of categorising lives on the old
+  // account, and the new one is a few hours old with nothing but an id.
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    accounts: [
+      { id: "old", name: "Everyday Checking", institution: "Wells Fargo", type: "checking",
+        balance: 90_00, includeInNetWorth: true, hidden: false, history: [], order: 1,
+        syncSource: "plaid", syncId: "pl-1", plaidItemId: "it_plaid",
+        lastSyncedAt: "2026-09-01T09:00:00.000Z" },
+      { id: "new", name: "WF Everyday Checking ...4471", institution: "Wells Fargo", type: "checking",
+        balance: 102_00, includeInNetWorth: true, hidden: false, history: [], order: 2,
+        syncSource: "simplefin", syncId: "sf-1", plaidItemId: "simplefin",
+        lastSyncedAt: "2026-10-02T09:00:00.000Z" },
+    ],
+    transactions: [
+      { id: "t1", accountId: "old", date: "2026-09-20", amount: -42_00, merchant: "Costco",
+        categoryId: "c_groceries", tags: [], notes: "the big shop", pending: false, reviewed: true,
+        hideFromReports: false, importKey: "pl:a", createdAt: "2026-09-20T00:00:00.000Z" },
+      { id: "t2", accountId: "new", date: "2026-09-20", amount: -42_00, merchant: "COSTCO WHSE #1021",
+        categoryId: "c_uncategorized", tags: [], pending: false, reviewed: false,
+        hideFromReports: false, importKey: "sf:b", createdAt: "2026-10-02T00:00:00.000Z" },
+    ],
+  };
+
+  const folded = M.RA.foldInto(db, "old", "new");
+  assert.equal(folded.db.accounts.length, 1, "the duplicate account is gone");
+  assert.equal(folded.db.transactions.length, 1, "and so is the duplicate row");
+
+  const kept = folded.db.transactions[0];
+  assert.equal(kept.notes, "the big shop", "the household's note survives");
+  assert.equal(kept.categoryId, "c_groceries", "and so does the category");
+  assert.equal(kept.importKey, "sf:b", "but it answers to the new connection's id now");
+
+  const acct = folded.db.accounts[0];
+  assert.equal(acct.id, "old", "the account somebody has been using is the one kept");
+  assert.equal(acct.syncSource, "simplefin", "pointed at the connection that works");
+  assert.equal(acct.syncId, "sf-1");
+});
+
 await test("an account the reconnected bank no longer recognises is found", () => {
   const db = strandedFixture();
   // The case a household actually hits, and the one worth telling apart. The
