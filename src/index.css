@@ -328,8 +328,16 @@ h3 { font-size: 14px; }
 /* A tile with a control in its corner. The figures keep the whole width they
    had; the control sits beside them rather than above, so adding one does not
    shorten the one line a tile has to say something in. */
-.tile-top { display: flex; align-items: flex-start; gap: 8px; }
-.tile-action { flex: none; margin-top: -2px; }
+.tile-top { display: flex; align-items: flex-start; gap: 8px; position: relative; }
+/* The body of a metric tile: a label over its own figure, centred on the card.
+   These sit in a row of three and are read as a set, which is what centring
+   them says; ranged left they read as the start of three paragraphs. */
+.tile-body { text-align: center; }
+/* Out of the flow, so the figure is centred on the card rather than on what is
+   left of it once a corner control has taken its width. */
+.tile-action { flex: none; position: absolute; top: -2px; right: 0; }
+/* And the label keeps clear of that corner at any width. */
+.tile-top:has(.tile-action) .tile-label { padding: 0 18px; }
 .tile-label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .tile-value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
 .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--faint); font-weight: 600; }

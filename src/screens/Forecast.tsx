@@ -7,7 +7,7 @@ import { addMonths, monthLabel, thisMonth } from "../lib/date";
 import { fmt0 } from "../lib/money";
 import { ACCOUNT_TYPE_LABEL } from "../lib/select";
 import { AreaChart } from "../components/charts";
-import { Btn, Card, CardHead, cx, Empty, Field, Modal, Money, MoneyInput, NumInput, PercentInput, SelectInput, TextInput, Toggle } from "../components/ui";
+import { Btn, Card, CardHead, cx, Empty, Field, Modal, Money, MoneyInput, NumInput, PercentInput, SelectInput, TextInput, Tile, Toggle } from "../components/ui";
 import type { Assumptions, EventKind, ForecastEvent, Scenario, TaxTreatment } from "../lib/forecast";
 import type { SocialSecurity as SS } from "../lib/social-security";
 import {
@@ -147,44 +147,30 @@ export default function Forecast() {
         </Card>
 
         <div className="grid g3">
-          <Card>
-            <div className="col" style={{ gap: 6 }}>
-              <span className="tile-label">Money lasts to</span>
-              <span className={cx("tile-value", "num", ran !== null && "neg")}>
-                {ran === null ? `${a.endAge}+` : `Age ${Math.floor(ran)}`}
-              </span>
-              <span className="small muted">
-                {ran === null
-                  ? `Still has ${fmt0(band.mid.atEnd)} left at ${a.endAge}`
-                  : `Savings run out before the plan ends at ${a.endAge}`}
-              </span>
-            </div>
-          </Card>
-          <Card>
-            <div className="col" style={{ gap: 6 }}>
-              <span className="tile-label">Could retire at</span>
-              <span className={cx("tile-value", "num", earliest === null && "neg")}>
-                {earliest === null ? "Not yet" : earliest}
-              </span>
-              <span className="small muted">
-                {earliest === null
-                  ? "At this rate the money does not last however long you work"
-                  : `The earliest age the money still lasts to ${a.endAge}`}
-              </span>
-            </div>
-          </Card>
-          <Card>
-            <div className="col" style={{ gap: 6 }}>
-              <span className="tile-label">Measured each month</span>
-              <span className="tile-value num">
-                <Money value={flows.income - flows.spend} cents={false} sign />
-              </span>
-              <span className="small muted">
-                <Money value={flows.income} cents={false} /> in, <Money value={flows.spend} cents={false} /> out,
-                averaged over the last year of transactions
-              </span>
-            </div>
-          </Card>
+          <Tile
+            label="Money lasts to"
+            value={ran === null ? `${a.endAge}+` : `Age ${Math.floor(ran)}`}
+            tone={ran !== null ? "neg" : undefined}
+            sub={ran === null
+              ? `Still has ${fmt0(band.mid.atEnd)} left at ${a.endAge}`
+              : `Savings run out before the plan ends at ${a.endAge}`}
+          />
+          <Tile
+            label="Could retire at"
+            value={earliest === null ? "Not yet" : earliest}
+            tone={earliest === null ? "neg" : undefined}
+            sub={earliest === null
+              ? "At this rate the money does not last however long you work"
+              : `The earliest age the money still lasts to ${a.endAge}`}
+          />
+          <Tile
+            label="Measured each month"
+            value={<Money value={flows.income - flows.spend} cents={false} sign />}
+            sub={<>
+              <Money value={flows.income} cents={false} /> in, <Money value={flows.spend} cents={false} /> out,
+              averaged over the last year of transactions
+            </>}
+          />
         </div>
 
         <Card pad={false}>

@@ -315,7 +315,7 @@ function SpendTile({ label, spend, sub }: { label: string; spend: RecurringSpend
   const share = spend.total > 0 ? Math.min(1, spend.spent / spend.total) : 0;
   return (
     <Card>
-      <div className="col" style={{ gap: 7 }}>
+      <div className="col tile-body" style={{ gap: 7 }}>
         <span className="tile-label">{label}</span>
         <span className="tile-value num">
           <Money value={spend.spent} cents={false} />

@@ -10736,6 +10736,59 @@ try {
     await bo.close();
   }
 
+  if (want("tiles")) {
+    // ── every metric tile reads centred ──
+    //
+    // The small cards that carry one figure each sit in rows of three or four
+    // and are read as a set. Ranged left they read as the start of three
+    // paragraphs instead, and one page drifting back to left is exactly the
+    // kind of thing nobody files a bug about.
+    const tl = await browser.newContext({ viewport: { width: 1280, height: 1200 } });
+    const tp = await tl.newPage();
+    await tp.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await tp.waitForTimeout(1500);
+
+    const off = [];
+    let seen = 0;
+    for (const route of ["/cards", "/forecast", "/recurring", "/goals", "/accounts"]) {
+      await tp.goto(`${BASE}${route}`, { waitUntil: "networkidle" });
+      await tp.waitForTimeout(900);
+      const here = await tp.evaluate(() => {
+        const out = [];
+        // The body of a metric tile, which is what carries the centring. A
+        // label beside a figure in the footer of a bigger card is a field, not
+        // a tile, and is ranged left on purpose.
+        for (const v of document.querySelectorAll(".tile-body, .tile-body .tile-value, .tile-body .tile-label")) {
+          out.push({ text: v.innerText.trim().slice(0, 22), align: getComputedStyle(v).textAlign });
+        }
+        return out;
+      });
+      seen += here.length;
+      for (const h of here.filter((h) => h.align !== "center")) off.push(`${route} ${h.text}: ${h.align}`);
+    }
+    check("every metric tile is centred, label and figure alike",
+      seen > 10 && off.length === 0, `${seen} seen, off-centre: ${off.join(", ")}`);
+
+    // The corner control on a tile must not shove the figure off centre: it is
+    // out of the flow, so the figure is centred on the card itself.
+    const corner = await (async () => {
+      await tp.goto(`${BASE}/cards`, { waitUntil: "networkidle" });
+      await tp.waitForTimeout(900);
+      return tp.evaluate(() => {
+        const act = document.querySelector(".card .tile-action");
+        if (!act) return null;
+        const card = act.closest(".card");
+        const val = card.querySelector(".tile-value");
+        const c = card.getBoundingClientRect(), v = val.getBoundingClientRect();
+        return { drift: Math.round(Math.abs((v.left + v.right) / 2 - (c.left + c.right) / 2)), label: val.innerText.trim() };
+      });
+    })();
+    check("and a tile with a control in its corner is still centred on the card",
+      corner !== null && corner.drift <= 2, corner ? `${corner.label} is ${corner.drift}px off centre` : "no tile with a corner control found");
+    await tp.close();
+    await tl.close();
+  }
+
   if (want("reconcile")) {
     // ── an account checked against the categories it holds ──
     //

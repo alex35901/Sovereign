@@ -68,7 +68,7 @@ export function Tile({ label, value, sub, tone, onClick, action }: {
   return (
     <Card style={onClick ? { cursor: "pointer" } : undefined}>
       <div className="tile-top">
-        <div onClick={onClick} className="col grow" style={{ gap: 6, minWidth: 0 }}>
+        <div onClick={onClick} className="col grow tile-body" style={{ gap: 6, minWidth: 0 }}>
           <span className="tile-label">{label}</span>
           <span className={cx("tile-value", "num", tone)}>{value}</span>
           {sub ? <span className="small muted">{sub}</span> : null}
