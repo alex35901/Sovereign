@@ -287,6 +287,18 @@ export interface ItemMark { institution: string; logo?: string; domain?: string;
  * browser proxy — and two copies of this mapping would be two sign conventions
  * waiting to disagree.
  */
+/**
+ * Whether every account in a pull is one that carries no transactions at all.
+ *
+ * A mortgage and a loan are statements of a balance owed, and the servicer has
+ * nothing to send month to month that Plaid calls a transaction. A connection
+ * holding only those will report "no transactions ready" on every pull it ever
+ * makes, which is true and is not news.
+ */
+function onlyLoans(accounts: readonly { type: string }[]): boolean {
+  return accounts.length > 0 && accounts.every((a) => a.type === "mortgage" || a.type === "loan");
+}
+
 export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload {
   // The day the balance belongs to is the day where the person is. A provider
   // already dates its readings this way; this used to use UTC, so a sync run
@@ -363,7 +375,12 @@ export function toPlaidPayload(raw: SyncResponse, item: ItemMark): PlaidPayload 
     // transactions is the arrangement rather than a fault. Filed under errors
     // it became the provider's error, and the provider's error is what makes
     // the whole of Plaid read as failing.
-    notes: raw.notReady
+    // Said once for a connection that might yet carry transactions, and not at
+    // all for one that never will. A mortgage has no transactions by its
+    // nature, so "none ready yet" is the arrangement rather than news, and a
+    // sentence repeated after every pull for ever is how somebody learns to
+    // skim the notes that do matter.
+    notes: raw.notReady && !onlyLoans(accounts)
       ? [`${item.institution}: Plaid has no transactions ready for this connection yet. `
         + "Balances are up to date. Some connections, a mortgage among them, never carry transactions at all."]
       : [],

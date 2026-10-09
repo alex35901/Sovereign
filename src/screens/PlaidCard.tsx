@@ -803,6 +803,33 @@ export function PlaidCard() {
       {(db.settings.deletedAccountKeys?.length ?? 0) > 0 ? (
         <>
           <div className="divider" />
+          {/* The ones a live connection is still offering, named and undone one
+              at a time. A tombstone that nothing is sending is a delete that
+              worked; one the bank repeats every night is an account whose
+              balance has quietly stopped moving, and the two should not be
+              answered by the same blunt button. */}
+          {(db.settings.refusedAccounts ?? []).length ? (
+            <div className="col" style={{ gap: 8, marginBottom: 14 }}>
+              {[...new Map((db.settings.refusedAccounts ?? []).map((r) => [r.name, r])).values()].map((r) => (
+                <div className="spread wrap" key={r.name} style={{ gap: 10 }}>
+                  <span className="small" style={{ maxWidth: 520 }}>
+                    <b>{r.institution} is still sending {r.name}, and it is being turned away.</b>{" "}
+                    It was deleted here on purpose, so its balance and transactions are left out of every pull.
+                  </span>
+                  <Btn
+                    onClick={() => {
+                      actions.letDeletedAccountBack(
+                        (db.settings.refusedAccounts ?? []).filter((x) => x.name === r.name).map((x) => x.key),
+                      );
+                      notify(`${r.name} will be taken again on the next sync.`);
+                    }}
+                  >
+                    Let it back
+                  </Btn>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="spread wrap" style={{ gap: 10 }}>
             <span className="small muted" style={{ maxWidth: 520 }}>
               <b>{db.settings.deletedAccountKeys!.length} deleted account

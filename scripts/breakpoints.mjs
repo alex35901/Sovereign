@@ -10736,6 +10736,69 @@ try {
     await bo.close();
   }
 
+  if (want("refused")) {
+    // ── an account the bank keeps sending and this document keeps refusing ──
+    //
+    // A tombstone is silent by design, which is right for a delete somebody
+    // meant and wrong for a mortgage whose balance quietly stopped moving. The
+    // way back used to be one button that forgot every delete at once, which
+    // is not a thing anybody should have to do to fix one account.
+    const rf = await browser.newContext({ viewport: { width: 1280, height: 1200 } });
+    const warm = await rf.newPage();
+    await warm.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(1500);
+    await warm.close();
+
+    await rf.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        db.settings = {
+          ...db.settings,
+          deletedAccountKeys: ["name:newrez|newrez llc", "name:old bank|something else"],
+          refusedAccounts: [{
+            key: "name:newrez|newrez llc", name: "Newrez LLC", institution: "NewRez",
+            at: "2026-10-01T09:00:00.000Z",
+          }],
+        };
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const rp = await rf.newPage();
+    await rp.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await rp.waitForTimeout(1400);
+
+    const said = rp.locator('text=/is still sending Newrez LLC/');
+    check("the account being turned away is named where it can be undone",
+      await said.count() > 0, "nothing on the settings page says which account is being refused");
+
+    const button = rp.locator('button:text-is("Let it back")');
+    check("and offers to let that one back", await button.count() === 1,
+      `${await button.count()} buttons`);
+
+    if (await button.count() === 1) {
+      await button.first().click();
+      await rp.waitForTimeout(900);
+      const after = await rp.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        return {
+          keys: db.settings.deletedAccountKeys ?? [],
+          refused: db.settings.refusedAccounts ?? [],
+        };
+      });
+      check("which lets back that one and leaves every other delete alone",
+        after.keys.length === 1 && after.keys[0] === "name:old bank|something else",
+        `tombstones left: ${after.keys.join(", ")}`);
+      check("and stops saying it is being refused",
+        after.refused.length === 0 && await said.count() === 0,
+        `${after.refused.length} still on the record`);
+    }
+    await rp.close();
+    await rf.close();
+  }
+
   if (want("tiles")) {
     // ── every metric tile reads centred ──
     //

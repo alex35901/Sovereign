@@ -571,6 +571,22 @@ export interface Settings {
    */
   deletedAccountKeys?: string[];
   /**
+   * The accounts a provider is still offering that those tombstones refuse.
+   *
+   * A tombstone is silent by design: the account simply does not arrive. That
+   * is right for a delete somebody meant, and quietly wrong for the case this
+   * records, where the connection is live, the bank is sending the account
+   * every night, and its balance has stopped moving because a tombstone from
+   * months ago still matches it by name. The note said so in prose, in a card
+   * nobody opens. This is the same fact in a form the app can raise a notice
+   * about and offer to undo for that one account.
+   *
+   * Rewritten on every pull, but only for the accounts that pull mentioned, so
+   * one bank's refusals never clear another's, and an account that comes back
+   * takes its own entry away with it.
+   */
+  refusedAccounts?: { key: string; name: string; institution: string; at: string }[];
+  /**
    * The SimpleFIN bridge, when one is connected.
    *
    * One connection, not a list: a bridge is the household's own account at it

@@ -105,6 +105,16 @@ export function mergeSync(
   const tombstones = new Set(db.settings.deletedAccountKeys ?? []);
 
   const suppressed: string[] = [];
+  /**
+   * The same refusals, kept in full so the document can record them.
+   *
+   * The prose above is for a card. This is for the notice that says a live
+   * connection is being turned away, and for the button that lets that one
+   * account back without forgetting every other delete the household meant.
+   */
+  const refused: { key: string; name: string; institution: string; at: string }[] = [];
+  /** Every account key this pull mentioned, refused or not. */
+  const offered = new Set<string>();
   const migrated: string[] = [];
 
   for (const r of payload.accounts) {
@@ -137,9 +147,13 @@ export function mergeSync(
     // looking at. Testing a connection, deleting what it made and then moving
     // the real accounts onto it is an ordinary afternoon, and it used to leave
     // every pull silently turned away at the door.
-    if (!existing
-      && accountKeys({ syncId: r.syncId, name: r.name, institution: r.institution }).some((k) => tombstones.has(k))) {
+    const keys = accountKeys({ syncId: r.syncId, name: r.name, institution: r.institution });
+    for (const k of keys) offered.add(k);
+    if (!existing && keys.some((k) => tombstones.has(k))) {
       suppressed.push(r.name);
+      for (const key of keys.filter((k) => tombstones.has(k))) {
+        refused.push({ key, name: r.name, institution: r.institution, at: payload.fetchedAt });
+      }
       continue;
     }
 
@@ -455,10 +469,26 @@ export function mergeSync(
     }
   }
 
+  /**
+   * The standing record of what this document is refusing.
+   *
+   * Only the keys this pull mentioned are rewritten. A pull from one bank must
+   * not clear another's refusals, and an account that has started arriving
+   * again takes its own entry away with it without anybody pressing anything.
+   */
+  const held = (db.settings.refusedAccounts ?? []).filter((r) => !offered.has(r.key));
+  const standing = [...held, ...refused];
+  const same = standing.length === (db.settings.refusedAccounts ?? []).length
+    && standing.every((r, i) => r.key === db.settings.refusedAccounts![i]!.key);
+
   return {
     db: {
       ...db, accounts, transactions, holdings,
-      settings: { ...db.settings, lastSyncAt: payload.fetchedAt },
+      settings: {
+        ...db.settings,
+        lastSyncAt: payload.fetchedAt,
+        ...(same ? {} : { refusedAccounts: standing }),
+      },
     },
     accountsAdded, accountsUpdated, transactionsAdded: fresh.length,
     transactionsRevised: revised.size, holdingsUpdated,

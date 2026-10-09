@@ -3084,6 +3084,89 @@ await test("a deleted account does not come back on the next sync", () => {
   assert.equal(again.transactionsAdded, 0, "and must not bring its transactions with it");
 });
 
+await test("an account a live connection keeps offering is recorded, not just mentioned", () => {
+  // The failure this is for: a mortgage whose account was deleted here months
+  // ago, still sent by the bank every night and turned away at the door every
+  // night. The refusal was a sentence in a card nobody opens, so the first
+  // sign was a balance that looked stale and no way to tell whether it was.
+  const db = {
+    ...M.emptyDB(),
+    settings: { ...M.emptyDB().settings, deletedAccountKeys: ["name:test bank|everyday"] },
+  };
+  const res = M.mergeSync(db, syncPayload({ syncId: "a-different-id" }), "plaid");
+  assert.equal(res.accountsAdded, 0, "it stays refused, which is the delete working");
+  assert.deepEqual(res.suppressed, ["Everyday"]);
+
+  const refused = res.db.settings.refusedAccounts;
+  assert.equal(refused.length, 1, "and the document now says so, rather than only the card");
+  assert.equal(refused[0].name, "Everyday");
+  assert.equal(refused[0].institution, "Test Bank", "named, so the notice can say which bank is sending it");
+  assert.equal(refused[0].key, "name:test bank|everyday", "by the tombstone that refused it, so one press can undo that one");
+
+  // The household lets that one back. The next pull takes the account and the
+  // standing record clears itself.
+  const allowed = {
+    ...res.db,
+    settings: { ...res.db.settings, deletedAccountKeys: [], refusedAccounts: [] },
+  };
+  const back = M.mergeSync(allowed, syncPayload({ syncId: "a-different-id" }), "plaid");
+  assert.equal(back.accountsAdded, 1, "it arrives once nothing refuses it");
+  assert.deepEqual(back.db.settings.refusedAccounts, [], "and nothing is still claiming it is being turned away");
+
+  // Or they do nothing, and it simply starts arriving again at the far end.
+  // The entry must clear itself either way, or the notice outlives the fact.
+  const healed = M.mergeSync(
+    { ...res.db, settings: { ...res.db.settings, deletedAccountKeys: [] } },
+    syncPayload({ syncId: "a-different-id" }),
+    "plaid",
+  );
+  assert.deepEqual(healed.db.settings.refusedAccounts, [], "an account that came back takes its own entry with it");
+});
+
+await test("one bank's pull does not clear another bank's refusal", () => {
+  // Each connection pulls on its own, so a record rewritten wholesale would
+  // last exactly as long as the next bank's sync. The mortgage would be
+  // refused every night and reported on only the nights it pulled last.
+  const db = {
+    ...M.emptyDB(),
+    settings: {
+      ...M.emptyDB().settings,
+      deletedAccountKeys: ["name:test bank|everyday", "name:other bank|mortgage"],
+      refusedAccounts: [{
+        key: "name:other bank|mortgage", name: "Mortgage", institution: "Other Bank",
+        at: "2026-09-01T09:00:00.000Z",
+      }],
+    },
+  };
+  const res = M.mergeSync(db, syncPayload({ syncId: "a-different-id" }), "plaid");
+  const keys = res.db.settings.refusedAccounts.map((r) => r.key).sort();
+  assert.deepEqual(keys, ["name:other bank|mortgage", "name:test bank|everyday"],
+    "the bank that did not pull keeps its own");
+});
+
+await test("a connection being turned away is raised as a notice, not left in a card", () => {
+  const base = M.emptyDB();
+  const db = {
+    ...base,
+    settings: {
+      ...base.settings,
+      deletedAccountKeys: ["name:newrez|newrez llc"],
+      refusedAccounts: [{
+        key: "name:newrez|newrez llc", name: "Newrez LLC", institution: "NewRez",
+        at: "2026-09-20T09:00:00.000Z",
+      }],
+    },
+  };
+  const notices = M.NT.notices(db, "2026-09-25");
+  const said = notices.find((n) => n.id.startsWith("refused:"));
+  assert.ok(said, "the household is told");
+  assert.match(said.title, /Newrez LLC/);
+  assert.match(said.body, /left\s+out/, "and told what it costs them");
+  assert.equal(said.to, "/settings", "with somewhere to go about it");
+  assert.equal(M.NT.notices(base, "2026-09-25").some((n) => n.id.startsWith("refused:")), false,
+    "and nothing is said when nothing is being refused");
+});
+
 await test("a tombstone matches on name too, for an account deleted before it had a sync id", () => {
   const db = {
     ...M.emptyDB(),
@@ -5331,6 +5414,45 @@ await test("a connection Plaid has no transactions for still brings its balances
   const fine = M.toPlaidPayload({ accounts: [], transactions: [], holdings: [], securities: [] }, { institution: "X" });
   assert.deepEqual(fine.errors, []);
   assert.deepEqual(fine.notes, []);
+});
+
+await test("a connection that can never carry transactions stops saying it has none", () => {
+  // True on the first pull and true on the four hundredth. A servicer holds a
+  // balance owed and has nothing month to month that Plaid calls a
+  // transaction, so "none ready yet" describes the arrangement rather than
+  // reporting anything, and a sentence repeated after every pull for ever is
+  // how somebody learns to skim the notes that do matter.
+  const mortgage = [{
+    account_id: "m1", name: "Mortgage", type: "loan", subtype: "mortgage",
+    balances: { current: 312_000, iso_currency_code: "USD" },
+  }];
+  const quiet = M.toPlaidPayload(
+    { accounts: mortgage, transactions: [], holdings: [], securities: [], notReady: true },
+    { institution: "Valon Mortgage" },
+  );
+  assert.equal(quiet.accounts[0].type, "mortgage");
+  assert.deepEqual(quiet.notes, [], "nothing to report about a connection that works exactly as it always will");
+  assert.deepEqual(quiet.errors, []);
+
+  // A connection that might yet carry transactions still says so: a bank
+  // linked this morning is genuinely still preparing, and that is worth the
+  // sentence.
+  const mixed = M.toPlaidPayload({
+    accounts: [...mortgage, {
+      account_id: "c1", name: "Everyday", type: "depository", subtype: "checking",
+      balances: { current: 10, iso_currency_code: "USD" },
+    }],
+    transactions: [], holdings: [], securities: [], notReady: true,
+  }, { institution: "Third National" });
+  assert.equal(mixed.notes.length, 1, "a connection holding anything else is still worth a word");
+
+  // And an empty pull says nothing either way, rather than guessing that a
+  // connection which sent no accounts at all is a mortgage.
+  const nothing = M.toPlaidPayload(
+    { accounts: [], transactions: [], holdings: [], securities: [], notReady: true },
+    { institution: "Third National" },
+  );
+  assert.equal(nothing.notes.length, 1);
 });
 
 await test("a mortgage that carries no transactions does not call Plaid broken", () => {

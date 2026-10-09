@@ -707,6 +707,45 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
     });
   }
 
+  /**
+   * An account the provider keeps offering and this document keeps refusing.
+   *
+   * A tombstone is silent by design, which is right for a delete somebody
+   * meant and quietly wrong here: the connection is live, the bank sends the
+   * account every night, and its balance stopped moving because a tombstone
+   * from months ago still matches it by name. The only sign was a sentence in
+   * a card nobody opens, so the first clue was a figure that looked stale and
+   * a suspicion rather than a fact.
+   */
+  const refused = new Map<string, { names: string[]; at: string; keys: string[] }>();
+  for (const row of db.settings.refusedAccounts ?? []) {
+    const bank = row.institution.trim() || row.name;
+    const held = refused.get(bank.toLowerCase());
+    if (held) {
+      if (!held.names.includes(row.name)) held.names.push(row.name);
+      held.keys.push(row.key);
+      if (row.at < held.at) held.at = row.at;
+    } else refused.set(bank.toLowerCase(), { names: [row.name], at: row.at, keys: [row.key] });
+  }
+
+  for (const [key, { names, at }] of refused) {
+    const one = names.length === 1;
+    out.push({
+      // Keyed on which accounts are being refused, so letting one back and
+      // leaving another does not silence what is left.
+      id: `refused:${key}:${[...names].map((n) => n.toLowerCase()).sort().join("|")}`,
+      kind: "connection",
+      title: `${listed(names)} ${one ? "is" : "are"} being turned away`,
+      body: `The connection is sending ${one ? "it" : "them"} on every pull, and ${one ? "an account" : "accounts"} `
+        + `of that name ${one ? "was" : "were"} deleted here on purpose, so the balance and transactions are left `
+        + "out. Let it back in Settings if that is not what you meant.",
+      at: at.slice(0, 10),
+      when: sinceLabel(at, new Date(`${now}T12:00:00.000Z`)),
+      to: "/settings",
+      tone: "warn",
+    });
+  }
+
   // ── a goal passing a mark somebody would recognise ──
   //
   // Read off the dated series rather than off the live figure, because the

@@ -404,6 +404,8 @@ export interface Actions {
   closeAccount: (id: ID) => void;
   reopenAccount: (id: ID) => void;
   forgetDeletedAccounts: () => void;
+  /** Let one deleted account back, leaving every other tombstone in place. */
+  letDeletedAccountBack: (keys: string[]) => void;
 
   addTransaction: (t: Omit<Transaction, "id" | "createdAt" | "tags"> & { tags?: ID[] }) => void;
   /**
@@ -683,8 +685,31 @@ function makeActions(apply: (fn: Mutator, label?: string) => void, notify: (m: s
     forgetDeletedAccounts: () =>
       apply((db) => ({
         ...db,
-        settings: { ...db.settings, deletedAccountKeys: [] },
+        settings: { ...db.settings, deletedAccountKeys: [], refusedAccounts: [] },
       }), "forget deleted accounts"),
+
+    /**
+     * One account let back, rather than every delete forgotten.
+     *
+     * The blunt version is the right answer to "I deleted that by mistake" and
+     * the wrong one to "this mortgage stopped updating": forgetting every
+     * tombstone invites back everything else the household meant to be rid of,
+     * on the next pull, unasked.
+     */
+    letDeletedAccountBack: (keys) =>
+      apply((db) => {
+        const gone = new Set(keys);
+        return {
+          ...db,
+          settings: {
+            ...db.settings,
+            deletedAccountKeys: (db.settings.deletedAccountKeys ?? []).filter((k) => !gone.has(k)),
+            // Taken off the standing record now rather than on the next pull,
+            // so the notice clears when the button is pressed.
+            refusedAccounts: (db.settings.refusedAccounts ?? []).filter((r) => !gone.has(r.key)),
+          },
+        };
+      }, "let a deleted account back"),
 
     addTransaction: (t) =>
       apply((db) => {
