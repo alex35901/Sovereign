@@ -228,7 +228,11 @@ export const isDay = (d: string): boolean =>
 
 /* ── talking to the provider ──────────────────────────────────────────── */
 
-interface HistoryResponse { history?: Record<string, { date: string; close: number }[]> }
+interface HistoryResponse {
+  history?: Record<string, { date: string; close: number }[]>;
+  asked?: string[];
+  error?: string;
+}
 
 /**
  * Closes for one symbol over a window, in cents.
@@ -243,7 +247,9 @@ export async function fetchHistory(
   from: ISODate,
   to: ISODate,
 ): Promise<{ date: ISODate; close: number }[]> {
-  return (await fetchHistories(apiKey, [ticker], from, to))[ticker.toUpperCase()] ?? [];
+  const out = await fetchHistories(apiKey, [ticker], from, to);
+  if (out.error && !out.asked.length) throw new Error(out.error);
+  return out.rows[ticker.toUpperCase()] ?? [];
 }
 
 /**
@@ -256,14 +262,30 @@ export async function fetchHistory(
  */
 export const HISTORY_BATCH = 4;
 
-/** The same, for several symbols at once. Keyed by symbol, upper-cased. */
+export interface Histories {
+  /** Closing prices, keyed by symbol, upper-cased. */
+  rows: Record<string, { date: ISODate; close: number }[]>;
+  /**
+   * The symbols the provider was actually asked about.
+   *
+   * What separates "this fund has no closing prices and never will" from "the
+   * allowance ran out before we got to it". Both arrive here with no rows, and
+   * only the first is worth remembering: stamping the second would hold off
+   * the retry for half a day over a question nobody asked.
+   */
+  asked: string[];
+  /** Why the run stopped early, when it did. Everything above it still stands. */
+  error?: string;
+}
+
+/** The same, for several symbols at once. */
 export async function fetchHistories(
   apiKey: string,
   tickers: readonly string[],
   from: ISODate,
   to: ISODate,
-): Promise<Record<string, { date: ISODate; close: number }[]>> {
-  const out: Record<string, { date: ISODate; close: number }[]> = {};
+): Promise<Histories> {
+  const out: Histories = { rows: {}, asked: [] };
   for (let i = 0; i < tickers.length; i += HISTORY_BATCH) {
     const batch = tickers.slice(i, i + HISTORY_BATCH);
     // Sequential, deliberately: a page with forty positions would otherwise
@@ -272,10 +294,22 @@ export async function fetchHistories(
       apiKey: apiKey.trim(), history: batch, from, to,
     });
     for (const [ticker, rows] of Object.entries(res.history ?? {})) {
-      out[ticker.toUpperCase()] = rows
+      out.rows[ticker.toUpperCase()] = rows
         .filter((r) => isDay(r.date) && Number.isFinite(r.close) && r.close > 0)
         .map((r) => ({ date: r.date, close: Math.round(r.close * 100) }));
     }
+    /*
+     * What the proxy says it asked about, or the whole batch when it does not
+     * say. A browser can be newer than the function answering it for as long
+     * as a deploy takes, and the old answer carries rows and no list; reading
+     * that as "nothing was asked" would throw away rows that are right there
+     * in the response. The batch is what was asked for, which is the same
+     * thing whenever the run was not cut short.
+     */
+    for (const t of res.asked ?? batch) out.asked.push(t.toUpperCase());
+    // The allowance or the key, which every symbol behind this one would hit
+    // the same way. Everything already answered is kept and returned.
+    if (res.error) { out.error = res.error; break; }
   }
   return out;
 }

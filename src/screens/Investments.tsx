@@ -124,12 +124,23 @@ export default function Investments() {
    * over the period. Asked for together so the fetch below can batch them.
    */
   const wanted = useMemo(() => {
-    // The lines a reader has chosen lead the queue. The provider's free tier
-    // allows fifty requests an hour and a portfolio of forty positions is
-    // forty of them, so whatever is last in this list is what goes without.
-    // It used to be the comparison lines, which are the subject of this card
-    // rather than a column in the table under it.
-    const out = new Set(picked);
+    /*
+     * The three benchmarks lead the queue, chosen or not.
+     *
+     * The provider's free tier allows fifty requests an hour and there is no
+     * batch endpoint, so a table of forty positions is forty of them and
+     * whatever is last in this list is what goes without. Putting the chosen
+     * lines first was not enough, because on arrival nothing is chosen yet:
+     * the page spent the whole hour on positions, and by the time a reader
+     * pressed a comparison pill there was nothing left to answer with. It read
+     * "no reading" every visit, for ever, which is exactly what it was.
+     *
+     * Three fixed symbols every twelve hours is what this costs, against an
+     * allowance of fifty an hour, and it is the difference between a card that
+     * works and a card that never has.
+     */
+    const out = new Set(BENCHMARKS.map((b) => b.ticker));
+    for (const t of picked) out.add(t);
     for (const t of holdingTickers(db, MAX_TICKERS)) out.add(t);
     return [...out];
   }, [db, picked]);

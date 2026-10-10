@@ -72,18 +72,31 @@ export function useHistories(tickers: readonly string[], apiKey: string) {
       // a limited hour on answers nobody will get.
       if (stopped) { for (const t of batch) busy.current.delete(t); continue; }
       try {
-        const rows = await fetchHistories(apiKey, batch, from, to);
+        const got = await fetchHistories(apiKey, batch, from, to);
         const at = new Date().toISOString();
         const merged: Record<string, PriceHistory> = {};
-        for (const t of batch) {
-          const next = mergeCloses(cached[t].dates.length ? cached[t] : emptyHistory(t), rows[t] ?? [], at);
+        /*
+         * Only what was really asked about is written down.
+         *
+         * A run cut short by the allowance answers for the symbols it reached
+         * and no others. Keeping those is the whole point: the requests were
+         * paid for, and a browser that threw them away asked for the same ones
+         * again on the next visit and lost them at the same place, for ever.
+         *
+         * Stamping the ones it never reached would be worse than useless: an
+         * empty history with a fresh date on it holds off the retry for half a
+         * day over a question nobody got round to asking.
+         */
+        for (const t of got.asked) {
+          const next = mergeCloses(cached[t]?.dates.length ? cached[t] : emptyHistory(t), got.rows[t] ?? [], at);
           // Stamped even when the provider had nothing new, or a quiet market
           // puts the page into a request loop.
           saveHistory(next);
           if (!next.dates.length) empty = true;
           merged[t] = next;
         }
-        setData((cur) => ({ ...cur, ...merged }));
+        if (got.error) stopped = got.error;
+        if (Object.keys(merged).length) setData((cur) => ({ ...cur, ...merged }));
       } catch (err) {
         stopped = err instanceof Error && err.message
           ? err.message

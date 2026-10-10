@@ -11610,12 +11610,64 @@ await test("a history request is answered by the same endpoint the quotes use", 
     () => invokePrices({ apiKey: "k", history: ["SPY"], from: "2026-09-01", to: "2026-09-02" }),
   );
   assert.equal(res.status, 200);
-  assert.deepEqual(JSON.parse(res.text), { history: { SPY: [{ date: "2026-09-01", close: 9 }] } });
+  assert.deepEqual(JSON.parse(res.text), { history: { SPY: [{ date: "2026-09-01", close: 9 }] }, asked: ["SPY"] });
 
   // Missing dates is a bad request, not an empty answer that looks like a
   // symbol nobody has heard of.
   const nodates = await invokePrices({ apiKey: "k", history: ["SPY"] });
   assert.equal(nodates.status, 400);
+});
+
+await test("the symbols already paid for are kept when the allowance runs out", async () => {
+  // The whole of the fault. The free tier allows fifty requests an hour and a
+  // portfolio of forty positions is forty of them, so a reader with a full
+  // table runs out part way through most visits. This used to answer with the
+  // error and nothing else: the requests spent on the symbols before it had
+  // been paid for, their answers were thrown away, the browser cached nothing,
+  // and the next visit asked for exactly the same symbols and lost them at
+  // exactly the same place. The comparison lines, which lead the queue, never
+  // once arrived.
+  const rows = [{ date: "2026-09-01", close: 10, adjClose: 9 }];
+  let n = 0;
+  const res = await withFetch(async () => {
+    n += 1;
+    // The third symbol is where the hour's allowance runs out.
+    return n >= 3
+      ? new Response("slow down", { status: 429 })
+      : new Response(JSON.stringify(rows), { status: 200 });
+  }, () => invokePrices({
+    apiKey: "k", history: ["SPY", "VTI", "BND", "FDRXX"], from: "2026-09-01", to: "2026-09-02",
+  }));
+
+  assert.equal(res.status, 200, "an answer with real rows in it is not an error response");
+  const body = JSON.parse(res.text);
+  assert.deepEqual(Object.keys(body.history).sort(), ["SPY", "VTI"], "what was paid for is handed back");
+  assert.deepEqual(body.asked, ["SPY", "VTI"], "and exactly those were asked about");
+  assert.match(body.error, /50 requests an hour/, "with the reason the rest are missing");
+  assert.equal(n, 3, "and nothing behind the refusal is asked for, since it would be refused too");
+});
+
+await test("a symbol the run never reached is not recorded as having no prices", async () => {
+  // The trap in keeping partial answers. A fund the provider has never heard
+  // of answers with nothing, and that is worth writing down so nobody spends
+  // another request learning it again. A symbol the run stopped short of also
+  // has nothing, and writing that down would hold off its retry for half a day
+  // over a question nobody got round to asking. The two are told apart by
+  // which symbols the server says it asked about.
+  const rows = [{ date: "2026-09-01", close: 10, adjClose: 9 }];
+  let n = 0;
+  const res = await withFetch(async () => {
+    n += 1;
+    if (n === 2) return new Response("[]", { status: 200 });     // heard of nobody
+    if (n === 3) return new Response("nope", { status: 429 });   // never reached
+    return new Response(JSON.stringify(rows), { status: 200 });
+  }, () => invokePrices({
+    apiKey: "k", history: ["SPY", "FDRXX", "VTI"], from: "2026-09-01", to: "2026-09-02",
+  }));
+
+  const body = JSON.parse(res.text);
+  assert.deepEqual(body.asked, ["SPY", "FDRXX"], "the one with no prices was asked; the one behind the refusal was not");
+  assert.deepEqual(Object.keys(body.history), ["SPY"], "and only one of them had anything to give");
 });
 
 await test("a date stays a proper noun in the middle of a sentence", () => {

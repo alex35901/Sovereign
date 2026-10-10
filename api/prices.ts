@@ -55,12 +55,41 @@ export default async function handler(req: ApiRequest, res: ServerResponse): Pro
 
     const want = body.history.filter((t): t is string => typeof t === "string").slice(0, MAX_HISTORY);
     const out: Record<string, { date: string; close: number }[]> = {};
+    /**
+     * The symbols actually asked about, answer or no answer.
+     *
+     * Not the same as the ones with rows: a provider that has never heard of a
+     * money-market fund answers with nothing, and that is an answer worth
+     * remembering so nobody spends another request learning it again. A symbol
+     * the run never reached is a different thing entirely and must not be
+     * recorded as having been asked.
+     */
+    const asked: string[] = [];
+    let error: string | undefined;
     for (const ticker of want) {
       const r = await fetchHistory(apiKey, ticker, from, to);
-      if (r.fatal) return send(r.status ?? 502, { error: r.fatal });
+      /*
+       * Stop, but keep what the earlier symbols cost.
+       *
+       * This used to return the error and nothing else. The requests already
+       * spent on the symbols before it had been paid for out of an allowance
+       * of fifty an hour, their answers were thrown away, and the browser
+       * cached nothing — so the next visit asked for exactly the same symbols
+       * and threw them away again at exactly the same point. A reader with
+       * more positions than the allowance never saw a single comparison line,
+       * for ever, while every hour's allowance went on answers nobody kept.
+       *
+       * The run still stops: what failed is the key or the allowance, so every
+       * symbol behind it would fail the same way.
+       */
+      if (r.fatal) { error = r.fatal; break; }
+      asked.push(r.ticker);
       if (r.rows.length) out[r.ticker] = r.rows;
     }
-    return send(200, { history: out });
+    // Two hundred with the reason inside it, rather than a status that throws
+    // away the body: the rows above are real and the reason is worth reading,
+    // and the caller needs both in the same answer.
+    return send(200, error ? { history: out, asked, error } : { history: out, asked });
   }
 
   if (!Array.isArray(body.tickers) || !body.tickers.length) {

@@ -5187,31 +5187,32 @@ try {
         // and refetching on every press would spend a request each time. The
         // table asks for every position it lists, so what matters is the width
         // of each window and that the symbol just chosen is among them.
+        const everything = [...onLoad, ...asked];
         check("which fetches one window wide enough for every period on offer",
-          asked.length > 0
-          && asked.every((a) => Number(a.to.slice(0, 4)) - Number(a.from.slice(0, 4)) >= 5)
-          && asked.some((a) => a.tickers.includes("SPY")),
-          JSON.stringify(asked));
+          everything.length > 0
+          && everything.every((a) => Number(a.to.slice(0, 4)) - Number(a.from.slice(0, 4)) >= 5)
+          && everything.some((a) => a.tickers.includes("SPY")),
+          JSON.stringify(everything));
         // Batched rather than one connection per symbol: a page that opens
         // with a table full of positions would otherwise fan out.
         check("and asks for several symbols per request rather than one each",
           [...onLoad, ...asked].every((a) => a.tickers.length <= 4)
           && onLoad.some((a) => a.tickers.length > 1),
           `${onLoad.map((a) => a.tickers.length).join(",")} opening, ${asked.map((a) => a.tickers.length).join(",")} after`);
-        // What the symbols already answered for cost the second time, which
-        // is nothing. Asking again for every position on every visit is what
-        // spent a free tier's hour before the chosen line reached the front.
-        check("and the table's own positions are not asked for a second time",
-          asked.length === 1 && asked[0].tickers.length === 1,
-          `${asked.length} requests, ${asked.map((a) => a.tickers.join("+")).join(" then ")}`);
-        // The order the queue goes out in, which is what decides who goes
-        // without. The free tier allows fifty requests an hour and the table
-        // asks about every position it lists, so a line at the back of that
-        // queue is the one that comes back empty. The chart is the subject of
-        // this card; the table's figures are a column under it.
-        check("putting the line just chosen at the front of the queue, not behind the table",
-          asked[0].tickers.includes("SPY"),
-          asked.map((a) => a.tickers.join("+")).join(" then "));
+        // Choosing a line costs nothing at all, which is the point.
+        //
+        // The three benchmarks go out before the table's positions now, chosen
+        // or not. Putting the chosen ones first was not enough: on arrival
+        // nothing is chosen, so the whole of a free tier's hour went on
+        // positions and the pill a reader then pressed had nothing left to
+        // answer with. It read "no reading" every visit, which is what a
+        // reader reported it doing.
+        check("and choosing one costs no request, because it was fetched before the table was",
+          asked.length === 0,
+          `${asked.length} requests after the press: ${asked.map((a) => a.tickers.join("+")).join(" then ")}`);
+        check("which means the three markets lead the queue, ahead of the positions",
+          onLoad.length > 0 && onLoad[0].tickers.slice(0, 3).join("+") === "SPY+VTI+BND",
+          onLoad.map((a) => a.tickers.join("+")).join(" then "));
 
         // A line with nothing behind it has to say which nothing. "No reading"
         // is the same three words for a provider nobody has given a token to,
@@ -10755,6 +10756,101 @@ try {
       }), "a full bar is still drawn against a ceiling it does not have");
     await bp.close();
     await bo.close();
+  }
+
+  if (want("benchmarks")) {
+    // ── a comparison line that arrives, and stays arrived ──
+    //
+    // The free tier allows fifty requests an hour and there is no batch
+    // endpoint, so a table of positions can spend the hour before the three
+    // lines this card is about are reached. What made that permanent was the
+    // proxy answering a spent allowance with the error alone: the symbols
+    // already paid for were thrown away, nothing was cached, and the next
+    // visit lost them at the same place. Every visit, for ever.
+    const bm = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
+    const warm = await bm.newPage();
+    await warm.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(1600);
+    // Cleared here rather than in an init script, which would run on every
+    // page in this context and wipe the cache the second visit is about.
+    await warm.evaluate(() => localStorage.removeItem("sovereign.benchmarks.v1"));
+    await warm.close();
+
+    // A token, or the page does not try at all.
+    await bm.addInitScript(() => {
+      try {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        db.settings = { ...db.settings, tiingoApiKey: "test-token" };
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    // The provider, with an allowance that runs out after two symbols.
+    let spent = 0;
+    const closes = [];
+    for (let i = 0; i < 400; i++) {
+      const d = new Date(Date.UTC(2026, 0, 1) + i * 86_400_000).toISOString().slice(0, 10);
+      closes.push({ date: d, close: 100 + i, adjClose: 100 + i });
+    }
+    const serve = async (route) => {
+      const body = JSON.parse(route.request().postData() ?? "{}");
+      if (!Array.isArray(body.history)) return route.fulfill({ status: 200, body: JSON.stringify({ quotes: {} }) });
+      const out = {};
+      const asked = [];
+      let error;
+      for (const t of body.history) {
+        if (spent >= 2) { error = "Tiingo's free tier allows 50 requests an hour. The comparison will fill in on the next try."; break; }
+        spent += 1;
+        asked.push(t);
+        out[t] = closes;
+      }
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(error ? { history: out, asked, error } : { history: out, asked }),
+      });
+    };
+
+    const inv = await bm.newPage();
+    await inv.route("**/api/prices", serve);
+    await inv.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+    await inv.waitForTimeout(1200);
+    await inv.locator('button:text-is("S&P 500")').first().click();
+    await inv.waitForTimeout(2500);
+
+    const reading = async (page) => page.evaluate(() => {
+      const row = [...document.querySelectorAll(".cmp-item, .chart-legend span, .bc-legend span")]
+        .map((e) => e.innerText.trim()).filter(Boolean);
+      return row.join(" | ");
+    });
+
+    const legend = await inv.evaluate(() => document.body.innerText);
+    check("a comparison line that the allowance reached actually reads",
+      /S&P 500/.test(legend) && !/S&P 500\s*no reading/.test(legend),
+      (await reading(inv)) || legend.slice(0, 120));
+    const afterFirst = spent;
+    await inv.close();
+
+    // Now the allowance is gone entirely. The line must still draw, because
+    // what was paid for the first time was kept.
+    spent = 99;
+    const again = await bm.newPage();
+    await again.route("**/api/prices", serve);
+    await again.goto(`${BASE}/investments`, { waitUntil: "networkidle" });
+    await again.waitForTimeout(1200);
+    await again.locator('button:text-is("S&P 500")').first().click();
+    await again.waitForTimeout(2500);
+    const second = await again.evaluate(() => document.body.innerText);
+    check("and still reads on the next visit, with the allowance spent",
+      /S&P 500/.test(second) && !/S&P 500\s*no reading/.test(second),
+      second.slice(0, 160));
+    // What the browser did with the answer, not what the proxy did to produce
+    // it: the provider is stubbed here, and the proxy keeping what it paid for
+    // is checked in the unit suite where the real handler runs.
+    check("because the browser wrote down what it was given",
+      afterFirst > 0 && JSON.parse(await again.evaluate(() => localStorage.getItem("sovereign.benchmarks.v1") ?? "null"))?.series?.SPY?.dates?.length > 0,
+      `${afterFirst} symbols were paid for on the first visit`);
+    await again.close();
+    await bm.close();
   }
 
   if (want("backtrack")) {
