@@ -12,7 +12,7 @@ import "./index.css";
  * can be written down for the browser and the one place they cannot be read
  * from here. Kept in step by hand, and the cost of them drifting is a frame.
  */
-const BOOT_MS = 1320;
+const BOOT_MS = 2000;
 const BOOT_FADE_MS = 260;
 
 /**

@@ -34,6 +34,20 @@ const source = resolve(root, "design/logo-source.png");
 export const ORANGE = [0xec, 0x71, 0x32];
 const FILL = 0.72;
 
+/**
+ * The mark with no tile under it, for the opening hop.
+ *
+ * White on transparency, which is not a picture of the rabbit but a stencil of
+ * it: the page paints through it in whichever orange the theme is wearing, so
+ * one file serves both and the colour stays with the tokens rather than being
+ * baked into a PNG that has to be regenerated to change it.
+ *
+ * Wider in its frame than the tile version, because there is no tile: 0.72
+ * leaves the margin a rounded square needs, and on its own that margin is just
+ * a mark that looks smaller than it is.
+ */
+const MARK = ["public/mark-192.png", 192, 0.94, "the opening hop, as a stencil to paint through"];
+
 const CHROME = process.env.CHROME_PATH;
 
 /** Every size, and why it exists. */
@@ -139,6 +153,24 @@ try {
       img{position:absolute;left:${dx * k}px;top:${dy * k}px;width:${cut.n * scale * k}px;height:auto}
     </style><img src="${cut.url}">`);
     await shot.screenshot({ path: resolve(root, file), omitBackground: false });
+    await shot.close();
+    console.log(`icons: ${file} — ${size}x${size} (${why})`);
+  }
+  // The stencil, on transparency rather than on the orange tile.
+  {
+    const [file, size, fill, why] = MARK;
+    const shot = await browser.newPage({ viewport: { width: size, height: size }, deviceScaleFactor: 1 });
+    const markScale = (fill * cut.n) / width;
+    const mdx = cut.n / 2 - ((cut.box[0] + cut.box[2]) / 2) * markScale;
+    const mdy = cut.n / 2 - ((cut.box[1] + cut.box[3]) / 2) * markScale;
+    const k = size / cut.n;
+    await shot.setContent(`<!doctype html><style>
+      html,body{margin:0;padding:0;background:transparent}
+      img{position:absolute;left:${mdx * k}px;top:${mdy * k}px;width:${cut.n * markScale * k}px;height:auto}
+    </style><img src="${cut.url}">`);
+    // omitBackground, or the transparency comes back as white and the stencil
+    // is a solid square.
+    await shot.screenshot({ path: resolve(root, file), omitBackground: true });
     await shot.close();
     console.log(`icons: ${file} — ${size}x${size} (${why})`);
   }

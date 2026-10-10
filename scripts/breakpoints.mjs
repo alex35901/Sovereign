@@ -10782,7 +10782,7 @@ try {
         boot.remove = () => {};
         const anims = document.getAnimations().filter((a) => String(a.animationName).startsWith("boot-"));
         for (const a of anims) a.pause();
-        const img = boot.querySelector("img");
+        const img = boot.querySelector(".boot-mark");
         const at = async (ms) => {
           for (const a of anims) a.currentTime = Math.min(ms, a.effect.getTiming().duration);
           await new Promise((d) => requestAnimationFrame(() => requestAnimationFrame(d)));
@@ -10790,11 +10790,18 @@ try {
           return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width) };
         };
         const frames = {};
-        for (const ms of [0, 200, 400, 600, 840, 1080, 1320]) frames[ms] = await at(ms);
+        for (const ms of [0, 300, 600, 900, 1270, 1640, 2000]) frames[ms] = await at(ms);
         // Every rise and fall across the way over, read finely enough to count.
         const ys = [];
-        for (let ms = 0; ms <= 820; ms += 20) ys.push((await at(ms)).y);
-        return { frames, ys, mid: Math.round(window.innerWidth / 2), anims: anims.length };
+        for (let ms = 0; ms <= 1240; ms += 30) ys.push((await at(ms)).y);
+        const seen = getComputedStyle(img);
+        return {
+          frames, ys, mid: Math.round(window.innerWidth / 2), anims: anims.length,
+          paint: {
+            colour: seen.backgroundColor,
+            stencil: seen.webkitMaskImage || seen.maskImage || "",
+          },
+        };
       });
 
       check("two motions, the ground covered and the arc over it", shape.anims === 2,
@@ -10802,10 +10809,10 @@ try {
       check("it starts off the left of the screen", shape.frames[0].x < 0,
         `starts at ${shape.frames[0].x}`);
       check("and travels right, hopping as it goes",
-        shape.frames[200].x > shape.frames[0].x
-        && shape.frames[400].x > shape.frames[200].x
-        && shape.frames[600].x > shape.frames[400].x,
-        [0, 200, 400, 600].map((k) => shape.frames[k].x).join(" then "));
+        shape.frames[300].x > shape.frames[0].x
+        && shape.frames[600].x > shape.frames[300].x
+        && shape.frames[900].x > shape.frames[600].x,
+        [0, 300, 600, 900].map((k) => shape.frames[k].x).join(" then "));
 
       // A hop is a rise and a landing, four times over. Counted off the trace
       // rather than trusted: a travel with no arc is a slide.
@@ -10815,16 +10822,23 @@ try {
       }
       check("four hops, not a slide", hops === 4, `${hops} rises counted`);
 
-      const landed = shape.frames[1320];
-      const big = shape.frames[1080];
+      const landed = shape.frames[2000];
+      const big = shape.frames[1640];
       check("it reaches the middle of the screen", Math.abs(landed.x - shape.mid) <= 2,
         `landed at ${landed.x} of ${shape.mid}`);
       check("and comes at you there, before landing at its own size",
-        big.w > landed.w * 1.3 && Math.abs(landed.w - 84) <= 2,
+        big.w > landed.w * 1.3 && Math.abs(landed.w - 92) <= 2,
         `${big.w}px at the jump, ${landed.w}px landed`);
       check("landing on the ground rather than part way up it",
-        Math.abs(landed.y - shape.frames[840].y) <= 4,
-        `${landed.y} against ${shape.frames[840].y}`);
+        Math.abs(landed.y - shape.frames[1270].y) <= 4,
+        `${landed.y} against ${shape.frames[1270].y}`);
+
+      // No tile under it: the file is a stencil and the colour is the page's,
+      // so the mark wears the app's orange rather than carrying a square of
+      // it around. A picture of the rabbit would have no colour to read here.
+      check("and it is the mark alone, painted in the app's own orange",
+        /ec7132|236, *113, *50/.test(shape.paint.colour) && /mark-192/.test(shape.paint.stencil),
+        `${shape.paint.colour}, through ${shape.paint.stencil}`);
     }
 
     // On screen and still not in the way: the app underneath is live the
@@ -10841,7 +10855,7 @@ try {
     // It goes, and leaves nothing behind to be read out or sat over.
     const clean = await bt.newPage();
     await clean.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
-    await clean.waitForTimeout(2600);
+    await clean.waitForTimeout(3400);
     check("and it is gone once the app has painted",
       await clean.evaluate(() => document.getElementById("boot") === null),
       "the mark is still in the page");
@@ -10860,7 +10874,7 @@ try {
     const still = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
     const sp = await still.newPage();
     await sp.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
-    await sp.waitForTimeout(2600);
+    await sp.waitForTimeout(3400);
     check("a reader who asked for no motion gets the app, not an animation",
       await sp.evaluate(() => document.getElementById("boot") === null)
       && await sp.locator(".app").count() === 1,

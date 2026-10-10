@@ -12,6 +12,8 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Asked for early, because the opening waits for it before it moves. -->
+    <link rel="preload" as="image" href="/mark-192.png" />
 
     <!-- Added to a phone's home screen, this is what makes it open as an app
          rather than a bookmark: no address bar, its own name under the icon,
@@ -56,10 +58,22 @@
          starts while the icon is still being fetched spends its first hops on
          an empty square and arrives looking like a glitch. */
       .boot-travel { transform: translateX(calc(-50vw - 60px)); }
-      #boot.ready .boot-travel { animation: boot-travel 820ms cubic-bezier(.33, 0, .66, 1) both; }
-      #boot.ready .boot-jump { animation: boot-jump 1320ms linear both; }
+      #boot.ready .boot-travel { animation: boot-travel 1240ms cubic-bezier(.33, 0, .66, 1) both; }
+      #boot.ready .boot-jump { animation: boot-jump 2000ms linear both; }
       .boot-jump { display: block; }
-      .boot-jump img { display: block; width: 84px; height: 84px; }
+      /* A stencil rather than a picture: the file is the rabbit's shape in
+         white on nothing, and what comes through it is a colour set here. One
+         file serves both themes, and the orange stays with the tokens instead
+         of being baked into a PNG. */
+      .boot-mark {
+        display: block;
+        width: 92px;
+        height: 92px;
+        background-color: #ec7132;
+        -webkit-mask: url(/mark-192.png) center / contain no-repeat;
+        mask: url(/mark-192.png) center / contain no-repeat;
+      }
+      :root[data-theme="light"] .boot-mark { background-color: #cd5213; }
       @keyframes boot-travel {
         from { transform: translateX(calc(-50vw - 60px)); }
         to { transform: translateX(0); }
@@ -93,8 +107,7 @@
     <div id="root"></div>
     <div id="boot" aria-hidden="true" hidden>
       <span class="boot-travel"><span class="boot-jump">
-        <img src="/icon-192.png" alt="" width="84" height="84"
-             onload="window.__bootReady && window.__bootReady()" />
+        <span class="boot-mark"></span>
       </span></span>
     </div>
     <script>
@@ -131,11 +144,19 @@
           window.__bootAt = Date.now();
           boot.classList.add("ready");
         };
-        // A drawing that is already in the cache fires load before this runs,
-        // and one that never arrives at all must not hold the opening for ever.
-        var img = boot.querySelector("img");
-        if (img && img.complete) window.__bootReady();
-        else window.setTimeout(window.__bootReady, 900);
+        /*
+         * The stencil is fetched here rather than waited on in the page,
+         * because a mask has no load event of its own. The browser serves the
+         * same file to the mask out of its cache, so this is the moment it is
+         * ready to be painted through. One that never arrives at all must not
+         * hold the opening for ever.
+         */
+        var pre = new Image();
+        pre.onload = window.__bootReady;
+        pre.onerror = window.__bootReady;
+        pre.src = "/mark-192.png";
+        if (pre.complete) window.__bootReady();
+        window.setTimeout(window.__bootReady, 900);
         boot.hidden = false;
       })();
     </script>
