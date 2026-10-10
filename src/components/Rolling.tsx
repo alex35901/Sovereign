@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useMediaQuery } from "../lib/media";
 import { cx } from "./ui";
+import { whenOpened } from "../lib/opening";
 
 /**
  * The headline figure, following the pen as its chart is drawn.
@@ -144,20 +145,35 @@ export function Rolling({ value, through, format, run, className }: {
     if (path.length && path[path.length - 1] !== value) path.push(value);
     if (!worthRolling(path)) return;
 
-    const begun = performance.now();
-    el.classList.add("rolling-on");
-    const step = () => {
-      const p = Math.min(1, (performance.now() - begun) / REVEAL_MS);
-      const at = valueAt(path, ease(p));
-      // Through the pseudo-element, which is read by nothing and copied by
-      // nothing: the figure in the span stays the figure throughout, so what
-      // this says and what can be taken off it never disagree.
-      el.style.setProperty("--roll-text", JSON.stringify(write.current(at)));
-      if (p < 1) { frame.current = requestAnimationFrame(step); return; }
-      stop();
+    /*
+     * Not before the opening is over.
+     *
+     * The figure walks in step with the chart being drawn beside it, and the
+     * chart is held at the start line while the rabbit is on screen. Starting
+     * this on mount regardless meant the walk happened behind the opening and
+     * the figure was simply sitting at its final value when the screen was
+     * uncovered, with the chart only then beginning to draw.
+     *
+     * A clock is no good here: what it is waiting for is an event.
+     */
+    const begin = () => {
+      const begun = performance.now();
+      el.classList.add("rolling-on");
+      const step = () => {
+        const p = Math.min(1, (performance.now() - begun) / REVEAL_MS);
+        const at = valueAt(path, ease(p));
+        // Through the pseudo-element, which is read by nothing and copied by
+        // nothing: the figure in the span stays the figure throughout, so what
+        // this says and what can be taken off it never disagree.
+        el.style.setProperty("--roll-text", JSON.stringify(write.current(at)));
+        if (p < 1) { frame.current = requestAnimationFrame(step); return; }
+        stop();
+      };
+      frame.current = requestAnimationFrame(step);
     };
-    frame.current = requestAnimationFrame(step);
-    return stop;
+
+    const waiting = whenOpened(begin);
+    return () => { waiting(); stop(); };
     // `through` is left out on purpose: it is a fresh array on every render
     // and `run` is the signature of what is in it, which is the whole reason
     // that signature exists.

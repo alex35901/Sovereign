@@ -7318,7 +7318,17 @@ try {
     });
     const settle = async () => dr.waitForTimeout((await duration()) + 400);
 
+    /*
+     * The opening comes first, and the chart is held at the start line until
+     * it is over. Waited on rather than slept through: what this section is
+     * about is the drawing, and the drawing now begins when the rabbit leaves.
+     */
+    const begun = () => dr.waitForFunction(
+      () => !document.documentElement.hasAttribute("data-booting"), { timeout: 15000 },
+    ).catch(() => {});
+
     await dr.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
+    await begun();
     await dr.waitForTimeout(200);
     const first = await across();
     await dr.waitForTimeout(500);
@@ -10099,6 +10109,10 @@ try {
     // the range does, so nothing noticed the chart had been redrawn.
     const rl = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     await rl.goto(`${BASE}/accounts`, { waitUntil: "domcontentloaded" });
+    // The walk begins when the opening ends, in step with the line it follows.
+    await rl.waitForFunction(
+      () => !document.documentElement.hasAttribute("data-booting"), { timeout: 15000 },
+    ).catch(() => {});
 
     const read = () => rl.evaluate(() => {
       const el = document.querySelector(".nw-value .rolling");
@@ -10841,6 +10855,30 @@ try {
         `${shape.paint.colour}, through ${shape.paint.stencil}`);
     }
 
+    /*
+     * What is behind the opening waits for it.
+     *
+     * The dashboard's charts draw themselves in over two seconds and their
+     * figures count up beside them. Both used to start on mount, which is
+     * behind a rabbit: the whole animation happened on a covered screen and
+     * what a reader saw when the rabbit left was a finished chart.
+     */
+    const behind = await bp.evaluate(() => {
+      const wipe = [...document.getAnimations()].find((a) => a.animationName === "chart-reveal");
+      return {
+        found: Boolean(wipe),
+        state: wipe?.playState ?? "",
+        at: Math.round(Number(wipe?.currentTime ?? 0)),
+        counting: document.querySelectorAll(".rolling-on").length,
+        said: document.documentElement.hasAttribute("data-booting"),
+      };
+    });
+    check("the chart behind it is held at the start line, not drawing itself unseen",
+      behind.found && behind.state === "paused" && behind.at === 0,
+      `${behind.state} at ${behind.at}ms`);
+    check("and no figure is counting up to nobody",
+      behind.counting === 0 && behind.said, `${behind.counting} counting`);
+
     // On screen and still not in the way: the app underneath is live the
     // moment it mounts, and the opening must not cost a press.
     const through = await bp.evaluate(() => {
@@ -10859,6 +10897,18 @@ try {
     check("and it is gone once the app has painted",
       await clean.evaluate(() => document.getElementById("boot") === null),
       "the mark is still in the page");
+    const after = await clean.evaluate(() => {
+      const wipe = [...document.getAnimations()].find((a) => a.animationName === "chart-reveal");
+      return {
+        said: document.documentElement.hasAttribute("data-booting"),
+        // Either still drawing, or finished — what matters is that it was not
+        // finished before anybody could see it.
+        ran: Boolean(wipe) || document.querySelectorAll(".chart-reveal").length > 0,
+      };
+    });
+    check("and once it has gone the chart is let go, from the beginning",
+      !after.said && after.ran, `still booting: ${after.said}`);
+
     // Once per open, not once per reload. Moving around the app never reloads
     // the page, so the case this guards is a reader pressing refresh, who is
     // not arriving and should not be made to watch an arrival.
@@ -10881,6 +10931,28 @@ try {
       "the opening did not stand down");
     await sp.close();
     await still.close();
+
+    /*
+     * The promise the page makes on its own.
+     *
+     * A chart held at the start line is a chart at nothing, so whatever holds
+     * it has to end whether or not the app ever gets far enough to end it. The
+     * page keeps its own timer against exactly that, and this is the only way
+     * to see it: the app is never allowed to load at all.
+     */
+    const stuck = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const sk = await stuck.newPage();
+    await sk.route("**/assets/*.js", (route) => route.abort());
+    await sk.goto(`${BASE}/dashboard`, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await sk.waitForTimeout(600);
+    const held = await sk.evaluate(() => document.documentElement.hasAttribute("data-booting"));
+    const freed = await sk.waitForFunction(
+      () => !document.documentElement.hasAttribute("data-booting"), { timeout: 12000 },
+    ).then(() => true).catch(() => false);
+    check("and an app that never loads still lets go of what it was holding",
+      held && freed, held ? "the hold never lifted" : "nothing was held in the first place");
+    await sk.close();
+    await stuck.close();
 
     // The theme is the page's to wear before the app has read anything. This
     // used to flash the dark page at everybody who had chosen the light one.

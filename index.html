@@ -158,6 +158,18 @@
         if (pre.complete) window.__bootReady();
         window.setTimeout(window.__bootReady, 900);
         boot.hidden = false;
+        /*
+         * Said on the root so a stylesheet can hold the things that play once
+         * on arrival, and the app clears it when the rabbit goes. The timer is
+         * against the app never getting that far: a chart held at nothing for
+         * ever is a worse failure than an opening cut short, and this is the
+         * only place that can promise it ends.
+         */
+        document.documentElement.setAttribute("data-booting", "");
+        window.setTimeout(function () {
+          document.documentElement.removeAttribute("data-booting");
+          window.dispatchEvent(new Event("sovereign:opened"));
+        }, 8000);
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

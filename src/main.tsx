@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 import App from "./App";
 import { StoreProvider } from "./store";
+import { openingDone } from "./lib/opening";
 import "./index.css";
 
 /**
@@ -56,7 +57,13 @@ if (boot) {
       boot.classList.add("gone");
       // After the fade in the stylesheet above it, so nothing is left in the
       // tree to be read out or to sit over the page.
-      window.setTimeout(() => boot.remove(), BOOT_FADE_MS);
+      window.setTimeout(() => {
+        boot.remove();
+        // And the screen is the app's now: whatever was waiting for a clear
+        // view to play itself in can go. The page sets a timer against this
+        // never being reached, so a chart is never held at nothing for ever.
+        openingDone();
+      }, BOOT_FADE_MS);
     }, still());
   }));
 }

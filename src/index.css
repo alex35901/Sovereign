@@ -1803,6 +1803,12 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    near-steady through the middle, which is what a pen drawing a line looks
    like. */
 .chart-reveal { animation: chart-reveal 2s cubic-bezier(0.37, 0, 0.63, 1) both; }
+/* Held at the start line while the rabbit is still on screen. A chart that
+   drew itself in behind the opening was finished by the time anybody could see
+   it, which is the whole of the animation spent on a covered screen. Paused
+   rather than delayed, because what it is waiting for is an event and not a
+   number of milliseconds. */
+:root[data-booting] .chart-reveal { animation-play-state: paused; }
 /* Asked for less of this: the chart is simply there, whole, at once. Not a
    faster wipe - the point of the setting is no movement, not brief movement. */
 @media (prefers-reduced-motion: reduce) { .chart-reveal { animation: none; } }
