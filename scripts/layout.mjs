@@ -1,7 +1,7 @@
 /**
  * The layout suite, several sections at a time.
  *
- *   node scripts/layout.mjs [--jobs=4] [--only=budget,rules]
+ *   node scripts/layout.mjs [--jobs=4] [--only=budget,rules] [--names]
  *
  * The suite is fifty-eight independent sections, each opening its own browser
  * context and asserting against a preview build. Run end to end in one process
@@ -96,11 +96,22 @@ const worker = async () => {
 
 await Promise.all(Array.from({ length: Math.min(JOBS, queue.length) }, worker));
 
+/**
+ * Every result, not only the failures.
+ *
+ * Normally a green run should say nothing, so only failures are printed. The
+ * exception is auditing the suite itself: a check guarded by an `if` that was
+ * never true is a check that cannot fail, and the only way to tell one from a
+ * check that passed is to see the whole list of what actually ran.
+ */
+const NAMES = process.argv.includes("--names");
+
 let passed = 0;
 let failed = 0;
 for (const name of queue) {
   for (const [state, text] of done.get(name)?.results ?? []) {
     if (state === "FAIL") { failed += 1; console.log(`FAIL  ${text}`); } else passed += 1;
+    if (NAMES && state === "PASS") console.log(`PASS  ${name} :: ${text}`);
   }
 }
 

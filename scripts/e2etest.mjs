@@ -478,8 +478,22 @@ try {
   // And the background tab, which never saw any of it, saves something of its
   // own. What it holds has to be judged from the server, not from storage:
   // the saved state is shared, which is the whole reason this bug exists.
-  await tryStep("the background tab makes an edit of its own", () =>
-    tabB.locator("button[title='Toggle theme']").first().click({ timeout: 5000 }));
+  //
+  // Asserted rather than merely attempted. This used to press a sun in the top
+  // bar, which moved into Settings; the click then timed out, the tab made no
+  // edit at all, and the question below went on being answered "yes" by a
+  // stale tab that had nothing to push. A step that silently stops doing
+  // anything is worse than one that fails, because the check it feeds keeps
+  // passing.
+  const themeOf = (page) => page.evaluate(() =>
+    JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.theme);
+  const themeWas = await themeOf(tabB);
+  await tryStep("the background tab makes an edit of its own", async () => {
+    await tabB.locator(".theme-pick button:not(.on)").first().click({ timeout: 5000 });
+    await tabB.waitForTimeout(600);
+  });
+  check("and the edit really is in the copy it holds",
+    await themeOf(tabB) !== themeWas, `still ${themeWas}, so this tab has nothing of its own to push`);
   await tabB.waitForTimeout(12000);
 
   // The question this whole section exists to ask, asked of the server rather

@@ -5039,7 +5039,7 @@ await test("the run stamps the item it pulled, and only that one", async () => {
   assert.equal(stamped[1].accessToken, "access-sandbox-2");
 });
 
-await test("one bank's expired login does not cost the others their sync", async () => {
+await test("one bank's expired login does not cost the others their overnight pull", async () => {
   const good = plaidServer({ transactions: [plaidTxn()] });
   const impl = async (url, init) => {
     if (JSON.parse(init.body).access_token === "dead") {
@@ -9946,6 +9946,29 @@ await test("nothing in the list is dated to the moment it was looked at", () => 
   }
 });
 
+await test("an account you have put away does not ask to be reconnected", () => {
+  // Hidden means "stop showing me this", and closed means "this is finished".
+  // A bank whose login has expired behind either of them is not news: the
+  // notice is a thing to act on, and there is nothing to act on here. Nothing
+  // was holding that, so the guard could have been taken out and the suite
+  // would have stayed green while the list filled with accounts somebody had
+  // deliberately put away.
+  const base = M.emptyDB();
+  const broken = (over) => ({
+    id: "a1", name: "Old Card", institution: "Third National", type: "credit",
+    balance: -10_00, includeInNetWorth: true, hidden: false, order: 0, history: [],
+    syncSource: "plaid", syncId: "pa1", lastSyncedAt: "2026-09-01T09:00:00.000Z",
+    syncNote: { message: "Third National: this connection needs re-authenticating.", at: "2026-09-01T09:00:00.000Z" },
+    ...over,
+  });
+  const withAccount = (a) => ({ ...base, accounts: [a] });
+  const said = (db) => M.NT.notices(db, "2026-09-10").filter((n) => n.kind === "connection");
+
+  assert.equal(said(withAccount(broken({}))).length, 1, "an account in use says so, or this proves nothing");
+  assert.deepEqual(said(withAccount(broken({ hidden: true }))), [], "one put out of sight stays quiet");
+  assert.deepEqual(said(withAccount(broken({ closedAt: "2026-08-01" }))), [], "and one settled and closed stays quiet");
+});
+
 await test("a connection that has gone quiet is dated to the day it went quiet", () => {
   // The silent failure: still running, still reporting no trouble, bringing
   // nothing back. Dated to the last day something arrived, because that is the
@@ -13412,6 +13435,34 @@ await test("money parses the shapes people paste", () => {
   assert.equal(M.parseMoney("-45"), -4500);
   assert.equal(M.parseMoney("1.2k"), 120000);
   assert.equal(M.fmt(-123456), "-$1,234.56");
+});
+
+await test("a figure ending in 99 cents is not a cent short", () => {
+  // Every amount typed into this app and every amount read out of a CSV comes
+  // through here, and 19.99 * 100 is 1998.9999999999998 in binary floating
+  // point. Rounding is what turns that back into the number somebody wrote;
+  // truncating it loses a penny on the most common price there is, silently,
+  // on every row. Nothing here was checking that it rounds.
+  assert.equal(M.parseMoney("19.99"), 1999);
+  assert.equal(M.parseMoney("$1,234.99"), 123499);
+  assert.equal(M.parseMoney("-0.07"), -7);
+  assert.equal(M.parseMoney("(8.29)"), -829);
+  assert.equal(M.parseMoney("0.1"), 10);
+  // Half a cent is where floating point stops being able to help: 1.005 is
+  // held as slightly less than 1.005, so this rounds down and no amount of
+  // rounding at the end changes that. Recorded as what it does rather than
+  // what arithmetic on paper would do, because a test asserting the paper
+  // answer would be asserting a bug nobody can fix here.
+  assert.equal(M.parseMoney("1.005"), 100);
+  // And the same through the multipliers, where the error would be bigger.
+  assert.equal(M.parseMoney("1.11k"), 111000);
+
+  // What it does with the shapes that are not money at all, which a paste from
+  // a bank statement is full of.
+  assert.equal(M.parseMoney(""), 0);
+  assert.equal(M.parseMoney("  "), 0);
+  assert.equal(M.parseMoney("pending"), 0);
+  assert.equal(M.parseMoney("$"), 0);
 });
 
 const demo = M.buildDemoDB();
@@ -19461,6 +19512,25 @@ await test("15th and last day walks the calendar, pulled back to Friday off a we
     const dow = new Date(`${d}T12:00:00`).getDay();
     assert.ok(dow >= 1 && dow <= 5, `${d} is a weekday`);
   }
+});
+
+await test("the line between the two halves of a semimonthly month is where it says", () => {
+  // A payday pulled back from the 15th lands no earlier than the 13th, and one
+  // pulled back from the month's end no earlier than the 26th, so the line
+  // between them can sit anywhere from the 23rd to the 25th. It sits on the
+  // 22nd, and nothing was holding it there: a slip of one day either way moves
+  // a pay date into the wrong half of the month and every date derived from it
+  // with it. Pinned so the boundary has to be moved on purpose.
+  const slot = (d) => M.RC.semimonthlySlot(d);
+  assert.equal(slot("2026-10-22"), slot("2026-10-15"), "the 22nd still belongs to the 15th");
+  assert.equal(slot("2026-10-23"), slot("2026-10-31"), "the 23rd belongs to the month's end");
+  assert.equal(slot("2026-10-23") - slot("2026-10-22"), 1, "and they are adjacent halves, not the same one");
+
+  // Both ends of each half, so a change to either edge is caught too.
+  assert.equal(slot("2026-10-01"), slot("2026-10-15"));
+  assert.equal(slot("2026-10-31"), slot("2026-10-23"));
+  // And the halves run in order across a year's turn.
+  assert.equal(slot("2027-01-01") - slot("2026-12-23"), 1);
 });
 
 await test("and a payday already pulled back still counts as the date it stood in for", () => {
