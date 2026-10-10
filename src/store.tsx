@@ -204,6 +204,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = db.settings.theme;
+    // Remembered where the page can read it before anything else has loaded.
+    // The document knows the answer and is too big to parse at that moment;
+    // this is five bytes and is read by the inline script in index.html, which
+    // is what stops a light theme opening on a dark page every time.
+    try { localStorage.setItem("sovereign.theme", db.settings.theme); } catch { /* storage refused */ }
     // The phone paints its status bar this colour when the app is running from a
     // home screen. index.html can only name one, and the theme is a stored
     // setting rather than a system preference, so the answer is only known here

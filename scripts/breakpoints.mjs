@@ -10758,6 +10758,143 @@ try {
     await bo.close();
   }
 
+  if (want("boot")) {
+    // ── the opening hop ──
+    //
+    // What the first moment of a cold open looks like, when the bundle is
+    // still being fetched and there is nothing to show. Checked against the
+    // animation's own clock rather than against wall time: a sample taken by
+    // waiting is a sample taken late, and the thing being asserted is the
+    // shape of the motion, not the speed of the machine running it.
+    const bt = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const bp = await bt.newPage();
+    await bp.goto(`${BASE}/dashboard`, { waitUntil: "commit" });
+    const started = await bp.waitForFunction(() => window.__bootAt !== undefined, { timeout: 15000 })
+      .then(() => true).catch(() => false);
+    check("a cold open opens on the mark, before the app exists", started,
+      "nothing was shown while the page was loading");
+
+    if (started) {
+      // Held still so the choreography can be read; the app takes it away on
+      // its own schedule, which is checked below on a page of its own.
+      const shape = await bp.evaluate(async () => {
+        const boot = document.getElementById("boot");
+        boot.remove = () => {};
+        const anims = document.getAnimations().filter((a) => String(a.animationName).startsWith("boot-"));
+        for (const a of anims) a.pause();
+        const img = boot.querySelector("img");
+        const at = async (ms) => {
+          for (const a of anims) a.currentTime = Math.min(ms, a.effect.getTiming().duration);
+          await new Promise((d) => requestAnimationFrame(() => requestAnimationFrame(d)));
+          const r = img.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width) };
+        };
+        const frames = {};
+        for (const ms of [0, 200, 400, 600, 840, 1080, 1320]) frames[ms] = await at(ms);
+        // Every rise and fall across the way over, read finely enough to count.
+        const ys = [];
+        for (let ms = 0; ms <= 820; ms += 20) ys.push((await at(ms)).y);
+        return { frames, ys, mid: Math.round(window.innerWidth / 2), anims: anims.length };
+      });
+
+      check("two motions, the ground covered and the arc over it", shape.anims === 2,
+        `${shape.anims} animations`);
+      check("it starts off the left of the screen", shape.frames[0].x < 0,
+        `starts at ${shape.frames[0].x}`);
+      check("and travels right, hopping as it goes",
+        shape.frames[200].x > shape.frames[0].x
+        && shape.frames[400].x > shape.frames[200].x
+        && shape.frames[600].x > shape.frames[400].x,
+        [0, 200, 400, 600].map((k) => shape.frames[k].x).join(" then "));
+
+      // A hop is a rise and a landing, four times over. Counted off the trace
+      // rather than trusted: a travel with no arc is a slide.
+      let hops = 0;
+      for (let i = 1; i < shape.ys.length - 1; i++) {
+        if (shape.ys[i] < shape.ys[i - 1] && shape.ys[i] <= shape.ys[i + 1]) hops += 1;
+      }
+      check("four hops, not a slide", hops === 4, `${hops} rises counted`);
+
+      const landed = shape.frames[1320];
+      const big = shape.frames[1080];
+      check("it reaches the middle of the screen", Math.abs(landed.x - shape.mid) <= 2,
+        `landed at ${landed.x} of ${shape.mid}`);
+      check("and comes at you there, before landing at its own size",
+        big.w > landed.w * 1.3 && Math.abs(landed.w - 84) <= 2,
+        `${big.w}px at the jump, ${landed.w}px landed`);
+      check("landing on the ground rather than part way up it",
+        Math.abs(landed.y - shape.frames[840].y) <= 4,
+        `${landed.y} against ${shape.frames[840].y}`);
+    }
+
+    // On screen and still not in the way: the app underneath is live the
+    // moment it mounts, and the opening must not cost a press.
+    const through = await bp.evaluate(() => {
+      const boot = document.getElementById("boot");
+      if (!boot) return "the mark was already gone";
+      const mid = document.elementFromPoint(Math.round(window.innerWidth / 2), Math.round(window.innerHeight / 2));
+      return boot.contains(mid) ? "the mark swallows a press" : "ok";
+    });
+    check("nothing a finger does lands on the mark instead of the app", through === "ok", through);
+    await bp.close();
+
+    // It goes, and leaves nothing behind to be read out or sat over.
+    const clean = await bt.newPage();
+    await clean.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await clean.waitForTimeout(2600);
+    check("and it is gone once the app has painted",
+      await clean.evaluate(() => document.getElementById("boot") === null),
+      "the mark is still in the page");
+    // Once per open, not once per reload. Moving around the app never reloads
+    // the page, so the case this guards is a reader pressing refresh, who is
+    // not arriving and should not be made to watch an arrival.
+    await clean.reload({ waitUntil: "networkidle" });
+    await clean.waitForTimeout(600);
+    check("and a reload in the same tab does not hop again",
+      await clean.evaluate(() => window.__bootAt === undefined && document.getElementById("boot") === null),
+      "the opening ran a second time on a refresh");
+    await clean.close();
+    await bt.close();
+
+    // Asked not to move things, nothing moves, and the app still arrives.
+    const still = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+    const sp = await still.newPage();
+    await sp.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await sp.waitForTimeout(2600);
+    check("a reader who asked for no motion gets the app, not an animation",
+      await sp.evaluate(() => document.getElementById("boot") === null)
+      && await sp.locator(".app").count() === 1,
+      "the opening did not stand down");
+    await sp.close();
+    await still.close();
+
+    // The theme is the page's to wear before the app has read anything. This
+    // used to flash the dark page at everybody who had chosen the light one.
+    const lit = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const warm = await lit.newPage();
+    await warm.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(1800);
+    await warm.evaluate(() => localStorage.setItem("sovereign.theme", "light"));
+    await warm.close();
+    const lp = await lit.newPage();
+    // The app is kept from loading at all, so what the page is wearing is what
+    // the page decided for itself. Asserting it on a live page would only
+    // prove that React got there eventually, which was never in doubt: the
+    // flash this fixes is the frames before React exists.
+    await lp.route("**/assets/*.js", (route) => route.abort());
+    await lp.goto(`${BASE}/dashboard`, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await lp.waitForTimeout(400);
+    const wearing = await lp.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      app: document.querySelector(".app") !== null,
+    }));
+    check("and the page wears the theme it was left in before the app loads at all",
+      wearing.theme === "light" && !wearing.app,
+      `${wearing.theme}, app loaded: ${wearing.app}`);
+    await lp.close();
+    await lit.close();
+  }
+
   if (want("benchmarks")) {
     // ── a comparison line that arrives, and stays arrived ──
     //
