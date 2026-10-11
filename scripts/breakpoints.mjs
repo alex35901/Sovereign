@@ -10954,6 +10954,55 @@ try {
     await sk.close();
     await stuck.close();
 
+    /*
+     * The white flash before any of this, which is not the page's doing.
+     *
+     * A link to a stylesheet holds rendering up until it lands, so a cold open
+     * paints nothing at all for a moment, and what fills that moment is the
+     * launch screen rather than the page: white on a home-screen app that has
+     * not been given one. The page cannot paint its way out of a frame it is
+     * not painting, so the fix is the three things that are read before it:
+     * the launch image, the manifest's colour, and a background on the root
+     * for every frame after.
+     */
+    const cold = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const cp = await cold.newPage();
+    await cp.route("**/assets/*.css", (route) => route.abort());
+    await cp.route("**/assets/*.js", (route) => route.abort());
+    await cp.goto(`${BASE}/dashboard`, { waitUntil: "domcontentloaded" }).catch(() => {});
+    await cp.waitForTimeout(400);
+
+    const bare = await cp.evaluate(async () => {
+      const page = getComputedStyle(document.documentElement).backgroundColor;
+      const links = [...document.querySelectorAll('link[rel="apple-touch-startup-image"]')];
+      // What the launch screen actually is, read out of the file itself.
+      const img = new Image();
+      img.src = links[0]?.getAttribute("href") ?? "";
+      let launch = "no launch screen";
+      try {
+        await img.decode();
+        const c = new OffscreenCanvas(img.width, img.height);
+        const g = c.getContext("2d");
+        g.drawImage(img, 0, 0);
+        const mid = g.getImageData(Math.floor(img.width / 2), Math.floor(img.height / 2), 1, 1).data;
+        const edge = g.getImageData(1, 1, 1, 1).data;
+        launch = mid.join(",") === edge.join(",") ? `rgb(${mid[0]}, ${mid[1]}, ${mid[2]})` : "not one colour";
+      } catch { /* left as it was */ }
+      const manifest = await fetch("/manifest.webmanifest").then((r) => r.json()).catch(() => ({}));
+      return { page, launch, manifest: manifest.background_color ?? "", links: links.length };
+    });
+
+    check("the page carries its own colour, with no stylesheet and no app",
+      bare.page === "rgb(14, 17, 22)", bare.page);
+    check("a home-screen app is given a launch screen rather than being left white",
+      bare.links > 1, `${bare.links} declared`);
+    check("and it is one flat colour, the same one the page opens on",
+      bare.launch === "rgb(14, 17, 22)", bare.launch);
+    check("as is the colour the manifest asks to start on",
+      bare.manifest.toLowerCase() === "#0e1116", bare.manifest);
+    await cp.close();
+    await cold.close();
+
     // The theme is the page's to wear before the app has read anything. This
     // used to flash the dark page at everybody who had chosen the light one.
     const lit = await browser.newContext({ viewport: { width: 390, height: 844 } });

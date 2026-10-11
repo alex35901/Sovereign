@@ -48,6 +48,21 @@ const FILL = 0.72;
  */
 const MARK = ["public/mark-192.png", 192, 0.94, "the opening hop, as a stencil to paint through"];
 
+/**
+ * The launch screen, which is one flat colour.
+ *
+ * A home-screen web app shows this while it is starting, before the page has
+ * painted anything at all. Without one iOS shows white, which is what a reader
+ * reported: a white flash, then the rabbit. The page cannot help here, because
+ * nothing it says has been read yet.
+ *
+ * Flat, so one file serves every screen. iOS matches these by device size and
+ * scales or crops what it is given, and neither is visible in a solid colour.
+ * The app's own page colour, so the launch screen and the first frame of the
+ * app are the same colour and there is nothing to see between them.
+ */
+const LAUNCH = ["public/launch.png", 1290, 2796, "#0e1116", "the launch screen of a home-screen app"];
+
 const CHROME = process.env.CHROME_PATH;
 
 /** Every size, and why it exists. */
@@ -156,6 +171,19 @@ try {
     await shot.close();
     console.log(`icons: ${file} — ${size}x${size} (${why})`);
   }
+  // The launch screen: one flat colour, at the largest size any phone asks for.
+  {
+    const [file, w, h, colour, why] = LAUNCH;
+    const shot = await browser.newPage({ viewport: { width: 60, height: 130 }, deviceScaleFactor: 1 });
+    await shot.setContent(`<!doctype html><style>html,body{margin:0;height:100%;background:${colour}}</style>`);
+    // Resized by the screenshot rather than drawn at full size: a flat colour
+    // compresses to nothing either way, and this keeps the page cheap to make.
+    await shot.setViewportSize({ width: Math.round(w / 2), height: Math.round(h / 2) });
+    await shot.screenshot({ path: resolve(root, file), scale: "css" });
+    await shot.close();
+    console.log(`icons: ${file} — ${Math.round(w / 2)}x${Math.round(h / 2)} ${colour} (${why})`);
+  }
+
   // The stencil, on transparency rather than on the orange tile.
   {
     const [file, size, fill, why] = MARK;
