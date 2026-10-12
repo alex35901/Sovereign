@@ -598,6 +598,22 @@ table.tbl { width: 100%; border-collapse: collapse; }
    date takes every column before it. */
 .date-head-label { grid-column: 1 / -2; }
 .tx-account { text-align: center; color: var(--muted); }
+
+/* ── was this put on the right card ──────────────────────────────────────
+ * The wallet knows what each card pays for each kind of purchase, so a row on
+ * a card can say whether it was the one to reach for. Only where there is
+ * something to say: a purchase every card pays the same for wears nothing, or
+ * the whole ledger would be green and the handful of rows that matter would be
+ * invisible in it.
+ *
+ * On a phone the account is its name, so the name takes the colour. On a wide
+ * screen it is the institution's mark, which cannot take one, so the mark
+ * wears a ring instead. */
+.tx-sub-account.tx-card-right { color: var(--pos); }
+.tx-sub-account.tx-card-wrong { color: var(--neg); }
+.tx-account-link.tx-card-right .avatar { outline-color: color-mix(in oklab, var(--pos) 70%, transparent); }
+.tx-account-link.tx-card-wrong .avatar { outline-color: color-mix(in oklab, var(--neg) 80%, transparent); }
+.tx-account-link.tx-card-right, .tx-account-link.tx-card-wrong { opacity: 1; }
 /* Account, Category and Amount all sit centred under their headings.
    Categories are one fixed-width pill each rather than a chip that grows with
    its name, so the column reads as a column instead of as ragged text. */

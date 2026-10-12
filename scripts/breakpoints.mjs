@@ -4073,6 +4073,129 @@ try {
     await fp.close();
   }
 
+  if (want("card-call")) {
+    // ── whether a purchase went on the right card ──
+    //
+    // The wallet already knows what each card pays for each kind of purchase.
+    // The ledger is where that knowledge is worth something: not as a figure
+    // at the end of the year, but as a mark on the row, on the day.
+    const cc = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    const warm = await cc.newPage();
+    await warm.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(2600);
+    await warm.close();
+
+    // Two cards with terms somebody has actually entered: one paying five on
+    // groceries and one paying two on everything.
+    await cc.addInitScript(() => {
+      try {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const cards = db.accounts.filter((a) => a.type === "credit");
+        const gro = db.categories.find((x) => /grocer/i.test(x.name));
+        if (cards[0] && gro) {
+          cards[0].rewards = { pointCents: 1, base: 1, rules: [{ id: "r_gro", rate: 5, categoryIds: [gro.id] }] };
+        }
+        if (cards[1]) cards[1].rewards = { pointCents: 1, base: 2, rules: [] };
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const phone = await cc.newPage();
+    await phone.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await phone.waitForTimeout(2600);
+
+    const marks = await phone.evaluate(() => {
+      const probe = (name) => {
+        const el = document.createElement("span");
+        el.style.color = `var(${name})`;
+        document.body.appendChild(el);
+        const seen = getComputedStyle(el).color;
+        el.remove();
+        return seen;
+      };
+      const rows = [...document.querySelectorAll(".list-row")];
+      const out = { right: 0, wrong: 0, plain: 0, bank: 0, wrongColour: "", rightColour: "", titles: [] };
+      for (const r of rows) {
+        const who = r.querySelector(".tx-sub-account");
+        if (!who) continue;
+        const tone = [...who.classList].find((c) => c.startsWith("tx-card-"));
+        const colour = getComputedStyle(who).color;
+        if (tone === "tx-card-right") { out.right += 1; out.rightColour = colour; }
+        else if (tone === "tx-card-wrong") { out.wrong += 1; out.wrongColour = colour; out.titles.push(who.getAttribute("title") ?? ""); }
+        else out.plain += 1;
+      }
+      return { ...out, pos: probe("--pos"), neg: probe("--neg") };
+    });
+
+    check("a purchase on the card that pays most for it is marked as the right one",
+      marks.right > 0 && marks.rightColour === marks.pos,
+      `${marks.right} marked, ${marks.rightColour} against ${marks.pos}`);
+    check("and one that belonged on another card is marked as the wrong one",
+      marks.wrong > 0 && marks.wrongColour === marks.neg,
+      `${marks.wrong} marked, ${marks.wrongColour} against ${marks.neg}`);
+    check("which says which card it should have been",
+      marks.titles.length > 0 && marks.titles.every((t) => /pays [\d.]+% here against [\d.]+%/.test(t)),
+      marks.titles[0] ?? "nothing said");
+    // Most of the ledger is not a card purchase, and says nothing at all.
+    check("and everything else is left alone", marks.plain > 0, `${marks.plain} unmarked`);
+
+    // A bank account is never marked, whatever is on it.
+    const bank = await phone.evaluate(() => {
+      const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+      const names = new Set(db.accounts.filter((a) => a.type !== "credit").map((a) => a.name));
+      return [...document.querySelectorAll(".tx-sub-account")]
+        .filter((e) => names.has(e.innerText.trim()))
+        .map((e) => [...e.classList].filter((c) => c.startsWith("tx-card-")).join("") || "plain");
+    });
+    check("a bank account is never called right or wrong",
+      bank.length > 0 && bank.every((t) => t === "plain"), `${bank.filter((t) => t !== "plain").length} marked of ${bank.length}`);
+    await phone.close();
+
+    // On a wide screen the account is a mark rather than a name, so it wears a
+    // ring instead of a colour.
+    const wide = await cc.newPage();
+    await wide.setViewportSize({ width: 1280, height: 900 });
+    await wide.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await wide.waitForTimeout(2600);
+    const rings = await wide.evaluate(() => {
+      const out = { right: 0, wrong: 0, plain: 0, dim: 0 };
+      for (const link of document.querySelectorAll(".tx-account-link")) {
+        const tone = [...link.classList].find((c) => c.startsWith("tx-card-"));
+        const mark = getComputedStyle(link.querySelector(".avatar") ?? link);
+        // A colour on a ring of no width is not a ring, which is exactly the
+        // kind of check that passes while showing nothing.
+        const lit = mark.outlineColor !== "rgba(0, 0, 0, 0)" && mark.outlineColor !== "transparent"
+          && mark.outlineStyle !== "none" && parseFloat(mark.outlineWidth) >= 1;
+        if (!tone) { out.plain += 1; continue; }
+        if (tone === "tx-card-right") out.right += lit ? 1 : 0;
+        else out.wrong += lit ? 1 : 0;
+        // The unmarked marks sit back a little, so a marked one comes forward
+        // to its full strength rather than showing a ring through a veil.
+        if (parseFloat(getComputedStyle(link).opacity) < 1) out.dim += 1;
+      }
+      return out;
+    });
+    check("the wide ledger rings the mark instead of colouring a name",
+      rings.right > 0 && rings.wrong > 0 && rings.dim === 0,
+      `${rings.right} right, ${rings.wrong} wrong, ${rings.plain} plain, ${rings.dim} dimmed`);
+    await wide.close();
+    await cc.close();
+
+    // And a wallet nobody has filled in says nothing about anything, because
+    // an assumed one percent is the right guess for a total and the wrong one
+    // for an accusation.
+    const blank = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    const bp = await blank.newPage();
+    await bp.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+    await bp.waitForTimeout(2600);
+    const none = await bp.evaluate(() =>
+      [...document.querySelectorAll(".tx-sub-account")]
+        .filter((e) => [...e.classList].some((c) => c.startsWith("tx-card-"))).length);
+    check("a card with no terms entered is never called wrong", none === 0, `${none} marked`);
+    await bp.close();
+    await blank.close();
+  }
+
   if (want("tx-muted")) {
     // ── an account told to keep its transactions out of the figures ──
     //

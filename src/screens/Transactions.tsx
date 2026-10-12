@@ -23,6 +23,7 @@ import { amountMatches, hasAmountRange, inAmountRange, typedAmount } from "../li
 import { ALL, FILTER_KINDS, PARAM_KEYS, bounds, fromParams, isNarrowed, toParams } from "../lib/date-filter";
 import { TransactionModal } from "./TransactionModal";
 import { ImportModal } from "./ImportModal";
+import { cardVerdict, verdictNote } from "../lib/cards";
 
 /**
  * The mark next to a total that had something taken out of it.
@@ -706,6 +707,15 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
   const { actions, suggestRule } = useStore();
   const account = db.accounts.find((a) => a.id === txn.accountId);
   const category = db.categories.find((c) => c.id === txn.categoryId);
+  /**
+   * Whether this went on the card that pays most for it.
+   *
+   * Null for nearly every row, which is the point: anything that is not a
+   * purchase on a credit card whose terms are known, and anything every card
+   * in the wallet pays the same for, says nothing at all. A mark on every row
+   * would be a mark on none of them.
+   */
+  const verdict = useMemo(() => cardVerdict(db, txn), [db, txn]);
   const split = (txn.splits?.length ?? 0) > 0;
   // By merchant rather than by row: what repeats is the charge at a merchant,
   // so every transaction there is part of the pattern, including the ones
@@ -766,7 +776,9 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
           <span className="truncate">
             {account ? (
               <Link
-                to={`/accounts/${account.id}`} className="tx-sub-account"
+                to={`/accounts/${account.id}`}
+                className={cx("tx-sub-account", verdict && `tx-card-${verdict.call}`)}
+                title={verdict ? verdictNote(verdict) : account.name}
                 onClick={(e) => e.stopPropagation()}
               >
                 {account.name}
@@ -821,8 +833,10 @@ export function Row({ txn, selected = false, onToggle, onEdit, amount }: {
       </div>
       {account ? (
         <Link
-          to={`/accounts/${account.id}`} className="tx-account tx-account-link"
-          title={account.name} aria-label={account.name}
+          to={`/accounts/${account.id}`}
+          className={cx("tx-account tx-account-link", verdict && `tx-card-${verdict.call}`)}
+          title={verdict ? `${account.name}. ${verdictNote(verdict)}.` : account.name}
+          aria-label={verdict ? `${account.name}, ${verdictNote(verdict)}` : account.name}
         >
           <InstitutionLogo account={account} size={26} round />
         </Link>

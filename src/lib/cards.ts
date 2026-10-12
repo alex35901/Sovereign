@@ -639,6 +639,134 @@ export function candidateValue(
   };
 }
 
+/* ── was this put on the right card ───────────────────────────────────── */
+
+/**
+ * Whether a purchase went on the card that pays most for it.
+ *
+ * The question somebody asks standing at a till, answered afterwards against
+ * the row in the ledger: of the cards in the wallet, did this one pay as well
+ * as any of them for this kind of purchase?
+ *
+ * Rates, not caps. The routing on the Cards page walks a whole year in date
+ * order under a shared set of caps, because that is how a year's earnings are
+ * actually settled. A mark against one row cannot work that way: the same
+ * purchase would be green in one month and red in another depending on what
+ * came before it, and a list that changes its mind as you scroll back through
+ * it is worse than no list. So this reads the rates in force on the day, which
+ * is the decision a person could have made at the time.
+ */
+export type CardCall = "right" | "wrong";
+
+export interface CardVerdict {
+  call: CardCall;
+  /** What this card pays for it, in cents per cent of spend. */
+  paid: number;
+  /** The most any card in the wallet pays for it. */
+  best: number;
+  /** The card that would have paid more, when one would. */
+  better?: string;
+}
+
+/** What a card pays for one purchase, ignoring caps. See the note above. */
+const rateFor = (r: CardRewards, line: { categoryId: ID; merchant?: string; date: ISODate }): number => {
+  const top = claiming(r, line)[0];
+  return (top ? top.rate : r.base) * r.pointCents;
+};
+
+/**
+ * The cards a verdict may be judged against.
+ *
+ * Only the ones somebody has actually filled in. A card with no terms is
+ * treated as a flat one percent everywhere else in the app, which is the right
+ * assumption for a total and the wrong one for an accusation: a card that in
+ * fact pays five percent on groceries would have every grocery shop on it
+ * marked as a mistake until somebody got round to typing its terms in.
+ */
+const walletCache = new WeakMap<DB, { id: ID; name: string; rewards: CardRewards }[]>();
+const judged = (db: DB) => {
+  const held = walletCache.get(db);
+  if (held) return held;
+  const out = cardAccounts(db)
+    .filter(isSet)
+    .map((a) => ({ id: a.id, name: a.name, rewards: rewardsOf(a) }));
+  walletCache.set(db, out);
+  return out;
+};
+
+/**
+ * Whether one transaction went on the right card, or nothing worth saying.
+ *
+ * Nothing worth saying covers most of the ledger, deliberately: anything that
+ * is not a purchase on a credit card whose terms are known, and anything every
+ * card in the wallet pays exactly the same for. A green mark on a purchase no
+ * card had an opinion about is a wall of green that means nothing, and it
+ * would bury the handful of rows that do mean something.
+ */
+export function cardVerdict(db: DB, t: {
+  accountId: ID; date: ISODate; merchant: string; amount: number;
+  categoryId: ID; splits?: { categoryId: ID; amount: number }[];
+  hideFromReports?: boolean;
+}): CardVerdict | null {
+  const account = db.accounts.find((a) => a.id === t.accountId);
+  if (!account || account.type !== "credit") return null;
+  if (!counts(t as Parameters<typeof counts>[0], mutedAccountIds(db))) return null;
+
+  // The card has to be one of the cards being judged: open, visible, and with
+  // terms somebody has entered. A closed card is the pointed case - its old
+  // purchases would be marked against a wallet that did not exist at the time,
+  // which is a reproach nobody can act on.
+  const wallet = judged(db);
+  if (!wallet.some((c) => c.id === account.id)) return null;
+  const mine = rewardsOf(account);
+
+  let paid = 0;
+  let best = 0;
+  let better: string | undefined;
+  let said = false;
+
+  for (const l of lines(t as Parameters<typeof lines>[0])) {
+    // Only money going out, only on something that is really a purchase, and
+    // only where somebody has said what it was for.
+    if (l.amount >= 0 || !l.categoryId || categoryKind(db, l.categoryId) === "transfer") return null;
+    const line = { date: t.date, categoryId: l.categoryId, merchant: t.merchant };
+    const ours = rateFor(mine, line);
+    let top = ours;
+    let low = ours;
+    let by: string | undefined;
+    for (const c of wallet) {
+      if (c.id === account.id) continue;
+      const r = rateFor(c.rewards, line);
+      if (r > top) { top = r; by = c.name; }
+      if (r < low) low = r;
+    }
+    // Every card pays the same for this, so there was nothing to get right.
+    if (top === low) continue;
+    said = true;
+    paid = Math.max(paid, ours);
+    best = Math.max(best, top);
+    // A split is wrong if any part of it would have earned more elsewhere:
+    // part of the charge went on the wrong card, which is the whole claim.
+    if (by && !better) better = by;
+  }
+
+  if (!said) return null;
+  return { call: better ? "wrong" : "right", paid, best, better };
+}
+
+/**
+ * The verdict in words.
+ *
+ * The rates are in it on purpose: a red mark that only says "wrong" invites an
+ * argument, and one that says five against one ends it.
+ */
+export function verdictNote(v: CardVerdict): string {
+  const rate = (n: number) => `${Math.round(n * 100) / 100}%`;
+  return v.better
+    ? `${v.better} pays ${rate(v.best)} here against ${rate(v.paid)}`
+    : `The best card in your wallet for this, at ${rate(v.paid)}`;
+}
+
 /* ── what is sitting in the programs, and what to do about it ──────────── */
 
 /**

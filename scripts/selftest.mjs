@@ -18207,6 +18207,180 @@ await test("an answer that is not a list at all is refused", () => {
   assert.deepEqual(M.OF.readOffers('{}').deals, []);
 });
 
+/* ── was this put on the right card ───────────────────────────────────── */
+
+const verdictDB = (over = {}) => {
+  const base = M.emptyDB();
+  const cat = (id, name, kind = "expense") => ({
+    id, groupId: kind === "transfer" ? "g_move" : "g_spend", name, icon: "x", color: "--c1",
+    excludeFromBudget: false, rollover: false, order: 0,
+  });
+  return {
+    ...base,
+    groups: [
+      { id: "g_spend", name: "Spending", kind: "expense", order: 0 },
+      { id: "g_move", name: "Transfers", kind: "transfer", order: 1 },
+    ],
+    categories: [cat("c_gro", "Groceries"), cat("c_gas", "Gas"), cat("c_other", "Other"), cat("c_pay", "Card payment", "transfer")],
+    accounts: [
+      {
+        id: "card_a", name: "Grocery Card", institution: "Bank", type: "credit", balance: -100_00,
+        includeInNetWorth: true, hidden: false, order: 0, history: [],
+        rewards: { pointCents: 1, base: 1, rules: [{ id: "r1", rate: 5, categoryIds: ["c_gro"] }] },
+      },
+      {
+        id: "card_b", name: "Everything Card", institution: "Bank", type: "credit", balance: -50_00,
+        includeInNetWorth: true, hidden: false, order: 1, history: [],
+        rewards: { pointCents: 1, base: 2, rules: [] },
+      },
+      {
+        id: "chk", name: "Everyday", institution: "Bank", type: "checking", balance: 500_00,
+        includeInNetWorth: true, hidden: false, order: 2, history: [],
+      },
+    ],
+    transactions: [],
+    ...over,
+  };
+};
+
+const paidWith = (accountId, categoryId, over = {}) => ({
+  id: "t1", accountId, categoryId, date: "2026-10-01", merchant: "Shop", amount: -100_00,
+  tags: [], pending: false, reviewed: true, hideFromReports: false,
+  createdAt: "2026-10-01T00:00:00.000Z", ...over,
+});
+
+await test("a shop on the card that pays most for it is marked as the right one", () => {
+  const db = verdictDB();
+  const said = M.CD.cardVerdict(db, paidWith("card_a", "c_gro"));
+  assert.ok(said, "something is said about a purchase the wallet has an opinion on");
+  assert.equal(said.call, "right");
+  assert.equal(said.better, undefined, "nothing pays more, so nothing is named");
+  assert.equal(said.paid, 5, "five percent");
+  assert.equal(said.best, 5);
+});
+
+await test("and the same shop on the other card is marked as the wrong one", () => {
+  const db = verdictDB();
+  const said = M.CD.cardVerdict(db, paidWith("card_b", "c_gro"));
+  assert.ok(said);
+  assert.equal(said.call, "wrong");
+  assert.equal(said.better, "Grocery Card", "and says which one to have reached for");
+  assert.equal(said.paid, 2);
+  assert.equal(said.best, 5);
+});
+
+await test("a purchase every card pays the same for says nothing at all", () => {
+  // Two percent against two percent is not a mistake, and a green mark on
+  // every such row would be a wall of green with the rows that matter lost in
+  // it. Gas claims no rule on either card, so both fall to their base rates -
+  // which differ, so that is still a choice. Made flat here to test the tie.
+  const flat = verdictDB();
+  flat.accounts[1].rewards = { pointCents: 1, base: 1, rules: [] };
+  assert.equal(M.CD.cardVerdict(flat, paidWith("card_a", "c_gas")), null, "a tie says nothing");
+  // And the better flat card is still a real choice when the bases differ.
+  const db = verdictDB();
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_gas")).call, "wrong", "one percent against two");
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_b", "c_gas")).call, "right");
+});
+
+await test("nothing is said about anything that is not a judged card purchase", () => {
+  const db = verdictDB();
+  assert.equal(M.CD.cardVerdict(db, paidWith("chk", "c_gro")), null, "a bank account is not a card");
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "")), null, "nothing was said about what it was for");
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_pay", { amount: -500_00 })), null, "a card payment is not a purchase");
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_gro", { amount: 100_00 })), null, "a refund is not a purchase");
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_gro", { hideFromReports: true })), null, "a row off the books is not counted");
+
+  // A card nobody has told the app about pays an assumed one percent, which is
+  // the right assumption for a total and the wrong one for an accusation.
+  const unset = verdictDB();
+  delete unset.accounts[0].rewards;
+  assert.equal(M.CD.cardVerdict(unset, paidWith("card_a", "c_gro")), null, "a card with no terms is not judged");
+  assert.equal(M.CD.cardVerdict(unset, paidWith("card_b", "c_gro")), null, "nor judged against");
+});
+
+await test("money moved rather than spent is not judged, whichever way it went", () => {
+  // A balance transfer leaves a card as a negative amount under a transfer
+  // category, so the sign alone does not rule it out. Nothing about moving a
+  // balance is a choice between reward rates.
+  const db = verdictDB();
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_pay", { amount: -1_000_00 })), null, "a balance moved is not a purchase");
+  // The same rule upstream: the earn engine must not pay rewards on it either.
+  const spent = { ...db, transactions: [paidWith("card_a", "c_pay", { amount: -1_000_00 })] };
+  assert.deepEqual(M.CD.cardedSpend(spent, "2026-10-01", "2026-10-31"), [], "nor does it earn anything");
+});
+
+await test("a card that is no longer in the wallet is not second-guessed", () => {
+  // Its purchases could only be judged against the cards held now, which is a
+  // reproach about a wallet that did not exist at the time.
+  const closed = verdictDB();
+  closed.accounts[0] = { ...closed.accounts[0], closedAt: "2026-09-30" };
+  assert.equal(M.CD.cardVerdict(closed, paidWith("card_a", "c_gro")), null, "a closed card says nothing");
+  const hidden = verdictDB();
+  hidden.accounts[0] = { ...hidden.accounts[0], hidden: true };
+  assert.equal(M.CD.cardVerdict(hidden, paidWith("card_a", "c_gro")), null, "nor does a hidden one");
+});
+
+await test("a rate that has stopped running does not decide a later purchase", () => {
+  // The rotating quarter. A five percent on groceries that ran to September
+  // says nothing about an October shop, and a card that was right in August
+  // must not go on being right afterwards.
+  const db = verdictDB();
+  db.accounts[0].rewards = {
+    pointCents: 1, base: 1,
+    rules: [{ id: "r1", rate: 5, categoryIds: ["c_gro"], from: "2026-07-01", to: "2026-09-30" }],
+  };
+  const inside = M.CD.cardVerdict(db, paidWith("card_a", "c_gro", { date: "2026-08-15" }));
+  assert.equal(inside.call, "right", "inside the window the rate counts");
+  const after = M.CD.cardVerdict(db, paidWith("card_a", "c_gro", { date: "2026-10-01" }));
+  assert.equal(after.call, "wrong", "outside it the card is down to one percent against two");
+  assert.equal(after.better, "Everything Card");
+});
+
+await test("a split is wrong if any part of it would have earned more elsewhere", () => {
+  const db = verdictDB();
+  const split = paidWith("card_b", "c_other", {
+    amount: -200_00,
+    splits: [{ categoryId: "c_other", amount: -100_00 }, { categoryId: "c_gro", amount: -100_00 }],
+  });
+  const said = M.CD.cardVerdict(db, split);
+  assert.equal(said.call, "wrong", "half of it belonged on the grocery card");
+  assert.equal(said.better, "Grocery Card");
+
+  // And one whose parts all belong where they went is right.
+  const good = paidWith("card_a", "c_gro", {
+    amount: -200_00,
+    splits: [{ categoryId: "c_gro", amount: -100_00 }, { categoryId: "c_gro", amount: -100_00 }],
+  });
+  assert.equal(M.CD.cardVerdict(db, good).call, "right");
+
+  // The rates quoted are the best and the worst of the whole row, not whichever
+  // line happened to be read last.
+  const mixed = paidWith("card_a", "c_gro", {
+    amount: -200_00,
+    splits: [{ categoryId: "c_gro", amount: -100_00 }, { categoryId: "c_gas", amount: -100_00 }],
+  });
+  const both = M.CD.cardVerdict(db, mixed);
+  assert.equal(both.paid, 5, "five percent is what this card paid at its best on the row");
+  assert.equal(both.best, 5, "and five is the most any card paid");
+  assert.equal(M.CD.verdictNote(both), "Everything Card pays 5% here against 5%");
+  assert.equal(
+    M.CD.verdictNote(M.CD.cardVerdict(db, paidWith("card_a", "c_gro"))),
+    "The best card in your wallet for this, at 5%",
+  );
+  // A fraction of a cent a point is still readable as a rate.
+  const odd = verdictDB();
+  odd.accounts[0].rewards = { pointCents: 1.5, base: 1, rules: [{ id: "r1", rate: 3, categoryIds: ["c_gro"] }] };
+  assert.equal(M.CD.verdictNote(M.CD.cardVerdict(odd, paidWith("card_a", "c_gro"))).endsWith("4.5%"), true);
+});
+
+await test("one card on its own is never wrong", () => {
+  // There is nothing to have reached for instead.
+  const db = verdictDB();
+  db.accounts = db.accounts.filter((a) => a.id !== "card_b");
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_gro")), null);
+});
+
 /* ── the figure following the pen as its chart is drawn ────────────────── */
 
 await test("the figure opens where the chart opens and lands where it lands", () => {
