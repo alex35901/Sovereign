@@ -3482,6 +3482,32 @@ try {
       list.rows > 3 && /^\/transactions\?account=/.test(list.viewAll),
       `${list.rows} rows, on to "${list.viewAll}"`);
 
+    /*
+     * And on an account that carries none, no card about it.
+     *
+     * A house and a car never have transactions, so the card was there on
+     * every visit to say so: a card whose only content is a sentence about its
+     * own emptiness, between the two cards somebody came to read.
+     */
+    const named = (page) => page.evaluate(() =>
+      [...document.querySelectorAll(".card-head h2, .card-head .card-title")].map((h) => h.innerText.trim()));
+    const withRows = await named(one);
+    await one.goto(`${BASE}/accounts/a_home`, { waitUntil: "networkidle" });
+    await one.waitForTimeout(900);
+    const without = await named(one);
+    const quiet = await one.evaluate(() => document.querySelectorAll(".list-row").length);
+    check("an account with no transactions carries no card about them",
+      quiet === 0 && !without.some((h) => /recent transactions/i.test(h))
+      && withRows.some((h) => /recent transactions/i.test(h)),
+      `${without.join(" | ")} (against ${withRows.join(" | ")})`);
+    // And what it does carry is still there: hiding one card must not have
+    // taken the page's own with it.
+    check("and still carries the cards it is on the page for",
+      without.some((h) => /property value/i.test(h)) && without.some((h) => /connection/i.test(h)),
+      without.join(" | "));
+    await one.goto(`${BASE}/accounts/a_checking`, { waitUntil: "networkidle" });
+    await one.waitForTimeout(900);
+
     // Dragging works here too, and moves this account's own figure.
     const readOne = () => one.evaluate(() => ({
       total: document.querySelector(".nw-value").innerText.trim(),

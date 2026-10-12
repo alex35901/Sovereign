@@ -43,7 +43,6 @@ export function PropertyValueCard({ account }: { account: Account }) {
     <Card>
       <CardHead
         title={<span className="row" style={{ gap: 8 }}><Home size={16} /> Property value</span>}
-        sub="Estimated from public records and nearby sales by RentCast"
         right={
           <Btn variant="primary" onClick={() => void refresh()} disabled={busy || !apiKey || !address.trim()}>
             <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} />
@@ -52,7 +51,7 @@ export function PropertyValueCard({ account }: { account: Account }) {
         }
       />
 
-      <Field label="Address" hint="Street, city, state, ZIP. The fuller the better">
+      <Field label="Address">
         <TextInput
           value={address}
           onChange={(next) => { setAddress(next); actions.updateAccount(account.id, { address: next }); }}
@@ -93,9 +92,6 @@ export function PropertyValueCard({ account }: { account: Account }) {
 
       {error ? <div className="small neg" style={{ marginTop: 10 }}>{error}</div> : null}
 
-      <div className="tiny faint" style={{ marginTop: 10 }}>
-        Each refresh writes a balance snapshot, so net worth reflects the new value and the history chart keeps the old one.
-      </div>
     </Card>
   );
 }

@@ -22,7 +22,7 @@ import { ImportModal } from "./ImportModal";
 import { BalancePointsCard } from "./BalancePointsCard";
 import { AccountControls } from "./AccountControls";
 import { ConnectionCard } from "./ConnectionCard";
-import { reconcileRows, tiedCategories } from "../lib/reconcile";
+import { reconcileRows } from "../lib/reconcile";
 import { TransactionModal } from "./TransactionModal";
 import type { Account, Transaction } from "../types";
 
@@ -149,8 +149,12 @@ export default function AccountDetail() {
         {canValue(account.type) ? <PropertyValueCard account={account} /> : null}
         {account.type === "vehicle" ? <VehicleValueCard account={account} /> : null}
 
+        {/* Nothing to list, nothing to show. An account that never carries
+            transactions, a house or a car, had a card saying so on every
+            visit, which is a card that only ever reports its own emptiness. */}
+        {mine.length ? (
         <Card pad={false}>
-          <CardHead flush title="Recent transactions" sub={`${mine.length} on this account`} />
+          <CardHead flush title="Recent transactions" />
           {mine.slice(0, RECENT).map((t) => (
             <div key={t.id} className="list-row click" onClick={() => setEditTxn(t)}>
               <MerchantAvatar name={t.merchant} size={28} />
@@ -171,16 +175,13 @@ export default function AccountDetail() {
               </span>
             </div>
           ))}
-          {mine.length ? (
-            <div style={{ padding: 12 }}>
-              <Link to={`/transactions?account=${account.id}`} className="btn view-all">
-                View all transactions
-              </Link>
-            </div>
-          ) : (
-            <Empty title="No transactions on this account" />
-          )}
+          <div style={{ padding: 12 }}>
+            <Link to={`/transactions?account=${account.id}`} className="btn view-all">
+              View all transactions
+            </Link>
+          </div>
         </Card>
+        ) : null}
         <ReconcileCard account={account} />
         <ConnectionCard account={account} />
       </div>
@@ -224,13 +225,11 @@ function ReconcileCard({ account }: { account: Account }) {
   if (!rows.length) return null;
 
   const live = thisMonth();
-  const tied = tiedCategories(db, account).length;
   return (
     <Card pad={false}>
       <CardHead
         flush
         title="Month-end check"
-        sub={`${tied} rollover ${tied === 1 ? "category" : "categories"}. A difference is not automatically wrong, but it is worth knowing.`}
       />
       <div className="tbl-wrap">
         <table className="tbl recon-tbl">
