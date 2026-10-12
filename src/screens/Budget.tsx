@@ -205,7 +205,9 @@ function GroupCard({ data, month, collapsed, onToggle, column, onColumn }: {
       <div className="card-head flush bgroup-head" style={{ cursor: "pointer" }} onClick={onToggle}>
         <div className="row" style={{ gap: 7 }}>
           {collapsed ? <ChevronRight size={15} className="faint" /> : <ChevronDown size={15} className="faint" />}
-          <h2>{data.group.name}</h2>
+          {/* The whole name is still there to be had: the row trims what it
+              cannot fit, and a long press or a hover says the rest. */}
+          <h2 title={data.group.name}>{data.group.name}</h2>
         </div>
         <div className="row budget-head">
           <div className="bcol bcol-plan">

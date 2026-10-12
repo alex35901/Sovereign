@@ -971,6 +971,20 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
    every width, because that padding is the other half of the same alignment. */
 .card-head.bgroup-head { padding-left: 16px; padding-right: 16px; }
 
+/* A group's name and its three columns are one row, whatever the name is.
+   Card heads are allowed to wrap on a phone, which is right for a title and a
+   button beside it and wrong here: these columns line up with the figures in
+   every row beneath them, and a column that has dropped onto a second line is
+   not a column any more, it is a caption over the rows it used to head. So the
+   name is the part that gives way, and it gives way by ending in an ellipsis
+   rather than by pushing everything else down. */
+.card-head.bgroup-head { flex-wrap: nowrap; }
+.bgroup-head > .row:first-child { min-width: 0; flex: 1 1 auto; }
+/* The arrow keeps its size: it is the thing being pressed. */
+.bgroup-head > .row:first-child > svg { flex: none; }
+.bgroup-head h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bgroup-head .budget-head { flex: none; }
+
 
 
 /* A switch and the sentence that says what it does. */

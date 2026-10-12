@@ -2532,6 +2532,93 @@ try {
     await ctx.close();
   }
 
+  if (want("budget-head")) {
+    // ── a group's name never pushes its own columns off the row ──
+    //
+    // Card heads wrap on a phone, which is right for a title and a button and
+    // wrong here: these three columns line up with the figures in every row
+    // beneath them, and a column that has dropped onto a second line is not a
+    // column any more. The name is the part that gives way, and it gives way
+    // by ending in an ellipsis.
+    const bh = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    const warm = await bh.newPage();
+    await warm.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(2400);
+    await warm.close();
+
+    // A name no phone can fit, so the trimming is exercised rather than hoped
+    // for: the seeded groups are all short enough to get away with it.
+    await bh.addInitScript(() => {
+      try {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const first = db.groups.find((g) => g.kind === "expense");
+        if (first) first.name = "Health and Wellness and Everything Else";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    for (const w of [320, 390, 430, 1280]) {
+      const page = await bh.newPage();
+      await page.setViewportSize({ width: w, height: 900 });
+      await page.goto(`${BASE}/budget`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(1500);
+      const heads = await page.evaluate(() => [...document.querySelectorAll(".bgroup-head")].map((h) => {
+        const name = h.querySelector("h2");
+        const cols = h.querySelector(".budget-head");
+        if (!name || !cols) return null;
+        const n = name.getBoundingClientRect();
+        const c = cols.getBoundingClientRect();
+        return {
+          name: name.innerText.trim(),
+          height: Math.round(h.getBoundingClientRect().height),
+          // One row: the name and the columns start at the same height.
+          sameRow: Math.abs(n.top - c.top) < 14,
+          trimmed: name.scrollWidth > name.clientWidth + 1,
+          /*
+           * How it gives way, not just that it does.
+           *
+           * A name with nowhere to go has a box narrower than its text either
+           * way: with the clipping it ends in an ellipsis, and without it the
+           * letters simply carry on over the columns. Both read as "trimmed"
+           * from the box alone, and only one of them is what was asked for.
+           * The rule that makes the difference is the thing worth naming.
+           */
+          clips: getComputedStyle(name).overflow === "hidden"
+            && getComputedStyle(name).textOverflow === "ellipsis",
+          // The columns keep the width they are given, or they stop lining up
+          // with the figures underneath them.
+          cols: Math.round(c.width),
+          titled: name.getAttribute("title") ?? "",
+        };
+      }).filter(Boolean));
+
+      const tallest = Math.max(...heads.map((h) => h.height));
+      const shortest = Math.min(...heads.map((h) => h.height));
+      check(`${w}px — every group's columns stay on the row with its name`,
+        heads.length > 2 && heads.every((h) => h.sameRow) && tallest === shortest,
+        `${heads.filter((h) => !h.sameRow).length} wrapped, heights ${shortest} to ${tallest}`);
+      // Every group's columns are the same width, whatever its name is doing.
+      const widths = new Set(heads.map((h) => h.cols));
+      check(`${w}px — and are the same width under every name`,
+        widths.size === 1, [...widths].join(", "));
+
+      const long = heads.find((h) => /^Health and Wellness/.test(h.name));
+      if (w === 1280) {
+        check("1280px — a name with room to spare is not trimmed",
+          long !== undefined && !long.trimmed, long?.name);
+      } else {
+        check(`${w}px — a name with no room is trimmed rather than wrapped`,
+          long !== undefined && long.trimmed && long.clips,
+          long ? `"${long.name}" trimmed: ${long.trimmed}, with an ellipsis: ${long.clips}` : "not found");
+      }
+      check(`${w}px — and the whole of it is still there to be read`,
+        long !== undefined && long.titled === "Health and Wellness and Everything Else",
+        long?.titled ?? "no title");
+      await page.close();
+    }
+    await bh.close();
+  }
+
   if (want("budget")) {
     // ── the budget's columns, headers and bar ──
     //
