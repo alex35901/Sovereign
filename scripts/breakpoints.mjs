@@ -10224,6 +10224,76 @@ try {
   }
 
 
+  if (want("set-aside")) {
+    // ── work set aside shows up where somebody looks ──
+    //
+    // The stored copy wins when two devices disagree, and what this browser
+    // had not sent is kept rather than dropped. The only word of it was a
+    // toast at the moment it happened, which is while the app is starting, and
+    // a card in Settings. A reader whose forecast had gone back to its
+    // defaults had no way to find out why.
+    const sa = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
+    const warm = await sa.newPage();
+    await warm.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(2600);
+    const before = await warm.evaluate(() => document.querySelector(".notif-dot")?.innerText ?? "");
+    await warm.close();
+
+    await sa.addInitScript(() => {
+      try {
+        localStorage.setItem("sovereign.db.conflict.v1", JSON.stringify({
+          savedAt: new Date(Date.now() - 3 * 3600000).toISOString(),
+          doc: { accounts: [], transactions: [] },
+        }));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+    const p2 = await sa.newPage();
+    await p2.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await p2.waitForTimeout(2600);
+    await p2.locator(".notif-bell").click();
+    await p2.waitForTimeout(700);
+    const seen = await p2.evaluate(() => {
+      const rows = [...document.querySelectorAll(".notif-row")];
+      const first = rows[0];
+      return {
+        count: rows.length,
+        top: first?.innerText.replace(/\n/g, " | ") ?? "",
+        unread: first?.classList.contains("unread") ?? false,
+        dot: document.querySelector(".notif-dot")?.innerText ?? "",
+      };
+    });
+    check("a browser holding work that was set aside says so in the bell",
+      /set aside/i.test(seen.top), seen.top.slice(0, 80));
+    check("and says it first, above the ordinary nagging",
+      seen.unread && seen.count > 1, `unread: ${seen.unread}, ${seen.count} notices`);
+    check("and it counts towards the bell's own number",
+      seen.dot !== before || before === "9+", `${before} before, ${seen.dot} after`);
+
+    // Pressing it goes to Settings, which is where the work can be had back.
+    await p2.locator(".notif-row").first().click();
+    await p2.waitForTimeout(900);
+    check("and leads to where the work can be put back",
+      new URL(p2.url()).pathname === "/settings"
+      && /set aside/i.test(await p2.evaluate(() => document.body.innerText)),
+      new URL(p2.url()).pathname);
+    await p2.close();
+
+    // Nothing set aside, nothing said.
+    const clean = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
+    const cp = await clean.newPage();
+    await cp.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await cp.waitForTimeout(2600);
+    await cp.locator(".notif-bell").click();
+    await cp.waitForTimeout(600);
+    check("a browser with nothing set aside says nothing about it",
+      !/set aside/i.test(await cp.evaluate(() =>
+        [...document.querySelectorAll(".notif-row")].map((r) => r.innerText).join(" "))),
+      "a notice with nothing behind it");
+    await cp.close();
+    await clean.close();
+    await sa.close();
+  }
+
   if (want("not-saved")) {
     // ── a save that is not happening has to be impossible to miss ──
     //

@@ -652,6 +652,9 @@ export function stashConflict(db: DB): void {
   try {
     localStorage.setItem(CONFLICT_KEY, JSON.stringify({ savedAt: new Date().toISOString(), doc: db }));
   } catch { /* nothing more we can do */ }
+  // Said out loud, so the bell and the Settings card both show it now rather
+  // than whenever something else happens to redraw them.
+  notifySync();
 }
 export function takeConflict(): { savedAt: string; doc: DB } | null {
   return read<{ savedAt: string; doc: DB } | null>(CONFLICT_KEY, null);

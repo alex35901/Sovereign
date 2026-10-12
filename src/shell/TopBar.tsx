@@ -1,11 +1,13 @@
 import { ArrowLeft, Bell, RefreshCw } from "lucide-react";
-import { useDeferredValue, useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
 import { Btn, Popover, cx } from "../components/ui";
 import { SaveState } from "../components/SaveState";
-import { isSeen, markRead, notices, unread } from "../lib/notifications";
+import { isSeen, markRead, notices, setAsideNotice, unread } from "../lib/notifications";
+import { subscribeSync, syncEpoch } from "../lib/sync-halt";
+import { takeConflict } from "../lib/cloud";
 
 /**
  * The bar across the top of every screen.
@@ -143,11 +145,30 @@ function Notifications() {
    * and the panel are always a reading of one document rather than of two.
    */
   const settled = useDeferredValue(db);
+
+  /*
+   * One notice that is not in the document, and cannot be.
+   *
+   * When two devices disagree the stored copy wins and this browser's unsent
+   * work is kept to one side. What is set aside is by definition not in the
+   * document, so it is read from this browser and folded in here, where it is
+   * counted and shown like anything else that wants attention. Subscribed to,
+   * because it is written from outside React.
+   */
+  useSyncExternalStore(subscribeSync, syncEpoch);
+  const aside = useMemo(() => setAsideNotice(takeConflict()?.savedAt ?? null), [db]);
+
   // Only worked out while the list is open; the count below is what the bell
   // needs the rest of the time. Both read the same document, and lib's own
   // cache means the second of them is free.
-  const all = useMemo(() => (open ? notices(settled) : []), [settled, open]);
-  const unreadCount = useMemo(() => unread(settled).length, [settled]);
+  const all = useMemo(
+    () => (open ? [...(aside ? [aside] : []), ...notices(settled)] : []),
+    [settled, open, aside],
+  );
+  const unreadCount = useMemo(
+    () => unread(settled).length + (aside && !isSeen(settled, aside.id) ? 1 : 0),
+    [settled, aside],
+  );
 
   return (
     <Popover

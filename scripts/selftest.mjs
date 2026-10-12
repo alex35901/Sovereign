@@ -9969,6 +9969,32 @@ await test("an account you have put away does not ask to be reconnected", () => 
   assert.deepEqual(said(withAccount(broken({ closedAt: "2026-08-01" }))), [], "and one settled and closed stays quiet");
 });
 
+await test("work set aside is said in the bell, not only in a card nobody opens", () => {
+  // The rule when two devices disagree is that the stored copy wins, and what
+  // this browser had not sent is kept to one side rather than dropped. The
+  // only word of that was a toast at the moment it happened, which is usually
+  // while the app is starting and nobody is looking, and a card in Settings
+  // that nobody visits unless they already suspect something. A reader whose
+  // forecast had gone back to its defaults had no way to find out why.
+  const at = "2026-10-12T03:00:00.000Z";
+  const said = M.NT.setAsideNotice(at, Date.parse("2026-10-12T06:00:00.000Z"));
+  assert.ok(said, "something is said");
+  assert.equal(said.kind, "aside");
+  assert.equal(said.tone, "neg", "it is a loss, not a note");
+  assert.equal(said.to, "/settings", "and it leads to where the work can be had back");
+  assert.match(said.when, /3h/, "dated from the moment it happened, not from noon");
+  assert.match(said.body, /set aside|kept to one side/i);
+
+  // Keyed on the moment, so a second one is a second notice rather than the
+  // first coming back after being read.
+  const later = M.NT.setAsideNotice("2026-10-12T05:00:00.000Z", Date.parse("2026-10-12T06:00:00.000Z"));
+  assert.notEqual(said.id, later.id);
+
+  // And nothing is said when nothing was set aside.
+  assert.equal(M.NT.setAsideNotice(null), null);
+  assert.equal(M.NT.setAsideNotice("not a date"), null, "a stash with an unreadable date says nothing");
+});
+
 await test("a connection that has gone quiet is dated to the day it went quiet", () => {
   // The silent failure: still running, still reporting no trouble, bringing
   // nothing back. Dated to the last day something arrived, because that is the

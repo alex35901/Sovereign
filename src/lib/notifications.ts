@@ -26,6 +26,8 @@ import { fmt0 } from "./money.js";
 
 export type NoticeKind =
   | "recurring" | "budget" | "connection" | "goal"
+  // Work this browser was holding that the shared copy did not have.
+  | "aside"
   | "missing" | "review" | "integration" | "swing" | "price"
   // The two the household sets for itself. See settings.alerts.
   | "nearing" | "balance";
@@ -913,6 +915,45 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
 }
 
 /** The ones nobody has read yet. */
+/**
+ * Work set aside, said where somebody will see it.
+ *
+ * When two devices disagree the stored copy wins, and whatever this browser
+ * was holding and had not managed to send is kept to one side rather than
+ * dropped. That is the right rule and the wrong silence: the only word of it
+ * was a toast at the moment it happened, which is the moment the app is
+ * usually starting up and nobody is looking, and a card in Settings that
+ * nobody visits unless they already suspect something.
+ *
+ * So it goes in the bell with everything else that wants attention, and stays
+ * there until it is read. Not derived from the document, because what was set
+ * aside is by definition not in the document: it is in this browser, and only
+ * this browser can say so.
+ */
+export function setAsideNotice(savedAt: string | null, now: number = Date.now()): Notice | null {
+  if (!savedAt) return null;
+  const when = Date.parse(savedAt);
+  if (!Number.isFinite(when)) return null;
+  return {
+    // The moment, so a second one later is a second notice rather than the
+    // first one coming back from the dead.
+    id: `aside:${savedAt}`,
+    kind: "aside",
+    title: "Changes made on this device were set aside",
+    body: "Another device had saved first, so its copy was loaded and the work this one "
+      + "had not sent was kept to one side. Settings can show what it held and put it back.",
+    at: savedAt.slice(0, 10),
+    /* Against the moment, not against noon.
+       Every other notice here dates something that happened on a day, and
+       noon is the fairest reading of a day. This one happened at a time, and
+       measuring it from noon reports a stash from this morning as having been
+       made last night. */
+    when: sinceLabel(savedAt, new Date(now)),
+    to: "/settings",
+    tone: "neg",
+  };
+}
+
 export const unread = (db: DB, now?: ISODate): Notice[] =>
   notices(db, now).filter((n) => !isSeen(db, n.id));
 
