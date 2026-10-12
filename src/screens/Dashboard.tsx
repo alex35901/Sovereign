@@ -143,25 +143,17 @@ function WorthSplitLine({ from }: { from: string }) {
   const split = useMemo(() => worthSplit(db, from, today()), [db, from]);
   if (!split.market || !split.change) return null;
 
+  // Coloured rather than signed. A plus in front of a figure says the same
+  // thing the colour says, and the colour says it without being read.
   return (
     <div className="worth-split tiny muted">
       <span>
-        <Money value={split.saved} cents={false} sign className="bold" /> you
+        <Money value={split.saved} cents={false} colored className="bold" /> you
       </span>
       <span className="faint">·</span>
       <span>
-        <Money value={split.market} cents={false} sign className="bold" /> the market
+        <Money value={split.market} cents={false} colored className="bold" /> the market
       </span>
-      {/* The one place this can mislead, said rather than folded in. A
-          brokerage that arrives as a balance and a list of holdings cannot
-          tell a contribution from a good week. */}
-      {split.unattributed.length ? (
-        <span className="faint">
-          ({split.unattributed.length === 1
-            ? `nothing records what goes into ${split.unattributed[0]!.name}, so its whole move counts as market`
-            : `${split.unattributed.length} accounts record nothing going into them, so their whole move counts as market`})
-        </span>
-      ) : null}
     </div>
   );
 }
@@ -486,19 +478,6 @@ function InvestmentCard() {
               <span className={cx("mover-pct", "num", "tiny", m.change < 0 ? "neg" : "pos")}>
                 {m.change < 0 ? "↓" : "↑"} {pctLabel(m.change)}
               </span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {p.byClass.length ? (
-        <div className="col" style={{ gap: 8, marginTop: 14 }}>
-          {p.byClass.slice(0, 4).map((c) => (
-            <div key={c.key} className="col" style={{ gap: 4 }}>
-              <div className="spread small">
-                <span className="muted">{c.label}</span>
-                <span className="num"><Money value={c.value} cents={false} /></span>
-              </div>
-              <Progress value={c.value} max={p.value || 1} color="--c2" />
             </div>
           ))}
         </div>

@@ -4445,6 +4445,64 @@ try {
     await dash.selectOption(".spend-card .cmp-mode", "month");
     await dash.waitForTimeout(200);
 
+    /*
+     * The chooser is readable at every width it is offered at.
+     *
+     * It was clamped to 190 pixels, which is narrower than the longest of the
+     * five labels it has to say: on a phone the chooser took a line of its own
+     * and then used a fifth of it, with "This month vs. average" cut off part
+     * way through "average".
+     */
+    const chooser = async (page) => page.evaluate(() => {
+      const sel = document.querySelector(".spend-card .cmp-mode");
+      const head = sel?.closest(".card-head");
+      if (!sel || !head) return null;
+      const s = sel.getBoundingClientRect();
+      const h = head.getBoundingClientRect();
+      // A select reports the width its text wants in scrollWidth, so a label
+      // that does not fit is one that would be trimmed with an ellipsis.
+      return {
+        clipped: sel.scrollWidth > sel.clientWidth + 1,
+        width: Math.round(s.width),
+        head: Math.round(h.width),
+        // Whether it took the whole line, which is what it does once the head
+        // wraps: within a couple of pixels of the head's own width.
+        full: s.width >= h.width - 2,
+        label: sel.options[sel.selectedIndex]?.text ?? "",
+      };
+    });
+
+    const roomy = await chooser(dash);
+    check("the spending chooser shows its whole label on a desktop card",
+      roomy !== null && !roomy.clipped, JSON.stringify(roomy));
+
+    const narrow = await browser.newPage({ viewport: { width: 390, height: 900 } });
+    await narrow.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await narrow.waitForTimeout(1500);
+    const small = await chooser(narrow);
+    check("and on a phone it takes the whole line it was given",
+      small !== null && small.full && !small.clipped,
+      JSON.stringify(small));
+    await narrow.close();
+
+    /*
+     * And the investments card is the figure and what moved, not a second
+     * allocation chart. The asset classes are a whole view on the investments
+     * screen, which this card is a door to; four progress bars under a
+     * headline is that view, worse, in a card nobody came to it for.
+     */
+    const invCard = await dash.evaluate(() => {
+      const card = document.querySelector(".inv-card");
+      if (!card) return null;
+      return {
+        bars: card.querySelectorAll(".bar").length,
+        text: card.innerText.replace(/\n/g, " "),
+      };
+    });
+    check("the investments card carries no allocation bars of its own",
+      invCard !== null && invCard.bars === 0 && !/US Stocks|Cash\b/.test(invCard.text),
+      invCard === null ? "no investments card" : `${invCard.bars} bars: ${invCard.text.slice(0, 90)}`);
+
     // ── the investments card's top movers ──
     //
     // Closing prices are public data this app caches in the browser rather
@@ -9664,18 +9722,111 @@ try {
 
     const split = await page.evaluate(() => {
       const el = document.querySelector(".worth-split");
-      return el ? { text: el.innerText.replace(/\n/g, " "), bottom: el.getBoundingClientRect().bottom,
-        chart: document.querySelector(".nw-card .chart-wrap")?.getBoundingClientRect().bottom ?? 0 } : null;
+      if (!el) return null;
+      const card = el.closest(".card") ?? document.body;
+      const box = el.getBoundingClientRect();
+      const inside = card.getBoundingClientRect();
+      const figures = [...el.querySelectorAll(".num")].map((n) => ({
+        text: n.innerText.trim(),
+        tone: [...n.classList].filter((c) => c === "pos" || c === "neg").join("") || "plain",
+        colour: getComputedStyle(n).color,
+      }));
+      const token = (name) => {
+        const probe = document.createElement("span");
+        probe.style.color = `var(${name})`;
+        card.appendChild(probe);
+        const seen = getComputedStyle(probe).color;
+        probe.remove();
+        return seen;
+      };
+      return {
+        text: el.innerText.replace(/\n/g, " "),
+        bottom: box.bottom,
+        chart: document.querySelector(".nw-card .chart-wrap")?.getBoundingClientRect().bottom ?? 0,
+        // How far the row's middle is from the card's, which is what centred
+        // means here: the row is as wide as the card and its content is not.
+        offCentre: Math.round(Math.abs(
+          (box.left + box.right) / 2 - (inside.left + inside.right) / 2,
+        )),
+        align: getComputedStyle(el).justifyContent,
+        figures,
+        pos: token("--pos"),
+        neg: token("--neg"),
+      };
     });
     check("net worth says how much of its move was the household and how much the market",
       split !== null && /you/.test(split.text) && /the market/.test(split.text), split?.text);
     check("and sits under the chart it is a footnote to",
       split !== null && split.bottom > split.chart, `${split?.bottom} vs ${split?.chart}`);
-    // The one place this can mislead: an account that arrives as a balance
-    // cannot tell a contribution from a good week.
-    check("saying so where nothing records what goes into an account",
-      split !== null && /record(s)? nothing going into|records what goes into/.test(split.text), split?.text);
+    // A caption sits under the middle of what it captions.
+    check("centred under it rather than ranged left",
+      split !== null && split.align === "center" && split.offCentre <= 2,
+      `${split?.align}, ${split?.offCentre}px off`);
+    /*
+     * Coloured rather than signed.
+     *
+     * A plus in front of a figure says what the colour says, and the colour
+     * says it without being read. The same two tones the rest of the app uses
+     * for the same two meanings, checked against the tokens themselves so a
+     * green that is nearly the right green is still a failure.
+     */
+    check("its figures wear the app's own colours rather than a plus sign",
+      split !== null && split.figures.length === 2
+      && split.figures.every((f) => f.tone !== "plain" && !f.text.startsWith("+"))
+      && split.figures.every((f) => f.colour === (f.tone === "pos" ? split.pos : split.neg)),
+      JSON.stringify(split?.figures));
+    check("and nothing is said about which accounts could not be told apart",
+      split !== null && !/record(s)? nothing going into|records what goes into/.test(split.text),
+      split?.text);
     await page.close();
+
+    // The other half of the colouring, which the seeded document never shows:
+    // a market that fell. Written into the document rather than waited for.
+    const red = await browser.newContext({ viewport: { width: 1280, height: 1600 } });
+    const warmRed = await red.newPage();
+    await warmRed.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await warmRed.waitForTimeout(1800);
+    await warmRed.close();
+    await red.addInitScript(() => {
+      try {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const today = new Date().toISOString().slice(0, 10);
+        // A brokerage that halved this month, which nothing was paid into.
+        const inv = db.accounts.find((a) => a.type === "investment" || a.type === "retirement");
+        if (inv) {
+          const was = inv.balance;
+          inv.balance = Math.round(was / 2);
+          inv.history = [...(inv.history ?? []), { date: today, balance: inv.balance }];
+        }
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* nothing to patch */ }
+    });
+    const fell = await red.newPage();
+    await fell.goto(`${BASE}/dashboard`, { waitUntil: "networkidle" });
+    await fell.waitForTimeout(1800);
+    const down = await fell.evaluate(() => {
+      const el = document.querySelector(".worth-split");
+      if (!el) return null;
+      const probe = document.createElement("span");
+      probe.style.color = "var(--neg)";
+      el.appendChild(probe);
+      const neg = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        figures: [...el.querySelectorAll(".num")].map((n) => ({
+          text: n.innerText.trim(),
+          tone: [...n.classList].filter((c) => c === "pos" || c === "neg").join("") || "plain",
+          colour: getComputedStyle(n).color,
+        })),
+        neg,
+      };
+    });
+    check("a figure that fell is the app's red, and still carries no plus",
+      down !== null && down.figures.some((f) => f.tone === "neg" && f.colour === down.neg)
+      && down.figures.every((f) => !f.text.startsWith("+")),
+      JSON.stringify(down?.figures));
+    await fell.close();
+    await red.close();
 
     // Nothing to split, and nothing said. A document whose net worth moves for
     // one reason does not need a line under the chart saying all of it was the

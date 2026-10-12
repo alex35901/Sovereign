@@ -1096,14 +1096,26 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
 }
 .mover-pct.pos { background: var(--pos-soft); }
 .mover-pct.neg { background: var(--neg-soft); }
-.cmp-mode { width: auto; min-width: 0; max-width: 190px; flex: 0 0 auto; }
+/* Never wider than the room it is in, and never cut off inside it. It used to
+   be clamped at 190px, which is narrower than "This month vs. average": the
+   label was trimmed to fit a limit rather than the card. */
+.cmp-mode { width: auto; min-width: 0; max-width: 100%; flex: 0 1 auto; }
 /* On a narrow card the five labels are longer than the room beside a heading,
-   so the chooser takes a line of its own rather than crushing the heading. */
+   so the chooser takes a line of its own rather than crushing the heading, and
+   on that line it takes the whole width: a control alone on a row, sized to
+   its text, reads as something half-drawn. */
 .spend-card .card-head { flex-wrap: wrap; row-gap: 8px; }
+@media (max-width: 760px) {
+  .spend-card .cmp-mode { flex: 1 1 100%; max-width: none; }
+}
 /* Under the net worth chart, in the chart's own gutter so it reads as a
    footnote to the figure above rather than as a second row of content. */
 .worth-split {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px;
+  /* Centred under the chart rather than ranged left with it. Two figures and
+     a separator are a caption, and a caption sits under the middle of what it
+     is captioning. */
+  justify-content: center; text-align: center;
   padding: 0 16px 14px; margin-top: -4px; position: relative; z-index: 2;
 }
 
