@@ -17,12 +17,20 @@ import { addDays, addMonths, monthEnd, monthLabel, monthOf, monthStart, parseISO
 
 export type Grain = "day" | "week" | "month" | "quarter" | "year";
 
+/**
+ * What a bar stands for, named as the thing itself.
+ *
+ * "Daily" and "Quarterly" describe the chart; "Day" and "Quarter" name what is
+ * being chosen, which is what a reader is doing, and they are short enough for
+ * all five to sit on one line of a phone. The adjectives took two lines, and a
+ * control that wraps inside a card head pushes the chart down with it.
+ */
 export const GRAINS: { value: Grain; label: string }[] = [
-  { value: "day", label: "Daily" },
-  { value: "week", label: "Weekly" },
-  { value: "month", label: "Monthly" },
-  { value: "quarter", label: "Quarterly" },
-  { value: "year", label: "Yearly" },
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "quarter", label: "Quarter" },
+  { value: "year", label: "Year" },
 ];
 
 export const isGrain = (v: string): v is Grain => GRAINS.some((g) => g.value === v);

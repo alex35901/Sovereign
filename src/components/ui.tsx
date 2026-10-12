@@ -96,8 +96,10 @@ export function Btn({ children, onClick, variant = "default", size, disabled, ti
   );
 }
 
-export function Segmented<T extends string>({ value, options, onChange, spread }: {
+export function Segmented<T extends string>({ value, options, onChange, spread, className }: {
   value: T; options: { value: T; label: string }[]; onChange: (v: T) => void;
+  /** For a control with a width of its own to argue for. */
+  className?: string;
   /**
    * Draw the options as separate buttons sharing the width equally, rather
    * than as one pill. A pill reads as "one setting, currently X"; separated
@@ -107,7 +109,7 @@ export function Segmented<T extends string>({ value, options, onChange, spread }
   spread?: boolean;
 }) {
   return (
-    <div className={cx("seg", spread && "seg-spread")}>
+    <div className={cx("seg", spread && "seg-spread", className)}>
       {options.map((o) => (
         <button key={o.value} className={cx(o.value === value && "on")} onClick={() => onChange(o.value)}>{o.label}</button>
       ))}

@@ -27,7 +27,6 @@ export default function CategoryDetail() {
   const [editing, setEditing] = useState(false);
 
   const category = db.categories.find((c) => c.id === id);
-  const group = db.groups.find((g) => g.id === category?.groupId);
 
   // Bars run from the first transaction in this category up to today, so the
   // chart still has a present-day edge for a category that stopped months ago.
@@ -84,7 +83,6 @@ export default function CategoryDetail() {
         nothingEver="Nothing has ever been put in this category."
         crumb={
           <>
-            {group ? <span className="tiny faint">in {group.name}</span> : null}
             {category.excludeFromBudget ? (
               <span className="tag" style={{ background: "var(--surface-3)", color: "var(--muted)" }}>off-budget</span>
             ) : null}

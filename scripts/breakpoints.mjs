@@ -7295,6 +7295,76 @@ try {
 
 
 
+  if (want("drill-head")) {
+    // ── the head of a drill-down's chart ──
+    //
+    // Five grains and a heading. On a phone they do not fit on one line, and a
+    // pill that wraps inside a card head does not get taller itself: it pushes
+    // the chart down a line, so the first thing on the screen is a control.
+    const dh = await browser.newContext({ viewport: { width: 390, height: 900 } });
+    for (const [w, beside] of [[320, false], [390, false], [430, false], [1280, true]]) {
+      const page = await dh.newPage();
+      await page.setViewportSize({ width: w, height: 900 });
+      await page.goto(`${BASE}/categories/c_groceries`, { waitUntil: "networkidle" });
+      await page.waitForTimeout(1200);
+      const head = await page.evaluate(() => {
+        const seg = document.querySelector(".grain-seg");
+        const card = seg?.closest(".card-head");
+        const title = card?.querySelector("h2");
+        if (!seg || !card || !title) return null;
+        const s = seg.getBoundingClientRect();
+        const t = title.getBoundingClientRect();
+        const buttons = [...seg.querySelectorAll("button")];
+        return {
+          rows: Math.round(s.height) > 44 ? 2 : 1,
+          beside: Math.abs(s.top - t.top) < 10,
+          labels: buttons.map((b) => b.innerText.trim()),
+          cut: buttons.filter((b) => b.scrollWidth > b.clientWidth + 1).map((b) => b.innerText.trim()),
+          widths: buttons.map((b) => Math.round(b.getBoundingClientRect().width)),
+          sub: card.innerText.replace(/\n/g, " "),
+        };
+      });
+      check(`${w}px — all five grains sit on one row`,
+        head !== null && head.rows === 1 && head.labels.length === 5 && head.cut.length === 0,
+        head === null ? "no grain control" : `${head.rows} rows, cut: ${head.cut.join(",") || "none"}`);
+      // On a phone the row is theirs and they share it; on a desktop they sit
+      // beside the heading at the width their own words need.
+      if (!beside) {
+        const even = head && new Set(head.widths).size === 1;
+        check(`${w}px — sharing the line they were given evenly`,
+          head !== null && !head.beside && even,
+          head === null ? "none" : `beside the title: ${head.beside}, widths ${head.widths.join(",")}`);
+      } else {
+        check(`${w}px — and sit beside the heading where there is room`,
+          head !== null && head.beside, `beside the title: ${head?.beside}`);
+      }
+      check(`${w}px — and the card says nothing about clicking them`,
+        head !== null && !/click/i.test(head.sub), head?.sub);
+      await page.close();
+    }
+
+    // A category's page no longer opens by naming the group it is in. The page
+    // is the category; the group is a line of chrome above the first card.
+    const cat = await dh.newPage();
+    await cat.setViewportSize({ width: 390, height: 900 });
+    await cat.goto(`${BASE}/categories/c_groceries`, { waitUntil: "networkidle" });
+    await cat.waitForTimeout(1000);
+    const top = await cat.evaluate(() => {
+      const page = document.querySelector(".page");
+      const card = document.querySelector(".card");
+      return {
+        text: (page?.innerText ?? "").slice(0, 60).replace(/\n/g, " "),
+        // Nothing between the top of the page and the first card.
+        gap: card && page ? Math.round(card.getBoundingClientRect().top - page.getBoundingClientRect().top) : -1,
+      };
+    });
+    check("a category opens on its chart, not on the group it belongs to",
+      !/^in /.test(top.text) && top.gap >= 0 && top.gap < 40,
+      `${top.gap}px before the first card: "${top.text}"`);
+    await cat.close();
+    await dh.close();
+  }
+
   if (want("drill-pick")) {
     // ── clicking a bar opens that bar ──
     //

@@ -202,7 +202,7 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
     }],
   }));
 
-  const grainWord = GRAINS.find((g) => g.value === grain)!.label.replace(/ly$/, "").toLowerCase();
+  const grainWord = GRAINS.find((g) => g.value === grain)!.label.toLowerCase();
 
   return (
     <>
@@ -214,10 +214,7 @@ export function Drilldown({ title, back, actions, crumb, tone, earliest, load, a
         <Card>
           <CardHead
             title="Over time"
-            sub={selected === null
-              ? `${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"}, all of them. Click one to look at it`
-              : `${bars.length} ${grainWord}${bars.length === 1 ? "" : "s"}, click one to look at it, click it again for all`}
-            right={<Segmented value={grain} options={GRAINS} onChange={setGrain} />}
+            right={<Segmented className="grain-seg" value={grain} options={GRAINS} onChange={setGrain} />}
           />
           {earliest ? (
             <BarChart
