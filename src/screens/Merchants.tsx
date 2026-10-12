@@ -43,9 +43,27 @@ export default function Merchants() {
       <TopBar
         title="Merchants"
         actions={
-          <div className="seg">
-            <button className={cx(by === "count" && "on")} onClick={() => setBy("count")}>Most often</button>
-            <button className={cx(by === "total" && "on")} onClick={() => setBy("total")}>Most spent</button>
+          /* Two words, because the bar has room for two words.
+             "Most often" and "Most spent" wanted 178px of a 131px slot on a
+             phone, so the pill wrapped onto a second line, doubled the height
+             of the bar and pushed itself up against the status bar. The "Most"
+             was doing no work that the pair of options did not already do:
+             these are the two ways to sort, and they are only ever read
+             against each other. Said in full to a screen reader, which has no
+             width to run out of. */
+          <div className="seg" role="group" aria-label="Sort merchants">
+            <button
+              className={cx(by === "count" && "on")} onClick={() => setBy("count")}
+              aria-pressed={by === "count"} title="Most often"
+            >
+              Often
+            </button>
+            <button
+              className={cx(by === "total" && "on")} onClick={() => setBy("total")}
+              aria-pressed={by === "total"} title="Most spent"
+            >
+              Spent
+            </button>
           </div>
         }
       />

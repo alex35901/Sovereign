@@ -417,6 +417,14 @@ h3 { font-size: 14px; }
    to 326px of pills, wider than a 320px phone. Anything that already fits
    on one line is unaffected. */
 .seg { display: inline-flex; flex-wrap: wrap; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px; gap: 2px; }
+/* A pill in the title bar never takes a second line. The bar is one row high
+   by design, and a control that wraps inside it does not get taller on its
+   own: it makes the bar taller, over the whole app, and walks the title up
+   into the status bar. If it will not fit it gives up its own words instead. */
+.topbar-own .seg, .topbar-actions .seg { flex-wrap: nowrap; min-width: 0; }
+.topbar-own .seg button, .topbar-actions .seg button {
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .seg button { border: 0; background: none; padding: 5px 11px; border-radius: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; font-weight: 500; }
 .seg button.on { background: var(--surface-3); color: var(--text); font-weight: 600; }
 
@@ -1978,6 +1986,9 @@ button, a, label, summary, [role="button"] { touch-action: manipulation; }
   /* Every button in the bar is down to its mark: the labels are what a phone
      does not have room for, on either side of the name. */
   .topbar-actions .btn-label, .topbar-own .btn-label { display: none; }
+  /* And the pill is drawn in a little, which is the difference between
+     fitting and not on the narrowest phone still sold. */
+  .topbar-own .seg button, .topbar-actions .seg button { padding-left: 8px; padding-right: 8px; }
   /* Neither wrapped nor clipped. A row that is allowed to wrap asks the grid
      for only its widest control, so the rest went under it while there was
      still room on the line; one that is allowed to clip asks for nothing at

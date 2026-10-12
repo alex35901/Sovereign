@@ -4834,6 +4834,69 @@ try {
     await mer.goto(`${BASE}/merchants`, { waitUntil: "networkidle" });
     await mer.waitForTimeout(800);
 
+    /*
+     * The sort sits in the title bar, and the title bar is one row high.
+     *
+     * A control that wraps inside it does not get taller on its own: it makes
+     * the bar taller, everywhere, and walks the title up under the status bar.
+     * Measured against another screen's bar at the same width rather than
+     * against a number, so the claim is "this screen's bar is like every other
+     * screen's" and stays true when the bar itself changes.
+     */
+    for (const w of [320, 390, 430]) {
+      await mer.setViewportSize({ width: w, height: 900 });
+      await mer.waitForTimeout(350);
+      const here = await mer.evaluate(() => {
+        const bar = document.querySelector(".topbar");
+        const seg = document.querySelector(".topbar-own .seg");
+        const title = document.querySelector(".topbar-title");
+        if (!bar || !seg || !title) return null;
+        const b = bar.getBoundingClientRect();
+        const s = seg.getBoundingClientRect();
+        const t = title.getBoundingClientRect();
+        return {
+          bar: Math.round(b.height),
+          seg: Math.round(s.height),
+          // Nothing of the pill may sit over the heading, which is what the
+          // second line used to do.
+          overlaps: s.right > t.left + 1,
+          cut: [...seg.querySelectorAll("button")].some((x) => x.scrollWidth > x.clientWidth + 1),
+          labels: [...seg.querySelectorAll("button")].map((x) => x.innerText.trim()).join(" / "),
+          // The heading is the middle of three columns and belongs in the
+          // middle of the bar. A control too wide for its own column does not
+          // wrap once wrapping is off: it takes the room from the heading,
+          // which slides off centre and ends up crowded against it.
+          offCentre: Math.round(Math.abs((t.left + t.right) / 2 - (b.left + b.right) / 2)),
+          titleCut: title.scrollWidth > title.clientWidth + 1,
+        };
+      });
+      await mer.goto(`${BASE}/transactions`, { waitUntil: "networkidle" });
+      await mer.waitForTimeout(400);
+      const plain = await mer.evaluate(() =>
+        Math.round(document.querySelector(".topbar").getBoundingClientRect().height));
+      await mer.goto(`${BASE}/merchants`, { waitUntil: "networkidle" });
+      await mer.waitForTimeout(400);
+      // Within a few pixels of a bar with no pill in it: a control a little
+      // taller than a plain heading is the point of putting one there. A
+      // second line was thirty pixels, which is what this is about.
+      check(`${w}px — the sort fits the bar without making it taller`,
+        here !== null && here.bar - plain <= 8 && here.seg < 40 && !here.overlaps,
+        here === null ? "no sort in the bar" : `bar ${here.bar} against ${plain} elsewhere, pill ${here.seg} tall`);
+      check(`${w}px — and says both of its words`,
+        here !== null && !here.cut && here.labels.split(" / ").every((l) => l.length > 2),
+        here?.labels);
+      /* Fifteen pixels, which is the difference between a bar whose two sides
+         are not quite the same width and a bar whose heading has been shoved
+         aside. On the narrowest phone the pill is wider than the bell, so the
+         columns cannot be equal and the heading sits a few pixels over; the
+         state this guards against was nearly forty. */
+      check(`${w}px — leaving the heading where it belongs`,
+        here !== null && here.offCentre <= 15 && !here.titleCut,
+        here === null ? "no heading" : `${here.offCentre}px off centre, clipped: ${here.titleCut}`);
+    }
+    await mer.setViewportSize({ width: 390, height: 900 });
+    await mer.waitForTimeout(300);
+
     const read = () => mer.evaluate(() => ({
       rows: [...document.querySelectorAll(".list-row")].map((r) => ({
         name: r.querySelector(".truncate")?.innerText.trim() ?? "",
@@ -4927,7 +4990,7 @@ try {
     await mer.locator(".search input").fill("");
     await mer.waitForTimeout(400);
     const resorted = await tryStep("it can be sorted by what was spent", async () => {
-      await mer.locator(".seg button", { hasText: "Most spent" }).click({ timeout: 5000 });
+      await mer.locator('.topbar-own .seg button[title="Most spent"]').click({ timeout: 5000 });
       await mer.waitForTimeout(500);
     });
     if (resorted) {
