@@ -68,8 +68,10 @@ export function TopBar({ title, back, actions, primary }: {
         {back ? <Back back={back} /> : null}
         {/* Ahead of this screen's other controls, and behind the way out: the
             arrow is how you leave the screen rather than something to do on
-            it, and it stays where every back arrow on the phone is. */}
-        {phone ? primary : null}
+            it, and it stays where every back arrow on the phone is.
+            Wrapped so the one control that changes sides can be found on
+            either of them, rather than inferred from what it is made of. */}
+        {phone && primary ? <span className="topbar-primary">{primary}</span> : null}
         {actions}
       </div>
       {typeof title === "string"
@@ -78,7 +80,7 @@ export function TopBar({ title, back, actions, primary }: {
       <div className="row topbar-actions" style={{ gap: 6 }}>
         <SaveState />
         <Notifications />
-        {phone ? null : primary}
+        {!phone && primary ? <span className="topbar-primary">{primary}</span> : null}
       </div>
     </header>
   );

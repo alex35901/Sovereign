@@ -1,11 +1,68 @@
-import { useState } from "react";
-import { Link2, RefreshCw, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Building2, Link2, RefreshCw, Trash2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import type { Account, DB } from "../types";
 import { useDB, useStore } from "../store";
 import { claimSetupToken } from "../lib/sync/simplefin";
 import { syncSimplefin } from "../lib/sync";
 import { reason } from "../lib/usage";
-import { sinceLabel } from "../lib/date";
+import { ACCOUNT_TYPE_LABEL } from "../lib/select";
+import { dateLabel, sinceLabel } from "../lib/date";
 import { Btn, Card, CardHead, Field } from "../components/ui";
+
+/**
+ * The banks behind the bridge, each with what came in through it.
+ *
+ * The same shape the Plaid card draws, because it is the same question: one
+ * connection is a sign-in and every account behind it, and which account is
+ * behind which sign-in is the thing you need to know before changing how one
+ * of them is read. The bridge holds one credential for every bank authorised
+ * at it, so the grouping is by institution rather than by login: that is what
+ * a person has at the bridge, and what they would go there to repair.
+ *
+ * Grouped off the accounts themselves rather than off the last payload, which
+ * is not kept: the document is the record of what arrived, and it is the thing
+ * still true the morning after a pull that failed.
+ */
+interface Behind {
+  institution: string;
+  accounts: Account[];
+  /** The newest the bridge has said anything about any of them. */
+  seen?: string;
+  /** Nothing in the last pull was for this bank, and it is not closed. */
+  quiet: boolean;
+}
+
+function behindBridge(db: DB, lastPull?: string): Behind[] {
+  const groups = new Map<string, Account[]>();
+  for (const a of db.accounts) {
+    if (a.syncSource !== "simplefin") continue;
+    const who = a.institution || "Unnamed";
+    groups.set(who, [...(groups.get(who) ?? []), a]);
+  }
+  return [...groups.entries()]
+    .map(([institution, held]) => {
+      // Closed last, then in the household's own order, the same way the
+      // connections above are listed.
+      const accounts = [...held].sort((a, b) =>
+        Number(Boolean(a.closedAt)) - Number(Boolean(b.closedAt)) || a.order - b.order);
+      const open = accounts.filter((a) => !a.closedAt);
+      const seen = open.reduce<string | undefined>(
+        (best, a) => (a.lastSyncedAt && (!best || a.lastSyncedAt > best) ? a.lastSyncedAt : best),
+        undefined,
+      );
+      return {
+        institution,
+        accounts,
+        seen,
+        // A closed account is settled on purpose and stops being pulled, so a
+        // bank with nothing open behind it is not a bank gone quiet.
+        quiet: open.length > 0 && !!lastPull && (!seen || seen < lastPull),
+      };
+    })
+    .sort((x, y) => Math.min(...x.accounts.map((a) => a.order))
+      - Math.min(...y.accounts.map((a) => a.order)));
+}
 
 /**
  * The bridge, connected by pasting one token.
@@ -27,6 +84,7 @@ export function SimplefinCard() {
   const [error, setError] = useState<string | null>(null);
 
   const ref = db.settings.simplefin;
+  const banks = useMemo(() => behindBridge(db, ref?.lastSyncAt), [db, ref?.lastSyncAt]);
 
   const connect = async () => {
     setBusy(true);
@@ -111,6 +169,53 @@ export function SimplefinCard() {
             Adding or removing a bank is done at the bridge rather than here. Its accounts arrive on
             the next pull.
           </span>
+
+          {banks.length ? (
+            <>
+              <div className="divider" />
+              <div className="col" style={{ gap: 8 }}>
+                {banks.map((bank) => (
+                  <div key={bank.institution} className="col conn-item" style={{ gap: 6 }}>
+                    <div className="spread conn-row">
+                      <span className="row conn-who" style={{ gap: 8, minWidth: 0 }}>
+                        <Building2 size={14} className="muted" />
+                        <span className="truncate" style={{ fontWeight: 500 }}>{bank.institution}</span>
+                      </span>
+                      <span className="row conn-doings" style={{ gap: 10 }}>
+                        <span className="tiny faint nowrap">
+                          {bank.seen ? `synced ${dateLabel(bank.seen.slice(0, 10))}` : "never synced"}
+                        </span>
+                      </span>
+                    </div>
+                    <ul className="conn-accounts">
+                      {bank.accounts.map((a) => (
+                        <li key={a.id}>
+                          <Link to={`/accounts/${a.id}`} className="truncate">{a.name}</Link>
+                          <span className="tiny faint nowrap">{ACCOUNT_TYPE_LABEL[a.type]}</span>
+                          {a.closedAt ? <span className="tiny faint nowrap">closed</span> : null}
+                        </li>
+                      ))}
+                    </ul>
+                    {/* The bridge's version of a bank that needs signing into
+                        again. There is no button for it here because the
+                        repair is at the bridge, so what this can do is say
+                        which bank to go and look at. */}
+                    {bank.quiet ? (
+                      <div className="tiny warn">
+                        Nothing came in for this bank on the last pull. It may need signing into
+                        again at the bridge.
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <span className="tiny faint">
+              Nothing has come in through the bridge yet. Press Sync now, or add your banks at the
+              bridge if you have not yet.
+            </span>
+          )}
         </div>
       ) : (
         <>

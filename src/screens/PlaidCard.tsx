@@ -625,9 +625,9 @@ export function PlaidCard() {
               const guessing = held.matched === "name" && held.accounts.length > 0
                 && items.some((i) => i.itemId !== item.itemId && i.institution === item.institution);
               return (
-              <div key={item.itemId} className="col plaid-item" style={{ gap: 6 }}>
-              <div className="spread plaid-row">
-                <span className="row plaid-who" style={{ gap: 8, minWidth: 0 }}>
+              <div key={item.itemId} className="col conn-item" style={{ gap: 6 }}>
+              <div className="spread conn-row">
+                <span className="row conn-who" style={{ gap: 8, minWidth: 0 }}>
                   {carriesTransactions(item.kind)
                     ? <Building2 size={14} className="muted" />
                     : <LineChart size={14} className="muted" />}
@@ -652,7 +652,7 @@ export function PlaidCard() {
                     </span>
                   )}
                 </span>
-                <span className="row plaid-doings" style={{ gap: 10 }}>
+                <span className="row conn-doings" style={{ gap: 10 }}>
                   <span className="tiny faint nowrap">
                     {item.lastSyncAt ? `synced ${dateLabel(item.lastSyncAt.slice(0, 10))}` : "never synced"}
                   </span>
@@ -696,7 +696,7 @@ export function PlaidCard() {
                   behind which login is the thing you need to know before
                   changing how one of them is read. */}
               {held.accounts.length ? (
-                <ul className="plaid-accounts">
+                <ul className="conn-accounts">
                   {held.accounts.map((a) => (
                     <li key={a.id} className={cx(held.misread.includes(a) && "misread")}>
                       <Link to={`/accounts/${a.id}`} className="truncate">{a.name}</Link>

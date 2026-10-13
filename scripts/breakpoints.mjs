@@ -504,8 +504,21 @@ try {
     const tb = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     /** What each screen's own button is, read off the wide bar. */
     const widePrimary = new Map();
+    /**
+     * The opening animation, waited out rather than slept through.
+     *
+     * The bar is drawn behind it, and a reading taken while it is still
+     * playing found a bar that had not finished arriving: the screen's own
+     * button was missing from it, which silently skipped the checks below
+     * that are about where that button is. Under four workers it was playing
+     * most of the time, which is why the suite's own count moved between runs.
+     */
+    const ready = (page) => page.waitForFunction(
+      () => !document.documentElement.hasAttribute("data-booting"), { timeout: 15000 },
+    ).catch(() => {});
     for (const path of PAGES) {
       await tb.goto(BASE + path, { waitUntil: "networkidle" });
+      await ready(tb);
       await tb.waitForTimeout(500);
       // Measured once the layout has stopped moving. A web font arriving after
       // first paint changes the rail's width and everything in the bar with
@@ -539,14 +552,12 @@ try {
             c.classList.contains("save-pill") ? "saved"
               : c.querySelector(".notif-bell") || c.classList.contains("notif-bell") ? "bell"
                 : "primary"),
-          // What the screen's own button is made of, so the phone pass below
-          // can recognise the same control in the other group. Matched on
-          // what it is rather than on what it says: the label is hidden at
-          // phone width, which is the whole reason the bar is laid out twice.
-          primarySig: kids
-            .filter((c) => !c.classList.contains("save-pill")
-              && !(c.querySelector(".notif-bell") || c.classList.contains("notif-bell")))
-            .map((c) => `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}`)[0] ?? null,
+          // Where the screen's own button is, so the phone pass below can say
+          // it has crossed over rather than infer it from what it is made of:
+          // the label is hidden at phone width, which is the whole reason the
+          // bar is laid out twice, and half these buttons are an icon alone.
+          primaryAt: el.querySelector(".topbar-actions .topbar-primary") ? "right"
+            : el.querySelector(".topbar-own .topbar-primary") ? "left" : "none",
           ownLeft: own ? own.getBoundingClientRect().left : null,
           rightStart: right ? right.getBoundingClientRect().left : null,
           titleMid: title ? mid(title) : null,
@@ -570,7 +581,9 @@ try {
         && bar.rightOrder.includes("bell"),
         bar.rightOrder.join(" / "));
       check(`${path} — and no theme toggle among them`, !bar.theme, String(bar.theme));
-      widePrimary.set(path, bar.primarySig);
+      check(`${path} — the screen's own button is one of the fixtures' neighbours`,
+        bar.primaryAt !== "left", `at ${bar.primaryAt}`);
+      widePrimary.set(path, bar.primaryAt);
     }
     await tb.close();
 
@@ -584,6 +597,7 @@ try {
     const narrow = await browser.newPage({ viewport: { width: 390, height: 844 } });
     for (const path of PAGES) {
       await narrow.goto(BASE + path, { waitUntil: "networkidle" });
+      await ready(narrow);
       await narrow.waitForTimeout(400);
       await narrow.evaluate(async () => { await document.fonts?.ready; });
       const bar = await narrow.evaluate(() => {
@@ -598,6 +612,8 @@ try {
         return {
           strays: kids(".topbar-actions").filter((c) => !fixture(c)).map(sig),
           own: own.map(sig),
+          primaryAt: el.querySelector(".topbar-actions .topbar-primary") ? "right"
+            : el.querySelector(".topbar-own .topbar-primary") ? "left" : "none",
           // The way out, which keeps the left edge.
           backFirst: own.length === 0 || !own.some((c) => c.classList.contains("topbar-back"))
             || own[0].classList.contains("topbar-back"),
@@ -608,12 +624,17 @@ try {
       if (bar === null) { check(`${path} — has a bar on a phone`, false, "none"); continue; }
       check(`${path} — on a phone the right holds the fixtures and nothing else`,
         bar.strays.length === 0, bar.strays.join(" / ") || "clean");
-      const want = widePrimary.get(path);
-      if (want) {
-        check(`${path} — and this screen's button leads its own controls`,
-          bar.lead === want, `${bar.lead ?? "nothing"} leads, wanted ${want}`);
-        check(`${path} — with the way out still ahead of it`, bar.backFirst, bar.own.join(" / "));
-      }
+      // Said for every page, including the ones with no button of their own:
+      // a check that quietly does not run on a page cannot tell anybody that
+      // the page lost its button, and the number of checks in this suite is
+      // not supposed to depend on how fast a browser was that morning.
+      const had = widePrimary.get(path) === "right";
+      check(`${path} — and this screen's button has crossed to the left`,
+        bar.primaryAt === (had ? "left" : "none"),
+        `${bar.primaryAt} on a phone, ${widePrimary.get(path)} on a wide screen`);
+      check(`${path} — leading this screen's own controls, behind the way out`,
+        bar.backFirst && (!had || bar.lead === "span.topbar-primary"),
+        `${bar.lead ?? "nothing"} leads: ${bar.own.join(" / ")}`);
       // A bar that wraps to a second line is the failure this whole layout is
       // balanced against, and moving a control across it is exactly the thing
       // that would cause one.
@@ -9588,11 +9609,11 @@ try {
     const behind = await st2.evaluate(() => {
       const found = [...document.querySelectorAll(".card")]
         .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
-      return [...(found?.querySelectorAll(".plaid-item") ?? [])].map((it) => ({
-        who: it.querySelector(".plaid-who .truncate")?.textContent.trim() ?? "",
-        accounts: [...it.querySelectorAll(".plaid-accounts li a")].map((a) => a.textContent.trim()),
-        links: [...it.querySelectorAll(".plaid-accounts li a")].map((a) => a.getAttribute("href")),
-        flagged: [...it.querySelectorAll(".plaid-accounts li.misread a")].map((a) => a.textContent.trim()),
+      return [...(found?.querySelectorAll(".conn-item") ?? [])].map((it) => ({
+        who: it.querySelector(".conn-who .truncate")?.textContent.trim() ?? "",
+        accounts: [...it.querySelectorAll(".conn-accounts li a")].map((a) => a.textContent.trim()),
+        links: [...it.querySelectorAll(".conn-accounts li a")].map((a) => a.getAttribute("href")),
+        flagged: [...it.querySelectorAll(".conn-accounts li.misread a")].map((a) => a.textContent.trim()),
         says: it.querySelector(".warn")?.textContent.trim() ?? "",
       }));
     });
@@ -9655,7 +9676,7 @@ try {
     const fit = await st2.evaluate(() => {
       const found = [...document.querySelectorAll(".card")]
         .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
-      const rows = [...(found?.querySelectorAll(".plaid-row") ?? [])];
+      const rows = [...(found?.querySelectorAll(".conn-row") ?? [])];
       const edge = found.getBoundingClientRect().right;
       let worst = 0;
       let name = 0;
@@ -9944,6 +9965,104 @@ try {
         after !== null && !/bridge\.example/.test(after.text) && !/user:pass/.test(after.text),
         after?.text.slice(0, 200) ?? "");
     }
+
+    // ── the banks behind the bridge, each with what came in through it ──
+    //
+    // The same shape the connections card draws, because it is the same
+    // question: which account is behind which sign-in. The bridge holds one
+    // credential for every bank authorised at it, so the grouping is by
+    // institution, which is what a person has at the bridge and what they
+    // would go there to repair.
+    const held = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
+    const first = await held.newPage();
+    await first.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await first.waitForTimeout(1400);
+    await first.close();
+    await held.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const now = new Date().toISOString();
+        const old = new Date(Date.now() - 6 * 86_400_000).toISOString();
+        const acct = (over) => ({
+          includeInNetWorth: true, hidden: false, history: [], balance: 100_00,
+          syncSource: "simplefin", lastSyncedAt: now, ...over,
+        });
+        db.accounts = [
+          ...db.accounts,
+          acct({ id: "sfb_1", name: "Joint Bills", institution: "Elements Financial", type: "checking", order: 1, syncId: "sfb-1" }),
+          acct({ id: "sfb_2", name: "Savings Account", institution: "Elements Financial", type: "savings", order: 2, syncId: "sfb-2" }),
+          // A closed account, which is settled on purpose: listed, marked, and
+          // not evidence that its bank has gone quiet. Ordered ahead of the
+          // live one, so being under it is the closed-last rule and not the
+          // household's own order agreeing with it by accident.
+          acct({ id: "sfb_3", name: "Old Card", institution: "Seaside Bank", type: "credit", order: 3, syncId: "sfb-3", closedAt: "2026-02-01", lastSyncedAt: old }),
+          acct({ id: "sfb_4", name: "Everyday Checking", institution: "Seaside Bank", type: "checking", order: 4, syncId: "sfb-4" }),
+          // And a bank that was not in the last pull at all.
+          acct({ id: "sfb_5", name: "Holiday Fund", institution: "Ridgeline Credit Union", type: "savings", order: 5, syncId: "sfb-5", lastSyncedAt: old }),
+          // A bank with nothing but a settled account behind it. It is not in
+          // the pulls either, and that is not something to go and repair.
+          acct({ id: "sfb_6", name: "Student Loan", institution: "Northfield Loans", type: "loan", order: 6, syncId: "sfb-6", closedAt: "2026-03-01", lastSyncedAt: old }),
+        ];
+        db.settings.simplefin = { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: old, lastSyncAt: now };
+        db.settings.syncCadence = "off";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const list = await held.newPage();
+    await list.route("**/api/simplefin", (route) => route.fulfill({ json: { accounts: [], errors: [] } }));
+    await list.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await list.waitForTimeout(1500);
+
+    const shown = await list.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === "SimpleFIN");
+      return [...(card?.querySelectorAll(".conn-item") ?? [])].map((it) => ({
+        who: it.querySelector(".conn-who .truncate")?.textContent.trim() ?? "",
+        when: it.querySelector(".conn-doings")?.textContent.trim() ?? "",
+        accounts: [...it.querySelectorAll(".conn-accounts li")].map((li) => li.textContent.trim()),
+        links: [...it.querySelectorAll(".conn-accounts li a")].map((a) => a.getAttribute("href")),
+        quiet: /needs? signing into again|Nothing came in/i.test(it.textContent ?? ""),
+      }));
+    });
+
+    check("the bridge lists one block per bank rather than one per account",
+      shown.length === 4 && shown.map((b) => b.who).join(" / ")
+        === "Elements Financial / Seaside Bank / Ridgeline Credit Union / Northfield Loans",
+      shown.map((b) => b.who).join(" / ") || "nothing listed");
+    check("with the accounts that came in through each one under it",
+      shown[0]?.accounts.length === 2 && /Joint Bills/.test(shown[0].accounts[0])
+      && /Savings Account/.test(shown[0].accounts[1]),
+      shown[0]?.accounts.join(" | ") ?? "none");
+    // The point of the list: it is a way into the account, the same as the
+    // connections card above it.
+    check("each one leading to the account it names",
+      shown.every((b) => b.links.length === b.accounts.length)
+      && shown[0]?.links[0] === "/accounts/sfb_1" && shown[2]?.links[0] === "/accounts/sfb_5",
+      shown.flatMap((b) => b.links).join(" ") || "no links");
+    check("saying what kind each account is, and which are closed",
+      /Checking/.test(shown[0]?.accounts[0] ?? "")
+      && shown[1]?.accounts.some((t) => /Old Card/.test(t) && /closed/.test(t)),
+      shown[1]?.accounts.join(" | ") ?? "");
+    // Closed last, the way the connections above list them.
+    check("and the settled account sitting under the live one",
+      /Everyday Checking/.test(shown[1]?.accounts[0] ?? ""), shown[1]?.accounts.join(" | ") ?? "");
+    check("each bank saying when the bridge last said anything about it",
+      shown.every((b) => /synced/.test(b.when)), shown.map((b) => b.when).join(" / "));
+    // The bridge's version of a bank that needs signing into again. There is
+    // no button for it, because the repair is at the bridge; what the card can
+    // do is say which bank to go and look at, and only about that one.
+    // And only that one: a bank whose accounts are all settled is not in the
+    // pulls either, and saying so would be sending somebody to the bridge to
+    // repair something they closed on purpose.
+    check("and the one that missed the last pull is the only one flagged",
+      shown.map((b) => b.quiet).join() === "false,false,true,false",
+      shown.map((b) => `${b.who}: ${b.quiet}`).join(" / "));
+
+    await list.close();
+    await held.close();
 
     // ── a bank stranded on Plaid, folded onto the bridge ──
     const moved = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
