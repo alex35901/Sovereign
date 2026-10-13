@@ -3,6 +3,7 @@ import { useDeferredValue, useMemo, useState, useSyncExternalStore } from "react
 import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "../store";
+import { PHONE, useMediaQuery } from "../lib/media";
 import { Btn, Popover, cx } from "../components/ui";
 import { SaveState } from "../components/SaveState";
 import { isSeen, markRead, notices, setAsideNotice, unread } from "../lib/notifications";
@@ -16,13 +17,20 @@ import { takeConflict } from "../lib/cloud";
  * this screen is on the left, what belongs to every screen is on the right,
  * and the screen's name sits between them.
  *
- * The right is always the same three, in the same order — whether the work is
- * saved, what has happened, and the one thing this screen is for adding. They
- * are in the same place on every screen because they belong to every screen,
- * and a reader who has learned where the add button is should not have to find
- * it again on the next one. The theme toggle used to sit among them and no
- * longer does: it is a preference, set once, and it lives in Settings with the
- * rest of them rather than beside the buttons pressed every day.
+ * On a wide screen the right is always the same three, in the same order —
+ * whether the work is saved, what has happened, and the one thing this screen
+ * is for adding. They are in the same place on every screen because they
+ * belong to every screen, and a reader who has learned where the add button is
+ * should not have to find it again on the next one. The theme toggle used to
+ * sit among them and no longer does: it is a preference, set once, and it
+ * lives in Settings with the rest of them rather than beside the buttons
+ * pressed every day.
+ *
+ * On a phone the add button crosses over to the left and leads this screen's
+ * own controls, so the screen's controls are one group rather than two with
+ * the heading and two fixtures between them. The fixtures keep the right. It
+ * is the same button either way, moved rather than drawn twice: two of it in
+ * the markup would be two of it to anything reading the page aloud.
  *
  * It used to add its own "+ Transaction" regardless of the page, so Goals had
  * one, and Reports, and Categories — a button that answered a question nobody
@@ -47,13 +55,21 @@ export function TopBar({ title, back, actions, primary }: {
   back?: { to: string; label: string };
   /** This screen's own controls, on the far left with the way back. */
   actions?: ReactNode;
-  /** This screen's one add button, last of the three on the right. */
+  /**
+   * This screen's one add button: last of the three on the right on a wide
+   * screen, and first of this screen's own controls on a phone.
+   */
   primary?: ReactNode;
 }) {
+  const phone = useMediaQuery(PHONE);
   return (
     <header className="topbar">
       <div className="row topbar-own" style={{ gap: 6 }}>
         {back ? <Back back={back} /> : null}
+        {/* Ahead of this screen's other controls, and behind the way out: the
+            arrow is how you leave the screen rather than something to do on
+            it, and it stays where every back arrow on the phone is. */}
+        {phone ? primary : null}
         {actions}
       </div>
       {typeof title === "string"
@@ -62,7 +78,7 @@ export function TopBar({ title, back, actions, primary }: {
       <div className="row topbar-actions" style={{ gap: 6 }}>
         <SaveState />
         <Notifications />
-        {primary}
+        {phone ? null : primary}
       </div>
     </header>
   );

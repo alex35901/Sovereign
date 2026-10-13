@@ -502,6 +502,8 @@ try {
     // them: a reader who has learned where the add button is should not have
     // to find it again on the next screen.
     const tb = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    /** What each screen's own button is, read off the wide bar. */
+    const widePrimary = new Map();
     for (const path of PAGES) {
       await tb.goto(BASE + path, { waitUntil: "networkidle" });
       await tb.waitForTimeout(500);
@@ -537,6 +539,14 @@ try {
             c.classList.contains("save-pill") ? "saved"
               : c.querySelector(".notif-bell") || c.classList.contains("notif-bell") ? "bell"
                 : "primary"),
+          // What the screen's own button is made of, so the phone pass below
+          // can recognise the same control in the other group. Matched on
+          // what it is rather than on what it says: the label is hidden at
+          // phone width, which is the whole reason the bar is laid out twice.
+          primarySig: kids
+            .filter((c) => !c.classList.contains("save-pill")
+              && !(c.querySelector(".notif-bell") || c.classList.contains("notif-bell")))
+            .map((c) => `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}`)[0] ?? null,
           ownLeft: own ? own.getBoundingClientRect().left : null,
           rightStart: right ? right.getBoundingClientRect().left : null,
           titleMid: title ? mid(title) : null,
@@ -560,8 +570,56 @@ try {
         && bar.rightOrder.includes("bell"),
         bar.rightOrder.join(" / "));
       check(`${path} — and no theme toggle among them`, !bar.theme, String(bar.theme));
+      widePrimary.set(path, bar.primarySig);
     }
     await tb.close();
+
+    // ── and on a phone the screen's button crosses over ──
+    //
+    // The fixtures keep the right; this screen's own button leads this
+    // screen's own controls on the left, so what belongs to the screen is one
+    // group under the thumb rather than two with the heading between them. The
+    // way out stays ahead of it: an arrow that leaves the screen is not one of
+    // the things to do on it.
+    const narrow = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    for (const path of PAGES) {
+      await narrow.goto(BASE + path, { waitUntil: "networkidle" });
+      await narrow.waitForTimeout(400);
+      await narrow.evaluate(async () => { await document.fonts?.ready; });
+      const bar = await narrow.evaluate(() => {
+        const el = document.querySelector(".topbar");
+        if (!el) return null;
+        const sig = (c) => `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}`;
+        const kids = (sel) => [...(el.querySelector(sel)?.children ?? [])]
+          .filter((c) => getComputedStyle(c).display !== "none");
+        const fixture = (c) => c.classList.contains("save-pill")
+          || !!c.querySelector(".notif-bell") || c.classList.contains("notif-bell");
+        const own = kids(".topbar-own");
+        return {
+          strays: kids(".topbar-actions").filter((c) => !fixture(c)).map(sig),
+          own: own.map(sig),
+          // The way out, which keeps the left edge.
+          backFirst: own.length === 0 || !own.some((c) => c.classList.contains("topbar-back"))
+            || own[0].classList.contains("topbar-back"),
+          lead: own.filter((c) => !c.classList.contains("topbar-back")).map(sig)[0] ?? null,
+          height: Math.round(el.getBoundingClientRect().height),
+        };
+      });
+      if (bar === null) { check(`${path} — has a bar on a phone`, false, "none"); continue; }
+      check(`${path} — on a phone the right holds the fixtures and nothing else`,
+        bar.strays.length === 0, bar.strays.join(" / ") || "clean");
+      const want = widePrimary.get(path);
+      if (want) {
+        check(`${path} — and this screen's button leads its own controls`,
+          bar.lead === want, `${bar.lead ?? "nothing"} leads, wanted ${want}`);
+        check(`${path} — with the way out still ahead of it`, bar.backFirst, bar.own.join(" / "));
+      }
+      // A bar that wraps to a second line is the failure this whole layout is
+      // balanced against, and moving a control across it is exactly the thing
+      // that would cause one.
+      check(`${path} — and the bar is still one row deep`, bar.height < 66, `${bar.height}px`);
+    }
+    await narrow.close();
   }
 
   if (want("overflow")) {
