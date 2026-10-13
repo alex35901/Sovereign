@@ -7274,6 +7274,25 @@ await test("the protocol's numeric strings become cents without going through a 
   assert.equal(toCents("1.2.3"), null);
 });
 
+await test("the way to the bridge carries none of the credential that reaches it", () => {
+  // The access URL is the only credential this app holds for the bridge, and
+  // the button beside a bank opens the bridge's front door. What goes in the
+  // href is the origin: no user, no password, no path, nothing a shoulder or
+  // a browser history would keep.
+  const home = M.SF.bridgeHome("https://alex-9f2:s3cr3t-pass@beta-bridge.simplefin.org/simplefin/abc123");
+  assert.equal(home, "https://beta-bridge.simplefin.org");
+  assert.ok(!home.includes("s3cr3t-pass"), "no password");
+  assert.ok(!home.includes("alex-9f2"), "nor the user it belongs to");
+  assert.ok(!home.includes("abc123"), "nor the path that reads the accounts");
+  // A port is part of where the bridge is, so it is kept.
+  assert.equal(M.SF.bridgeHome("https://u:p@bridge.example:8443/simplefin"), "https://bridge.example:8443");
+  // And anything that will not parse, or is not the web, is not a door to
+  // send anybody through.
+  for (const bad of ["", "not a url", "javascript:alert(1)", "file:///etc/passwd", "   "]) {
+    assert.equal(M.SF.bridgeHome(bad), null, bad || "empty");
+  }
+});
+
 await test("a bridge's answer becomes a payload, and what cannot be re-found is dropped", () => {
   const out = M.SF.toPayload({
     accounts: [

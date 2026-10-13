@@ -45,6 +45,31 @@ export interface SimplefinRef {
 }
 
 /**
+ * The bridge's own front door, from the credential that reaches its API.
+ *
+ * The access URL carries basic-auth credentials and a path, and neither may
+ * leave this app: what comes back is the origin and nothing else, which is the
+ * page somebody signs into to add a bank, re-authorise one, or take one away.
+ * Those three are the only repairs a bridge connection has, and none of them
+ * can be done from here, so the useful thing the app can do is open the door.
+ *
+ * Built with the URL parser rather than by cutting the string up, because the
+ * one way to be sure a password has been dropped is to let something that
+ * understands the grammar take it apart. Null when it will not parse: an
+ * origin guessed from a string nobody could read is not somewhere to send
+ * anybody.
+ */
+export function bridgeHome(accessUrl: string): string | null {
+  try {
+    const url = new URL(accessUrl);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The one-use exchange. A setup token in, an access URL out.
  *
  * Done once, when somebody pastes the token. The token cannot be claimed

@@ -1,14 +1,14 @@
 import { useMemo, useState } from "react";
-import { Building2, Link2, RefreshCw, Trash2 } from "lucide-react";
+import { Building2, KeyRound, Link2, RefreshCw, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Account, DB } from "../types";
 import { useDB, useStore } from "../store";
-import { claimSetupToken } from "../lib/sync/simplefin";
+import { bridgeHome, claimSetupToken } from "../lib/sync/simplefin";
 import { syncSimplefin } from "../lib/sync";
 import { reason } from "../lib/usage";
 import { ACCOUNT_TYPE_LABEL } from "../lib/select";
 import { dateLabel, sinceLabel } from "../lib/date";
-import { Btn, Card, CardHead, Field } from "../components/ui";
+import { Btn, Card, CardHead, Field, cx } from "../components/ui";
 
 /**
  * The banks behind the bridge, each with what came in through it.
@@ -85,6 +85,15 @@ export function SimplefinCard() {
 
   const ref = db.settings.simplefin;
   const banks = useMemo(() => behindBridge(db, ref?.lastSyncAt), [db, ref?.lastSyncAt]);
+  /**
+   * Where a bank is repaired, which is not here.
+   *
+   * The bridge holds the logins; this app holds one credential that reads what
+   * the bridge has. So the button beside a bank cannot sign into it, and does
+   * the one useful thing left: opens the place where somebody can. The origin
+   * only, never the credential that reaches the API.
+   */
+  const home = ref ? bridgeHome(ref.accessUrl) : null;
 
   const connect = async () => {
     setBusy(true);
@@ -185,6 +194,21 @@ export function SimplefinCard() {
                         <span className="tiny faint nowrap">
                           {bank.seen ? `synced ${dateLabel(bank.seen.slice(0, 10))}` : "never synced"}
                         </span>
+                        {/* Marked out when this bank stopped arriving, which is
+                            the one thing on this card worth crossing the room
+                            for, and the plain button otherwise: adding a bank
+                            and taking one away are the same door. */}
+                        {home ? (
+                          <a
+                            className={cx("btn btn-sm", bank.quiet && "btn-primary")}
+                            href={home} target="_blank" rel="noreferrer"
+                            title={bank.quiet
+                              ? `Nothing came in for ${bank.institution} on the last pull. Opens the bridge, where it can be signed into again.`
+                              : `Opens the bridge, where this bank is signed into again, changed, or taken away.`}
+                          >
+                            <KeyRound size={12} /> Reconnect
+                          </a>
+                        ) : null}
                       </span>
                     </div>
                     <ul className="conn-accounts">

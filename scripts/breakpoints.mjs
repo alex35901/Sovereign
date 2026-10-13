@@ -3013,7 +3013,11 @@ try {
        * one can be told apart instead of argued about.
        */
       const trace = [];
-      const watch = setInterval(() => trace.push([at(), performance.now()]), 16);
+      // The month with each reading, because `at()` is two readings in one:
+      // the transform, and how many months the strip has turned. They change
+      // in the same frame and are painted in different ones, so a pair that
+      // spans a turn can be a whole panel out. See the fold below.
+      const watch = setInterval(() => trace.push([at(), performance.now(), key()]), 16);
       // Moved in small steps, the way a thumb does: a synthetic finger that
       // leaps a hundred pixels at a time would put leaps in the trace and
       // leave nothing to measure against.
@@ -3031,15 +3035,38 @@ try {
       let back = 0;
       let worst = 0;
       let gap = 0;
+      let jump = 0;
       for (let i = 1; i < trace.length; i++) {
-        const moved = trace[i][0] - trace[i - 1][0];
-        back = Math.max(back, moved);
-        worst = Math.max(worst, Math.abs(moved));
-        // The gap that produced the worst reading, not the worst gap in the
-        // run: a stall while the strip was still is not what misreads it.
-        if (Math.abs(moved) === worst) gap = Math.round(trace[i][1] - trace[i - 1][1]);
+        const raw = trace[i][0] - trace[i - 1][0];
+        // The snap is read raw. It is the claim this check exists for, it has
+        // never misread, and the skew below runs the other way: these flicks
+        // turn forwards, so what the skew produces is a large negative step.
+        back = Math.max(back, raw);
+        // Across a turn, a whole panel of the step is the two halves of the
+        // reading disagreeing for a frame rather than the strip moving.
+        // Folded only there, and only in whole panels, so nothing a strip
+        // could do goes missing: it is the one discontinuity this sampler
+        // makes for itself.
+        const turned = trace[i][2] !== trace[i - 1][2];
+        const moved = turned ? raw - w * Math.round(raw / w) : raw;
+        const dt = Math.max(1, trace[i][1] - trace[i - 1][1]);
+        // Per frame rather than per sample. The sampler is a 16ms interval and
+        // the browser is free to deliver it late; a reading taken across two
+        // dropped frames covers two frames of travel with nothing having
+        // jumped, which is how a loaded machine came to be reported as a
+        // teleporting strip. A rate says what the claim means.
+        // Clamped at a frame, so a sample delivered early cannot inflate the
+        // reading the way a late one used to: this correction is here to stop
+        // dropped frames being read as travel, not to turn a short gap into a
+        // speeding ticket.
+        const rate = Math.abs(moved) * (16 / Math.max(dt, 16));
+        if (rate > worst) {
+          worst = Math.round(rate);
+          gap = Math.round(dt);
+          jump = Math.abs(moved);
+        }
       }
-      return { months: key() - from, back, worst, gap, width: w };
+      return { months: key() - from, back, worst, gap, jump, width: w };
     });
     // ── a tap is not a drag, and must not rebuild the row under the finger ──
     //
@@ -3104,12 +3131,18 @@ try {
      * failed twice in full runs and never once alone. Measured against the
      * panel instead, which is what a teleport would actually cross, it says
      * what it means and stops reporting the machine's load as a defect.
+     *
+     * Then it failed a third time, at a full panel in one reading taken over
+     * 41ms: not the strip jumping but the sampler missing two frames, which
+     * the message underneath had been saying all along. So the reading is a
+     * rate now, pixels per frame rather than pixels per sample, and a dropped
+     * frame costs the measurement nothing.
      */
     const hop = Math.round(rapid.width * 0.5);
     check("and catching one still flying picks it up rather than snapping it back",
       rapid.back <= 2 && rapid.worst <= hop,
-      `${rapid.back}px backwards, ${rapid.worst}px at once of a ${rapid.width}px panel, over ${rapid.gap}ms `
-      + `(a gap far past 16ms is the sampler missing frames, not the strip jumping)`);
+      `${rapid.back}px backwards, ${rapid.worst}px a frame of a ${rapid.width}px panel `
+      + `(${rapid.jump}px over ${rapid.gap}ms)`);
 
     // A scroll must not drag the strip sideways at all, not merely fail to
     // turn it at the end: a thumb travelling down a phone drifts, and a screen
@@ -10019,12 +10052,18 @@ try {
     const shown = await list.evaluate(() => {
       const card = [...document.querySelectorAll(".card")]
         .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === "SimpleFIN");
+      const fix = (it) => it.querySelector(".conn-doings a");
       return [...(card?.querySelectorAll(".conn-item") ?? [])].map((it) => ({
         who: it.querySelector(".conn-who .truncate")?.textContent.trim() ?? "",
         when: it.querySelector(".conn-doings")?.textContent.trim() ?? "",
         accounts: [...it.querySelectorAll(".conn-accounts li")].map((li) => li.textContent.trim()),
         links: [...it.querySelectorAll(".conn-accounts li a")].map((a) => a.getAttribute("href")),
         quiet: /needs? signing into again|Nothing came in/i.test(it.textContent ?? ""),
+        // The way to the repair, which is at the bridge rather than here.
+        fix: fix(it)?.getAttribute("href") ?? null,
+        fixLabel: fix(it)?.textContent.trim() ?? "",
+        fixTone: fix(it) ? getComputedStyle(fix(it)).backgroundColor : "",
+        blank: fix(it)?.getAttribute("target") ?? "",
       }));
     });
 
@@ -10060,6 +10099,33 @@ try {
     check("and the one that missed the last pull is the only one flagged",
       shown.map((b) => b.quiet).join() === "false,false,true,false",
       shown.map((b) => `${b.who}: ${b.quiet}`).join(" / "));
+
+    // ── and the way to the repair, marked out on the bank that needs it ──
+    //
+    // The bridge holds the logins, so nothing here can sign a bank in again.
+    // What the app can do is open the door, and say which bank to open it for.
+    check("every bank offers the way back to the bridge",
+      shown.every((b) => b.fix === "https://bridge.example" && /Reconnect/i.test(b.fixLabel)),
+      shown.map((b) => `${b.who}: ${b.fix ?? "nothing"}`).join(" / "));
+    // The access URL is the only credential this app holds for the bridge. It
+    // reaches the API with basic auth in it, and none of that may end up in a
+    // link, a history entry or a screenshot.
+    const bare = await list.evaluate(() => {
+      const card = [...document.querySelectorAll(".card")]
+        .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === "SimpleFIN");
+      return (card?.innerHTML ?? "") + " " + [...(card?.querySelectorAll("a") ?? [])]
+        .map((a) => a.getAttribute("href")).join(" ");
+    });
+    check("and never carries the credential that reads it",
+      !/u:p@|bridge\.example\/simplefin|%40/.test(bare), "the card's own markup");
+    check("opening it beside the app rather than in place of it",
+      shown.every((b) => b.blank === "_blank"), shown.map((b) => b.blank).join(" / "));
+    // The colour is the point: the bank that stopped arriving is the one to
+    // press, and it should not take reading three lines of grey to find it.
+    check("with the one that stopped arriving marked out from the rest",
+      shown[2].fixTone !== shown[0].fixTone && shown[0].fixTone === shown[1].fixTone
+      && shown[0].fixTone === shown[3].fixTone,
+      shown.map((b) => `${b.who}: ${b.fixTone}`).join(" / "));
 
     await list.close();
     await held.close();
