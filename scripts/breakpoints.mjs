@@ -9950,6 +9950,272 @@ try {
   }
 
 
+  if (want("bridge-first")) {
+    // ── the bridge is the way in, and Plaid is the exception ──
+    //
+    // Plaid bills for every connection every month; a bridge subscription
+    // carries every bank authorised at it. So the page has to lead with the
+    // bridge, and an account already on Plaid has to be movable onto it
+    // without losing what is on it: authorising the same bank at the bridge
+    // and letting the next pull find it files a second account beside the
+    // first and refiles years of transactions under ids nothing recognises.
+    const bf = await browser.newContext({ viewport: { width: 1280, height: 1500 } });
+    const warm = await bf.newPage();
+    await warm.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await warm.waitForTimeout(1400);
+    await warm.close();
+
+    await bf.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const now = new Date().toISOString();
+        const onPlaid = (over) => ({
+          institution: "Ridgeline Credit Union", type: "checking", includeInNetWorth: true,
+          hidden: false, history: [], syncSource: "plaid", plaidItemId: "it_live",
+          lastSyncedAt: now, ...over,
+        });
+        db.accounts = [
+          ...db.accounts,
+          onPlaid({ id: "bf_bank", name: "Ridgeline Everyday", balance: 1_200_00, order: 91, syncId: "pl-bf-1" }),
+          onPlaid({ id: "bf_bank2", name: "Ridgeline Holiday", balance: 300_00, order: 92, syncId: "pl-bf-2" }),
+        ];
+        db.settings.plaidItems = [
+          ...(db.settings.plaidItems ?? []),
+          { itemId: "it_live", institution: "Ridgeline Credit Union", kind: "transactions", addedAt: now, lastSyncAt: now },
+          // Synced before and feeding nothing now: the one empty state that
+          // costs money every month it is left alone.
+          { itemId: "it_idle", institution: "Dormant Savings Bank", kind: "transactions", addedAt: now, lastSyncAt: now },
+        ];
+        db.settings.simplefin = { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: now, lastSyncAt: now };
+        // Off, so no pull fires against a preview build that serves no API.
+        db.settings.syncCadence = "off";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+
+    const page = await bf.newPage();
+    let askedBridge = 0;
+    let failSync = false;
+    await page.route("**/api/simplefin", (route) => {
+      askedBridge += 1;
+      const body = route.request().postDataJSON() ?? {};
+      // The listing asks for one day; a sync asks for a window. Failing only
+      // the sync is the case that matters below: the account has been pointed
+      // at the bridge and the bridge is down, which must not leave it reading
+      // as though the old connection still fed it.
+      if (body.from && body.to && body.from !== body.to && failSync) {
+        return route.fulfill({ status: 502, json: { error: "The bridge is not answering." } });
+      }
+      return route.fulfill({ json: {
+        accounts: [
+          // Another bank first, so being offered the right one first is the
+          // sort doing work rather than the bridge happening to agree.
+          {
+            id: "sf-other-1", name: "Vacation Savings", currency: "USD",
+            balance: "3000.00", "balance-date": Math.floor(Date.now() / 1000),
+            org: { name: "Seaside Bank", domain: "seaside.example" },
+            transactions: [],
+          },
+          {
+            id: "sf-ridge-1", name: "EVERYDAY CHECKING ...4471", currency: "USD",
+            balance: "1215.40", "balance-date": Math.floor(Date.now() / 1000),
+            org: { name: "Ridgeline Credit Union", domain: "ridgeline.example" },
+            transactions: [],
+          },
+        ],
+        errors: [],
+      } });
+    });
+    await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1500);
+
+    const order = await page.evaluate(() => {
+      const heads = [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim());
+      const bridge = heads.indexOf("SimpleFIN");
+      const plaid = heads.indexOf("Connections");
+      const card = (t) => {
+        const found = [...document.querySelectorAll(".card")]
+          .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === t);
+        return found ? found.innerText.replace(/\n/g, " | ") : "";
+      };
+      return { bridge, plaid, plaidText: card("Connections"), bridgeText: card("SimpleFIN") };
+    });
+    check("Settings leads with the bridge rather than with Plaid",
+      order.bridge >= 0 && order.plaid >= 0 && order.bridge < order.plaid,
+      `bridge at ${order.bridge}, Plaid at ${order.plaid}`);
+    // The cost is the whole reason the order changed, so the card that costs
+    // money says so where somebody deciding can read it.
+    check("and Plaid says plainly that each connection there is billed monthly",
+      /billed by Plaid every month/i.test(order.plaidText), order.plaidText.slice(0, 200));
+    check("a connection nothing comes from any more says to disconnect it",
+      /Nothing here comes from this connection any more/i.test(order.plaidText),
+      order.plaidText.slice(0, 400));
+
+    await page.goto(`${BASE}/accounts/bf_bank`, { waitUntil: "networkidle" });
+    await page.waitForTimeout(1200);
+    const offers = await page.evaluate(() => {
+      const labels = [...document.querySelectorAll("button")].map((b) => b.innerText.trim());
+      return {
+        bridge: labels.findIndex((t) => /Move this account to SimpleFIN/i.test(t)),
+        plaid: labels.findIndex((t) => /Connect this account to Plaid/i.test(t)),
+        provider: document.body.innerText.includes("Plaid"),
+      };
+    });
+    check("an account on Plaid is offered the move onto the bridge, first",
+      offers.bridge >= 0 && (offers.plaid < 0 || offers.bridge < offers.plaid),
+      `bridge at ${offers.bridge}, Plaid at ${offers.plaid}`);
+
+    if (await tryStep("the bridge can be asked what it is carrying", async () => {
+      await page.locator("button", { hasText: "Move this account to SimpleFIN" }).click({ timeout: 8000 });
+      await page.locator(".modal").waitFor({ timeout: 6000 });
+      await page.waitForTimeout(400);
+    })) {
+      const picker = await page.evaluate(() => {
+        const modal = document.querySelector(".modal");
+        return {
+          text: modal?.innerText.replace(/\n/g, " | ") ?? "",
+          rows: [...(modal?.querySelectorAll("button") ?? [])].map((b) => b.innerText.replace(/\n/g, " ").trim()),
+        };
+      });
+      check("naming the accounts behind it, so the right one can be picked",
+        /4471/.test(picker.text) && /Vacation Savings/.test(picker.text),
+        picker.text.slice(0, 220));
+      // Two providers never spell a bank the same way, so the same bank is
+      // sorted to the top rather than being the only thing offered.
+      check("with the same bank offered first and the others still offered",
+        picker.rows.findIndex((r) => /4471/.test(r)) < picker.rows.findIndex((r) => /Vacation/.test(r)),
+        picker.rows.join(" | ").slice(0, 200));
+
+      if (await tryStep("and the account can be pointed at it", async () => {
+        await page.locator(".modal button", { hasText: "4471" }).click({ timeout: 8000 });
+        await page.waitForTimeout(1200);
+      })) {
+        const after = await page.evaluate(() => {
+          const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+          const a = db.accounts.find((x) => x.id === "bf_bank");
+          // The one row that says where the figures come from, rather than the
+          // whole card: the card also carries the offer to move it back, and
+          // that offer naming Plaid is not the card saying Plaid feeds it.
+          const row = [...document.querySelectorAll(".drow")]
+            .find((r) => /Data provider/.test(r.querySelector(".drow-label")?.innerText ?? ""));
+          return {
+            source: a?.syncSource, syncId: a?.syncId, movedFrom: a?.movedFrom ?? [],
+            item: a?.plaidItemId, name: a?.name, from: a?.syncFrom,
+            provider: row?.querySelector(".drow-val")?.innerText.trim() ?? "",
+            said: document.body.innerText,
+          };
+        });
+        check("which moves the provider and nothing else about the account",
+          after.source === "simplefin" && after.syncId === "sf-ridge-1" && after.name === "Ridgeline Everyday",
+          `${after.source} ${after.syncId} ${after.name}`);
+        // What stops the old connection filing a second copy of it every
+        // night, and what stops this account being listed under a Plaid login
+        // that no longer feeds it.
+        check("remembering what it answered to, and letting the old login go",
+          after.movedFrom.includes("pl-bf-1") && after.item !== "it_live",
+          `movedFrom ${after.movedFrom.join(",") || "nothing"}, item ${after.item ?? "none"}`);
+        check("and the card now says the data comes from the bridge",
+          after.provider === "SimpleFIN", after.provider || "nothing said");
+        // The move does not stop the bill. Saying so at the one moment the
+        // person is looking is the difference between moving and saving.
+        check("saying out loud that the old connection still has to be dropped",
+          /stop paying for it/i.test(after.said), "the notice");
+        check("and the bridge was actually asked, rather than guessed at",
+          askedBridge > 0, `${askedBridge} calls`);
+      }
+    }
+
+    await page.close();
+
+    // ── the same move, with the bridge down ──
+    //
+    // The pull that follows a move is not what moves the account: the write
+    // happens first, on purpose, so a bridge that is down for an hour leaves
+    // an account correctly pointed at it rather than one that still reads as
+    // the old connection's and would be listed under a login nothing feeds.
+    //
+    // Its own browser, because the successful pull above brings in every
+    // account the bridge carries, and an account the bridge has already filed
+    // here is not one this flow offers.
+    failSync = true;
+    const bfd = await browser.newContext({ viewport: { width: 1280, height: 1500 } });
+    const warmed = await bfd.newPage();
+    await warmed.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await warmed.waitForTimeout(1400);
+    await warmed.close();
+    await bfd.addInitScript(() => {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const now = new Date().toISOString();
+        db.accounts = [...db.accounts, {
+          id: "bf_bank2", name: "Ridgeline Holiday", institution: "Ridgeline Credit Union",
+          type: "checking", balance: 300_00, includeInNetWorth: true, hidden: false,
+          order: 92, history: [], syncSource: "plaid", syncId: "pl-bf-2",
+          plaidItemId: "it_live", lastSyncedAt: now,
+        }];
+        db.settings.plaidItems = [...(db.settings.plaidItems ?? []),
+          { itemId: "it_live", institution: "Ridgeline Credit Union", kind: "transactions", addedAt: now, lastSyncAt: now }];
+        db.settings.simplefin = { accessUrl: "https://u:p@bridge.example/simplefin", addedAt: now, lastSyncAt: now };
+        db.settings.syncCadence = "off";
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    });
+    const down = await bfd.newPage();
+    await down.route("**/api/simplefin", (route) => {
+      const body = route.request().postDataJSON() ?? {};
+      if (body.from && body.to && body.from !== body.to) {
+        return route.fulfill({ status: 502, json: { error: "The bridge is not answering." } });
+      }
+      return route.fulfill({ json: {
+        accounts: [{
+          id: "sf-other-1", name: "Vacation Savings", currency: "USD",
+          balance: "3000.00", "balance-date": Math.floor(Date.now() / 1000),
+          org: { name: "Seaside Bank", domain: "seaside.example" },
+          transactions: [],
+        }],
+        errors: [],
+      } });
+    });
+    await down.goto(`${BASE}/accounts/bf_bank2`, { waitUntil: "networkidle" });
+    await down.waitForTimeout(1300);
+    if (await tryStep("a second account can be moved while the bridge is down", async () => {
+      await down.locator("button", { hasText: "Move this account to SimpleFIN" }).click({ timeout: 8000 });
+      await down.locator(".modal").waitFor({ timeout: 6000 });
+      await down.locator(".modal button", { hasText: "Vacation Savings" }).click({ timeout: 8000 });
+      await down.waitForTimeout(1500);
+    })) {
+      const stuck = await down.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        const a = db.accounts.find((x) => x.id === "bf_bank2");
+        const row = [...document.querySelectorAll(".drow")]
+          .find((r) => /Data provider/.test(r.querySelector(".drow-label")?.innerText ?? ""));
+        return {
+          source: a?.syncSource, syncId: a?.syncId, item: a?.plaidItemId,
+          provider: row?.querySelector(".drow-val")?.innerText.trim() ?? "",
+        };
+      });
+      check("the account is the bridge's even though the pull failed",
+        stuck.source === "simplefin" && stuck.syncId === "sf-other-1" && stuck.provider === "SimpleFIN",
+        `${stuck.source} ${stuck.syncId} says ${stuck.provider}`);
+      check("and it is no longer held under the Plaid login it came in on",
+        stuck.item !== "it_live", stuck.item ?? "none");
+      // And the failure is said out loud rather than swallowed, or the account
+      // reads as moved and nothing explains why no figures followed.
+      check("with the bridge's refusal shown rather than swallowed",
+        /not answering|could not|failed/i.test(await down.evaluate(() => document.body.innerText)),
+        "the message");
+    }
+    failSync = false;
+
+    await down.close();
+    await bfd.close();
+    await bf.close();
+  }
+
   if (want("link-trouble")) {
     // ── a bank that has refused the same way for a fortnight ──
     //
@@ -10104,9 +10370,10 @@ try {
     await cfg.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
     await cfg.waitForTimeout(1300);
     if (await tryStep("the configuration check runs", async () => {
-      // Scoped to the Plaid card: a second provider's card carries the same
-      // button, and its title contains this one's.
-      await cfg.locator(".card", { hasText: "Banks, cards and brokerages" })
+      // Scoped to the Plaid card by its own heading: another provider's card
+      // carries the same button, and matching on the words underneath tied
+      // this step to a sentence that is there to be rewritten.
+      await cfg.locator('.card:has(h2:text-is("Connections"))')
         .getByRole("button", { name: /Check configuration/ }).click({ timeout: 8000 });
       await cfg.waitForTimeout(800);
     })) {

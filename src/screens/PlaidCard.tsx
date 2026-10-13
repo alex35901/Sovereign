@@ -572,9 +572,14 @@ export function PlaidCard() {
 
   return (
     <Card>
+      {/* Named for what it is for now rather than for everything it can do.
+          Plaid charges for each connection every month once a trial is behind
+          you, and the bridge above does not, so the honest default is that a
+          connection lives here only when it has to: holdings, or a bank the
+          bridge cannot open. */}
       <CardHead
         title="Connections"
-        sub="Banks, cards and brokerages, through Plaid"
+        sub="Through Plaid, for investment holdings and anything the bridge cannot open. Each connection here is billed by Plaid every month."
         right={items.length ? (
           <Btn variant="primary" onClick={() => void syncAll()} disabled={busy !== null}>
             <RefreshCw size={14} style={busy === "sync" ? { animation: "spin 1s linear infinite" } : undefined} />
@@ -700,6 +705,16 @@ export function PlaidCard() {
                     </li>
                   ))}
                 </ul>
+              ) : item.lastSyncAt ? (
+                /* It has pulled before and nothing here comes from it now, so
+                   either its accounts were moved to the bridge or they were
+                   deleted. Plaid goes on charging for a connection for as long
+                   as the app holds its token, whether anything reads it or
+                   not, so this is the one empty state that costs money. */
+                <div className="tiny warn">
+                  Nothing here comes from this connection any more. Disconnect it to stop Plaid
+                  billing for it. Its accounts and their history stay where they are.
+                </div>
               ) : (
                 <div className="tiny faint">
                   Nothing has come in from this connection yet. Press Sync all, or Reconnect if it is

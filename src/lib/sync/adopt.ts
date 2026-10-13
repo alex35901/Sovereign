@@ -32,7 +32,7 @@ export function floorFor(db: DB, accountId: string, fallback: ISODate): ISODate 
 }
 
 export interface Adoption {
-  /** The Plaid account this one becomes. */
+  /** The provider's account this one becomes. */
   syncId: string;
   /** The item it now belongs to. */
   institution: string;
@@ -46,11 +46,26 @@ export interface Adoption {
  * The id, the name, the type, the history, the balance and everything hanging
  * off it are untouched: this is the same account, reached a different way. Only
  * the provider, its id for the account, and the day its history starts.
+ *
+ * `source` is named rather than assumed. It was "plaid" in the body of this
+ * function back when Plaid was the only thing an account could be moved onto,
+ * and the whole point of the function is that an account can be moved.
  */
-export function adopt(account: Account, to: Adoption, from: ISODate): Account {
+export function adopt(
+  account: Account,
+  to: Adoption,
+  from: ISODate,
+  source: "plaid" | "simplefin",
+): Account {
   return {
     ...account,
-    syncSource: "plaid",
+    syncSource: source,
+    // Which Plaid login this account sits behind, if it still sits behind one.
+    // A stale one on an account that has moved to the bridge would have the
+    // connections card go on listing it under a login that no longer feeds
+    // it, for as long as it took the first pull to come in. The pull then
+    // stamps whatever the new provider calls its own connection.
+    plaidItemId: source === "plaid" ? account.plaidItemId : undefined,
     syncId: to.syncId,
     // What it used to answer to. The old connection keeps offering this
     // account every night under that id, and without this the merge meets

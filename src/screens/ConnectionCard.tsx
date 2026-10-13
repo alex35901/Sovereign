@@ -12,6 +12,7 @@ import { readInstitutionHealth, readItemHealth, verdictOn } from "../lib/sync/he
 import type { Verdict } from "../lib/sync/health";
 import { Btn, Card, CardHead, cx } from "../components/ui";
 import { feederOf, feeders, replacementsFor, strandedIn } from "../lib/sync/reattach";
+import { SwitchToSimplefin } from "./SwitchToSimplefin";
 import { SwitchToPlaid } from "./SwitchToPlaid";
 import { ReattachCard } from "./Reattach";
 
@@ -202,6 +203,11 @@ export function ConnectionCard({ account }: { account: Account }) {
           points an existing account at a connection, keeping its history
           rather than filing a second copy beside it, was hidden from exactly
           the accounts that needed it most. */}
+      {/* The bridge first, because it is the cheap path and the one most
+          accounts should be on: one subscription carries every bank
+          authorised at it, where Plaid bills for each connection every month.
+          Renders nothing until a bridge is connected. */}
+      {account.syncSource !== "simplefin" ? <SwitchToSimplefin account={account} /> : null}
       {account.syncSource !== "plaid" || stranded ? <SwitchToPlaid account={account} /> : null}
     </Card>
   );

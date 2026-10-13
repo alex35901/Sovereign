@@ -82,7 +82,7 @@ export function SimplefinCard() {
         title="SimpleFIN"
         sub={ref
           ? "Connected. Every bank you authorised at the bridge arrives through it."
-          : "A bridge you authorise your own banks at, for the ones Plaid will not open. Nothing to sign up for here."}
+          : "A bridge you authorise your own banks at, and the way most accounts should come in. One subscription carries every bank you add there, and there is nothing to sign up for here."}
         right={ref ? (
           <div className="row" style={{ gap: 8 }}>
             <Btn size="sm" onClick={() => void pull()} disabled={busy}>

@@ -1779,7 +1779,7 @@ await test("a switched provider does not refile the history already held", () =>
   assert.equal(from, "2026-08-20", "the day after the newest it holds");
   const moved = {
     ...first.db,
-    accounts: [M.adopt(account, { syncId: "pl-acct-1", institution: "Stub Bank" }, from)],
+    accounts: [M.adopt(account, { syncId: "pl-acct-1", institution: "Stub Bank" }, from, "plaid")],
   };
 
   // Plaid now offers the same two days again, plus one that is genuinely new.
@@ -4727,7 +4727,7 @@ await test("an account moved to another provider keeps everything but where its 
     syncSource: "plaid", syncId: "pl-123",
     syncNote: { message: "We are upgrading this connection.", at: "2026-09-20T00:00:00.000Z" },
   };
-  const moved = M.adopt(account, { syncId: "pl-987", institution: "Elements Financial", logo: "data:image/png;base64,x" }, "2026-09-03");
+  const moved = M.adopt(account, { syncId: "pl-987", institution: "Elements Financial", logo: "data:image/png;base64,x" }, "2026-09-03", "plaid");
 
   // The same account, reached a different way.
   assert.equal(moved.id, "a_joint", "the id is what every transaction, rule and goal points at");
@@ -4741,6 +4741,30 @@ await test("an account moved to another provider keeps everything but where its 
   assert.equal(moved.syncFrom, "2026-09-03");
   assert.equal(moved.syncNote, undefined, "the old provider's complaint is no longer about this account");
   assert.equal(moved.logo, "data:image/png;base64,x", "a mark it did not have is taken");
+});
+
+await test("and an account can be moved the other way, onto the bridge", () => {
+  // The direction a household travels once Plaid starts billing per
+  // connection. Same account, same history, and the Plaid login it used to
+  // sit behind is let go, or the connections card would go on listing it
+  // under a login that no longer feeds it.
+  const account = {
+    id: "a_joint", name: "Joint Bills", institution: "Elements Financial", type: "checking",
+    balance: 421_00, includeInNetWorth: true, hidden: false, order: 3, history: [],
+    syncSource: "plaid", syncId: "pl-123", plaidItemId: "item-7",
+  };
+  const moved = M.adopt(account, { syncId: "sf-55", institution: "Elements" }, "2026-10-14", "simplefin");
+  assert.equal(moved.syncSource, "simplefin");
+  assert.equal(moved.syncId, "sf-55");
+  assert.equal(moved.plaidItemId, undefined, "it no longer sits behind a Plaid login");
+  assert.deepEqual(moved.movedFrom, ["pl-123"], "so the old connection's offer of it is ignored");
+  assert.equal(moved.id, "a_joint");
+  assert.equal(moved.name, "Joint Bills");
+  assert.equal(moved.order, 3);
+  // And moving onto Plaid keeps the login it is told about.
+  const back = M.adopt(moved, { syncId: "pl-9", institution: "Elements" }, "2026-10-20", "plaid");
+  assert.equal(back.syncSource, "plaid");
+  assert.deepEqual(back.movedFrom, ["pl-123", "sf-55"], "every id it has ever answered to");
 });
 
 await test("the new provider starts the day after the history already held", () => {
@@ -5601,7 +5625,7 @@ await test("an account moved to a new connection is not handed back by the old o
   // Moved: same account, new provider, and it remembers what it answered to.
   const moved = M.adopt(before.db.accounts.find((a) => a.syncId === "sf-1"), {
     syncId: "pl-9", institution: "Elements",
-  }, "2026-09-25");
+  }, "2026-09-25", "plaid");
   assert.deepEqual(moved.movedFrom, ["sf-1"]);
   assert.equal(moved.syncSource, "plaid");
   const after = { ...before.db, accounts: before.db.accounts.map((a) => (a.syncId === "sf-1" ? moved : a)) };

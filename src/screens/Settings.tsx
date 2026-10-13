@@ -107,11 +107,14 @@ export default function Settings() {
         <HistoryCard />
         <EncryptionCard />
 
-        <PlaidCard />
-        {/* After Plaid, because it is the answer to something Plaid refused
-            rather than an equal choice: one bank comes this way and the rest
-            stay where they are. */}
+        {/* The bridge first, because it is the way most accounts should come
+            in. It was second when it was the answer to a bank Plaid refused;
+            it is first now that Plaid bills for every connection every month
+            and one bridge subscription carries the lot. */}
         <SimplefinCard />
+        {/* And Plaid after it, for what the bridge does not do: investment
+            holdings, and any bank the bridge cannot open. */}
+        <PlaidCard />
         {/* Under the connections, because it is about them: an account a
             reconnected bank handed back under a new name. Renders nothing
             unless there is one. */}

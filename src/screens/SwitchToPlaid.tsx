@@ -117,7 +117,7 @@ export function SwitchToPlaid({ account }: { account: Account }) {
       if (Object.keys(patch).length) actions.patchSettings(patch);
       apply((cur) => ({
         ...cur,
-        accounts: cur.accounts.map((a) => (a.id === account.id ? adopt(a, pick, from) : a)),
+        accounts: cur.accounts.map((a) => (a.id === account.id ? adopt(a, pick, from, "plaid") : a)),
       }), `move ${account.name} to Plaid`);
       setChoices(null);
       notify(`${account.name} now comes from Plaid. Its history is untouched; anything from ${from} is taken from the new connection.`);
