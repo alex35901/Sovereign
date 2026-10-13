@@ -18381,6 +18381,47 @@ await test("one card on its own is never wrong", () => {
   assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_gro")), null);
 });
 
+/* ── the shops a card's own small print leaves out ─────────────────────── */
+
+await test("a bonus the issuer does not pay at a warehouse club pays base there", () => {
+  // The case this exists for. A card paying six percent at supermarkets says in
+  // its terms that warehouse clubs are not supermarkets, so the Costco run in
+  // the Groceries category earns the base rate and every other grocery shop
+  // earns the bonus. The fact belongs to the card, not to the category.
+  const card = cash(1, [earnRule("r1", 6, ["c_gro"], { excludeMerchants: ["Costco"] })]);
+  assert.equal(M.CD.earned(card, [buy("2026-10-01", "c_gro", 100, "Safeway")]), 6_00);
+  assert.equal(M.CD.earned(card, [buy("2026-10-01", "c_gro", 100, "Costco")]), 1_00);
+  // Spelling and case are the ledger's, not the typist's.
+  assert.equal(M.CD.earned(card, [buy("2026-10-01", "c_gro", 100, "COSTCO")]), 1_00);
+  // And a rule with no carve-out is untouched by any of this.
+  const plain = cash(1, [earnRule("r1", 6, ["c_gro"])]);
+  assert.equal(M.CD.earned(plain, [buy("2026-10-01", "c_gro", 100, "Costco")]), 6_00);
+});
+
+await test("the carve-out beats the rule's own list of shops", () => {
+  // Both lists on one rule is "these categories, and also these shops". An
+  // exclusion is the issuer's small print and is read first, or a card could
+  // be made to pay a rate its terms say it does not.
+  const card = cash(1, [earnRule("r1", 5, [], { merchants: ["Costco"], excludeMerchants: ["Costco"] })]);
+  assert.equal(M.CD.earned(card, [buy("2026-10-01", "c_gro", 100, "Costco")]), 1_00);
+});
+
+await test("and the ledger marks a warehouse run on the grocery card as the wrong one", () => {
+  const db = verdictDB();
+  db.accounts[0].rewards = {
+    pointCents: 1, base: 1,
+    rules: [{ id: "r1", rate: 5, categoryIds: ["c_gro"], excludeMerchants: ["Costco"] }],
+  };
+  // Groceries anywhere else: still the card to reach for.
+  assert.equal(M.CD.cardVerdict(db, paidWith("card_a", "c_gro", { merchant: "Safeway" })).call, "right");
+  // The same category at the one shop the card leaves out: the flat card wins.
+  const said = M.CD.cardVerdict(db, paidWith("card_a", "c_gro", { merchant: "Costco" }));
+  assert.equal(said.call, "wrong");
+  assert.equal(said.better, "Everything Card");
+  assert.equal(said.paid, 1, "the base rate is what the card paid there");
+  assert.equal(said.best, 2);
+});
+
 /* ── the figure following the pen as its chart is drawn ────────────────── */
 
 await test("the figure opens where the chart opens and lands where it lands", () => {
@@ -18532,6 +18573,29 @@ await test("a quarter of a rotating card is drafted as a rate that runs for it",
   assert.equal(rules[0].from, "2026-10-01");
   assert.equal(rules[0].to, "2026-12-31");
   assert.deepEqual(rules[0].categoryIds, ["c_gro"]);
+});
+
+await test("a drafted carve-out is read, bounded, and carried into the rule", () => {
+  const d = draft({
+    base: 1, pointCents: 1, annualFee: 95,
+    rules: [{
+      rate: 6, categories: ["Groceries"], cap: 6000, period: "year",
+      excludeShops: ["Costco", " costco ", "Sam's Club", "", "BJ's Wholesale Club"],
+    }],
+    note: "Warehouse clubs are excluded.",
+  });
+  assert.deepEqual(d.rules[0].excludeMerchants, ["Costco", "Sam's Club", "BJ's Wholesale Club"],
+    "deduplicated without case deciding anything, and blanks dropped");
+  const [rule] = M.toRules(d, [{ id: "c_gro", name: "Groceries" }]);
+  assert.deepEqual(rule.excludeMerchants, ["Costco", "Sam's Club", "BJ's Wholesale Club"]);
+  // A draft that names no exclusions holds none, rather than an empty list
+  // nobody asked for.
+  const bare = draft({ base: 1, rules: [{ rate: 3, categories: ["Groceries"] }] });
+  assert.deepEqual(bare.rules[0].excludeMerchants, []);
+  assert.equal(M.toRules(bare, [{ id: "c_gro", name: "Groceries" }])[0].excludeMerchants, undefined);
+  // And exclusions alone are not a rate: there is nothing for them to carve.
+  const empty = draft({ base: 1, rules: [{ rate: 6, categories: [], excludeShops: ["Costco"] }] });
+  assert.deepEqual(empty.rules, []);
 });
 
 await test("a rate that runs all year keeps no window at all", () => {

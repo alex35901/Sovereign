@@ -75,6 +75,9 @@ const claiming = (r: CardRewards, line: { categoryId: ID; merchant?: string; dat
   const who = merchantKey(line.merchant ?? "");
   return r.rules
     .filter((x) => runsOn(x, line.date))
+    // The card's own carve-out, first: a bonus that does not run at warehouse
+    // clubs does not run there however the purchase was categorised.
+    .filter((x) => !(!!who && (x.excludeMerchants ?? []).some((m) => merchantKey(m) === who)))
     .filter((x) => x.categoryIds.includes(line.categoryId)
       || (!!who && (x.merchants ?? []).some((m) => merchantKey(m) === who)))
     .sort((a, b) => b.rate - a.rate);

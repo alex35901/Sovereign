@@ -35,6 +35,7 @@ outside the object.
       "rate": number,      // earned per dollar in these categories
       "categories": string[], // names, chosen ONLY from the list you are given
       "merchants": string[],  // shops this rate is tied to, e.g. ["Amazon"]
+      "excludeShops": string[], // shops the issuer excludes, e.g. ["Costco"]
       "cap": number,       // dollars of spending the rate applies to, 0 for none
       "period": "month" | "quarter" | "year" | "",
       "from": string,      // "" or YYYY-MM-DD: first day this rate is paid
@@ -52,6 +53,11 @@ Rules:
   {"rate": 5, "categories": [], "merchants": ["Amazon"]}. Use merchants only
   where the card really is tied to named shops, not as a guess at what a
   category contains.
+- Many cards that pay a bonus at supermarkets exclude warehouse clubs and
+  superstores in the small print. Where the issuer excludes named chains, list
+  them in "excludeShops". Only the ones the issuer names, and leave the list
+  empty where you are not sure: a shop excluded by guesswork sends somebody to
+  a worse card for no reason.
 - Rates are per dollar as the card counts them: 3 for 3% cash back, 3 for 3x
   points. Do not convert one into the other.
 - Caps matter. If a rate is capped, say so; if you do not know, leave cap 0.
@@ -76,6 +82,8 @@ export interface DraftRule {
   rate: number;
   categories: string[];
   merchants: string[];
+  /** Shops the issuer's own terms carve out of this rate. */
+  excludeMerchants: string[];
   cap?: number;
   period?: EarnRule["period"];
   /** The stretch a rate runs for, when it does not run all year. */
@@ -220,18 +228,23 @@ export function readDraft(text: string, known: readonly string[], now: string = 
        * before anything is saved, exactly as every other line of this draft
        * does.
        */
-      const seen = new Set<string>();
-      const merchants: string[] = [];
-      for (const raw of Array.isArray(row.merchants) ? row.merchants : []) {
-        const name = String(raw ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
-        // Deduplicated without case deciding anything, but kept as written:
-        // this goes in a form a person reads, and "amazon" in a box they are
-        // checking against their own card reads as a typo rather than a draft.
-        if (!name || seen.has(name.toLowerCase())) continue;
-        seen.add(name.toLowerCase());
-        merchants.push(name);
-        if (merchants.length >= MAX_MERCHANTS) break;
-      }
+      const shops = (list: unknown): string[] => {
+        const seen = new Set<string>();
+        const out: string[] = [];
+        for (const one of Array.isArray(list) ? list : []) {
+          const name = String(one ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+          // Deduplicated without case deciding anything, but kept as written:
+          // this goes in a form a person reads, and "amazon" in a box they are
+          // checking against their own card reads as a typo rather than a draft.
+          if (!name || seen.has(name.toLowerCase())) continue;
+          seen.add(name.toLowerCase());
+          out.push(name);
+          if (out.length >= MAX_MERCHANTS) break;
+        }
+        return out;
+      };
+      const merchants = shops(row.merchants);
+      const excludeMerchants = shops(row.excludeShops);
       // A rate with nothing to apply to is not a rate. Dropped rather than
       // shown, because an empty row in the form reads as something to fill in.
       if (!categories.length && !merchants.length) return [];
@@ -242,6 +255,7 @@ export function readDraft(text: string, known: readonly string[], now: string = 
         rate: num(row.rate, 1, MAX_RATE),
         categories,
         merchants,
+        excludeMerchants,
         cap: cap > 0 ? cap : undefined,
         period: cap > 0 && PERIODS.has(period) ? period as EarnRule["period"] : undefined,
         ...(span ?? {}),
@@ -268,11 +282,13 @@ export function toRules(draft: RewardsDraft, categories: readonly Category[]): E
       .filter((id): id is ID => !!id);
     const merchants = r.merchants ?? [];
     if (!categoryIds.length && !merchants.length) return [];
+    const except = r.excludeMerchants ?? [];
     return [{
       id: uid("er"),
       rate: r.rate,
       categoryIds,
       merchants: merchants.length ? merchants : undefined,
+      excludeMerchants: except.length ? except : undefined,
       cap: r.cap ? Math.round(r.cap * 100) : undefined,
       period: r.period,
       // Both ends or neither, the same way the draft was read: readDraft keeps

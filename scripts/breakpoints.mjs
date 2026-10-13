@@ -8687,9 +8687,21 @@ try {
     check("and says plainly that nobody has said what these cards pay",
       before.warns && before.unset === before.cards.length,
       `${before.unset} marked unset of ${before.cards.length}`);
-    check("with nothing to move while every card pays the same",
-      before.rows.every((r) => r.missed === "-" && /stay put/i.test(r.reach)),
-      before.rows.slice(0, 3).map((r) => `${r.name}: ${r.reach} ${r.missed}`).join(" | "));
+    // Nothing to move, but the column still has to answer the question it is
+    // named for: with no bonus anywhere, the card to use is the daily driver,
+    // and the tile at the top of the page names it. One claim, read twice off
+    // the same screen, so the column cannot drift from the tile.
+    const driverName = await wl.evaluate(() => {
+      const label = [...document.querySelectorAll(".tile-label")]
+        .find((e) => /daily driver/i.test(e.textContent ?? ""));
+      return (label?.closest(".tile-body")?.innerText.split("\n")[1] ?? "").trim();
+    });
+    check("with nothing to move, every row names the daily driver",
+      !!driverName && before.rows.length > 0
+      && before.rows.every((r) => r.missed === "-" && r.reach === driverName),
+      `${driverName || "no driver named"}: ${before.rows.slice(0, 3).map((r) => `${r.name}: ${r.reach} ${r.missed}`).join(" | ")}`);
+    check("and nothing on the page tells anybody to stay put",
+      !/stay put/i.test(await wl.evaluate(() => document.body.innerText)), "wording");
 
     // Say one card pays more on one category and the page has to find it.
     const named = before.rows.find((r) => r.name)?.name ?? "";
@@ -8707,8 +8719,8 @@ try {
       check("and the card stops being marked as unchecked",
         after.unset === before.unset - 1, `${before.unset} -> ${after.unset}`);
       // Only the rows with something in them: a category whose saving rounds
-      // to nothing says "stay put" on purpose, and reading those as failures
-      // would be asserting the opposite of what the page is for.
+      // to nothing names the daily driver on purpose, and reading those as
+      // failures would be asserting the opposite of what the page is for.
       const worth = after.rows.filter((r) => /^\+\$/.test(r.missed));
       check("the better card becomes the one to reach for",
         worth.length > 0 && worth.every((r) => r.reach.includes(second)),
@@ -8871,7 +8883,7 @@ try {
     // page reports is not what the source says.
     check("under the same five headings, named for what the column holds",
       shops !== null
-      && shops.heads.join(" / ").toLowerCase() === "merchant / spent / reach for / earned / missed",
+      && shops.heads.join(" / ").toLowerCase() === "merchant / spent / card / earned / missed",
       shops?.heads.join(" / ") ?? "");
     check("with a row per shop that leads to that shop's own page",
       shops !== null && shops.names.length === shops.rows
@@ -9129,6 +9141,75 @@ try {
       }
       await wl.locator(".modal-foot button", { hasText: "Cancel" }).click({ timeout: 8000 });
       await wl.waitForTimeout(400);
+    }
+
+    // ── the shops a card's own small print leaves out ──
+    //
+    // A card paying a bonus at supermarkets usually says in its terms that a
+    // warehouse club is not one. That is a fact about the card, so it is typed
+    // on the card's own rate rather than worked around by splitting the
+    // household's categories in two. The arithmetic is pinned in selftest.mjs;
+    // what this checks is that the form holds it and the document keeps it.
+    //
+    // Last in the section, and saving as it goes: everything above reads a
+    // wallet nobody has confirmed, and a confirmed card would be a different
+    // page.
+    const gaveException = await tryStep("a rate can be given a shop and an exception", async () => {
+      await wl.locator(".card-row").first().click({ timeout: 8000 });
+      await wl.locator(".modal").waitFor({ timeout: 5000 });
+      // Matched loosely: each label sits beside an icon, so its text carries a
+      // leading space that an anchored pattern would miss.
+      await wl.locator(".modal button", { hasText: "Add" }).click({ timeout: 8000 });
+      const rule = wl.locator(".modal .card-rule").last();
+      await rule.locator('input[aria-label="Shop this rate applies at"]').fill("Trader Joes", { timeout: 8000 });
+      await rule.locator("button", { hasText: "Shop" }).click({ timeout: 8000 });
+      await rule.locator('input[aria-label="Shop this rate applies at"]').fill("Costco", { timeout: 8000 });
+      await rule.locator("button", { hasText: "Except" }).click({ timeout: 8000 });
+      await wl.waitForTimeout(250);
+    });
+    // A modal left half-filled swallows every click after it, so a step that
+    // got partway has to put the page back.
+    if (!gaveException) {
+      await wl.keyboard.press("Escape");
+      await wl.waitForTimeout(400);
+    }
+    if (gaveException) {
+      const chips = await wl.evaluate(() => {
+        const rule = [...document.querySelectorAll(".modal .card-rule")].pop();
+        const colour = (sel) => {
+          const el = rule?.querySelector(sel);
+          return el ? getComputedStyle(el).color : "";
+        };
+        return {
+          earns: [...(rule?.querySelectorAll(".card-rule-shop") ?? [])].map((e) => e.innerText.trim()),
+          except: [...(rule?.querySelectorAll(".card-rule-not") ?? [])].map((e) => e.innerText.trim()),
+          earnsColour: colour(".card-rule-shop"),
+          exceptColour: colour(".card-rule-not"),
+        };
+      });
+      check("the shop that earns it and the shop that does not are held apart",
+        chips.earns.join() === "Trader Joes" && chips.except.join() === "Costco",
+        `earns ${chips.earns.join(", ") || "nothing"} / except ${chips.except.join(", ") || "nothing"}`);
+      // The two have to be told apart at a glance, or the mark is worse than
+      // nothing: one says paid here and the other says not paid here.
+      check("and not wearing the same colour as each other",
+        !!chips.earnsColour && !!chips.exceptColour && chips.earnsColour !== chips.exceptColour,
+        `${chips.earnsColour} against ${chips.exceptColour}`);
+
+      // Saved and reopened, because a form that holds it only until the modal
+      // closes holds nothing.
+      if (await tryStep("the terms can be saved with the exception on them", async () => {
+        await wl.locator(".modal-foot button", { hasText: "Save and confirm" }).click({ timeout: 8000 });
+        await wl.waitForTimeout(900);
+        await wl.locator(".card-row").first().click({ timeout: 8000 });
+        await wl.locator(".modal").waitFor({ timeout: 5000 });
+        await wl.waitForTimeout(300);
+      })) {
+        const kept = await wl.evaluate(() =>
+          [...document.querySelectorAll(".modal .card-rule-not")].map((e) => e.innerText.trim()));
+        check("and the exception is still on it on the way back in",
+          kept.join() === "Costco", kept.join(", ") || "nothing kept");
+      }
     }
     await wl.close();
   }

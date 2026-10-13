@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
-import { Plus, Sparkles, Store, Trash2 } from "lucide-react";
+import { Ban, Plus, Sparkles, Store, Trash2 } from "lucide-react";
 import type { Account, CandidateCard, CardRewards, EarnRule, ID } from "../types";
 import { useDB, useStore } from "../store";
 import { TopBar } from "../shell/TopBar";
@@ -303,6 +303,7 @@ export default function Cards() {
               head="Category"
               rows={catRows}
               byId={byId}
+              driver={report.driver?.name}
               onAsk={(r) => askHopper(
                 `Which credit cards would be good for my ${r.name} spending? Look at what I spent on ${r.name} over the last year and what my cards earn on it now, then name a few worth considering and say what each one pays.`,
               )}
@@ -320,6 +321,7 @@ export default function Cards() {
               head="Merchant"
               rows={shopRows}
               byId={byId}
+              driver={report.driver?.name}
               onAsk={(r) => askHopper(
                 `Which credit cards would be good for my spending at ${r.name}? Look at what I spent there over the last year and what my cards earn on it now, then say whether any card aimed at ${r.name} is worth it, and what it pays.`,
               )}
@@ -385,7 +387,7 @@ export default function Cards() {
  * them, and both read the same routing: the caps a purchase spends are spent
  * once, however the answer is later cut up.
  */
-function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun = "rows" }: {
+function ReachTable({ title, sub, head, rows, byId, driver, onAsk, askTitle, empty, noun = "rows" }: {
   title: string;
   sub: string;
   /** What to call the first column. */
@@ -394,6 +396,8 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
   byId: Map<ID, Account>;
   onAsk: (row: ReachRow) => void;
   askTitle: (row: ReachRow) => string;
+  /** The card to reach for where nothing pays extra, by name. */
+  driver?: string;
   /** Said instead of an empty table, when there is nothing to show. */
   empty?: string;
   /** What the rows are, for the button that shows the rest of them. */
@@ -406,8 +410,9 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
     if (key === "earned") return r.earned;
     if (key === "gap") return r.gap;
     if (key === "name") return r.name;
-    // Only the rows worth moving name a card. The rest say "stay put", which
-    // is not a card name, so they gather at the bottom either way.
+    // Only the rows worth moving sort by the card they name. The rest are the
+    // ones with nothing to change, a different kind of row whatever their cell
+    // says, so they gather at the bottom either way.
     return r.gap >= WORTH_SAYING && r.bestAccountId
       ? byId.get(r.bestAccountId)?.name ?? "a card"
       : null;
@@ -432,7 +437,7 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
           <div className="card-cat head">
             <span className="tiny faint"><SortHead field="name" sort={sort} onSort={onSort}>{head}</SortHead></span>
             <span className="tiny faint card-cat-spend"><SortHead field="spend" sort={sort} onSort={onSort}>Spent</SortHead></span>
-            <span className="tiny faint card-cat-best"><SortHead field="best" sort={sort} onSort={onSort}>Reach for</SortHead></span>
+            <span className="tiny faint card-cat-best"><SortHead field="best" sort={sort} onSort={onSort}>Card</SortHead></span>
             <span className="tiny faint card-cat-earned"><SortHead field="earned" sort={sort} onSort={onSort}>Earned</SortHead></span>
             <span className="tiny faint card-cat-gap"><SortHead field="gap" sort={sort} onSort={onSort}>Missed</SortHead></span>
             <span />
@@ -447,12 +452,15 @@ function ReachTable({ title, sub, head, rows, byId, onAsk, askTitle, empty, noun
                 <span className="card-cat-name">{r.label}</span>
                 <span className="num tiny faint card-cat-spend">{fmt0(r.spend)}</span>
                 <span className="card-cat-best">
-                  {/* Only when there is something to change. With nothing in
-                      it, naming a card reads as "switch to this" against a
-                      saving of nothing. */}
+                  {/* A card to switch to only where switching is worth
+                      something. Everywhere else the answer is still a card,
+                      and it is the daily driver: the one to reach for when
+                      nothing in the wallet pays extra. Said faintly, because
+                      the same name at full strength would read as "switch to
+                      this" against a saving of nothing. */}
                   {worth && r.bestAccountId
                     ? <span className="tiny truncate">{byId.get(r.bestAccountId)?.name ?? "a card"}</span>
-                    : <span className="tiny faint">stay put</span>}
+                    : <span className="tiny faint truncate">{driver ?? "-"}</span>}
                 </span>
                 <span className="num tiny faint card-cat-earned">{fmt0(r.earned)}</span>
                 <span className={cx("num tiny card-cat-gap", worth && "neg")}>
@@ -634,7 +642,11 @@ function Offers() {
  * that only offered known shops could not express the one thing store cards
  * are for. So it is a text box with its own suggestions behind it.
  */
-function MerchantAdd({ onAdd }: { onAdd: (name: string) => void }) {
+function MerchantAdd({ onAdd, onExcept }: {
+  onAdd: (name: string) => void;
+  /** Given, a second button carves the shop out of the rate instead. */
+  onExcept?: (name: string) => void;
+}) {
   const db = useDB();
   const [text, setText] = useState("");
   const listId = useId();
@@ -644,10 +656,10 @@ function MerchantAdd({ onAdd }: { onAdd: (name: string) => void }) {
     () => [...merchantIndex(db).values()].sort((a, b) => b.count - a.count).slice(0, 400),
     [db],
   );
-  const add = () => {
+  const add = (to: (name: string) => void) => {
     const name = text.trim();
     if (!name) return;
-    onAdd(name);
+    to(name);
     setText("");
   };
   return (
@@ -656,13 +668,24 @@ function MerchantAdd({ onAdd }: { onAdd: (name: string) => void }) {
         className="input" list={listId} value={text} placeholder="Shop"
         aria-label="Shop this rate applies at"
         onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(onAdd); } }}
         style={{ minWidth: 0 }}
       />
       <datalist id={listId}>
         {known.map((m) => <option key={m.name} value={m.name} />)}
       </datalist>
-      <Btn size="sm" onClick={add} disabled={!text.trim()}><Plus size={12} /> Shop</Btn>
+      <Btn size="sm" onClick={() => add(onAdd)} disabled={!text.trim()}><Plus size={12} /> Shop</Btn>
+      {/* The same box, the other answer. A card that pays at supermarkets but
+          not at warehouse clubs is one rate with one exception, and asking for
+          the shop twice in two boxes would be asking the same question twice. */}
+      {onExcept ? (
+        <Btn
+          size="sm" onClick={() => add(onExcept)} disabled={!text.trim()}
+          title="This rate is not paid at this shop"
+        >
+          <Ban size={12} /> Except
+        </Btn>
+      ) : null}
     </span>
   );
 }
@@ -891,8 +914,18 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
                   patch(r.id, { merchants: [...have, name] });
                 }
               }}
+              onExcept={(name) => {
+                const have = r.excludeMerchants ?? [];
+                if (!have.some((m) => m.toLowerCase() === name.toLowerCase())) {
+                  patch(r.id, { excludeMerchants: [...have, name] });
+                }
+              }}
             />
-            {r.categoryIds.length || (r.merchants ?? []).length ? (
+            {/* Two questions, not one. The marks show whatever the rate holds,
+                including a carve-out on its own; the line below says the rate
+                claims nothing, and a rate with only an exception on it claims
+                nothing, so it has to say so. */}
+            {r.categoryIds.length || (r.merchants ?? []).length || (r.excludeMerchants ?? []).length ? (
               <div className="row wrap" style={{ gap: 5 }}>
                 {r.categoryIds.map((id) => (
                   <CategoryTag
@@ -911,8 +944,21 @@ function RewardsModal({ name: startName, rewards: start, nameLocked, onSave, onD
                     <span className="truncate" style={{ maxWidth: 130 }}>{name}</span>
                   </span>
                 ))}
+                {(r.excludeMerchants ?? []).map((name) => (
+                  <span
+                    key={name} className="chip card-rule-not"
+                    title={`${name}: this rate is not paid here. Click to remove.`}
+                    onClick={() => patch(r.id, {
+                      excludeMerchants: (r.excludeMerchants ?? []).filter((x) => x !== name),
+                    })}
+                  >
+                    <Ban size={11} />
+                    <span className="truncate" style={{ maxWidth: 130 }}>{name}</span>
+                  </span>
+                ))}
               </div>
-            ) : (
+            ) : null}
+            {r.categoryIds.length || (r.merchants ?? []).length ? null : (
               <span className="tiny faint">
                 Pick a category or a shop, or this rate does nothing. A purchase earns it if it matches either.
               </span>

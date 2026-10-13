@@ -207,6 +207,21 @@ export interface EarnRule {
    */
   merchants?: string[];
   /**
+   * Shops this rate is NOT paid at, whatever else it matches.
+   *
+   * The carve-out is on the card, not in the household's categories. Most
+   * cards that pay a bonus at supermarkets say in the small print that
+   * warehouse clubs and superstores are not supermarkets, so a Costco run
+   * under Groceries earns the base rate while every other grocery shop earns
+   * the bonus. One fact about one card, which is where it belongs: splitting
+   * Groceries into two categories to model it would rewrite budgets, history
+   * and reports to work around a footnote, and would still be wrong for the
+   * next card with a different list.
+   *
+   * Checked before the match, so it beats both lists above.
+   */
+  excludeMerchants?: string[];
+  /**
    * The first and last day this rate is paid, for one that does not last.
    *
    * A rotating card pays its bonus rate on different categories every quarter,

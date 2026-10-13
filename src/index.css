@@ -1698,6 +1698,14 @@ button.budget-amount.remaining.flat:hover { background: var(--surface-2); filter
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: transparent; color: var(--accent); font-weight: 500;
 }
+/* And a shop the rate is NOT paid at, which has to be unmistakable from the
+   one beside it that earns: the whole point of the chip is that a reader can
+   see the card's own carve-out, so it borrows the colour of a loss. */
+.card-rule-not {
+  cursor: pointer;
+  background: color-mix(in srgb, var(--neg) 12%, transparent);
+  border-color: transparent; color: var(--neg); font-weight: 500;
+}
 /* The one control that hands a question to Hopper, wherever it sits: a row of
    the reach-for tables, or the corner of a tile. Named for what it does
    rather than for the table it started in. */
