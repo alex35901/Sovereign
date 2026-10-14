@@ -9608,11 +9608,11 @@ try {
     check("and the table of connections meters it beside the rest",
       page.providers.some((p) => /simplefin/i.test(p)), page.providers.join(" | "));
     check("the one connections card is named for what it holds",
-      page.cards.includes("Connections") && !page.cards.includes("Bank sync"), page.cards.join(" | "));
+      page.cards.includes("Plaid") && !page.cards.includes("Connections") && !page.cards.includes("Bank sync"), page.cards.join(" | "));
 
     const card = await st2.evaluate(() => {
       const found = [...document.querySelectorAll(".card")]
-        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+        .find((c) => /^Plaid$/.test(c.querySelector("h2")?.innerText ?? ""));
       if (!found) return null;
       return {
         schedule: found.querySelectorAll("select").length,
@@ -9641,7 +9641,7 @@ try {
     // changing how one of them is read.
     const behind = await st2.evaluate(() => {
       const found = [...document.querySelectorAll(".card")]
-        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+        .find((c) => /^Plaid$/.test(c.querySelector("h2")?.innerText ?? ""));
       return [...(found?.querySelectorAll(".conn-item") ?? [])].map((it) => ({
         who: it.querySelector(".conn-who .truncate")?.textContent.trim() ?? "",
         accounts: [...it.querySelectorAll(".conn-accounts li a")].map((a) => a.textContent.trim()),
@@ -9708,7 +9708,7 @@ try {
     await st2.waitForTimeout(600);
     const fit = await st2.evaluate(() => {
       const found = [...document.querySelectorAll(".card")]
-        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+        .find((c) => /^Plaid$/.test(c.querySelector("h2")?.innerText ?? ""));
       const rows = [...(found?.querySelectorAll(".conn-row") ?? [])];
       const edge = found.getBoundingClientRect().right;
       let worst = 0;
@@ -10277,13 +10277,13 @@ try {
     const order = await page.evaluate(() => {
       const heads = [...document.querySelectorAll(".card-head h2")].map((h) => h.innerText.trim());
       const bridge = heads.indexOf("SimpleFIN");
-      const plaid = heads.indexOf("Connections");
+      const plaid = heads.indexOf("Plaid");
       const card = (t) => {
         const found = [...document.querySelectorAll(".card")]
           .find((c) => (c.querySelector(".card-head h2")?.innerText ?? "").trim() === t);
         return found ? found.innerText.replace(/\n/g, " | ") : "";
       };
-      return { bridge, plaid, plaidText: card("Connections"), bridgeText: card("SimpleFIN") };
+      return { bridge, plaid, plaidText: card("Plaid"), bridgeText: card("SimpleFIN") };
     });
     check("Settings leads with the bridge rather than with Plaid",
       order.bridge >= 0 && order.plaid >= 0 && order.bridge < order.plaid,
@@ -10501,7 +10501,7 @@ try {
 
     const said = await page.evaluate(() => {
       const card = [...document.querySelectorAll(".card")]
-        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+        .find((c) => /^Plaid$/.test(c.querySelector("h2")?.innerText ?? ""));
       if (!card) return null;
       const text = card.innerText;
       return {
@@ -10550,7 +10550,7 @@ try {
       selectable === "text", selectable);
 
     if (await tryStep("the count can be cleared", async () => {
-      await page.locator(".card", { hasText: "Connections" })
+      await page.locator('.card:has(h2:text-is("Plaid"))')
         .getByRole("button", { name: "Forget these" }).click({ timeout: 8000 });
       await page.waitForTimeout(700);
     })) {
@@ -10582,7 +10582,7 @@ try {
     await once.waitForTimeout(1400);
     const first = await once.evaluate(() => {
       const card = [...document.querySelectorAll(".card")]
-        .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+        .find((c) => /^Plaid$/.test(c.querySelector("h2")?.innerText ?? ""));
       return {
         text: card?.innerText ?? "",
         warned: card?.querySelector(".warn")?.innerText ?? "",
@@ -10616,13 +10616,13 @@ try {
       // Scoped to the Plaid card by its own heading: another provider's card
       // carries the same button, and matching on the words underneath tied
       // this step to a sentence that is there to be rewritten.
-      await cfg.locator('.card:has(h2:text-is("Connections"))')
+      await cfg.locator('.card:has(h2:text-is("Plaid"))')
         .getByRole("button", { name: /Check configuration/ }).click({ timeout: 8000 });
       await cfg.waitForTimeout(800);
     })) {
       const shown = await cfg.evaluate(() => {
         const card = [...document.querySelectorAll(".card")]
-          .find((c) => /^Connections/.test(c.querySelector("h2")?.innerText ?? ""));
+          .find((c) => /^Plaid$/.test(c.querySelector("h2")?.innerText ?? ""));
         return card?.innerText ?? "";
       });
       check("credentials Plaid accepts are reported as credentials, not as working banks",
@@ -10793,96 +10793,6 @@ try {
     await ws.close();
   }
 
-  if (want("alerts")) {
-    // ── the two marks the household sets for itself ──
-    const al = await browser.newContext({ viewport: { width: 1280, height: 1400 } });
-    const seed = await al.newPage();
-    await seed.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
-    await seed.waitForTimeout(1400);
-    await seed.close();
-    await al.addInitScript(() => {
-      try {
-        const raw = localStorage.getItem("sovereign.db.v1");
-        if (!raw) return;
-        const db = JSON.parse(raw);
-        db.settings.syncCadence = "off";
-        const month = new Date().toISOString().slice(0, 7);
-        const cat = db.categories.find((c) => !c.excludeFromBudget) ?? db.categories[0];
-        const acct = db.accounts.find((a) => a.type === "checking") ?? db.accounts[0];
-        // Seventy percent of the plan and not a penny over it, so the mark is
-        // the only thing that can be speaking.
-        db.budgets = { ...db.budgets, [month]: { ...(db.budgets?.[month] ?? {}), [cat.id]: 100_00 } };
-        db.transactions = [
-          ...db.transactions.filter((t) => t.categoryId !== cat.id || t.date.slice(0, 7) !== month),
-          { id: "al_1", accountId: acct.id, date: `${month}-04`, amount: -70_00, merchant: "Shop",
-            categoryId: cat.id, tags: [], pending: false, reviewed: true },
-        ];
-        db.settings.alerts = { budgetAt: 70, balanceFloor: 1_000_000_00 };
-        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
-      } catch { /* nothing to patch */ }
-    });
-    const page = await al.newPage();
-    await page.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
-    await page.waitForTimeout(1600);
-
-    const card = await page.evaluate(() => {
-      const found = [...document.querySelectorAll(".card")]
-        .find((c) => /Tell me when/.test(c.querySelector("h2")?.innerText ?? ""));
-      return found ? {
-        text: found.innerText,
-        chosen: found.querySelector("select")?.value ?? "",
-        off: [...(found.querySelector("select")?.options ?? [])].some((o) => /Don't tell me/.test(o.textContent)),
-      } : null;
-    });
-    check("the thresholds are the household's to set, in settings",
-      card !== null && card.chosen === "70" && card.off, JSON.stringify(card?.chosen));
-
-    await page.locator(".notif-bell").click();
-    await page.waitForTimeout(600);
-    const bell = await page.evaluate(() => [...document.querySelectorAll(".notif-row")]
-      .map((r) => r.innerText.split("\n").filter(Boolean)[0]));
-    check("a category reaching the mark says so before it is over",
-      bell.some((t) => /70% through its plan/.test(t)), bell.join(" | "));
-    // Current accounts only, and a floor nothing could clear so the notice is
-    // certain to be there.
-    check("and an account under the floor says so",
-      bell.some((t) => /is below /.test(t)), bell.join(" | "));
-    await page.close();
-
-    // Off is off: no mark, no notice, however the month is going.
-    await al.addInitScript(() => {
-      try {
-        const raw = localStorage.getItem("sovereign.db.v1");
-        if (!raw) return;
-        const db = JSON.parse(raw);
-        delete db.settings.alerts;
-        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
-      } catch { /* nothing to patch */ }
-    });
-    const quiet = await al.newPage();
-    await quiet.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
-    await quiet.waitForTimeout(1500);
-    await quiet.locator(".notif-bell").click();
-    await quiet.waitForTimeout(600);
-    const none = await quiet.evaluate(() => [...document.querySelectorAll(".notif-row")]
-      .map((r) => r.innerText.split("\n").filter(Boolean)[0]));
-    check("and an alert nobody asked for is not one more thing to dismiss",
-      !none.some((t) => /through its plan|is below /.test(t)), none.join(" | "));
-    // A control that is off should say what being off means, rather than
-    // leaving somebody to work out whether they have switched something off
-    // that was doing something for them.
-    const off = await quiet.evaluate(() => {
-      const found = [...document.querySelectorAll(".card")]
-        .find((c) => /Tell me when/.test(c.querySelector("h2")?.innerText ?? ""));
-      return found?.innerText ?? "";
-    });
-    check("and each threshold says plainly what it does when it is off",
-      (off.match(/Off\./g) ?? []).length === 2,
-      off.split("\n").filter((l) => /Off\./.test(l)).join(" | "));
-    await quiet.close();
-    await al.close();
-  }
-
   if (want("settings-trim")) {
     // ── settings holds settings, not switches nobody moves ──
     //
@@ -10902,7 +10812,15 @@ try {
     }));
 
     check("settings carries no toggles at all", page.switches === 0, `${page.switches} left`);
-    for (const gone of ["Danger zone", "Import transactions", "What's stored where"]) {
+    // Each card is named for whoever feeds it. "Connections" was one card
+    // called after the job rather than the provider, back when there was only
+    // one provider doing it, and with two of them it said nothing about which
+    // one you were reading.
+    check("and the two providers are named, each for itself",
+      page.cards.includes("Plaid") && page.cards.includes("SimpleFIN")
+      && !page.cards.includes("Connections"),
+      page.cards.join(", "));
+    for (const gone of ["Danger zone", "Import transactions", "What's stored where", "Tell me when"]) {
       check(`and no "${gone}" box`, !page.cards.includes(gone), page.cards.join(", "));
     }
     // The pushback: that box held the only way to take a copy out or put one

@@ -28,9 +28,7 @@ export type NoticeKind =
   | "recurring" | "budget" | "connection" | "goal"
   // Work this browser was holding that the shared copy did not have.
   | "aside"
-  | "missing" | "review" | "integration" | "swing" | "price"
-  // The two the household sets for itself. See settings.alerts.
-  | "nearing" | "balance";
+  | "missing" | "review" | "integration" | "swing" | "price";
 
 export interface Notice {
   /** Stable, and specific to what was true. See above. */
@@ -596,68 +594,6 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
           // "the month" is honest about that; a made-up day would not be.
           : `${monthLabel(month)} so far`,
         to: "/budget",
-        tone: "neg",
-      });
-    }
-  }
-
-  // ── the two thresholds the household set for itself ──
-  //
-  // Everything above fires on a rung this app chose. These only exist if
-  // somebody asked for them, and the figure they were asked for is in the id,
-  // so moving the mark raises a fresh notice rather than reviving a read one.
-  const alerts = db.settings.alerts;
-  const budgetAt = alerts?.budgetAt;
-  if (budgetAt && budgetAt > 0 && budgetAt < 100) {
-    for (const group of budgetSummary(db, month).expense) {
-      for (const row of group.rows) {
-        if (row.planned <= 0) continue;
-        // Already past the plan, which the notice above says more usefully.
-        // Two lines about one category is one line too many. Past it at all,
-        // not past the floor: a plan spent to within a few dollars is the
-        // quiet case the floor exists for, and "90% through, -$3 left" would
-        // say it anyway.
-        if (row.actual > row.planned) continue;
-        const mark = Math.round((row.planned * budgetAt) / 100);
-        if (row.actual < mark) continue;
-        const went = crossedOn(spendRun(db, month, row.category.id), mark);
-        const crossed = went && went > now ? now : went;
-        out.push({
-          id: `nearing:${month}:${row.category.id}:${budgetAt}`,
-          kind: "nearing",
-          title: `${row.category.name} is ${budgetAt}% through its plan`,
-          body: `${fmt0(row.actual)} spent of ${fmt0(row.planned)} planned. `
-            + `${fmt0(row.planned - row.actual)} left for the rest of the month.`,
-          at: crossed ?? `${month}-01`,
-          when: crossed
-            ? sinceLabel(`${crossed}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`))
-            : `${monthLabel(month)} so far`,
-          to: "/budget",
-          tone: "warn",
-        });
-      }
-    }
-  }
-
-  const floor = alerts?.balanceFloor;
-  if (floor && floor > 0) {
-    for (const account of db.accounts) {
-      // Current accounts only, which is what the floor is about: the thing
-      // bills come out of. A savings account under the figure is a savings
-      // account, not a problem.
-      if (account.type !== "checking" || account.hidden || account.closedAt) continue;
-      if (account.balance >= floor) continue;
-      const fell = fellBelowOn(account, floor, now);
-      out.push({
-        id: `balance:${account.id}:${floor}:${fell ?? month}`,
-        kind: "balance",
-        title: `${account.name} is below ${fmt0(floor)}`,
-        body: `${fmt0(account.balance)} in it. You asked to be told at ${fmt0(floor)}.`,
-        at: fell ?? now,
-        when: fell
-          ? sinceLabel(`${fell}T12:00:00.000Z`, new Date(`${now}T12:00:00.000Z`))
-          : "now",
-        to: `/accounts/${account.id}`,
         tone: "neg",
       });
     }

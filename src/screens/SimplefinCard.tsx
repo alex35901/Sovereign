@@ -148,7 +148,7 @@ export function SimplefinCard() {
       <CardHead
         title="SimpleFIN"
         sub={ref
-          ? "Connected. Every bank you authorised at the bridge arrives through it."
+          ? "Connected. Every bank, card and loan you authorised at the bridge arrives through it, on the one subscription."
           : "A bridge you authorise your own banks at, and the way most accounts should come in. One subscription carries every bank you add there, and there is nothing to sign up for here."}
         right={ref ? (
           <div className="row" style={{ gap: 8 }}>

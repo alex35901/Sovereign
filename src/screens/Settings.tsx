@@ -8,7 +8,6 @@ import { Btn, Card, CardHead, Field, Segmented, TextInput } from "../components/
 import { IntegrationsCard } from "./IntegrationsCard";
 import { SimplefinCard } from "./SimplefinCard";
 import { PlaidCard } from "./PlaidCard";
-import { AlertsCard } from "./AlertsCard";
 import { ReattachCard } from "./Reattach";
 import { CloudCard } from "./CloudCard";
 import { HistoryCard } from "./HistoryCard";
@@ -95,11 +94,6 @@ export default function Settings() {
             </div>
           </Card>
         </div>
-
-        {/* Beside the other preferences rather than down with the providers:
-            these are choices about what the app says, not about where its
-            figures come from. */}
-        <AlertsCard />
 
         <IntegrationsCard />
 

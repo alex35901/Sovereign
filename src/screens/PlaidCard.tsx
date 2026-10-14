@@ -572,14 +572,15 @@ export function PlaidCard() {
 
   return (
     <Card>
-      {/* Named for what it is for now rather than for everything it can do.
-          Plaid charges for each connection every month once a trial is behind
-          you, and the bridge above does not, so the honest default is that a
-          connection lives here only when it has to: holdings, or a bank the
-          bridge cannot open. */}
+      {/* Named for the provider rather than for the job, because there are two
+          providers now and "Connections" said nothing about which one you were
+          looking at. Plaid charges for each connection every month once a
+          trial is behind you, and the bridge above does not, so the honest
+          default is that a connection lives here only when it has to:
+          holdings, or a bank the bridge cannot open. */}
       <CardHead
-        title="Connections"
-        sub="Through Plaid, for investment holdings and anything the bridge cannot open. Each connection here is billed by Plaid every month."
+        title="Plaid"
+        sub="Investment holdings, and any bank the bridge cannot open. Each connection here is billed by Plaid every month."
         right={items.length ? (
           <Btn variant="primary" onClick={() => void syncAll()} disabled={busy !== null}>
             <RefreshCw size={14} style={busy === "sync" ? { animation: "spin 1s linear infinite" } : undefined} />

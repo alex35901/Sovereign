@@ -9178,11 +9178,8 @@ await test("a plan spent to within the floor is not news", () => {
   assert.equal(M.NT.overFloor(38_00), 5_00, "and five dollars on a small one");
 
   const month = M.thisMonth();
-  const db = { ...budgetDB(3_133_00, 3_133_40), settings: { ...M.emptyDB().settings, alerts: { budgetAt: 90 } } };
-  const ns = M.NT.notices(db, `${month}-20`);
+  const ns = M.NT.notices(budgetDB(3_133_00, 3_133_40), `${month}-20`);
   assert.deepEqual(ns.filter((n) => n.kind === "budget").map((n) => n.id), [], "no over-budget notice");
-  assert.deepEqual(ns.filter((n) => n.kind === "nearing").map((n) => n.id), [],
-    "and no '90% through, -$0 left' in its place");
 });
 
 /**
