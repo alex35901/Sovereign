@@ -854,19 +854,25 @@ function buildNotices(db: DB, now: ISODate): Notice[] {
 /**
  * Work set aside, said where somebody will see it.
  *
- * When two devices disagree the stored copy wins, and whatever this browser
- * was holding and had not managed to send is kept to one side rather than
- * dropped. That is the right rule and the wrong silence: the only word of it
- * was a toast at the moment it happened, which is the moment the app is
- * usually starting up and nobody is looking, and a card in Settings that
- * nobody visits unless they already suspect something.
+ * Two copies that both moved are merged now, so this is no longer what happens
+ * whenever two devices disagree. It is what happens where a merge had to
+ * choose — one field both of them changed — and where a merge could not be
+ * made at all. Either way a copy of what this browser held is kept rather than
+ * dropped, and either way the only word of it used to be a toast at the moment
+ * it happened, which is usually while the app is starting and nobody is
+ * looking, and a card in Settings that nobody visits unless they already
+ * suspect something.
  *
  * So it goes in the bell with everything else that wants attention, and stays
  * there until it is read. Not derived from the document, because what was set
  * aside is by definition not in the document: it is in this browser, and only
  * this browser can say so.
  */
-export function setAsideNotice(savedAt: string | null, now: number = Date.now()): Notice | null {
+export function setAsideNotice(
+  savedAt: string | null,
+  now: number = Date.now(),
+  why: "chose" | "whole" = "whole",
+): Notice | null {
   if (!savedAt) return null;
   const when = Date.parse(savedAt);
   if (!Number.isFinite(when)) return null;
@@ -875,9 +881,14 @@ export function setAsideNotice(savedAt: string | null, now: number = Date.now())
     // first one coming back from the dead.
     id: `aside:${savedAt}`,
     kind: "aside",
-    title: "Changes made on this device were set aside",
-    body: "Another device had saved first, so its copy was loaded and the work this one "
-      + "had not sent was kept to one side. Settings can show what it held and put it back.",
+    title: why === "chose"
+      ? "Both copies changed the same thing"
+      : "Changes made on this device were set aside",
+    body: why === "chose"
+      ? "The two copies were merged, and where both had changed the same thing the saved one "
+        + "was kept. A copy of what this device was holding is in Settings, in case it chose wrong."
+      : "Another device had saved first and the two could not be merged, so its copy was loaded "
+        + "and the work this one had not sent was kept to one side. Settings can show what it held.",
     at: savedAt.slice(0, 10),
     /* Against the moment, not against noon.
        Every other notice here dates something that happened on a day, and

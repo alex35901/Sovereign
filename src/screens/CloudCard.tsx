@@ -406,8 +406,12 @@ export function CloudCard() {
           <div className="divider" />
           <div className="col" style={{ gap: 8 }}>
             <span className="small neg">
-              Changes made on this device were set aside on {new Date(stashed.savedAt).toLocaleString()},
-              because a newer copy had been saved elsewhere.
+              {stashed.why === "chose"
+                ? `On ${new Date(stashed.savedAt).toLocaleString()} this device's copy was merged with one
+                   saved elsewhere, and where both had changed the same thing the saved one was kept. This is
+                   what this device was holding, in case it chose wrong.`
+                : `Changes made on this device were set aside on ${new Date(stashed.savedAt).toLocaleString()},
+                   because a newer copy had been saved elsewhere and the two could not be merged.`}
             </span>
             <div className="row wrap" style={{ gap: 8 }}>
               <Btn onClick={downloadStash}><Download size={14} /> Download that copy</Btn>

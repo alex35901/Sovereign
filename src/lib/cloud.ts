@@ -648,16 +648,26 @@ export async function probe(override?: string): Promise<Probe> {
 }
 
 /** Keeps a copy that would otherwise be lost to a conflict. */
-export function stashConflict(db: DB): void {
+/**
+ * Why a copy was kept to one side, which decides what to say about it.
+ *
+ * "chose" is the ordinary one now: the two copies were merged and the merge
+ * had to settle a field they had both changed. "whole" is the old rule, still
+ * there for the cases a merge cannot be made at all, where the stored copy was
+ * taken and this browser's was not merged into it.
+ */
+export type StashReason = "chose" | "whole";
+
+export function stashConflict(db: DB, why: StashReason = "whole"): void {
   try {
-    localStorage.setItem(CONFLICT_KEY, JSON.stringify({ savedAt: new Date().toISOString(), doc: db }));
+    localStorage.setItem(CONFLICT_KEY, JSON.stringify({ savedAt: new Date().toISOString(), why, doc: db }));
   } catch { /* nothing more we can do */ }
   // Said out loud, so the bell and the Settings card both show it now rather
   // than whenever something else happens to redraw them.
   notifySync();
 }
-export function takeConflict(): { savedAt: string; doc: DB } | null {
-  return read<{ savedAt: string; doc: DB } | null>(CONFLICT_KEY, null);
+export function takeConflict(): { savedAt: string; why?: StashReason; doc: DB } | null {
+  return read<{ savedAt: string; why?: StashReason; doc: DB } | null>(CONFLICT_KEY, null);
 }
 export function clearConflict(): void {
   try { localStorage.removeItem(CONFLICT_KEY); } catch { /* ignore */ }

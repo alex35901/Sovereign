@@ -174,7 +174,10 @@ function Notifications() {
    * because it is written from outside React.
    */
   useSyncExternalStore(subscribeSync, syncEpoch);
-  const aside = useMemo(() => setAsideNotice(takeConflict()?.savedAt ?? null), [db]);
+  const aside = useMemo(() => {
+    const held = takeConflict();
+    return setAsideNotice(held?.savedAt ?? null, Date.now(), held?.why ?? "whole");
+  }, [db]);
 
   // Only worked out while the list is open; the count below is what the bell
   // needs the rest of the time. Both read the same document, and lib's own

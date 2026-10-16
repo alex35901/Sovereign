@@ -10063,6 +10063,19 @@ await test("work set aside is said in the bell, not only in a card nobody opens"
   assert.equal(said.to, "/settings", "and it leads to where the work can be had back");
   assert.match(said.when, /3h/, "dated from the moment it happened, not from noon");
   assert.match(said.body, /set aside|kept to one side/i);
+  assert.match(said.body, /could not be merged/i, "which is the case this one is");
+
+  // The ordinary case now is not that one. Two copies that both moved are
+  // merged, and what is kept to one side is a copy of this device's in case
+  // the merge chose the wrong side of a field they had both changed. Saying
+  // "its copy was loaded" about that would be telling somebody their work was
+  // thrown away when most of it is in front of them.
+  const chose = M.NT.setAsideNotice(at, Date.parse("2026-10-12T06:00:00.000Z"), "chose");
+  assert.match(chose.title, /both copies changed the same thing/i);
+  assert.match(chose.body, /merged/i);
+  assert.match(chose.body, /in case it chose wrong/i);
+  assert.equal(chose.to, "/settings");
+  assert.ok(!/could not be merged/i.test(chose.body), "because it was merged");
 
   // Keyed on the moment, so a second one is a second notice rather than the
   // first coming back after being read.
@@ -12599,6 +12612,41 @@ await test("and nothing in the result was invented", () => {
   for (const leaf of seen) {
     assert.ok(known.has(leaf), `${leaf} is in the merge and in none of the three it came from`);
   }
+});
+
+await test("an old shape and a new one are settled before they are compared", () => {
+  // What this browser holds has been through the migration on its way in; the
+  // stored copy and the version it came from come straight off the wire and
+  // have not. Comparing one against the others makes every migration look
+  // like an edit this device made.
+  //
+  // Today's migrations happen to survive that: an added field reads as this
+  // device's addition and is kept, a removed one as its removal and stands.
+  // The merge is given all three in one shape anyway, because "it happens to
+  // come out right" is a property of the migrations that exist rather than of
+  // the rule, and the next one is written by somebody who has never read this.
+  const old = M.emptyDB();
+  // A document from before transactions carried tags and before the standing
+  // budget figure was written out into months.
+  old.transactions = [{ id: "t1", accountId: "a1", date: "2026-10-02", merchant: "Shop", amount: -20_00, categoryId: "c_gro" }];
+  old.budgetDefaults = { c_gro: { amount: 400_00, from: "2026-09" } };
+
+  const mine = M.migrate(JSON.parse(JSON.stringify(old)));
+  assert.ok(!("budgetDefaults" in mine), "this browser's copy has been brought up to date");
+  assert.deepEqual(mine.transactions[0].tags, []);
+  // An edit of its own, on top of the migration.
+  mine.transactions[0].reviewed = true;
+  // And the other device saved something, in the shape it had.
+  const theirs = JSON.parse(JSON.stringify(old));
+  theirs.transactions[0].merchant = "The Shop";
+
+  const out = M.MG.mergeDocs(M.migrate(JSON.parse(JSON.stringify(old))), mine, M.migrate(theirs));
+  assert.equal(out.db.transactions[0].reviewed, true, "this device's edit");
+  assert.equal(out.db.transactions[0].merchant, "The Shop", "and the other device's");
+  assert.deepEqual(out.db.transactions[0].tags, [], "with the migration's work kept");
+  assert.ok(!("budgetDefaults" in out.db), "and the old field gone rather than resurrected");
+  assert.ok(out.db.budgets["2026-10"]?.c_gro === 400_00, "the months the standing figure stood for");
+  assert.deepEqual(out.conflicts, [], "nothing the app did to the shape is a disagreement");
 });
 
 await test("a year of a real household merges in a blink", () => {

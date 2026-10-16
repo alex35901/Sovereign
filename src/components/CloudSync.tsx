@@ -6,6 +6,7 @@ import {
   stashConflict, subscribeSync,
 } from "../lib/cloud";
 import { mergeDocs } from "../lib/sync/merge-doc";
+import { migrate } from "../lib/storage";
 import { haltSync } from "../lib/sync-halt";
 import { drainQueue } from "../lib/sync/drain";
 import { POLL_MIN_MS, pollDelay, saveDelay } from "../lib/sync/schedule";
@@ -229,7 +230,19 @@ export function CloudSync() {
       const from = base.current > 0 ? await readVersion(base.current).catch(() => null) : null;
       if (!from) return takeRemote(say);
 
-      const merged = mergeDocs(from, latest.current, remote.doc);
+      /**
+       * All three in the same shape before any of them are compared.
+       *
+       * What this browser holds has been through `migrate` on its way in; the
+       * stored copy and the past version have not, because they come straight
+       * off the wire. Comparing a migrated document against two raw ones makes
+       * every migration look like an edit this device made: a transaction that
+       * gained an empty tag list, a budget written out of a standing figure.
+       * Some of those happen to merge correctly and none of them should be
+       * left to chance, so the shapes are settled first and the merge is told
+       * about changes people made rather than changes the app made.
+       */
+      const merged = mergeDocs(migrate(from), latest.current, migrate(remote.doc));
       const doc = install(merged.db);
       /**
        * Kept even when the merge worked, where the merge had to choose.
@@ -239,7 +252,7 @@ export function CloudSync() {
        * afterwards. Where nothing was chosen between, nothing is set aside:
        * a drawer that fills up on every ordinary save is a drawer nobody opens.
        */
-      if (merged.conflicts.length) stashConflict(latest.current);
+      if (merged.conflicts.length) stashConflict(latest.current, "chose");
 
       try {
         const res = await push(doc, remote.version);
