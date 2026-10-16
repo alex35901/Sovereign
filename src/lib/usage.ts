@@ -70,7 +70,7 @@ export function noteRun(
   usage: Usage | undefined,
   id: string,
   period: Period,
-  outcome: { calls?: number; distinct?: readonly string[]; error?: string },
+  outcome: { calls?: number; distinct?: readonly string[]; error?: string; atLeast?: number },
   now: number = Date.now(),
 ): Usage {
   const key = periodKey(period, now);
@@ -93,6 +93,11 @@ export function noteRun(
   } else {
     count += outcome.calls ?? 1;
   }
+
+  // A figure from somewhere that cannot lose count. Only ever upwards: this is
+  // a correction for what a merge dropped, not a second opinion, and a stale
+  // reading from a slow reply must not talk the total back down.
+  if (typeof outcome.atLeast === "number" && outcome.atLeast > count) count = outcome.atLeast;
 
   const next: Meter = {
     period: key,
@@ -117,7 +122,7 @@ export function recordRun(
   apply: (fn: (cur: DB) => DB, label?: string) => void,
   id: string,
   period: Period,
-  outcome: { calls?: number; distinct?: readonly string[]; error?: string },
+  outcome: { calls?: number; distinct?: readonly string[]; error?: string; atLeast?: number },
 ): void {
   apply((cur) => ({
     ...cur,

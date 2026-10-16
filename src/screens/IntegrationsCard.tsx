@@ -95,7 +95,7 @@ export function IntegrationsCard() {
           valuation: { source: "rentcast", low: estimate.low, high: estimate.high, at: estimate.asOf },
         });
         actions.setAccountBalance(account.id, estimate.value);
-        recordRun(apply, "rentcast", "month", {});
+        recordRun(apply, "rentcast", "month", { atLeast: estimate.spent });
         done += 1;
       } catch (err) {
         recordRun(apply, "rentcast", "month", { error: reason(err, "the valuation failed") });

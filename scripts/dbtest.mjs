@@ -37,6 +37,8 @@ await build({
       export { default as cronHandler } from "./api/cron/sync.ts";
       export { default as pingHandler } from "./api/ping.ts";
       export { readAttempt, noteFailure, clearFailures, lockedOutNow, callerKey, MAX_FAILURES } from "./api/_ratelimit.ts";
+      export { claimRequest, spentThisMonth, monthKey } from "./api/_meter.ts";
+      export { default as propertyHandler } from "./api/property.ts";
       export { queuePull, readQueue, clearQueue, trimQueue } from "./api/_store.ts";
       export { default as cronHandler2 } from "./api/cron/sync.ts";
       export * as C from "./src/lib/crypto.ts";
@@ -1874,6 +1876,96 @@ await test("an expired card login is queued for the browser, not lost in the job
   delete process.env.PLAID_CLIENT_ID;
   delete process.env.PLAID_SECRET;
   delete process.env.PLAID_ACCESS_TOKENS;
+});
+
+/* ── the ceiling on what this app spends at a metered provider ─────────── */
+
+await test("a month's spending is counted where the money is spent", async () => {
+  const provider = `test-${Date.now()}`;
+  const now = Date.parse("2026-10-16T12:00:00Z");
+  assert.equal(await M.spentThisMonth(provider, now), 0, "nothing spent to begin with");
+
+  const first = await M.claimRequest(provider, 3, now);
+  assert.deepEqual([first.allowed, first.spent, first.cap], [true, 1, 3]);
+  assert.equal((await M.claimRequest(provider, 3, now)).spent, 2);
+  assert.equal((await M.claimRequest(provider, 3, now)).spent, 3);
+  assert.equal(await M.spentThisMonth(provider, now), 3);
+
+  // And that is the ceiling: the next one is refused rather than served, and
+  // refusing costs nothing, so the count does not creep past the cap either.
+  const over = await M.claimRequest(provider, 3, now);
+  assert.equal(over.allowed, false, "the fourth is refused");
+  assert.equal(over.spent, 3, "and says what was spent rather than only that something was");
+  assert.equal(await M.spentThisMonth(provider, now), 3, "a refusal does not count as a spend");
+});
+
+await test("and two requests at once cannot both take the last one", async () => {
+  // The lost update this exists to prevent, one layer down: read-then-write
+  // would have both of these see nine, both write ten, and both go on to
+  // spend. The increment and the check are one statement, so they cannot.
+  const provider = `race-${Date.now()}`;
+  const now = Date.parse("2026-10-16T12:00:00Z");
+  const claims = await Promise.all(
+    Array.from({ length: 12 }, () => M.claimRequest(provider, 5, now)),
+  );
+  assert.equal(claims.filter((c) => c.allowed).length, 5, "five allowed of twelve asked at once");
+  assert.equal(await M.spentThisMonth(provider, now), 5, "and the count is exactly the cap");
+  // Every allowed claim carries a different number, so none of them overwrote
+  // another's.
+  const numbers = claims.filter((c) => c.allowed).map((c) => c.spent).sort((a, b) => a - b);
+  assert.deepEqual(numbers, [1, 2, 3, 4, 5]);
+});
+
+await test("a new month starts the allowance again, with nothing having to run", async () => {
+  const provider = `roll-${Date.now()}`;
+  const october = Date.parse("2026-10-31T23:00:00Z");
+  const november = Date.parse("2026-11-01T01:00:00Z");
+  await M.claimRequest(provider, 1, october);
+  assert.equal((await M.claimRequest(provider, 1, october)).allowed, false, "October is spent");
+  assert.equal((await M.claimRequest(provider, 1, november)).allowed, true, "November is not");
+  assert.equal(await M.spentThisMonth(provider, october), 1, "and October still says what it spent");
+});
+
+await test("the property proxy stops before asking, and says it stopped", async () => {
+  // The whole point: a ceiling that answers in words costs nothing, where the
+  // provider's own refusal arrives as a bill at the end of a billing period.
+  const month = M.monthKey();
+  let asked = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    asked += 1;
+    return new Response(JSON.stringify({ price: 450000 }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  // Counted against this month's real row, which earlier runs of this suite
+  // have already written to, so the ceiling is set relative to what is there
+  // rather than to a number that was only true the first time.
+  const before = await M.spentThisMonth("rentcast");
+  const cap = before + 2;
+  process.env.RENTCAST_MONTHLY_CAP = String(cap);
+  try {
+    const call = () => invokeWith(M.propertyHandler, {
+      method: "POST", url: "/api/property",
+      body: { apiKey: "k", address: "1 Main St, Springfield, IL" },
+    });
+    const first = await call();
+    assert.equal(first.status, 200, "under the cap it goes through");
+    assert.equal(asked, 1, "and the provider was actually asked");
+    assert.equal(await M.spentThisMonth("rentcast"), before + 1, `counted against ${month}`);
+    // Handed back with the answer, so a browser whose own count was dropped by
+    // a merge can be pulled up to the figure that cannot be dropped.
+    assert.equal(JSON.parse(first.text).spent, before + 1, "the reply carries the server's count");
+
+    // Up to the ceiling, and then it stops before the provider is touched.
+    while ((await M.spentThisMonth("rentcast")) < cap) await call();
+    const askedBefore = asked;
+    const stopped = await call();
+    assert.equal(stopped.status, 429, "at the cap the app refuses, rather than the provider");
+    assert.equal(asked, askedBefore, "and nothing left the building");
+    assert.match(JSON.parse(stopped.text).error, new RegExp(`spent its ${cap} RentCast lookups`));
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.RENTCAST_MONTHLY_CAP;
+  }
 });
 
 for (const [state, name, msg] of results) console.log(`${state}  ${name}${msg ? ` — ${msg}` : ""}`);

@@ -11,6 +11,14 @@ export interface ValueEstimate {
   high?: number;
   asOf: string;
   address: string;
+  /**
+   * Lookups counted on the server this month, where a count cannot be lost.
+   *
+   * The browser keeps its own, in the document, and the document is merged
+   * whole: two devices that each spend one and each add one to the count can
+   * agree on a total of one. This is what they should both have said.
+   */
+  spent?: number;
 }
 
 interface ProxyResult {
@@ -18,6 +26,8 @@ interface ProxyResult {
   priceRangeLow?: number;
   priceRangeHigh?: number;
   address?: string;
+  /** What the server has counted this month, when it is counting. */
+  spent?: number;
 }
 
 const toCents = (dollars: number | undefined): number | undefined =>
@@ -38,6 +48,7 @@ export async function estimateHomeValue(apiKey: string, address: string): Promis
     high: toCents(raw.priceRangeHigh),
     asOf: new Date().toISOString(),
     address: raw.address ?? clean,
+    spent: typeof raw.spent === "number" && Number.isFinite(raw.spent) ? raw.spent : undefined,
   };
 }
 

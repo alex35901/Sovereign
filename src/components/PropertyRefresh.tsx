@@ -90,7 +90,7 @@ export function PropertyRefresh() {
               }
             : a)),
         }), `value ${next.name}`);
-        recordRun(act.current.apply, "rentcast", "month", {});
+        recordRun(act.current.apply, "rentcast", "month", { atLeast: estimate.spent });
       } catch (err) {
         recordRun(act.current.apply, "rentcast", "month", { error: reason(err, "The valuation failed.") });
         // The attempt is already stamped, so a bad address waits its full turn

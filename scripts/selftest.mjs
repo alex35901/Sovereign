@@ -689,6 +689,17 @@ await test("property proxy sends the key as a header, never in the URL", async (
   assert.equal(JSON.parse(r.text).price, 812500);
 });
 
+await test("a household with no database is counted by its browser, not refused", async () => {
+  // The ceiling that holds across devices lives in the database, because that
+  // is the only place a count cannot be lost. Somebody running this without
+  // one is one browser, which the browser's own count is already right about,
+  // so the absence of a database must not be the absence of property values.
+  assert.ok(!process.env.DATABASE_URL, "this suite runs without one");
+  const r = await rentcast(async () => new Response(JSON.stringify({ price: 450000 }), { status: 200 }));
+  assert.equal(r.status, 200);
+  assert.equal(JSON.parse(r.text).price, 450000);
+});
+
 await test("a rejected key says so, rather than showing a raw 401", async () => {
   const r = await rentcast(async () => new Response("Unauthorized", { status: 401 }));
   assert.match(errorOf(r), /rejected the API key/);
@@ -996,6 +1007,28 @@ await test("a meter belongs to its period and starts the next one at zero", () =
     "when it last ran survives the rollover — only the count resets");
   // and a call in the new period starts from zero rather than continuing
   assert.equal(M.U.meterOf(M.U.noteRun(u, "rentcast", "month", {}, OCT), "rentcast", "month", OCT).count, 1);
+});
+
+await test("a count that cannot be lost pulls the browser's own up to it", () => {
+  // The failure this repairs: the document is merged whole, so two devices
+  // that each spend a lookup and each add one to the count can agree on a
+  // total of one, and the page then says there is more of the month left than
+  // there is. The server counts the same lookups where nothing can drop them,
+  // and hands the figure back with the answer.
+  let u = M.U.noteRun(undefined, "rentcast", "month", {}, SEP);
+  assert.equal(M.U.meterOf(u, "rentcast", "month", SEP).count, 1);
+  u = M.U.noteRun(u, "rentcast", "month", { atLeast: 9 }, SEP);
+  assert.equal(M.U.meterOf(u, "rentcast", "month", SEP).count, 9, "caught up in one step");
+
+  // Only ever upwards. A reply that overtook a later one must not talk the
+  // total back down, and a figure below what this browser has counted itself
+  // is a figure from before its own last call.
+  u = M.U.noteRun(u, "rentcast", "month", { atLeast: 3 }, SEP);
+  assert.equal(M.U.meterOf(u, "rentcast", "month", SEP).count, 10,
+    "its own call still counts, and the stale figure is ignored");
+
+  // And a month of its own: a correction cannot reach back into the one before.
+  assert.equal(M.U.meterOf(u, "rentcast", "month", OCT).count, 0);
 });
 
 await test("a provider billed per symbol counts symbols, not requests", () => {

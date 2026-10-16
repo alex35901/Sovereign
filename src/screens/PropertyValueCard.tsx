@@ -29,7 +29,7 @@ export function PropertyValueCard({ account }: { account: Account }) {
         valuation: { source: "rentcast", low: estimate.low, high: estimate.high, at: estimate.asOf },
       });
       actions.setAccountBalance(account.id, estimate.value);
-      recordRun(apply, "rentcast", "month", {});
+      recordRun(apply, "rentcast", "month", { atLeast: estimate.spent });
       notify(`${account.name} valued at ${(estimate.value / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}.`);
     } catch (err) {
       recordRun(apply, "rentcast", "month", { error: reason(err, "The valuation failed.") });
