@@ -255,12 +255,24 @@ export function CloudSync() {
       if (merged.conflicts.length) stashConflict(latest.current, "chose");
 
       try {
+        const held = cloudState();
         const res = await push(doc, remote.version);
         base.current = res.version;
         // Anything typed while the merge was in the air is in the document
         // this browser holds and not in what went up, so it stays unsent
         // rather than being marked saved and forgotten.
-        setCloudState({ version: res.version, dirty: latest.current !== doc, okAt: Date.now() });
+        //
+        // The last failure is carried through the success, the way `pushNow`
+        // carries it: an intermittent fault is the one worth being able to
+        // see, and clearing the record every time a save works is what hides
+        // it. What does go is the backoff, which this save has just disproved.
+        setCloudState({
+          version: res.version,
+          dirty: latest.current !== doc,
+          okAt: Date.now(),
+          lastError: held.lastError,
+          saidAt: held.saidAt,
+        });
         const said = say(remote.updatedBy);
         if (said) {
           act.current.notify(merged.conflicts.length
