@@ -100,7 +100,7 @@ await build({
       export * as WS from "./src/lib/worth-split.ts";
       export { documentMB } from "./src/lib/transfer.ts";
       export * as LL from "./src/lib/sync/link-log.ts";
-      export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, MONTHLY_LOOKUPS, MANUAL_RESERVE } from "./src/lib/property.ts";
+      export { estimateHomeValue, canValue, refreshEveryHours, lookupsPerMonth, cadenceLabel, propertyDue, autoRoom, MONTHLY_LOOKUPS, AUTO_MONTHLY_CAP, AUTO_EVERY_HOURS } from "./src/lib/property.ts";
       export { default as pricesHandler } from "./api/prices.ts";
       export { fetchQuotes as fetchQuotesDirect, cleanTickers, MAX_TICKERS as MAX_TICKERS_API } from "./api/_prices.ts";
       export { fetchHistory as fetchHistoryDirect, MAX_HISTORY } from "./api/_prices.ts";
@@ -694,10 +694,15 @@ await test("a rejected key says so, rather than showing a raw 401", async () => 
   assert.match(errorOf(r), /rejected the API key/);
 });
 
-await test("exhausting the free quota explains itself", async () => {
+await test("a spent monthly limit explains itself", async () => {
+  // Without naming a figure. The plan behind the key is the provider's
+  // business and the app has never been told which one it is: a message that
+  // says "all 50 free lookups" to somebody on a paid plan is a message that
+  // sends them looking for the wrong thing.
   const r = await rentcast(async () => new Response("Too Many Requests", { status: 429 }));
   assert.equal(r.status, 429);
-  assert.match(errorOf(r), /50 free RentCast lookups/);
+  assert.match(errorOf(r), /monthly limit is spent/);
+  assert.ok(!/50/.test(errorOf(r)), "and no figure this app cannot know");
 });
 
 await test("an unknown address suggests the address format", async () => {
@@ -12275,41 +12280,66 @@ await test("every action a rule carries is applied in one pass", () => {
 
 /* ── how often property values refresh ────────────────────────────────── */
 
-await test("two properties use the allowance without spending the reserve", () => {
-  const every = M.refreshEveryHours(2);
-  const spend = M.lookupsPerMonth(2, every);
-  assert.ok(spend <= M.MONTHLY_LOOKUPS - M.MANUAL_RESERVE,
-    `${spend} lookups would eat into the ${M.MANUAL_RESERVE} held back for manual refreshes`);
-  assert.ok(spend >= 40, `only ${spend} of a possible 44 — that is not making use of the tier`);
-  assert.equal(every, 34, "roughly a day and a half apart");
+await test("one or two properties are left a fortnight, not chased daily", () => {
+  // A house is the slowest-moving figure in the app. The old cadence asked
+  // every seventeen hours for one property, which bought nothing and spent
+  // forty-two of a fifty-lookup month.
+  assert.equal(M.refreshEveryHours(1), M.AUTO_EVERY_HOURS);
+  assert.equal(M.refreshEveryHours(2), M.AUTO_EVERY_HOURS);
+  assert.equal(M.lookupsPerMonth(1, M.refreshEveryHours(1)), 2);
+  assert.equal(M.lookupsPerMonth(2, M.refreshEveryHours(2)), 4);
 });
 
-await test("the cadence never overruns the tier, however many properties", () => {
-  for (let n = 1; n <= 12; n++) {
-    const every = M.refreshEveryHours(n);
-    const spend = M.lookupsPerMonth(n, every);
-    assert.ok(spend <= M.MONTHLY_LOOKUPS - M.MANUAL_RESERVE,
-      `${n} properties would spend ${spend}, over the ${M.MONTHLY_LOOKUPS - M.MANUAL_RESERVE} budget`);
+await test("the schedule spends a fraction of the allowance, not all of it", () => {
+  // The failure this exists for: aimed at 84% of the ceiling, the schedule
+  // had no room for the ordinary ways a household spends more than one device
+  // thinks it has, and the first anybody heard of it was the provider's email.
+  for (let n = 1; n <= 20; n++) {
+    const spend = M.lookupsPerMonth(n, M.refreshEveryHours(n));
+    assert.ok(spend <= M.AUTO_MONTHLY_CAP,
+      `${n} properties would spend ${spend}, over the ${M.AUTO_MONTHLY_CAP} the schedule may have`);
+    assert.ok(spend <= M.MONTHLY_LOOKUPS / 3,
+      `${n} properties would spend ${spend} of ${M.MONTHLY_LOOKUPS}, which is not headroom`);
   }
 });
 
-await test("adding a property slows the others down rather than overspending", () => {
-  const two = M.refreshEveryHours(2);
-  const three = M.refreshEveryHours(3);
-  assert.ok(three > two, "three properties have to wait longer between refreshes");
-  assert.ok(M.lookupsPerMonth(3, three) <= 44);
+await test("adding properties slows them all down rather than spending more", () => {
+  // Up to the point where a fortnight each fits inside the cap, nothing slows
+  // down: five properties at a fortnight each is ten lookups, not thirteen.
+  assert.equal(M.refreshEveryHours(5), M.AUTO_EVERY_HOURS);
+  const six = M.refreshEveryHours(6);
+  assert.ok(six > M.AUTO_EVERY_HOURS, "past that, the interval stretches");
+  assert.ok(M.lookupsPerMonth(6, six) <= M.AUTO_MONTHLY_CAP);
+  assert.ok(M.refreshEveryHours(20) > six, "and keeps stretching");
 });
 
-await test("more properties than the tier can serve is said, not silently starved", () => {
-  // 44 lookups cannot give 50 properties even one refresh each.
-  assert.equal(M.refreshEveryHours(50), Infinity);
-  assert.equal(M.lookupsPerMonth(50, Infinity), 0);
-  assert.match(M.cadenceLabel(Infinity), /too many properties/);
+await test("a wallet of properties is slowed, not starved", () => {
+  // It used to refuse outright past the point the tier could serve, which
+  // left fifty properties with no valuation at all rather than a slow one.
+  const every = M.refreshEveryHours(50);
+  assert.ok(Number.isFinite(every), "fifty properties still get a turn each");
+  assert.ok(M.lookupsPerMonth(50, every) <= M.AUTO_MONTHLY_CAP);
+  assert.equal(M.propertyDue({ address: "1 Main St" }, every, Date.now()), true);
+  // And nothing at all is asked where there is nothing to ask about.
+  assert.equal(M.refreshEveryHours(0), Infinity);
   assert.equal(M.propertyDue({ address: "1 Main St" }, Infinity), false,
     "an impossible cadence must refresh nothing rather than everything");
 });
 
+await test("the month's count stops the schedule whatever the clock says", () => {
+  // Two devices reading their own clocks against their own copy of the
+  // document can both believe a property is due. The count is one number both
+  // of them add to, so it is the one that holds.
+  assert.equal(M.autoRoom(0), true);
+  assert.equal(M.autoRoom(M.AUTO_MONTHLY_CAP - 1), true);
+  assert.equal(M.autoRoom(M.AUTO_MONTHLY_CAP), false, "the cap is a ceiling, not a target");
+  assert.equal(M.autoRoom(M.AUTO_MONTHLY_CAP + 9), false, "and past it stays past it");
+  assert.ok(M.AUTO_MONTHLY_CAP < M.MONTHLY_LOOKUPS / 3,
+    "the schedule's whole year of overspending has to fit in what is left");
+});
+
 await test("the cadence reads as words", () => {
+  assert.equal(M.cadenceLabel(M.AUTO_EVERY_HOURS), "about every 14 days");
   assert.equal(M.cadenceLabel(34), "about daily");
   assert.equal(M.cadenceLabel(12), "every 12 hours");
   assert.equal(M.cadenceLabel(72), "about every 3 days");

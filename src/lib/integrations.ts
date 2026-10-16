@@ -2,7 +2,7 @@ import type { DB } from "../types.js";
 import { quietFor } from "./quiet.js";
 import type { Quiet } from "./quiet.js";
 import { canValue } from "./property.js";
-import { MONTHLY_LOOKUPS } from "./property.js";
+import { AUTO_MONTHLY_CAP, MONTHLY_LOOKUPS } from "./property.js";
 import { MONTHLY_SYMBOLS, tickersOf } from "./prices.js";
 import type { Period } from "./usage.js";
 import { meterOf } from "./usage.js";
@@ -187,9 +187,10 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
   return [
     {
       id: "plaid",
-      // Banks and brokerages both, since it is the only provider left: the
-      // bridge that used to do the bank half is gone.
-      process: "Bank & investment sync",
+      // Named for what it carries here now: the bridge takes the banks, and
+      // what is left for Plaid is the holdings and whatever the bridge cannot
+      // open.
+      process: "Investment holdings & other banks",
       provider: "Plaid",
       credential: { kind: "server", vars: "PLAID_CLIENT_ID / PLAID_SECRET" },
       set: plaidItems.length > 0,
@@ -255,6 +256,10 @@ export function integrations(db: DB, hopper?: HopperSpend | null, now: number = 
       ceiling: MONTHLY_LOOKUPS,
       unit: "lookups",
       period: "month",
+      // What the figure above does not say on its own: most of the allowance
+      // is not the schedule's to spend. It stops at its own cap, and the rest
+      // is there for the button and for whatever a second device duplicates.
+      caveat: `the schedule stops at ${AUTO_MONTHLY_CAP} a month, the rest are yours`,
       lastAt: rentcast.at,
       note: addressless
         ? `${addressless} propert${addressless === 1 ? "y has" : "ies have"} no address`

@@ -10793,6 +10793,81 @@ try {
     await ws.close();
   }
 
+  if (want("property-cap")) {
+    // ── the schedule stops at the month's count, not at the clock ──
+    //
+    // A lookup past the plan's limit is a charge. The cadence is read against
+    // each device's own clock and its own copy of the document, so it cannot
+    // be the only thing standing between a household and a bill; the count in
+    // the document is one number every device adds to, and this is the check
+    // that it is consulted before anything is spent.
+    const seedProperty = (spent) => function seed() {
+      try {
+        const raw = localStorage.getItem("sovereign.db.v1");
+        if (!raw) return;
+        const db = JSON.parse(raw);
+        const month = new Date().toISOString().slice(0, 7);
+        db.settings.rentcastApiKey = "rc-test-key";
+        db.settings.syncCadence = "off";
+        db.settings.usage = {
+          ...(db.settings.usage ?? {}),
+          rentcast: { period: month, count: SPENT, at: new Date().toISOString() },
+        };
+        db.accounts = [...db.accounts, {
+          id: "prop_1", name: "The house", institution: "", type: "real_estate",
+          balance: 450_000_00, includeInNetWorth: true, hidden: false, order: 80,
+          history: [], address: "1 Main St, Springfield, IL 62704",
+          // Long overdue by any cadence this app has ever had.
+          valuationTriedAt: new Date(Date.now() - 90 * 86_400_000).toISOString(),
+        }];
+        localStorage.setItem("sovereign.db.v1", JSON.stringify(db));
+      } catch { /* a browser with no room is not this check's subject */ }
+    }.toString().replace("SPENT", String(spent));
+
+    const run = async (spent) => {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 1000 } });
+      const warm = await ctx.newPage();
+      await warm.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
+      await warm.waitForTimeout(1400);
+      await warm.close();
+      await ctx.addInitScript(`(${seedProperty(spent)})()`);
+      const page = await ctx.newPage();
+      let asked = 0;
+      await page.route("**/api/property", (route) => {
+        asked += 1;
+        return route.fulfill({ json: { price: 462_000, priceRangeLow: 450_000, priceRangeHigh: 475_000, address: "1 Main St" } });
+      });
+      await page.goto(`${BASE}/accounts`, { waitUntil: "networkidle" });
+      await page.waitForFunction(
+        () => !document.documentElement.hasAttribute("data-booting"), { timeout: 15000 },
+      ).catch(() => {});
+      // The settle round is two seconds after the key is seen; the ten minute
+      // tick is far outside this window, so what happens here is one round.
+      await page.waitForTimeout(4500);
+      const count = await page.evaluate(() => {
+        const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+        return db.settings.usage?.rentcast?.count ?? 0;
+      });
+      await page.close();
+      await ctx.close();
+      return { asked, count };
+    };
+
+    const spent = await run(12);
+    check("a month already at the cap spends nothing more",
+      spent.asked === 0, `${spent.asked} lookups asked for`);
+    check("and the count is left where it was",
+      spent.count === 12, `count ${spent.count}`);
+
+    const room = await run(3);
+    check("a month with room refreshes the property that is due",
+      room.asked === 1, `${room.asked} lookups asked for`);
+    // One per tick, so a wallet of due properties cannot empty the allowance
+    // in a minute, and the count rises by exactly what was spent.
+    check("counting the one it spent, and no more",
+      room.count === 4, `count ${room.count}`);
+  }
+
   if (want("settings-trim")) {
     // ── settings holds settings, not switches nobody moves ──
     //

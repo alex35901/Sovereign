@@ -1,16 +1,22 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
-import { canValue, estimateHomeValue, propertyDue, refreshEveryHours } from "../lib/property";
-import { reason, recordRun } from "../lib/usage";
+import { autoRoom, canValue, estimateHomeValue, propertyDue, refreshEveryHours } from "../lib/property";
+import { meterOf, reason, recordRun } from "../lib/usage";
 
 /**
- * Keeps property values current, within RentCast's free allowance.
+ * Keeps property values current, well inside RentCast's allowance.
  *
- * Renders nothing. Every call here spends one of fifty lookups a month, so the
- * design is about not wasting them: the cadence is worked out from how many
- * properties there are rather than fixed, an attempt is recorded whether or not
- * it succeeded, and only one property is refreshed per tick so a burst of due
- * ones cannot empty the allowance in a single minute.
+ * Renders nothing. Every call here spends a lookup, and a lookup past the
+ * plan's limit is now a charge rather than a refusal, so the design is about
+ * spending few of them: a fortnight between refreshes of one property, one
+ * property per tick so a burst of due ones cannot empty the allowance in a
+ * minute, an attempt recorded whether or not it succeeded, and a hard stop at
+ * the month's count however often anything here is asked.
+ *
+ * The stop is the part that holds when the rest does not. A cadence is read
+ * against each device's own clock and its own copy of the document, so two
+ * devices can both believe a property is due; the count is one number in the
+ * document that both of them add to.
  */
 
 /** How often to look at the clock. The cadence decides whether anything happens. */
@@ -44,6 +50,11 @@ export function PropertyRefresh() {
 
       const key = cur.settings.rentcastApiKey?.trim();
       if (!key) return;
+
+      // The month's ceiling, before the cadence is even consulted. Everything
+      // below this line spends money.
+      const used = meterOf(cur.settings.usage, "rentcast", "month").count;
+      if (!autoRoom(used)) return;
 
       const properties = cur.accounts.filter(
         (a) => canValue(a.type) && !a.hidden && !a.closedAt && a.address?.trim(),
