@@ -41,10 +41,19 @@ try {
 
 // The document has to start empty, or the first device joins someone else's
 // budget and encrypts nothing.
+//
+// Its past versions too. They used to be left behind on the grounds that
+// nothing read them, which stopped being true the day a merge started
+// fetching the version it last agreed with: a run that reused version numbers
+// from the run before was handed somebody else's document as its own past,
+// and the merge it could not make quietly became the old take-the-stored-copy
+// rule. The one failing check looked exactly like a bug in the merge.
 if (process.env.DATABASE_URL) {
   const { Pool } = await import("pg");
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  try { await pool.query("TRUNCATE budget_document"); } catch { /* not created yet */ }
+  for (const table of ["budget_document", "budget_history", "sync_queue"]) {
+    try { await pool.query(`TRUNCATE ${table}`); } catch { /* not created yet */ }
+  }
   await pool.end();
 } else {
   skip("no DATABASE_URL — cannot clear the document, so the flow was not checked");
@@ -656,6 +665,82 @@ try {
   check("and the tabs go quiet again afterwards",
     !meter.some(fetchedDoc) && meter.every((r) => r.up < 4096),
     meter.filter((r) => fetchedDoc(r) || r.up).map((r) => `${r.label} ${r.method} ${r.down + r.up}B`).join(", ") || "none");
+
+  /*
+   * ── both devices changed something, and both changes survive ──
+   *
+   * The failure this is here for: the rule used to be that the stored copy
+   * won and this browser's work went into a drawer with a line saying where
+   * to find it. A household lost an evening of forecast assumptions to it,
+   * and later a month of a provider's allowance, because a count kept in the
+   * document was dropped the same way.
+   *
+   * Two tabs, each holding an edit the other has not seen. One of them cannot
+   * reach the server while it makes its change, which is what produces the
+   * state the merge exists for: two copies that both moved on from the same
+   * version. Nothing here is contrived about the edits themselves; they are
+   * two different settings, which is exactly the shape the forecast had.
+   */
+  // Whatever earlier parts of this run put in the drawer, so that what is
+  // checked below is what this merge added to it and not what it inherited.
+  const drawerBefore = await t2.evaluate(() => localStorage.getItem("sovereign.db.conflict.v1"));
+  let holding = true;
+  const blockSaves = async (route) => {
+    if (holding && route.request().method() !== "GET") return route.abort();
+    return route.continue();
+  };
+  await t2.route("**/api/db*", blockSaves);
+
+  // The tab that cannot save picks the other theme.
+  await t2.locator('.theme-pick button:not(.on)').first().click();
+  await t2.waitForTimeout(400);
+  await t2.clock.fastForward("00:10");
+  await t2.waitForTimeout(1500);
+  const wanted = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.db.v1")).settings.theme);
+  const unsent = await t2.evaluate(() => JSON.parse(localStorage.getItem("sovereign.cloud.state.v1") ?? "{}").dirty);
+  check("a tab that cannot reach the server keeps its change, unsent",
+    unsent === true, `dirty: ${unsent}`);
+
+  // Meanwhile the other tab renames the household and saves it.
+  await t1.locator('input[name="sovereign-household"]').fill("Renamed on the other device");
+  await t1.waitForTimeout(600);
+  await t1.clock.fastForward("00:10");
+  await t1.waitForTimeout(2500);
+
+  // The blocked tab is let go. Its save is refused, because the document moved
+  // under it, and what used to happen next is that it took the stored copy and
+  // put its own in the drawer.
+  holding = false;
+  for (let i = 0; i < 3; i++) { await t2.clock.fastForward("01:00"); await t2.waitForTimeout(2500); }
+
+  const both = await t2.evaluate(() => {
+    const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+    return { theme: db.settings.theme, household: db.settings.householdName };
+  });
+  check("the blocked tab keeps its own change through the merge",
+    both.theme === wanted, `theme ${both.theme}, wanted ${wanted}`);
+  check("and takes the one the other device saved",
+    both.household === "Renamed on the other device", both.household);
+
+  // And the merged copy is what everybody else gets, not just this tab.
+  await t1.keyboard.press("Shift");
+  for (let i = 0; i < 3; i++) { await t1.clock.fastForward("01:00"); await t1.waitForTimeout(2000); }
+  const far = await t1.evaluate(() => {
+    const db = JSON.parse(localStorage.getItem("sovereign.db.v1"));
+    return { theme: db.settings.theme, household: db.settings.householdName };
+  });
+  check("the other device ends up holding both changes too",
+    far.theme === wanted && far.household === "Renamed on the other device",
+    `theme ${far.theme}, household ${far.household}`);
+
+  // Nothing was set aside, because nothing had to be chosen between: the
+  // drawer is for the one case a three-way merge cannot settle, and two
+  // different settings are not that case.
+  const drawer = await t2.evaluate(() => localStorage.getItem("sovereign.db.conflict.v1"));
+  check("and nothing was put in the drawer, because nothing had to be",
+    drawer === drawerBefore,
+    drawerBefore === null ? "a copy was set aside" : "a copy was set aside on top of the earlier one");
+  await t2.unroute("**/api/db*", blockSaves);
 } finally {
   await browser.close();
 }

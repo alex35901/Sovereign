@@ -96,6 +96,7 @@ await build({
       export { applyQueue, drainSummary } from "./src/lib/sync/drain.ts";
       export { accountsOf, adopt, floorFor, itemFor } from "./src/lib/sync/adopt.ts";
       export * as RA from "./src/lib/sync/reattach.ts";
+      export * as MG from "./src/lib/sync/merge-doc.ts";
       export * as SF from "./src/lib/sync/simplefin.ts";
       export * as WS from "./src/lib/worth-split.ts";
       export { documentMB } from "./src/lib/transfer.ts";
@@ -12309,6 +12310,343 @@ await test("every action a rule carries is applied in one pass", () => {
   assert.deepEqual(out.tags, ["tg1"]);
   assert.equal(out.reviewed, true);
   assert.equal(out.hideFromReports, true);
+});
+
+/* ── two copies of the budget that both moved ─────────────────────────── */
+
+/**
+ * A document, and two edits of it.
+ *
+ * `base` is what both devices last agreed on, `mine` is what this browser is
+ * holding and `theirs` is what the server took from somebody else. Deep copies
+ * every time, so a test that mutates one cannot reach the others.
+ */
+const threeWay = (build) => {
+  const seed = {
+    ...M.emptyDB(),
+    accounts: [
+      { id: "a1", name: "Everyday", institution: "Bank", type: "checking", balance: 500_00,
+        includeInNetWorth: true, hidden: false, order: 0, history: [{ date: "2026-10-01", balance: 500_00 }] },
+      { id: "a2", name: "Savings", institution: "Bank", type: "savings", balance: 9_000_00,
+        includeInNetWorth: true, hidden: false, order: 1, history: [] },
+    ],
+    transactions: [
+      { id: "t1", accountId: "a1", date: "2026-10-02", merchant: "Shop", amount: -20_00, categoryId: "c_gro", tags: [] },
+      { id: "t2", accountId: "a1", date: "2026-10-03", merchant: "Cafe", amount: -4_00, categoryId: "c_out", tags: [] },
+    ],
+    budgets: { "2026-10": { c_gro: 400_00 } },
+  };
+  const copy = () => JSON.parse(JSON.stringify(seed));
+  const base = copy();
+  const mine = copy();
+  const theirs = copy();
+  build({ base, mine, theirs });
+  return M.MG.mergeDocs(base, mine, theirs);
+};
+
+await test("two copies that agree are merged into the same thing, quietly", () => {
+  const out = threeWay(() => {});
+  assert.deepEqual(out.conflicts, []);
+  assert.equal(out.kept, false, "nothing of this browser's was needed");
+  assert.equal(out.db.transactions.length, 2);
+  assert.equal(out.db.accounts.length, 2);
+});
+
+await test("a change made here survives a save made elsewhere", () => {
+  // The whole point. Two people, two different edits, both kept.
+  const out = threeWay(({ mine, theirs }) => {
+    mine.transactions[0].categoryId = "c_household";
+    theirs.accounts[1].name = "Emergency fund";
+  });
+  assert.deepEqual(out.conflicts, []);
+  assert.equal(out.kept, true);
+  assert.equal(out.db.transactions[0].categoryId, "c_household", "the phone's recategorisation");
+  assert.equal(out.db.accounts[1].name, "Emergency fund", "and the laptop's rename");
+});
+
+await test("and two edits to one row, on different fields, are both kept", () => {
+  const out = threeWay(({ mine, theirs }) => {
+    mine.transactions[1].merchant = "The Cafe";
+    theirs.transactions[1].categoryId = "c_coffee";
+  });
+  assert.deepEqual(out.conflicts, []);
+  assert.equal(out.db.transactions[1].merchant, "The Cafe");
+  assert.equal(out.db.transactions[1].categoryId, "c_coffee");
+  assert.equal(out.db.transactions[1].amount, -4_00, "and nothing else moved");
+});
+
+await test("the same field changed twice takes the saved copy, and says so", () => {
+  // The only case that loses anything, and it needs two people to change one
+  // field between the same two saves.
+  const out = threeWay(({ mine, theirs }) => {
+    mine.transactions[0].amount = -21_00;
+    theirs.transactions[0].amount = -22_00;
+  });
+  assert.equal(out.db.transactions[0].amount, -22_00, "the stored copy, which every other device already has");
+  assert.equal(out.conflicts.length, 1);
+  assert.match(out.conflicts[0], /transactions\/Shop\/amount/);
+});
+
+await test("two devices that each add a row end up with both", () => {
+  const row = (id, merchant) => ({
+    id, accountId: "a1", date: "2026-10-05", merchant, amount: -9_00, categoryId: "c_gro", tags: [],
+  });
+  const out = threeWay(({ mine, theirs }) => {
+    mine.transactions.push(row("t_mine", "Corner shop"));
+    theirs.transactions.push(row("t_theirs", "Market"));
+  });
+  assert.deepEqual(out.conflicts, []);
+  assert.deepEqual(out.db.transactions.map((t) => t.id).sort(), ["t1", "t2", "t_mine", "t_theirs"]);
+});
+
+await test("a row deleted on one side stays deleted", () => {
+  const gone = threeWay(({ mine }) => { mine.transactions = mine.transactions.filter((t) => t.id !== "t2"); });
+  assert.deepEqual(gone.db.transactions.map((t) => t.id), ["t1"]);
+  assert.deepEqual(gone.conflicts, [], "a deletion nobody argued with is not a conflict");
+
+  const theirSide = threeWay(({ theirs }) => { theirs.transactions = theirs.transactions.filter((t) => t.id !== "t1"); });
+  assert.deepEqual(theirSide.db.transactions.map((t) => t.id), ["t2"]);
+});
+
+await test("but a row deleted on one side and changed on the other is kept", () => {
+  // An edit is the thing that cannot be done again from memory; a deletion is
+  // one press. So the edit survives and the merge says what happened.
+  const out = threeWay(({ mine, theirs }) => {
+    theirs.transactions = theirs.transactions.filter((t) => t.id !== "t1");
+    mine.transactions[0].amount = -25_00;
+  });
+  assert.equal(out.db.transactions.length, 2, "it came back rather than taking the edit with it");
+  assert.equal(out.db.transactions.find((t) => t.id === "t1").amount, -25_00);
+  assert.equal(out.conflicts.length, 1);
+
+  // And the same the other way round.
+  const back = threeWay(({ mine, theirs }) => {
+    mine.transactions = mine.transactions.filter((t) => t.id !== "t1");
+    theirs.transactions[0].merchant = "Shop & Co";
+  });
+  assert.equal(back.db.transactions.find((t) => t.id === "t1").merchant, "Shop & Co");
+  assert.equal(back.conflicts.length, 1);
+});
+
+await test("a budget set on one device and another set elsewhere are both kept", () => {
+  const out = threeWay(({ mine, theirs }) => {
+    mine.budgets["2026-10"].c_gro = 450_00;
+    theirs.budgets["2026-10"].c_gas = 120_00;
+    theirs.budgets["2026-11"] = { c_gro: 400_00 };
+  });
+  assert.deepEqual(out.conflicts, []);
+  assert.equal(out.db.budgets["2026-10"].c_gro, 450_00, "this device's figure");
+  assert.equal(out.db.budgets["2026-10"].c_gas, 120_00, "and the other's");
+  assert.equal(out.db.budgets["2026-11"].c_gro, 400_00, "and a month only one of them had");
+});
+
+await test("the same budget figure moved twice takes the saved one and names it", () => {
+  const out = threeWay(({ mine, theirs }) => {
+    mine.budgets["2026-10"].c_gro = 450_00;
+    theirs.budgets["2026-10"].c_gro = 500_00;
+  });
+  assert.equal(out.db.budgets["2026-10"].c_gro, 500_00);
+  assert.deepEqual(out.conflicts, ["budgets/2026-10/c_gro"]);
+});
+
+await test("a forecast assumption changed here is not thrown away for an unrelated save", () => {
+  // The evening this cost somebody. The forecast is one object with a list of
+  // scenarios in it, and the old rule took the whole document.
+  const plan = {
+    activeId: "s1",
+    scenarios: [
+      { id: "s1", name: "Base", assumptions: { returnRate: 6, inflation: 2.5 } },
+      { id: "s2", name: "Lean", assumptions: { returnRate: 4, inflation: 3 } },
+    ],
+  };
+  const out = threeWay(({ base, mine, theirs }) => {
+    base.forecast = JSON.parse(JSON.stringify(plan));
+    mine.forecast = JSON.parse(JSON.stringify(plan));
+    theirs.forecast = JSON.parse(JSON.stringify(plan));
+    mine.forecast.scenarios[0].assumptions.returnRate = 7;
+    theirs.transactions[0].reviewed = true;
+  });
+  assert.deepEqual(out.conflicts, []);
+  assert.equal(out.db.forecast.scenarios[0].assumptions.returnRate, 7, "still there");
+  assert.equal(out.db.forecast.scenarios[0].assumptions.inflation, 2.5);
+  assert.equal(out.db.transactions[0].reviewed, true);
+});
+
+await test("two meters of the same month are added up, not chosen between", () => {
+  // Not an opinion about a number but two counts of real calls: a lookup spent
+  // on a phone and one spent on a laptop are two lookups, and the provider
+  // will say so. This is the count that read eighteen against a provider's
+  // forty-two.
+  const out = threeWay(({ base, mine, theirs }) => {
+    base.settings.usage = { rentcast: { period: "2026-10", count: 5, at: "2026-10-10T00:00:00.000Z" } };
+    mine.settings.usage = { rentcast: { period: "2026-10", count: 6, at: "2026-10-15T00:00:00.000Z" } };
+    theirs.settings.usage = { rentcast: { period: "2026-10", count: 9, at: "2026-10-16T00:00:00.000Z" } };
+  });
+  assert.equal(out.db.settings.usage.rentcast.count, 9, "the side that saw more calls");
+  assert.deepEqual(out.conflicts, [], "and counting is not a disagreement");
+
+  // And the other way round: the side that saw more is this browser as often
+  // as it is the server, and a rule that quietly meant "the stored one" would
+  // read the same on the fixture above.
+  const ahead = threeWay(({ base, mine, theirs }) => {
+    base.settings.usage = { rentcast: { period: "2026-10", count: 5 } };
+    mine.settings.usage = { rentcast: { period: "2026-10", count: 11 } };
+    theirs.settings.usage = { rentcast: { period: "2026-10", count: 9 } };
+  });
+  assert.equal(ahead.db.settings.usage.rentcast.count, 11, "this browser counted more of them");
+
+  // A month that has rolled over on one side only starts again rather than
+  // taking the larger of two different months.
+  const rolled = threeWay(({ base, mine, theirs }) => {
+    base.settings.usage = { rentcast: { period: "2026-10", count: 40 } };
+    mine.settings.usage = { rentcast: { period: "2026-10", count: 41 } };
+    theirs.settings.usage = { rentcast: { period: "2026-11", count: 2 } };
+  });
+  assert.equal(rolled.db.settings.usage.rentcast.period, "2026-11");
+  assert.equal(rolled.db.settings.usage.rentcast.count, 2);
+
+  // A meter counted in distinct things is a set, so both sides' symbols count.
+  const symbols = threeWay(({ base, mine, theirs }) => {
+    base.settings.usage = { tiingo: { period: "2026-10", count: 1, seen: ["VTI"] } };
+    mine.settings.usage = { tiingo: { period: "2026-10", count: 2, seen: ["VTI", "BND"] } };
+    theirs.settings.usage = { tiingo: { period: "2026-10", count: 2, seen: ["VTI", "VXUS"] } };
+  });
+  assert.deepEqual(symbols.db.settings.usage.tiingo.seen.sort(), ["BND", "VTI", "VXUS"]);
+  assert.equal(symbols.db.settings.usage.tiingo.count, 3, "the count and the set say the same thing");
+});
+
+await test("a balance written on both devices keeps both days", () => {
+  const out = threeWay(({ mine, theirs }) => {
+    mine.accounts[0].history.push({ date: "2026-10-15", balance: 480_00 });
+    theirs.accounts[0].history.push({ date: "2026-10-16", balance: 470_00 });
+  });
+  assert.deepEqual(out.db.accounts[0].history.map((h) => h.date),
+    ["2026-10-01", "2026-10-15", "2026-10-16"]);
+  // The same day written twice is one reading, and the stored one is what the
+  // other devices are showing.
+  const sameDay = threeWay(({ mine, theirs }) => {
+    mine.accounts[0].history.push({ date: "2026-10-15", balance: 1_00 });
+    theirs.accounts[0].history.push({ date: "2026-10-15", balance: 2_00 });
+  });
+  assert.equal(sameDay.db.accounts[0].history.find((h) => h.date === "2026-10-15").balance, 2_00);
+});
+
+await test("a list of keys that both sides added to is unioned", () => {
+  const out = threeWay(({ base, mine, theirs }) => {
+    base.settings.deletedAccountKeys = ["k1"];
+    mine.settings.deletedAccountKeys = ["k1", "k_mine"];
+    theirs.settings.deletedAccountKeys = ["k1", "k_theirs"];
+  });
+  assert.deepEqual([...out.db.settings.deletedAccountKeys].sort(), ["k1", "k_mine", "k_theirs"]);
+  assert.deepEqual(out.conflicts, []);
+});
+
+await test("a setting only one side touched is not an argument", () => {
+  const out = threeWay(({ mine, theirs }) => {
+    mine.settings.householdName = "The Smiths";
+    theirs.settings.startPage = "/transactions";
+  });
+  assert.equal(out.db.settings.householdName, "The Smiths");
+  assert.equal(out.db.settings.startPage, "/transactions");
+  assert.deepEqual(out.conflicts, []);
+});
+
+await test("the merge is stable: running it again changes nothing", () => {
+  const first = threeWay(({ mine, theirs }) => {
+    mine.transactions[0].categoryId = "c_household";
+    theirs.accounts[1].name = "Emergency fund";
+    theirs.transactions[1].amount = -5_00;
+  });
+  const again = M.MG.mergeDocs(first.db, first.db, first.db);
+  assert.deepEqual(again.db, first.db);
+  assert.deepEqual(again.conflicts, []);
+});
+
+await test("and nothing in the result was invented", () => {
+  // Every leaf of a merged document is a value one of the three already held.
+  // A merge that can produce a figure nobody wrote is not safe to run over
+  // somebody's money, whatever else it gets right.
+  const seen = new Set();
+  const walk = (v) => {
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (v && typeof v === "object") { Object.values(v).forEach(walk); return; }
+    seen.add(JSON.stringify(v));
+  };
+  const out = threeWay(({ mine, theirs }) => {
+    mine.transactions[0].amount = -21_00;
+    theirs.transactions[0].amount = -22_00;
+    mine.budgets["2026-10"].c_gro = 450_00;
+    theirs.accounts[0].balance = 499_00;
+  });
+  const known = new Set();
+  const collect = (db) => {
+    const inner = (v) => {
+      if (Array.isArray(v)) { v.forEach(inner); return; }
+      if (v && typeof v === "object") { Object.values(v).forEach(inner); return; }
+      known.add(JSON.stringify(v));
+    };
+    inner(db);
+  };
+  // The three it came from, rebuilt the same way the merge saw them.
+  threeWay(({ base, mine, theirs }) => {
+    mine.transactions[0].amount = -21_00;
+    theirs.transactions[0].amount = -22_00;
+    mine.budgets["2026-10"].c_gro = 450_00;
+    theirs.accounts[0].balance = 499_00;
+    [base, mine, theirs].forEach(collect);
+  });
+  walk(out.db);
+  for (const leaf of seen) {
+    assert.ok(known.has(leaf), `${leaf} is in the merge and in none of the three it came from`);
+  }
+});
+
+await test("a year of a real household merges in a blink", () => {
+  // The merge runs on a phone, in the moment between a save being refused and
+  // being made again, on a document that can hold years. A rule that is right
+  // and quadratic is a rule that locks the screen.
+  const big = () => {
+    const db = M.emptyDB();
+    db.accounts = [{
+      id: "a1", name: "Everyday", institution: "Bank", type: "checking", balance: 0,
+      includeInNetWorth: true, hidden: false, order: 0, history: [],
+    }];
+    db.transactions = Array.from({ length: 20_000 }, (_, i) => ({
+      id: `t${i}`, accountId: "a1", date: "2026-05-05", merchant: `Shop ${i % 400}`,
+      amount: -(i % 900) - 100, categoryId: `c${i % 30}`, tags: [],
+    }));
+    db.budgets = Object.fromEntries(Array.from({ length: 36 }, (_, m) => [
+      `2024-${String((m % 12) + 1).padStart(2, "0")}`,
+      Object.fromEntries(Array.from({ length: 30 }, (_, c) => [`c${c}`, (c + 1) * 1000])),
+    ]));
+    return db;
+  };
+  const base = big();
+  const mine = JSON.parse(JSON.stringify(base));
+  const theirs = JSON.parse(JSON.stringify(base));
+  mine.transactions[17].categoryId = "c_moved";
+  theirs.transactions[19_000].merchant = "Renamed";
+  theirs.transactions.push({ ...theirs.transactions[0], id: "t_new" });
+
+  const at = Date.now();
+  const out = M.MG.mergeDocs(base, mine, theirs);
+  const took = Date.now() - at;
+
+  assert.equal(out.db.transactions.length, 20_001);
+  assert.equal(out.db.transactions[17].categoryId, "c_moved");
+  assert.equal(out.db.transactions[19_000].merchant, "Renamed");
+  assert.deepEqual(out.conflicts, []);
+  assert.ok(took < 4000, `twenty thousand rows took ${took}ms, which is long enough to be felt`);
+});
+
+await test("key order is not a change", () => {
+  // Two browsers build the same record through the same code and usually in
+  // the same order. The one time they do not, a merge that compared them as
+  // text would call every field of an untouched row a conflict.
+  assert.equal(M.MG.same({ a: 1, b: 2 }, { b: 2, a: 1 }), true);
+  assert.equal(M.MG.same({ a: 1 }, { a: 1, b: undefined }), false, "a key that is there is there");
+  assert.equal(M.MG.same([1, 2], [2, 1]), false, "but a list is its order");
+  assert.equal(M.MG.same(Number.NaN, Number.NaN), true);
 });
 
 /* ── how often property values refresh ────────────────────────────────── */

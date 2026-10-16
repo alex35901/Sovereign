@@ -2,9 +2,10 @@ import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import {
   CloudError, cloudEnabled, cloudState, deviceName, head, isBlocking, mayPush, pull, push,
-  retryDelay, setCloudState, shouldSay,
+  readVersion, retryDelay, setCloudState, shouldSay,
   stashConflict, subscribeSync,
 } from "../lib/cloud";
+import { mergeDocs } from "../lib/sync/merge-doc";
 import { haltSync } from "../lib/sync-halt";
 import { drainQueue } from "../lib/sync/drain";
 import { POLL_MIN_MS, pollDelay, saveDelay } from "../lib/sync/schedule";
@@ -174,10 +175,11 @@ export function CloudSync() {
   /**
    * Take the stored document, setting aside anything unsent first.
    *
-   * The rule when the two disagree is that the server wins, and this is the
-   * only place that rule is carried out, so that no path can quietly implement
-   * it differently. A local edit that would be lost to it is stashed, never
-   * dropped.
+   * The last resort, and no longer the ordinary path: two copies that both
+   * moved are merged by `settle` below, and this runs only where a merge
+   * cannot be done — no version to compare against, or three tries lost to
+   * other devices saving in between. A local edit that would be lost to it is
+   * stashed, never dropped.
    */
   const takeRemote = async (say: (by: string) => string | null): Promise<Held | null> => {
     const remote = await pull().catch(() => null);
@@ -189,6 +191,78 @@ export function CloudSync() {
     const said = say(remote.updatedBy);
     if (said) act.current.notify(said);
     return { doc, version: remote.version };
+  };
+
+  /** How many times to re-merge when another device saves mid-round. */
+  const MERGE_TRIES = 3;
+
+  /**
+   * Both copies moved, so both are kept.
+   *
+   * The old rule was that the server won and this browser's work went into a
+   * drawer with a line saying where to find it. That is honest and it is not a
+   * merge: a forecast assumption changed on a phone and a transaction
+   * categorised on a laptop are not a disagreement, and treating them as one
+   * cost an evening's work and, later, a month of a provider's allowance.
+   *
+   * What makes a merge possible is the version this browser last agreed with
+   * the server about. The server still holds it, so the two copies can be
+   * compared against the one they both came from, and "changed" can be told
+   * apart from "different". Without it — a browser that has never saved, or
+   * a version old enough to have fallen off the end of the stored history —
+   * there is nothing to compare against and the old rule is the only one left.
+   *
+   * The merge is pushed straight back, because a merge nobody else can see is
+   * half a merge. If another device saves in the moment that takes, the answer
+   * is to do it again against what they saved rather than to give up: three
+   * goes, which is two more than this has ever needed.
+   */
+  const settle = async (say: (by: string) => string | null): Promise<Held | null> => {
+    if (!cloudState().dirty) {
+      // Nothing of this browser's is unsent, so there is nothing to merge and
+      // the stored copy is simply the newer one.
+      return takeRemote(() => null);
+    }
+    for (let attempt = 0; attempt < MERGE_TRIES; attempt += 1) {
+      const remote = await pull().catch(() => null);
+      if (!remote) return null;
+      const from = base.current > 0 ? await readVersion(base.current).catch(() => null) : null;
+      if (!from) return takeRemote(say);
+
+      const merged = mergeDocs(from, latest.current, remote.doc);
+      const doc = install(merged.db);
+      /**
+       * Kept even when the merge worked, where the merge had to choose.
+       *
+       * A field both devices moved is the one thing a three-way merge cannot
+       * keep twice, and it is exactly the case somebody might want to look at
+       * afterwards. Where nothing was chosen between, nothing is set aside:
+       * a drawer that fills up on every ordinary save is a drawer nobody opens.
+       */
+      if (merged.conflicts.length) stashConflict(latest.current);
+
+      try {
+        const res = await push(doc, remote.version);
+        base.current = res.version;
+        // Anything typed while the merge was in the air is in the document
+        // this browser holds and not in what went up, so it stays unsent
+        // rather than being marked saved and forgotten.
+        setCloudState({ version: res.version, dirty: latest.current !== doc, okAt: Date.now() });
+        const said = say(remote.updatedBy);
+        if (said) {
+          act.current.notify(merged.conflicts.length
+            ? `${said} ${merged.conflicts.length} ${merged.conflicts.length === 1 ? "thing was" : "things were"} changed in both copies; this device's is in Settings.`
+            : said);
+        }
+        return { doc, version: res.version };
+      } catch (err) {
+        // Somebody saved between the pull and the push. Merge again against
+        // what they saved: this browser's work is still in hand.
+        if (err instanceof CloudError && err.status === 409) continue;
+        throw err;
+      }
+    }
+    return takeRemote(say);
   };
 
   /**
@@ -231,8 +305,7 @@ export function CloudSync() {
       if (err instanceof CloudError && err.status === 409) {
         // The save did not land, but the document moved, which is the question
         // the poll is asking.
-        if (await takeRemote((by) =>
-          `${by} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`)) return true;
+        if (await settle((by) => `Merged with the copy ${by} saved.`)) return true;
       }
       // Everything else stays unsent and waits, longer each time. Said once
       // when it starts failing rather than on every attempt: a toast a minute
@@ -346,12 +419,10 @@ export function CloudSync() {
        * straight back over the recovery.
        */
       if (meta.version !== local.version) {
-        // Both moved. Keep the shared copy, but don't throw this browser's
-        // unsent work away: Settings can hand it back.
-        const stale = local.dirty;
-        const took = await takeRemote((by) => (stale
-          ? `Loaded the copy saved by ${by}. This device's unsent changes were set aside, see Settings.`
-          : null));
+        // Both moved, or only the stored copy did. Either way `settle` knows
+        // which: with nothing unsent it simply takes the newer copy, and with
+        // work in hand it merges the two and saves the result back.
+        const took = await settle((by) => (local.dirty ? `Merged with the copy ${by} saved.` : null));
         if (isCancelled() || !took) return;
         held = took;
       } else if (local.dirty) {
@@ -371,8 +442,7 @@ export function CloudSync() {
          */
         const res = await push(latest.current, base.current).catch(async (err: unknown) => {
           if (err instanceof CloudError && err.status === 409) {
-            await takeRemote((by) =>
-              `${by} changed this budget first. That copy is now loaded; yours was set aside, see Settings.`);
+            await settle((by) => `Merged with the copy ${by} saved.`);
             return null;
           }
           throw err;
