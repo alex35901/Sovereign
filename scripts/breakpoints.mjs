@@ -7900,6 +7900,36 @@ try {
       check("and that one finishes too", Math.abs((await across()) - 1) < 0.001);
     }
 
+    /*
+     * But a change that lands while it is still drawing does not start it
+     * again.
+     *
+     * Opening the app is the case this is for: the dashboard draws from the
+     * copy in this browser, and a second or so later the stored copy arrives
+     * with whatever the overnight job or another device added. Every line
+     * moves, and the wipe that was half way across went back to the left and
+     * started over, which reads as a stutter rather than as new figures. The
+     * lines under the wipe update either way, so there is nothing to see by
+     * starting again. Driven here by changing the period mid-wipe, which
+     * changes the series the same way the arriving copy does.
+     */
+    await dr.reload({ waitUntil: "domcontentloaded" });
+    await begun();
+    await dr.waitForTimeout(500);
+    const partway = await across();
+    if (await tryStep("the period can be changed while it is still drawing", async () => {
+      await dr.locator(".span-pill", { hasText: "6M" }).click({ timeout: 8000 });
+    })) {
+      await dr.waitForTimeout(260);
+      const after = await across();
+      check("a change that lands mid-draw is taken without starting over",
+        partway !== null && after !== null && after > partway && after < 0.99,
+        `${partway} then ${after}`);
+      await settle();
+      check("and it still finishes drawn all the way across",
+        Math.abs((await across()) - 1) < 0.001, String(await across()));
+    }
+
     // So does changing which accounts are being shown.
     if (await tryStep("a different slice can be chosen", async () => {
       await dr.locator(".scope-pill", { hasText: "Cash" }).first().click({ timeout: 8000 });

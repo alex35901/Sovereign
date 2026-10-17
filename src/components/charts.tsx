@@ -59,22 +59,49 @@ function Tip({ x, y, width, children }: { x: number; y: number; width: number; c
  * and a remounted element starts its animation from the beginning, which is
  * the whole trick. Nothing is stored and nothing is timed.
  *
- * The rectangle is keyed on the measured width too. The first paint happens
- * before the chart knows how wide it is, and a sweep across a placeholder
- * width would be over before the real one arrived.
+ * A signature that arrives while a wipe is drawing is taken, and the wipe is
+ * left alone. Opening the app is the case: the dashboard draws from the copy
+ * in this browser, and a second or so later the stored copy arrives with
+ * whatever the overnight job or another device added. Every line changes, and
+ * the wipe that was half way across the screen went back to the left and
+ * started again, which reads as a stutter rather than as new figures. The
+ * lines under the wipe update either way, so there is nothing to see by
+ * starting over and the only thing lost is the interruption.
+ *
+ * Changes after it has finished still run it again, which is what makes
+ * picking a different range or a different month feel like the chart being
+ * redrawn rather than swapped.
+ *
+ * The rectangle is still keyed on whether the width has been measured. The
+ * first paint happens before the chart knows how wide it is, and a sweep
+ * across a placeholder width is one nobody asked to watch. That key is
+ * defensive rather than proven: the measurement normally lands within a frame
+ * of the first paint, so absorbing it instead would cost a percent of the
+ * wipe and no check can tell the two apart. What it is really there for is a
+ * chart that mounts out of sight and is shown later, which is the one case
+ * where the gap is long enough to see.
  */
 export function Reveal({ id, x, width, height, signature }: {
   id: string; x: number; width: number; height: number; signature: string;
 }) {
+  const [shown, setShown] = useState(signature);
+  /** Whether the last wipe has finished, so a new series may start another. */
+  const idle = useRef(false);
+  useEffect(() => {
+    if (idle.current) setShown(signature);
+  }, [signature]);
+
   return (
     <clipPath id={id}>
       <rect
-        key={signature}
+        key={`${width > 0 ? 1 : 0}:${shown}`}
         className="chart-reveal"
         x={x} y={0} width={width} height={height}
         // In view-box units, so no transform-box is needed and the origin is
         // the left-hand edge of the plot area on every chart.
         style={{ transformOrigin: `${x}px 0px` }}
+        onAnimationStart={() => { idle.current = false; }}
+        onAnimationEnd={() => { idle.current = true; }}
       />
     </clipPath>
   );
